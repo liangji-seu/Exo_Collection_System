@@ -60,46 +60,100 @@ Project
 
 ## 3. 总体架构
 
-```mermaid
-flowchart LR
-    UI["PySide6 操作界面"] --> ORC["Session / Trial Orchestrator"]
+### 3.1 产品形态：单仓库、双桌面应用
 
-    ORC --> US["Ultrasound Adapter"]
-    ORC --> IMU["IMU Adapter"]
-    ORC --> ENC["Encoder Adapter"]
-    ORC --> EXT["其他 Modality Adapter"]
-    ORC --> PULSE["Sync Pulse Adapter"]
+系统作为一个产品和一个代码仓库开发、测试、版本控制与发布，但向工作人员提供两个职责不同的桌面入口：
 
-    US --> BUS["有界数据总线"]
-    IMU --> BUS
-    ENC --> BUS
-    EXT --> BUS
-    PULSE --> BUS
+| 用户应用 | 主要职责 | 明确不负责 |
+| --- | --- | --- |
+| `Exo Collector` | 设备连接、工况选择、Trial 采集、实时预览、设备告警、停止与最终化、即时轻量质检 | 大型历史文件回放、全量统计、SSH/SCP 上传 |
+| `Exo Data Studio` | 本地数据树、工况统计、质量审核、离线多模态回放、外部测力台/动捕导入、人工 SSH/SCP 上传 | 控制正在采集的设备、写入当前 Trial 原始数据 |
 
-    BUS --> WR["按模态隔离的 Writer"]
-    BUS --> PRE["共享内存预览缓冲区"]
-    PRE --> UI
+两个应用共享同一个 `exo_collection` 核心包，包括领域模型、Manifest Schema、时间模型、存储布局、SQLite Catalog、质量规则、可视化基础组件和传输协议。禁止复制两套 Trial、Manifest 或数据库实现。
 
-    WR --> PKG["Trial 数据包"]
-    PKG --> QA["质量检查与统计"]
-    QA --> DB["本地 SQLite Catalog"]
-    DB --> MAN["本地数据管理与回放"]
-    DB --> SCP["人工触发 SSH/SCP 上传工具"]
-    SCP --> CLOUD["指定服务器工作目录"]
+最终发布物是同一个安装包中的两个可执行入口：
+
+```text
+ExoCollector.exe
+ExoDataStudio.exe
 ```
 
-系统采用本地模块化多进程架构，不采用重量级微服务。建议运行时至少包含：
+可以提供一个只负责选择入口的轻量启动器，但启动器不承载采集、数据管理或上传逻辑。SSH/SCP 上传作为 Data Studio 内的功能页面呈现，实际传输由独立 `transfer-worker` 子进程执行，不再作为第三个必须单独学习的用户应用。
+
+### 3.2 逻辑架构
+
+```mermaid
+flowchart TB
+    subgraph COL["Exo Collector"]
+        CUI["采集 UI / 实时预览"] --> ORC["Session / Trial Orchestrator"]
+        ORC --> US["Ultrasound Adapter"]
+        ORC --> IMU["IMU Adapter"]
+        ORC --> ENC["Encoder Adapter"]
+        ORC --> EXT["其他 Modality Adapter"]
+        ORC --> PULSE["Sync Pulse Adapter"]
+
+        US --> BUS["有界数据总线"]
+        IMU --> BUS
+        ENC --> BUS
+        EXT --> BUS
+        PULSE --> BUS
+
+        BUS --> WR["按模态隔离的 Writer"]
+        BUS --> PRE["共享内存预览缓冲区"]
+        PRE --> CUI
+    end
+
+    WR --> PKG["FINALIZED Trial 数据包"]
+    PKG --> QA["质量检查与统计"]
+    QA --> DB["本地 SQLite Catalog"]
+
+    subgraph STUDIO["Exo Data Studio"]
+        DUI["数据管理 UI"] --> TREE["数据树与统计"]
+        DUI --> PLAY["离线多模态回放"]
+        DUI --> REVIEW["质量审核与外部数据导入"]
+        DUI --> SCP["人工创建上传批次"]
+        SCP --> TRANSFER["SSH/SCP Transfer Worker"]
+    end
+
+    DB --> TREE
+    DB --> PLAY
+    DB --> REVIEW
+    DB --> SCP
+    TRANSFER --> CLOUD["指定服务器工作目录"]
+
+    CORE["共享 exo_collection 核心包"] -.-> CUI
+    CORE -.-> DUI
+```
+
+### 3.3 运行时进程
+
+系统采用本地模块化多进程架构，不采用重量级微服务。两个用户应用分别启动自己的后台 Worker：
 
 | 进程 | 职责 |
 | --- | --- |
-| `collector-ui` | 界面、实验引导、实时预览，不直接写原始数据 |
+| `collector-ui` | Exo Collector 主进程；界面、实验引导、实时预览，不直接写原始数据 |
 | `collector-core` | Session/Trial 状态机、设备编排、工况锁定、健康聚合 |
 | `device-worker-*` | 厂商 SDK 调用、数据接收、设备状态，每个高风险 SDK 独立进程 |
 | `writer-*` | 按模态写盘；超声使用独立高吞吐 Writer |
 | `catalog-worker` | Trial 完成后的索引、统计和质量报告入库 |
-| `transfer-tool` | 采集结束后人工执行的 SSH/SCP 离线上传工具 |
+| `studio-ui` | Exo Data Studio 主进程；数据树、统计、质检、回放和上传操作入口 |
+| `analysis-worker` | 大型文件扫描、统计重算和质量检查 |
+| `playback-worker` | 超声及其他大型模态的索引读取、抽取和回放缓存 |
+| `transfer-worker` | Data Studio 创建上传批次后执行 SSH/SCP 和远端校验 |
 
 进程之间传递结构化控制消息；大块采样数据使用共享内存或预分配缓冲区，避免大数组反复序列化。
+
+### 3.4 应用边界与并发规则
+
+- Collector 是 `.recording`、`.partial` 和当前 Trial 原始数据的唯一写入方；
+- Data Studio 默认只展示并打开 `FINALIZED`、`ABORTED` 或 `RECOVERABLE` Trial，不读取正在写入的大型数据文件；
+- Data Studio 不直接向原始 Artifact 写入任何内容，重算结果写入 `derived` 或 `reports`；
+- Collector 只执行保障现场判断所需的轻量即时质检，全量统计和复杂回放放到 Data Studio；
+- SQLite 启用 WAL、`busy_timeout` 和短事务；Collector 写入 Trial 生命周期，Data Studio 主要读取并写入审核、派生结果和上传状态；
+- 上传只读取已最终化文件，不能与当前 Writer 共享文件句柄；
+- Collector 在采集期间发布进程心跳和数据根目录活动锁；Data Studio 检测到活动采集后进入轻量模式，允许浏览 Catalog，但暂停大型回放、全盘统计、SHA-256 重算和上传；
+- 两个应用可以同时启动，但必须通过 Trial 状态和文件锁遵守上述边界；
+- 两个应用使用相同版本的核心包、数据库迁移和 Schema，不支持不同发行版本长期混用同一 Catalog。
 
 ## 4. 领域模型
 
@@ -516,7 +570,7 @@ transfer_files
 audit_logs
 ```
 
-本地管理界面至少支持：
+Exo Data Studio 中的本地管理界面至少支持：
 
 - 按项目、受试者、Session、工况、日期和质量等级筛选；
 - 展开 Trial 查看所有模态、外部文件、文件大小和完整性；
@@ -533,6 +587,8 @@ audit_logs
 
 ### 13.1 实时预览
 
+实时预览属于 Exo Collector：
+
 - UI 读取共享内存中的降采样数据；
 - 默认刷新频率 10～20 Hz；
 - 超声原始数据写盘优先级高于预览；
@@ -541,7 +597,7 @@ audit_logs
 
 ### 13.2 离线回放
 
-回放器按 Manifest 加载各 Artifact，通过公共 Trial 时间轴联合显示：
+离线回放属于 Exo Data Studio。回放器按 Manifest 加载各 Artifact，通过公共 Trial 时间轴联合显示：
 
 - 超声帧或波形；
 - IMU 三轴、模长和姿态；
@@ -556,18 +612,18 @@ audit_logs
 
 ### 14.1 工作方式
 
-上传不在采集过程中自动执行。工作人员完成采集和本地质检后，在独立上传工具中：
+上传不在采集过程中自动执行。工作人员完成采集和本地质检后，在 Exo Data Studio 的“离线上传”页面中：
 
 1. 选择一个或多个 `FINALIZED` Trial/Session；
 2. 输入或选择服务器 IP、SSH 端口、用户名和远端工作目录；
 3. 输入密码，或选择 SSH 私钥；
-4. 工具生成上传批次和文件校验清单；
+4. Data Studio 生成上传批次和文件校验清单；
 5. 通过 SSH 创建远端目录；
 6. 通过 SCP 逐文件传输；
 7. 通过 SSH 在远端计算 SHA-256；
 8. 校验一致后将本地状态标记为“远端已验证”。
 
-推荐使用 `paramiko` 建立 SSH 会话，并使用 `scp.SCPClient` 执行 SCP，这样 Windows GUI 可以支持账号密码认证。密码默认只保存在当前进程内存中，不写入 JSON、日志、SQLite 或命令行参数。也应支持 SSH 私钥认证。
+Data Studio 将上传批次交给独立 `transfer-worker`。推荐使用 `paramiko` 建立 SSH 会话，并使用 `scp.SCPClient` 执行 SCP，这样 Windows GUI 可以支持账号密码认证。密码默认只保存在当前 Worker 进程内存中，不写入 JSON、日志、SQLite 或命令行参数。也应支持 SSH 私钥认证。
 
 ### 14.2 远端目录规范
 
@@ -703,7 +759,7 @@ exception
 | SSH/SCP | Paramiko + scp |
 | 数值分析 | NumPy、SciPy |
 | 日志 | 标准 logging + JSON formatter |
-| 打包 | PyInstaller |
+| 打包 | PyInstaller；同一安装包生成 `ExoCollector.exe` 和 `ExoDataStudio.exe` |
 | 测试 | pytest、hypothesis、模拟设备与回放数据 |
 
 不建议让 FastAPI、Redis、Kafka 等服务成为本地采集的必要依赖。若未来需要浏览器管理界面，可在 Catalog 之上增加可选本地 API，而不改变采集核心。
@@ -714,8 +770,16 @@ exception
 Exo_Collection_System/
   pyproject.toml
   src/exo_collection/
-    app/
-    ui/
+    apps/
+      collector/
+        main.py
+        windows/
+        viewmodels/
+      data_studio/
+        main.py
+        windows/
+        viewmodels/
+      launcher/
     domain/
       models.py
       states.py
@@ -759,6 +823,10 @@ Exo_Collection_System/
     logging/
   config/
   schemas/
+  packaging/
+    collector.spec
+    data_studio.spec
+    installer/
   tests/
     unit/
     integration/
@@ -850,16 +918,19 @@ Exo_Collection_System/
 ## 22. 首批架构决策
 
 1. 采用 Local-first，采集不依赖网络。
-2. 上传由工作人员在采集结束后人工触发，通过 SSH/SCP 完成。
-3. Trial 是采集、管理、统计和上传的最小完整单元。
-4. 原始数据不可变，数据库可由 Manifest 重建。
-5. 超声使用分块二进制，不使用 CSV。
-6. 不将所有模态强制写入一个 HDF5；不同高吞吐模态可以独立写盘。
-7. 主机单调时钟是软件公共时间基准，UTC 用于审计。
-8. 模拟同步脉冲是正式模态，必须同时保存原始波形和检测事件。
-9. 测力台、动捕等外部数据通过脉冲事件桥接到公共时间轴。
-10. 工况等级与数据质量等级分离。
-11. 新模态通过 Adapter/Writer/Visualizer/Quality 插件扩展。
-12. UI、原始采集、写盘和上传彼此隔离。
+2. 产品采用单仓库、双桌面应用：Exo Collector 负责实时采集，Exo Data Studio 负责管理、统计、回放、审核和离线上传。
+3. 两个应用属于同一个安装包并共享核心领域模型、Schema、Catalog 和公共组件，不复制业务实现。
+4. 耗时或高风险操作由独立 Worker 进程执行，用户无需管理这些 Worker。
+5. 上传由工作人员在采集结束后从 Data Studio 人工触发，通过 SSH/SCP 完成。
+6. Trial 是采集、管理、统计和上传的最小完整单元。
+7. 原始数据不可变，数据库可由 Manifest 重建。
+8. 超声使用分块二进制，不使用 CSV。
+9. 不将所有模态强制写入一个 HDF5；不同高吞吐模态可以独立写盘。
+10. 主机单调时钟是软件公共时间基准，UTC 用于审计。
+11. 模拟同步脉冲是正式模态，必须同时保存原始波形和检测事件。
+12. 测力台、动捕等外部数据通过脉冲事件桥接到公共时间轴。
+13. 工况等级与数据质量等级分离。
+14. 新模态通过 Adapter/Writer/Visualizer/Quality 插件扩展。
+15. UI、原始采集、写盘、分析和上传彼此隔离。
 
 这些决策构成项目第一版实现的架构边界。任何改变数据格式、时间语义或 Trial 身份规则的修改，都应先形成新的架构决策记录并评估兼容性。
