@@ -1,0 +1,865 @@
+# Exo Collection System 架构设计
+
+> 文档状态：初始架构基线
+> 目标平台：Windows 11
+> 主要语言：Python 3.11
+> 适用对象：外骨骼实验中的超声、IMU、电机编码器及后续扩展模态采集
+
+## 1. 文档目标
+
+本文档定义 Exo Collection System 的总体架构、时间同步模型、数据格式、本地数据管理、工况体系、离线 SSH/SCP 上传规范以及扩展机制。
+
+系统第一阶段需要支持：
+
+- 超声信号、IMU 信号和电机编码器信号的完整实时采集；
+- 一段采集对应一个明确工况，并支持重复轮次；
+- 采集过程中的实时预览、设备健康监控和异常提示；
+- 本地数据检索、统计、质量检查和回放；
+- 采集完成后由工作人员手动选择数据，通过 SSH/SCP 离线上传到指定服务器目录；
+- 为后续增加测力台、动作捕捉、肌电、足底压力、力矩、控制器状态等模态预留统一接口；
+- 接收测力台、动作捕捉等外部系统的模拟同步脉冲，并将外部数据映射到本系统的公共时间轴。
+
+本项目不在采集过程中实时上传数据。采集链路必须独立于网络状态，服务器不可用不能影响现场采集。
+
+## 2. 核心设计原则
+
+### 2.1 Trial 是最小完整数据单元
+
+一次连续记录的一段数据定义为一个 `Trial`，一个 Trial 对应一个确定工况。系统层级为：
+
+```text
+Project
+└── Subject
+    └── Session
+        ├── Trial 001：工况 A，第 1 次重复
+        ├── Trial 002：工况 A，第 2 次重复
+        └── Trial 003：工况 B，第 1 次重复
+```
+
+每个 Project、Subject、Session、Trial 均使用 UUID 作为真实主键。可读文件名只用于显示，不能作为文件关联的唯一依据。
+
+### 2.2 原始数据不可变
+
+设备产生的原始数据完成写盘后不得原地修改。统计结果、预览缓存、质量报告和外部模态对齐结果属于派生数据，必须记录算法版本和来源。
+
+### 2.3 完整不等于同步
+
+即使每个设备都没有丢失数据，不同设备仍可能使用不同采样时钟。系统必须同时保存设备计数、设备时间和主机单调时间，并明确记录各时钟域到公共时间轴的映射关系。
+
+### 2.4 采集、预览、管理和上传解耦
+
+- 采集进程只负责稳定接收数据；
+- 写盘进程只负责高吞吐、可恢复地保存数据；
+- UI 只消费抽取后的预览数据，UI 卡顿不得阻塞采集；
+- 统计系统查询本地数据库，不反复扫描大型二进制文件；
+- 上传是人工触发的离线工具，不与采集争抢网络、CPU 和磁盘资源。
+
+### 2.5 对扩展开放，对核心约束稳定
+
+新增模态通过 Adapter、Writer、Visualizer 和 Quality Evaluator 注册。核心 Session/Trial 状态机、Manifest、时间事件和数据目录协议保持稳定。
+
+## 3. 总体架构
+
+```mermaid
+flowchart LR
+    UI["PySide6 操作界面"] --> ORC["Session / Trial Orchestrator"]
+
+    ORC --> US["Ultrasound Adapter"]
+    ORC --> IMU["IMU Adapter"]
+    ORC --> ENC["Encoder Adapter"]
+    ORC --> EXT["其他 Modality Adapter"]
+    ORC --> PULSE["Sync Pulse Adapter"]
+
+    US --> BUS["有界数据总线"]
+    IMU --> BUS
+    ENC --> BUS
+    EXT --> BUS
+    PULSE --> BUS
+
+    BUS --> WR["按模态隔离的 Writer"]
+    BUS --> PRE["共享内存预览缓冲区"]
+    PRE --> UI
+
+    WR --> PKG["Trial 数据包"]
+    PKG --> QA["质量检查与统计"]
+    QA --> DB["本地 SQLite Catalog"]
+    DB --> MAN["本地数据管理与回放"]
+    DB --> SCP["人工触发 SSH/SCP 上传工具"]
+    SCP --> CLOUD["指定服务器工作目录"]
+```
+
+系统采用本地模块化多进程架构，不采用重量级微服务。建议运行时至少包含：
+
+| 进程 | 职责 |
+| --- | --- |
+| `collector-ui` | 界面、实验引导、实时预览，不直接写原始数据 |
+| `collector-core` | Session/Trial 状态机、设备编排、工况锁定、健康聚合 |
+| `device-worker-*` | 厂商 SDK 调用、数据接收、设备状态，每个高风险 SDK 独立进程 |
+| `writer-*` | 按模态写盘；超声使用独立高吞吐 Writer |
+| `catalog-worker` | Trial 完成后的索引、统计和质量报告入库 |
+| `transfer-tool` | 采集结束后人工执行的 SSH/SCP 离线上传工具 |
+
+进程之间传递结构化控制消息；大块采样数据使用共享内存或预分配缓冲区，避免大数组反复序列化。
+
+## 4. 领域模型
+
+### 4.1 Project
+
+保存项目名称、负责人、研究协议版本、数据根目录、工况定义版本和默认设备配置。
+
+### 4.2 Subject
+
+保存去标识化受试者编号、分组和必要实验属性。姓名、联系方式等敏感信息不应写入信号文件和远端目录名称。
+
+### 4.3 Session
+
+表示一次到场或一组连续实验，包含操作者、软件版本、设备集合、校准记录和多个 Trial。
+
+### 4.4 Trial
+
+表示一个原子采集单元，至少包含：
+
+- `trial_uuid`；
+- 所属 Project、Subject 和 Session；
+- 工况代码、工况参数、重复序号；
+- 开始、停止和最终完成时间；
+- 参与采集的模态；
+- 设备、固件、驱动和校准版本；
+- 文件列表及校验值；
+- 时间同步描述；
+- 数据质量等级；
+- 本地状态和离线上传状态。
+
+### 4.5 Artifact
+
+每个数据文件都是一个 Artifact，例如超声二进制、IMU HDF5、编码器 HDF5、模拟脉冲、外部动捕文件和质量报告。Artifact 必须通过 UUID 与 Trial 关联。
+
+## 5. Trial 状态机
+
+```mermaid
+stateDiagram-v2
+    [*] --> IDLE
+    IDLE --> PREPARING: 选择工况并检查设备
+    PREPARING --> READY: 所有必需设备已就绪
+    READY --> RECORDING: 开始 Trial
+    RECORDING --> STOPPING: 请求停止
+    STOPPING --> FINALIZING: 各设备确认停止
+    FINALIZING --> FINALIZED: 文件关闭并通过完整性检查
+    PREPARING --> FAILED: 准备失败
+    RECORDING --> ABORTED: 紧急中断
+    FINALIZING --> RECOVERABLE: 异常退出或文件未正常关闭
+    RECOVERABLE --> FINALIZED: 启动后恢复成功
+```
+
+状态转换只能由 Orchestrator 执行。UI 不得直接修改设备状态或数据库状态。
+
+停止采集后，UI 立即显示“正在停止”，各 Adapter 返回停止确认，Writer 完成 flush、关闭和校验后，Trial 才进入 `FINALIZED`。只有 `FINALIZED` 或人工确认的 `ABORTED` Trial 可以进入离线上传列表。
+
+## 6. 设备与模态扩展接口
+
+### 6.1 Modality Adapter
+
+所有输入设备实现统一生命周期接口。概念接口如下：
+
+```python
+class ModalityAdapter(Protocol):
+    def descriptor(self) -> ModalityDescriptor: ...
+    def connect(self, config: DeviceConfig) -> None: ...
+    def prepare(self, trial: TrialContext) -> PreparedInfo: ...
+    def start(self, start_token: StartToken) -> None: ...
+    def stop(self) -> StopReport: ...
+    def health(self) -> HealthSnapshot: ...
+    def close(self) -> None: ...
+```
+
+Adapter 输出统一事件：
+
+- `SampleBatch`：一批连续采样；
+- `FrameBatch`：超声图像、A-line、RF 帧等二维或多维数据；
+- `SyncPulseEvent`：同步脉冲边沿；
+- `DeviceStatusEvent`：连接、准备、采集中、停止、故障；
+- `MetricEvent`：实时采样率、队列深度、丢包、温度等指标。
+
+### 6.2 Writer 插件
+
+每种模态声明自己的 Writer：
+
+- `BlockBinaryWriter`：超声和其他高吞吐规则数组；
+- `Hdf5SignalWriter`：IMU、编码器及中等频率结构化信号；
+- `ExternalArtifactWriter`：登记外部系统产生的文件；
+- 后续可增加视频、音频、Parquet 或厂商专用格式 Writer。
+
+### 6.3 扩展注册
+
+初期采用 Python 包内注册表，稳定后可使用 `importlib.metadata.entry_points` 加载独立插件。配置文件只引用 Adapter 类型和参数，不包含 UI 或写盘实现。
+
+示例设备配置：
+
+```json
+{
+  "id": "imu_left_shank",
+  "modality": "imu",
+  "adapter": "exo.adapters.vendor_x.ImuAdapter",
+  "writer": "hdf5_signal",
+  "required": true,
+  "clock_domain": "imu_left_device_clock",
+  "sync_mode": "device_to_host_clock_model",
+  "channels": ["ax", "ay", "az", "gx", "gy", "gz"],
+  "units": ["m/s2", "m/s2", "m/s2", "rad/s", "rad/s", "rad/s"]
+}
+```
+
+新增模态不应修改 Trial 状态机，只需要实现 Adapter、Writer、预览组件和质量规则。
+
+## 7. 时间系统与同步架构
+
+### 7.1 公共时间轴
+
+Windows 系统时间可能因校时发生跳变，因此采样对齐使用 `time.perf_counter_ns()` 对应的主机单调时钟。UTC 时间只用于文件命名、跨机器记录和实验审计。
+
+每个数据块至少携带：
+
+```text
+clock_domain
+first_sample_index
+sample_count
+device_timestamp 或 device_tick
+host_monotonic_ns
+host_utc_ns
+sequence_number
+```
+
+规则等间隔数据不必为每个样本重复保存 64 位时间戳，可以保存块起始时间、采样率、样本索引和间断表。非等间隔数据应保存逐样本或逐帧时间。
+
+### 7.2 同步优先级
+
+1. 共享硬件采样时钟或硬件触发；
+2. 设备自身时钟与主机单调时钟的持续映射；
+3. 数据到达主机的单调时间；
+4. 仅在无法获得其他信息时使用 UTC 接收时间。
+
+设备时钟映射表示为：
+
+```text
+t_global_ns = a * t_device + b
+```
+
+系统保存 `a`、`b`、有效区间、锚点数量、残差分布和算法版本，而不只保存换算后的结果。
+
+### 7.3 模拟同步脉冲
+
+测力台、动作捕捉等外部系统可能输出模拟脉冲。系统预留独立 `SyncPulseAdapter`，通过 DAQ/ADC 通道同步采集原始电压。
+
+同步脉冲必须保存两层数据：
+
+1. 原始模拟波形，便于重新检测和审计；
+2. 在线或离线检测出的 `SyncPulseEvent`。
+
+事件至少包含：
+
+```text
+pulse_id
+source_device
+edge_type
+sample_index
+host_monotonic_ns
+amplitude
+pulse_width_ns
+detection_threshold
+confidence
+detector_version
+```
+
+边沿检测应使用双阈值迟滞、最小脉宽和去抖时间，避免噪声产生假脉冲。条件允许时，优先使用多脉冲编码序列，而不是只有一个无法识别序号的单脉冲。
+
+核心超声、IMU、编码器先通过本系统公共时间轴完成内部对齐。外部测力台或动捕文件导入后，通过共同脉冲事件建立：
+
+```text
+t_global = a * t_external + b
+```
+
+若外部系统只有一个脉冲，只能估计时间偏移 `b`；若有多个跨越 Trial 的脉冲，可以同时估计时钟漂移 `a`。因此建议每个 Trial 至少发送开始和结束脉冲，长 Trial 中周期性发送同步脉冲更可靠。
+
+### 7.4 外部模态文件接入
+
+测力台、动捕不一定由本软件直接采集。系统提供 `External Artifact Importer`：
+
+- 导入或登记外部原始文件；
+- 识别外部脉冲时间；
+- 与本系统脉冲事件配对；
+- 生成对齐参数和质量指标；
+- 将外部文件及其映射写入 Trial Manifest；
+- 不覆盖外部原始文件。
+
+这属于标准的外部时钟桥接，不应与异常数据补救逻辑混在一起。
+
+## 8. 数据采集管线
+
+### 8.1 控制面与数据面分离
+
+控制面传输开始、停止、状态和配置等小消息；数据面传输超声帧和传感器批次。两者使用独立队列，防止高吞吐数据阻塞停止命令。
+
+### 8.2 有界队列与背压
+
+所有队列必须有容量上限并暴露队列深度。不得为了“看起来不丢数据”使用无限队列，因为无限队列最终会耗尽内存。
+
+当 Writer 跟不上时：
+
+- 首先降低或丢弃预览帧；
+- 原始采集队列不得静默丢数据；
+- 达到危险阈值时立即告警并标记 Trial；
+- 达到不可恢复阈值时执行受控中断，而不是继续生成表面正常的数据。
+
+### 8.3 预览旁路
+
+原始数据直接进入 Writer；预览从独立共享内存环形缓冲区读取抽取结果。UI 以约 10～20 Hz 刷新，不应按原始采样率绘图。
+
+超声预览可按设备类型显示 B-mode、A-line、包络或选定通道；IMU 显示三轴、模长和姿态；编码器显示角度、角速度及可选电流/力矩。所有图使用同一 Trial 相对时间游标。
+
+## 9. 数据存储规范
+
+### 9.1 Trial 目录
+
+```text
+dataset_root/
+  project_id/
+    subject_id/
+      session_uuid/
+        session.json
+        trials/
+          trial_uuid/
+            manifest.json
+            raw/
+              ultrasound.bin
+              ultrasound.meta.json
+              ultrasound.idx
+              imu.h5
+              encoder.h5
+              sync_pulse.h5
+              external/
+            derived/
+              preview/
+              alignment.json
+              statistics.json
+            reports/
+              quality_report.json
+            logs/
+              trial.jsonl
+            checksums.sha256
+```
+
+采集过程中目录名添加 `.recording` 或文件添加 `.partial` 后缀。全部 Writer 正常关闭、Manifest 落盘、关键文件可读后，再使用同一磁盘内的原子重命名发布正式 Trial。
+
+### 9.2 超声分块二进制格式
+
+超声不使用 CSV。CSV 存储膨胀明显、解析慢、丢失 dtype 信息，也不适合持续高吞吐写入。
+
+首选格式为追加写入的分块二进制 `ultrasound.bin`，配套 `ultrasound.meta.json` 和可重建的 `ultrasound.idx`。
+
+`ultrasound.meta.json` 保存：
+
+- 数据格式版本和字节序；
+- dtype，例如 `int16`、`uint16` 或 `float32`；
+- 每帧/每样本维度和通道定义；
+- 标称采样率、帧率和单位；
+- 设备、探头、增益、深度及校准信息；
+- 压缩方式，初期建议 `none`；
+- 时钟域和时间映射信息。
+
+每个二进制块包含固定长度 Header 和连续 Payload。建议 Header 至少包含：
+
+```text
+block_magic
+format_version
+header_size
+block_sequence
+first_sample_index
+sample_count
+payload_nbytes
+device_timestamp
+host_monotonic_ns
+flags
+payload_crc32
+```
+
+Payload 使用固定 dtype 的连续 C-order 数组，可直接通过 NumPy `frombuffer` 或 `memmap` 读取。块 Magic、长度和 CRC 允许程序在异常退出后扫描并恢复最后一个完整块。
+
+`ultrasound.idx` 记录块序号、文件偏移、首样本索引和时间。索引属于可重建派生物，即使索引损坏，也可顺序扫描 `ultrasound.bin` 恢复。
+
+初期不在采集时进行高负载压缩。若实际超声数据对无损压缩非常敏感，可在完成吞吐基准测试后增加轻量块压缩，并在 Header 中明确记录 codec 和原始长度。
+
+### 9.3 IMU 与编码器
+
+IMU、编码器默认使用独立 HDF5 文件。每个文件只有一个 Writer 进程，使用分块追加写入。
+
+建议组结构：
+
+```text
+/samples/data
+/samples/sample_index
+/samples/device_time
+/samples/host_monotonic_ns
+/events/discontinuities
+/metadata/channels
+/metadata/units
+/metadata/device
+/metadata/clock_model
+```
+
+不要将单位、坐标系和通道顺序只写在代码中，必须进入文件元数据和 Manifest。
+
+### 9.4 Manifest
+
+`manifest.json` 是 Trial 数据包的入口，至少包含：
+
+- `schema_version`；
+- Project、Subject、Session、Trial UUID；
+- 工况标签和参数；
+- 开始、停止、最终完成时间；
+- 软件版本、配置版本和 Git commit；
+- 模态及 Artifact 列表；
+- 每个文件的相对路径、大小和 SHA-256；
+- 时钟域与对齐信息；
+- 数据质量摘要；
+- 是否异常停止；
+- 外部文件关联；
+- 离线上传记录引用。
+
+Manifest 使用 Pydantic 模型和 JSON Schema 校验。Schema 采用语义化版本，并提供向前迁移工具。
+
+## 10. 工况与标签体系
+
+工况标签、工况等级和数据质量等级是三个不同概念，不得共用一个字段。
+
+### 10.1 工况定义
+
+工况由版本化 JSON 协议定义，示例：
+
+```json
+{
+  "condition_code": "WALK_LEVEL",
+  "condition_name": "平地行走",
+  "condition_level": 2,
+  "parameters": {
+    "speed_mps": 0.8,
+    "assist_level": 3,
+    "load_kg": 10,
+    "slope_deg": 0
+  },
+  "repeat_index": 2,
+  "protocol_version": "1.0.0"
+}
+```
+
+进入 Trial 前必须确定工况，开始录制后锁定。若选错，只能停止当前 Trial 并按规则标记，不能在录制中无痕修改。
+
+### 10.2 工况分级
+
+分级规则应支持层级和多维参数，例如：
+
+```text
+运动类型：站立 / 行走 / 上楼 / 下楼 / 坡道
+负载等级：L0 / L1 / L2 / L3
+速度等级：S1 / S2 / S3
+助力等级：A0 / A1 / A2 / A3
+```
+
+系统同时保存离散等级和原始物理量，避免将来改变阈值后无法重新分级。自动规则必须记录 `grading_rule_version`，人工调整必须记录操作者、时间、原值和原因。
+
+### 10.3 数据质量等级
+
+建议单独定义：
+
+- `A`：所有必需模态完整，同步和信号质量正常；
+- `B`：存在轻微异常，但不影响主要分析；
+- `C`：部分模态异常，需要人工审核；
+- `INVALID`：关键模态缺失、时间不可用或采集失败。
+
+质量等级由可解释指标生成，工作人员可复核，但不能覆盖原始质量报告。
+
+## 11. 自动质量检查与统计
+
+每个 Trial 完成后立即执行轻量质检：
+
+- 预期 Artifact 是否齐全；
+- 文件能否正常打开，尾块 CRC 是否正确；
+- 实际样本数、帧数、持续时间和有效采样率；
+- sequence 是否连续，是否存在间断；
+- 各模态时间范围是否覆盖 Trial；
+- 设备时钟模型残差；
+- 同步脉冲数量、宽度、间隔和匹配误差；
+- 超声饱和、全零、动态范围和信噪指标；
+- IMU 饱和、静止偏置、异常常值；
+- 编码器跳变、越界、速度异常和计数回绕；
+- 磁盘写入错误、队列峰值和设备故障历史。
+
+统计结果写入 `statistics.json` 和 SQLite，不要求数据管理界面每次打开大型原始文件重新计算。
+
+## 12. 本地数据管理系统
+
+SQLite 只保存元数据、索引和摘要，原始采样仍保存在文件系统。建议核心表包括：
+
+```text
+projects
+subjects
+sessions
+trials
+conditions
+devices
+calibrations
+artifacts
+clock_domains
+sync_events
+quality_metrics
+transfer_batches
+transfer_files
+audit_logs
+```
+
+本地管理界面至少支持：
+
+- 按项目、受试者、Session、工况、日期和质量等级筛选；
+- 展开 Trial 查看所有模态、外部文件、文件大小和完整性；
+- 查看每位受试者的已完成和缺失工况；
+- 统计各工况重复次数、总时长和有效 Trial 数；
+- 查找未完成、待恢复、待质检和待上传数据；
+- 回放多模态数据并共享时间游标；
+- 执行重新质检、校验 SHA-256、导出清单；
+- 创建人工选择的离线上传批次。
+
+数据库不是原始数据的唯一真相。数据库损坏时，应能通过扫描 Manifest 重建 Catalog。
+
+## 13. 可视化与回放
+
+### 13.1 实时预览
+
+- UI 读取共享内存中的降采样数据；
+- 默认刷新频率 10～20 Hz；
+- 超声原始数据写盘优先级高于预览；
+- 预览落后时只丢预览帧，不丢原始帧；
+- 显示设备实际采样率、最后数据年龄、写盘速率和队列占用。
+
+### 13.2 离线回放
+
+回放器按 Manifest 加载各 Artifact，通过公共 Trial 时间轴联合显示：
+
+- 超声帧或波形；
+- IMU 三轴、模长和姿态；
+- 编码器角度、速度及其他状态；
+- 工况标签和人工事件；
+- 同步脉冲；
+- 后续测力台、动捕轨迹和事件。
+
+大型超声文件使用索引和内存映射按需读取，不一次加载到内存。
+
+## 14. 离线 SSH/SCP 上传
+
+### 14.1 工作方式
+
+上传不在采集过程中自动执行。工作人员完成采集和本地质检后，在独立上传工具中：
+
+1. 选择一个或多个 `FINALIZED` Trial/Session；
+2. 输入或选择服务器 IP、SSH 端口、用户名和远端工作目录；
+3. 输入密码，或选择 SSH 私钥；
+4. 工具生成上传批次和文件校验清单；
+5. 通过 SSH 创建远端目录；
+6. 通过 SCP 逐文件传输；
+7. 通过 SSH 在远端计算 SHA-256；
+8. 校验一致后将本地状态标记为“远端已验证”。
+
+推荐使用 `paramiko` 建立 SSH 会话，并使用 `scp.SCPClient` 执行 SCP，这样 Windows GUI 可以支持账号密码认证。密码默认只保存在当前进程内存中，不写入 JSON、日志、SQLite 或命令行参数。也应支持 SSH 私钥认证。
+
+### 14.2 远端目录规范
+
+用户提供远端根目录，工具在其下保持稳定层级：
+
+```text
+remote_workdir/
+  project_id/
+    subject_id/
+      session_uuid/
+        trials/
+          trial_uuid/
+```
+
+远端路径必须经过规范化和安全校验，禁止未经转义地拼接到 Shell 命令。
+
+### 14.3 上传状态
+
+```text
+NOT_SELECTED
+QUEUED
+TRANSFERRING
+TRANSFERRED
+VERIFYING
+VERIFIED
+FAILED
+```
+
+每个文件单独记录状态。再次执行同一批次时，已通过远端 SHA-256 验证的文件直接跳过。
+
+SCP 对单个大文件不提供真正的块级断点续传；若超声单文件过大且网络不稳定，后续可增加基于 SFTP 分块续传的兼容后端，但不能改变 Trial Manifest 和上传批次协议。
+
+### 14.4 上传安全边界
+
+- 禁止在日志中打印密码；
+- 禁止默认保存明文密码；
+- 首次连接显示服务器主机指纹并要求确认；
+- 后续连接校验已保存的主机指纹，防止中间人攻击；
+- 所有远端文件在 SHA-256 验证成功前视为未完成；
+- 云端验证成功不自动删除本地数据，删除必须由独立归档策略控制。
+
+## 15. 配置体系
+
+配置按职责分层：
+
+```text
+config/
+  app.json
+  storage.json
+  devices/
+  protocols/
+  quality_rules/
+  transfer_profiles/
+```
+
+- `app.json`：界面和常规行为；
+- `storage.json`：数据根目录、磁盘阈值、块大小；
+- `devices`：设备 Adapter 和通道配置；
+- `protocols`：工况树和实验流程；
+- `quality_rules`：质检与分级阈值；
+- `transfer_profiles`：IP、端口、用户名和远端目录，不保存明文密码。
+
+所有配置使用 Pydantic 校验并记录版本。Trial Manifest 保存本次采集使用配置的快照或内容哈希。
+
+## 16. 故障恢复与可靠性
+
+### 16.1 采集前检查
+
+- 所有必需设备可用；
+- 设备序列号与配置一致；
+- 实际采样率和通道数正确；
+- 同步脉冲输入可用；
+- 数据盘剩余空间满足预计 Trial；
+- 磁盘持续写入吞吐通过基准阈值；
+- 输出目录可创建且没有 UUID 冲突；
+- 系统时间和单调时钟状态正常。
+
+### 16.2 采集中监控
+
+- 最后数据到达时间；
+- 实际采样率；
+- sequence 间断；
+- 数据队列和共享内存占用；
+- Writer 吞吐和 flush 延迟；
+- 设备 SDK 异常；
+- 磁盘空间；
+- 同步脉冲输入状态。
+
+告警必须采用去抖和多条件判定，避免瞬时延迟被误判为设备掉线。
+
+### 16.3 崩溃恢复
+
+程序启动时扫描 `.recording` 和 `.partial`：
+
+- 验证二进制完整块和 CRC；
+- 截断不完整尾块，但保留原始恢复日志；
+- 重建超声索引；
+- 检查 HDF5 是否可读；
+- 生成 `RECOVERABLE` Trial；
+- 由工作人员确认后发布为 `FINALIZED` 或标记 `ABORTED`。
+
+## 17. 日志与审计
+
+使用结构化 JSON Lines 日志，至少包含：
+
+```text
+timestamp_utc
+host_monotonic_ns
+level
+process
+event_type
+session_uuid
+trial_uuid
+device_id
+message
+exception
+```
+
+关键操作进入审计日志：创建/删除受试者、修改工况、开始/停止 Trial、恢复文件、修改质量等级、创建上传批次和远端验证。
+
+## 18. 推荐技术栈
+
+| 领域 | 推荐方案 |
+| --- | --- |
+| Python | 3.11，优先兼容厂商 SDK |
+| 桌面 UI | PySide6 |
+| 实时曲线 | PyQtGraph |
+| 数组与二进制 | NumPy、`memoryview`、`shared_memory` |
+| 中低频结构化文件 | h5py / HDF5 |
+| 模型与配置 | Pydantic、JSON Schema |
+| 本地索引 | SQLite + SQLAlchemy + Alembic |
+| 进程通信 | `multiprocessing` Queue/Pipe + shared memory |
+| SSH/SCP | Paramiko + scp |
+| 数值分析 | NumPy、SciPy |
+| 日志 | 标准 logging + JSON formatter |
+| 打包 | PyInstaller |
+| 测试 | pytest、hypothesis、模拟设备与回放数据 |
+
+不建议让 FastAPI、Redis、Kafka 等服务成为本地采集的必要依赖。若未来需要浏览器管理界面，可在 Catalog 之上增加可选本地 API，而不改变采集核心。
+
+## 19. 建议源码结构
+
+```text
+Exo_Collection_System/
+  pyproject.toml
+  src/exo_collection/
+    app/
+    ui/
+    domain/
+      models.py
+      states.py
+      events.py
+    orchestration/
+    adapters/
+      base.py
+      ultrasound/
+      imu/
+      encoder/
+      sync_pulse/
+      external/
+    acquisition/
+      buffers.py
+      messages.py
+      workers.py
+    writers/
+      binary_block.py
+      hdf5_signal.py
+    timing/
+      clock.py
+      clock_model.py
+      pulse_detector.py
+      alignment.py
+    storage/
+      manifest.py
+      layout.py
+      recovery.py
+      checksum.py
+    catalog/
+      db.py
+      repositories.py
+      migrations/
+    protocols/
+    quality/
+    visualization/
+    transfer/
+      ssh_client.py
+      scp_worker.py
+      verification.py
+    logging/
+  config/
+  schemas/
+  tests/
+    unit/
+    integration/
+    simulated_devices/
+    soak/
+  docs/
+```
+
+## 20. 测试策略
+
+### 20.1 模拟设备
+
+在接入真实硬件前实现超声、IMU、编码器和同步脉冲模拟器。模拟器可以控制采样率、漂移、抖动、丢块、断连和脉冲噪声。
+
+### 20.2 吞吐基准
+
+必须根据真实超声最大数据率测试：
+
+- 连续写盘速度；
+- CPU 使用率；
+- 内存峰值；
+- 队列峰值；
+- UI 开启和关闭时的差异；
+- 30 分钟、1 小时及目标最长时长的稳定性；
+- 磁盘剩余空间不足时的受控停止。
+
+### 20.3 同步验证
+
+使用已知频率脉冲和模拟时钟漂移验证：
+
+- 单脉冲偏移；
+- 多脉冲漂移拟合；
+- 漏脉冲和伪脉冲；
+- 长时间采集；
+- 外部文件导入和公共时间轴回放。
+
+### 20.4 故障注入
+
+覆盖设备掉线、Writer 崩溃、UI 无响应、磁盘写满、断电后尾块不完整、HDF5 未关闭、上传中断和远端校验失败。
+
+## 21. 分阶段开发建议
+
+### 阶段 0：冻结数据契约
+
+- Trial/Manifest JSON Schema；
+- 超声二进制格式；
+- 公共时间和同步事件模型；
+- Adapter 与 Writer 接口；
+- 工况协议格式。
+
+### 阶段 1：稳定采集核心
+
+- 模拟设备；
+- Trial 状态机；
+- 超声、IMU、编码器 Adapter；
+- 多进程写盘；
+- 实时预览；
+- 崩溃恢复和基础质量检查。
+
+### 阶段 2：本地数据管理
+
+- SQLite Catalog；
+- 数据树、搜索和统计；
+- 多模态回放；
+- 工况覆盖率和质量报告。
+
+### 阶段 3：外部同步
+
+- 模拟脉冲采集；
+- 脉冲检测；
+- 测力台和动捕外部文件导入；
+- 时间映射和同步质量展示。
+
+### 阶段 4：离线上传
+
+- 上传批次；
+- SSH/SCP；
+- 远端目录创建；
+- SHA-256 验证；
+- 失败重试和审计记录。
+
+### 阶段 5：现场验证与冻结
+
+- 长时间压力测试；
+- 真实设备故障注入；
+- 安装包与环境检查工具；
+- 数据 Schema 和二进制格式发布为 `1.0.0`。
+
+## 22. 首批架构决策
+
+1. 采用 Local-first，采集不依赖网络。
+2. 上传由工作人员在采集结束后人工触发，通过 SSH/SCP 完成。
+3. Trial 是采集、管理、统计和上传的最小完整单元。
+4. 原始数据不可变，数据库可由 Manifest 重建。
+5. 超声使用分块二进制，不使用 CSV。
+6. 不将所有模态强制写入一个 HDF5；不同高吞吐模态可以独立写盘。
+7. 主机单调时钟是软件公共时间基准，UTC 用于审计。
+8. 模拟同步脉冲是正式模态，必须同时保存原始波形和检测事件。
+9. 测力台、动捕等外部数据通过脉冲事件桥接到公共时间轴。
+10. 工况等级与数据质量等级分离。
+11. 新模态通过 Adapter/Writer/Visualizer/Quality 插件扩展。
+12. UI、原始采集、写盘和上传彼此隔离。
+
+这些决策构成项目第一版实现的架构边界。任何改变数据格式、时间语义或 Trial 身份规则的修改，都应先形成新的架构决策记录并评估兼容性。
