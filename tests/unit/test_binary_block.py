@@ -19,6 +19,7 @@ from exo_collection.writers.binary_block import (
     CRCMismatchError,
     BlockBinaryWriter,
     IndexFormatError,
+    SampleIndexDiscontinuityError,
     companion_paths,
 )
 
@@ -137,7 +138,7 @@ def test_reader_rebuilds_missing_or_invalid_index(
         struct.pack_into("<Q", damaged, 16 + 8, 123)
         index_path.write_bytes(damaged)
 
-    with BlockBinaryReader(data_path) as reader:
+    with BlockBinaryReader(data_path, auto_rebuild_index=True) as reader:
         np.testing.assert_array_equal(reader.read_block(1).data, second)
     entries = load_index(index_path)
     assert [entry.file_offset for entry in entries] == [
@@ -186,7 +187,7 @@ def test_resume_mode_only_appends_after_a_strict_scan(tmp_path: Path) -> None:
         np.testing.assert_array_equal(reader.read_block(1).data, second)
 
 
-def test_reader_can_be_told_not_to_rebuild_index(tmp_path: Path) -> None:
+def test_reader_is_read_only_by_default_and_rebuild_is_explicit(tmp_path: Path) -> None:
     data_path = tmp_path / "ultrasound.bin"
     with _writer(data_path) as writer:
         writer.append(
@@ -197,7 +198,9 @@ def test_reader_can_be_told_not_to_rebuild_index(tmp_path: Path) -> None:
     _, index_path = companion_paths(data_path)
     index_path.write_bytes(b"bad")
     with pytest.raises(IndexFormatError):
-        BlockBinaryReader(data_path, auto_rebuild_index=False)
+        BlockBinaryReader(data_path)
+    with BlockBinaryReader(data_path, auto_rebuild_index=True) as reader:
+        assert reader.block_count == 1
 
 
 def test_writer_rejects_shape_and_sequence_mismatch(tmp_path: Path) -> None:
@@ -205,8 +208,51 @@ def test_writer_rejects_shape_and_sequence_mismatch(tmp_path: Path) -> None:
     with _writer(data_path) as writer:
         with pytest.raises(ValueError, match="shape"):
             writer.append(np.zeros((2, 6), dtype=np.int16))
-        with pytest.raises(ValueError, match="sequence must be 0"):
+        writer.append(
+            np.zeros((1, 2, 3), dtype=np.int16),
+            sequence=2,
+        )
+        with pytest.raises(ValueError, match="sequence must be at least 3"):
             writer.append(
                 np.zeros((1, 2, 3), dtype=np.int16),
-                sequence=2,
+                sequence=1,
             )
+        with pytest.raises(ValueError, match="first_sample_index must be at least 1"):
+            writer.append(
+                np.zeros((1, 2, 3), dtype=np.int16),
+                sequence=3,
+                first_sample_index=0,
+            )
+
+
+def test_source_sequence_gaps_are_preserved_and_auditable(tmp_path: Path) -> None:
+    data_path = tmp_path / "ultrasound.bin"
+    with _writer(data_path) as writer:
+        writer.append(np.zeros((1, 2, 3), dtype=np.int16), sequence=0)
+        writer.append(
+            np.ones((1, 2, 3), dtype=np.int16),
+            sequence=3,
+            first_sample_index=3,
+        )
+    scan = scan_binary_file(data_path)
+    assert scan.is_clean
+    assert scan.sequence_gap_ranges == ((1, 2),)
+    assert scan.sequence_gap_count == 2
+    with BlockBinaryReader(data_path) as reader:
+        assert [record.header.sequence for record in reader] == [0, 3]
+
+
+def test_scan_rejects_overlapping_sample_ranges_in_external_bytes(tmp_path: Path) -> None:
+    data_path = tmp_path / "ultrasound.bin"
+    batch = np.zeros((1, 2, 3), dtype=np.int16)
+    with _writer(data_path) as writer:
+        writer.append(batch)
+        writer.append(batch)
+    damaged = bytearray(data_path.read_bytes())
+    second_block_offset = BLOCK_HEADER_SIZE + batch.nbytes
+    # Header layout: magic(8), version(2), size(2), sequence(8), first index(8).
+    struct.pack_into("<Q", damaged, second_block_offset + 20, 0)
+    data_path.write_bytes(damaged)
+
+    scan = scan_binary_file(data_path)
+    assert isinstance(scan.error, SampleIndexDiscontinuityError)

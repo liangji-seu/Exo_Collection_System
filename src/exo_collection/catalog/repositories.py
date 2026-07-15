@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from time import sleep
+from typing import Callable
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from sqlalchemy import func, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session
 
 from exo_collection.domain.models import Project, Session as DomainSession, Subject
 from exo_collection.storage.layout import iter_finalized_manifest_paths
@@ -16,6 +22,9 @@ from exo_collection.storage.manifest import TrialManifest, load_manifest
 
 from .db import Catalog
 from .models import ArtifactRow, ConditionRow, ProjectRow, SessionRow, SubjectRow, TrialRow
+
+
+_WRITE_RETRY_DELAYS_SECONDS = (0.025, 0.05, 0.1, 0.2)
 
 
 @dataclass(slots=True)
@@ -41,21 +50,54 @@ def _condition_uuid(manifest: TrialManifest) -> str:
     return str(uuid5(NAMESPACE_URL, key))
 
 
+def _is_sqlite_lock_error(exc: OperationalError) -> bool:
+    """Return whether an OperationalError is SQLite BUSY/LOCKED contention."""
+
+    original = exc.orig
+    error_code = getattr(original, "sqlite_errorcode", None)
+    if isinstance(error_code, int) and error_code & 0xFF in {
+        sqlite3.SQLITE_BUSY,
+        sqlite3.SQLITE_LOCKED,
+    }:
+        return True
+    message = str(original).casefold()
+    return "locked" in message and ("database" in message or "table" in message)
+
+
 class CatalogRepository:
     def __init__(self, catalog: Catalog) -> None:
         self.catalog = catalog
 
+    def _run_write_transaction(self, operation: Callable[[Session], None]) -> None:
+        """Run a short write transaction with bounded SQLite lock retries."""
+
+        retry_delays: tuple[float | None, ...] = (*_WRITE_RETRY_DELAYS_SECONDS, None)
+        for retry_delay in retry_delays:
+            try:
+                with self.catalog.session() as db, db.begin():
+                    operation(db)
+                return
+            except OperationalError as exc:
+                if not _is_sqlite_lock_error(exc) or retry_delay is None:
+                    raise
+                sleep(retry_delay)
+
     def register_hierarchy(self, project: Project, subject: Subject, visit: DomainSession) -> None:
-        """Create or refresh the user-facing hierarchy before a Trial starts."""
+        """Create or refresh hierarchy metadata without rewriting audit anchors."""
 
         if subject.project_uuid != project.project_uuid:
             raise ValueError("Subject does not belong to Project")
         if visit.project_uuid != project.project_uuid or visit.subject_uuid != subject.subject_uuid:
             raise ValueError("Session hierarchy UUIDs are inconsistent")
         project_code = f"{project.project_name}-{str(project.project_uuid)[:8]}"
-        with self.catalog.session() as db, db.begin():
-            db.merge(
-                ProjectRow(
+        project_id = str(project.project_uuid)
+        subject_id = str(subject.subject_uuid)
+        session_id = str(visit.session_uuid)
+
+        def register(db: Session) -> None:
+            project_row = db.get(ProjectRow, project_id)
+            if project_row is None:
+                project_row = ProjectRow(
                     project_uuid=str(project.project_uuid),
                     project_code=project_code,
                     name=project.project_name,
@@ -64,9 +106,18 @@ class CatalogRepository:
                     data_root=project.data_root,
                     created_utc=_utc(project.created_at_utc),
                 )
-            )
-            db.merge(
-                SubjectRow(
+                db.add(project_row)
+                db.flush()
+            else:
+                project_row.project_code = project_code
+                project_row.name = project.project_name
+                project_row.principal_investigator = project.principal_investigator
+                project_row.protocol_version = project.protocol_version
+                project_row.data_root = project.data_root
+
+            subject_row = db.get(SubjectRow, subject_id)
+            if subject_row is None:
+                subject_row = SubjectRow(
                     subject_uuid=str(subject.subject_uuid),
                     project_uuid=str(subject.project_uuid),
                     subject_code=subject.subject_code,
@@ -74,9 +125,18 @@ class CatalogRepository:
                     attributes_json=_json(subject.attributes),
                     created_utc=_utc(subject.created_at_utc),
                 )
-            )
-            db.merge(
-                SessionRow(
+                db.add(subject_row)
+                db.flush()
+            else:
+                if subject_row.project_uuid != project_id:
+                    raise ValueError("Existing Subject belongs to a different Project")
+                subject_row.subject_code = subject.subject_code
+                subject_row.group_label = subject.group
+                subject_row.attributes_json = _json(subject.attributes)
+
+            session_row = db.get(SessionRow, session_id)
+            if session_row is None:
+                session_row = SessionRow(
                     session_uuid=str(visit.session_uuid),
                     project_uuid=str(visit.project_uuid),
                     subject_uuid=str(visit.subject_uuid),
@@ -86,7 +146,18 @@ class CatalogRepository:
                     ended_utc=_utc(visit.ended_at_utc),
                     created_utc=_utc(visit.created_at_utc),
                 )
-            )
+                db.add(session_row)
+            else:
+                if (
+                    session_row.project_uuid != project_id
+                    or session_row.subject_uuid != subject_id
+                ):
+                    raise ValueError("Existing Session belongs to a different hierarchy")
+                session_row.operator = visit.operator
+                session_row.software_version = visit.software_version
+                session_row.ended_utc = _utc(visit.ended_at_utc)
+
+        self._run_write_transaction(register)
 
     def index_manifest(self, manifest: TrialManifest, manifest_path: str | Path) -> None:
         """Upsert one immutable Manifest and its Artifact summaries."""
@@ -108,104 +179,148 @@ class CatalogRepository:
         else:
             duration_s = 0.0
 
-        now = datetime.now(timezone.utc)
-        with self.catalog.session() as db, db.begin():
+        def index(db: Session) -> None:
+            now = datetime.now(timezone.utc)
             self._ensure_fallback_hierarchy(db, manifest, path)
-            db.merge(
-                ConditionRow(
-                    condition_uuid=condition_id,
-                    project_uuid=str(manifest.project_uuid),
-                    condition_code=manifest.condition.condition_code,
-                    condition_name=manifest.condition.condition_name,
-                    condition_level=(
-                        manifest.condition.condition_level
-                        if isinstance(manifest.condition.condition_level, int)
-                        else None
-                    ),
-                    protocol_version=manifest.condition.protocol_version,
-                    parameters_json=_json(manifest.condition.parameters),
+            condition_values = {
+                "condition_uuid": condition_id,
+                "project_uuid": str(manifest.project_uuid),
+                "condition_code": manifest.condition.condition_code,
+                "condition_name": manifest.condition.condition_name,
+                "condition_level": (
+                    manifest.condition.condition_level
+                    if isinstance(manifest.condition.condition_level, int)
+                    else None
+                ),
+                "protocol_version": manifest.condition.protocol_version,
+                "parameters_json": _json(manifest.condition.parameters),
+            }
+            condition_insert = sqlite_insert(ConditionRow).values(**condition_values)
+            db.execute(
+                condition_insert.on_conflict_do_update(
+                    index_elements=[ConditionRow.condition_uuid],
+                    set_={
+                        key: getattr(condition_insert.excluded, key)
+                        for key in (
+                            "condition_name",
+                            "condition_level",
+                            "parameters_json",
+                        )
+                    },
                 )
             )
-            db.merge(
-                TrialRow(
-                    trial_uuid=str(manifest.trial_uuid),
-                    project_uuid=str(manifest.project_uuid),
-                    subject_uuid=str(manifest.subject_uuid),
-                    session_uuid=str(manifest.session_uuid),
-                    condition_uuid=condition_id,
-                    condition_code=manifest.condition.condition_code,
-                    repeat_index=manifest.condition.repeat_index,
-                    state=manifest.state.value,
-                    quality_grade=quality_value,
-                    started_utc=_utc(timing.started_at_utc),
-                    stopped_utc=_utc(timing.stopped_at_utc),
-                    finalized_utc=_utc(timing.finalized_at_utc),
-                    duration_s=duration_s,
-                    abnormal_stop=manifest.abnormal_termination.occurred,
-                    manifest_path=str(path),
-                    manifest_schema_version=manifest.schema_version,
-                    updated_utc=now,
+            trial_values = {
+                "trial_uuid": str(manifest.trial_uuid),
+                "project_uuid": str(manifest.project_uuid),
+                "subject_uuid": str(manifest.subject_uuid),
+                "session_uuid": str(manifest.session_uuid),
+                "condition_uuid": condition_id,
+                "condition_code": manifest.condition.condition_code,
+                "repeat_index": manifest.condition.repeat_index,
+                "state": manifest.state.value,
+                "quality_grade": quality_value,
+                "started_utc": _utc(timing.started_at_utc),
+                "stopped_utc": _utc(timing.stopped_at_utc),
+                "finalized_utc": _utc(timing.finalized_at_utc),
+                "duration_s": duration_s,
+                "abnormal_stop": manifest.abnormal_termination.occurred,
+                "manifest_path": str(path),
+                "manifest_schema_version": manifest.schema_version,
+                "updated_utc": now,
+            }
+            trial_insert = sqlite_insert(TrialRow).values(**trial_values)
+            db.execute(
+                trial_insert.on_conflict_do_update(
+                    index_elements=[TrialRow.trial_uuid],
+                    set_={
+                        key: getattr(trial_insert.excluded, key)
+                        for key in (
+                            "state",
+                            "quality_grade",
+                            "stopped_utc",
+                            "finalized_utc",
+                            "duration_s",
+                            "abnormal_stop",
+                            "manifest_path",
+                            "manifest_schema_version",
+                            "updated_utc",
+                        )
+                    },
                 )
             )
             for artifact in manifest.artifacts:
-                db.merge(
-                    ArtifactRow(
-                        artifact_uuid=str(artifact.artifact_uuid),
-                        trial_uuid=str(manifest.trial_uuid),
-                        modality=artifact.modality,
-                        artifact_type=artifact.kind.value,
-                        relative_path=artifact.relative_path,
-                        media_type=artifact.media_type,
-                        size_bytes=artifact.size_bytes,
-                        sha256=artifact.sha256,
-                        immutable=artifact.immutable,
+                artifact_values = {
+                    "artifact_uuid": str(artifact.artifact_uuid),
+                    "trial_uuid": str(manifest.trial_uuid),
+                    "modality": artifact.modality,
+                    "artifact_type": artifact.kind.value,
+                    "relative_path": artifact.relative_path,
+                    "media_type": artifact.media_type,
+                    "size_bytes": artifact.size_bytes,
+                    "sha256": artifact.sha256,
+                    "immutable": artifact.immutable,
+                }
+                artifact_insert = sqlite_insert(ArtifactRow).values(**artifact_values)
+                db.execute(
+                    artifact_insert.on_conflict_do_update(
+                        index_elements=[ArtifactRow.artifact_uuid],
+                        set_={
+                            key: getattr(artifact_insert.excluded, key)
+                            for key in (
+                                "modality",
+                                "artifact_type",
+                                "media_type",
+                                "size_bytes",
+                                "sha256",
+                                "immutable",
+                            )
+                        },
                     )
                 )
 
+        self._run_write_transaction(index)
+
     @staticmethod
-    def _ensure_fallback_hierarchy(db: object, manifest: TrialManifest, path: Path) -> None:
+    def _ensure_fallback_hierarchy(db: Session, manifest: TrialManifest, path: Path) -> None:
         project_id = str(manifest.project_uuid)
         subject_id = str(manifest.subject_uuid)
         session_id = str(manifest.session_uuid)
-        if db.get(ProjectRow, project_id) is None:
-            db.add(
-                ProjectRow(
-                    project_uuid=project_id,
-                    project_code=f"project-{project_id[:8]}",
-                    name=f"Project {project_id[:8]}",
-                    principal_investigator=None,
-                    protocol_version=manifest.condition.protocol_version,
-                    data_root=str(path.parents[5] if len(path.parents) > 5 else path.parent),
-                    created_utc=manifest.created_at_utc,
-                )
-            )
-            db.flush()
-        if db.get(SubjectRow, subject_id) is None:
-            db.add(
-                SubjectRow(
-                    subject_uuid=subject_id,
-                    project_uuid=project_id,
-                    subject_code=f"subject-{subject_id[:8]}",
-                    group_label=None,
-                    attributes_json="{}",
-                    created_utc=manifest.created_at_utc,
-                )
-            )
-            db.flush()
-        if db.get(SessionRow, session_id) is None:
-            db.add(
-                SessionRow(
-                    session_uuid=session_id,
-                    project_uuid=project_id,
-                    subject_uuid=subject_id,
-                    operator="unknown (Manifest rebuild)",
-                    software_version=manifest.software.application_version,
-                    started_utc=manifest.timing.started_at_utc,
-                    ended_utc=manifest.timing.stopped_at_utc,
-                    created_utc=manifest.created_at_utc,
-                )
-            )
-            db.flush()
+        project_insert = sqlite_insert(ProjectRow).values(
+            project_uuid=project_id,
+            project_code=f"project-{project_id[:8]}",
+            name=f"Project {project_id[:8]}",
+            principal_investigator=None,
+            protocol_version=manifest.condition.protocol_version,
+            data_root=str(path.parents[5] if len(path.parents) > 5 else path.parent),
+            created_utc=manifest.created_at_utc,
+        )
+        db.execute(
+            project_insert.on_conflict_do_nothing(index_elements=[ProjectRow.project_uuid])
+        )
+        subject_insert = sqlite_insert(SubjectRow).values(
+            subject_uuid=subject_id,
+            project_uuid=project_id,
+            subject_code=f"subject-{subject_id[:8]}",
+            group_label=None,
+            attributes_json="{}",
+            created_utc=manifest.created_at_utc,
+        )
+        db.execute(
+            subject_insert.on_conflict_do_nothing(index_elements=[SubjectRow.subject_uuid])
+        )
+        session_insert = sqlite_insert(SessionRow).values(
+            session_uuid=session_id,
+            project_uuid=project_id,
+            subject_uuid=subject_id,
+            operator="unknown (Manifest rebuild)",
+            software_version=manifest.software.application_version,
+            started_utc=manifest.timing.started_at_utc,
+            ended_utc=manifest.timing.stopped_at_utc,
+            created_utc=manifest.created_at_utc,
+        )
+        db.execute(
+            session_insert.on_conflict_do_nothing(index_elements=[SessionRow.session_uuid])
+        )
 
     def scan_dataset(self, dataset_root: str | Path) -> ScanReport:
         report = ScanReport()
@@ -315,4 +430,3 @@ class CatalogRepository:
                 for code, count, duration in rows
             },
         }
-

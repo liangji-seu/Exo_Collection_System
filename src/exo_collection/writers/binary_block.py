@@ -122,7 +122,7 @@ CRCError = CRCMismatchError
 
 
 class SequenceDiscontinuityError(BinaryBlockError):
-    """On-disk block sequences are not contiguous."""
+    """On-disk block sequences repeat or move backwards."""
 
     def __init__(self, *, offset: int, expected: int, actual: int) -> None:
         super().__init__(
@@ -131,6 +131,19 @@ class SequenceDiscontinuityError(BinaryBlockError):
             offset=offset,
         )
         self.expected = expected
+        self.actual = actual
+
+
+class SampleIndexDiscontinuityError(BinaryBlockError):
+    """A block overlaps or moves behind an already stored sample range."""
+
+    def __init__(self, *, offset: int, minimum: int, actual: int) -> None:
+        super().__init__(
+            f"sample index discontinuity at offset {offset}: "
+            f"expected at least {minimum}, got {actual}",
+            offset=offset,
+        )
+        self.minimum = minimum
         self.actual = actual
 
 
@@ -654,9 +667,9 @@ class BlockBinaryWriter:
         chosen_sequence = _require_int_range(
             "sequence", chosen_sequence, 0, UINT64_MAX
         )
-        if chosen_sequence != self._next_sequence:
+        if chosen_sequence < self._next_sequence:
             raise ValueError(
-                f"sequence must be {self._next_sequence}; got {chosen_sequence}"
+                f"sequence must be at least {self._next_sequence}; got {chosen_sequence}"
             )
         chosen_first_index = (
             self._next_sample_index
@@ -667,6 +680,11 @@ class BlockBinaryWriter:
         )
         if first_sample_index is None:
             chosen_first_index = self._next_sample_index
+        if chosen_first_index < self._next_sample_index:
+            raise ValueError(
+                f"first_sample_index must be at least {self._next_sample_index}; "
+                f"got {chosen_first_index}"
+            )
         device_time = (
             DEVICE_TIMESTAMP_UNKNOWN
             if device_timestamp is None
@@ -805,6 +823,7 @@ __all__ = [
     "IndexFormatError",
     "MetadataFormatError",
     "PayloadChecksumError",
+    "SampleIndexDiscontinuityError",
     "SequenceDiscontinuityError",
     "TruncatedBlockError",
     "UnsupportedFormatVersionError",

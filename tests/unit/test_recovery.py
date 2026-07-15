@@ -73,7 +73,7 @@ def test_recovery_truncates_partial_header_and_rebuilds_index(
     _, index_path = companion_paths(data_path)
     index_path.write_bytes(b"broken derived index")
 
-    report = recover_ultrasound_file(data_path, truncate=True)
+    report = recover_ultrasound_file(data_path, truncate=True, rebuild_idx=True)
     assert report.truncated
     assert report.truncated_nbytes == partial_tail_nbytes
     assert report.valid_bytes == clean_bytes
@@ -99,7 +99,7 @@ def test_recovery_removes_crc_invalid_final_block(tmp_path: Path) -> None:
     assert scan.error_kind == "CRCMismatchError"
     assert scan.tail_recoverable
 
-    report = recover_ultrasound_file(data_path, truncate=True)
+    report = recover_ultrasound_file(data_path, truncate=True, rebuild_idx=True)
     assert report.truncated
     assert report.valid_bytes == sum(sizes[:2])
     with BlockBinaryReader(data_path) as reader:
@@ -154,7 +154,7 @@ def test_clean_recovery_can_rebuild_only_the_index(tmp_path: Path) -> None:
     _, index_path = companion_paths(data_path)
     index_path.unlink()
 
-    report = recover_ultrasound_file(data_path)
+    report = recover_ultrasound_file(data_path, rebuild_idx=True)
     assert report.is_clean
     assert report.index_rebuilt
     assert not report.truncated

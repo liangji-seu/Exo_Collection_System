@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import socket
+import time
 from uuid import uuid4
 
 import pytest
@@ -64,3 +67,40 @@ def test_activity_lock_announces_lightweight_mode(tmp_path) -> None:
         assert activity.trial_uuid == str(trial_uuid)
     assert read_activity(tmp_path) is None
 
+
+def test_activity_lock_heartbeats_during_slow_finalization(tmp_path) -> None:
+    with AcquisitionLock(
+        tmp_path,
+        uuid4(),
+        stale_after_s=0.25,
+        heartbeat_interval_s=0.04,
+    ):
+        first = read_activity(tmp_path, stale_after_s=0.1)
+        assert first is not None
+        time.sleep(0.16)
+        second = read_activity(tmp_path, stale_after_s=0.1)
+        assert second is not None
+        assert second.heartbeat_monotonic_ns > first.heartbeat_monotonic_ns
+
+
+def test_activity_lock_reclaims_stale_dead_owner(tmp_path) -> None:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    stale_path = tmp_path / ".collector-active.json"
+    stale_path.write_text(
+        json.dumps(
+            {
+                "pid": 999_999_999,
+                "hostname": socket.gethostname(),
+                "trial_uuid": str(uuid4()),
+                "heartbeat_monotonic_ns": time.perf_counter_ns() - 10_000_000_000,
+                "heartbeat_utc_ns": time.time_ns() - 10_000_000_000,
+                "owner_token": "dead-owner",
+            }
+        ),
+        encoding="utf-8",
+    )
+    with AcquisitionLock(tmp_path, uuid4()) as replacement:
+        activity = read_activity(tmp_path)
+        assert activity is not None
+        assert activity.owner_token == replacement.owner_token
+    assert not stale_path.exists()

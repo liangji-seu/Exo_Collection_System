@@ -11,7 +11,12 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from exo_collection.domain.models import ArtifactKind, UTCDateTime, utc_now
-from exo_collection.storage.manifest import ManifestArtifact, TrialManifest, save_manifest
+from exo_collection.storage.manifest import (
+    ManifestArtifact,
+    TrialManifest,
+    load_manifest,
+    save_manifest,
+)
 
 from .checksum import sha256_file, verify_checksum_manifest, write_checksum_manifest
 from .layout import TrialLayout, safe_relative_path
@@ -87,7 +92,14 @@ def finalize_trial_package(layout: TrialLayout, manifest: TrialManifest) -> Path
         raise ValueError("Manifest Trial UUID does not match TrialLayout")
     validate_artifact_integrity(layout, manifest.artifacts)
     manifest_path = layout.path("manifest.json")
-    save_manifest(manifest_path, manifest)
+    if manifest_path.exists():
+        # A crash can occur after Manifest publication but before the atomic
+        # directory rename. Retrying is safe only for byte-equivalent content.
+        existing = load_manifest(manifest_path)
+        if existing != manifest:
+            raise FileExistsError(f"conflicting Manifest already exists: {manifest_path}")
+    else:
+        save_manifest(manifest_path, manifest)
     relative_paths = [artifact.relative_path for artifact in manifest.artifacts]
     relative_paths.append("manifest.json")
     checksums = write_checksum_manifest(layout.recording_directory, relative_paths)
@@ -95,4 +107,3 @@ def finalize_trial_package(layout: TrialLayout, manifest: TrialManifest) -> Path
     if not results or not all(results.values()):
         raise RuntimeError("Trial checksum validation failed before publication")
     return layout.finalize_directory()
-

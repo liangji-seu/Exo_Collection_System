@@ -139,7 +139,7 @@ def recover_ultrasound_file(
     *,
     index_path: str | os.PathLike[str] | None = None,
     truncate: bool = False,
-    rebuild_idx: bool = True,
+    rebuild_idx: bool = False,
     validate_crc: bool = True,
 ) -> UltrasoundRecoveryResult:
     """Inspect, optionally truncate a crash tail, and rebuild the index.
@@ -174,6 +174,8 @@ def recover_ultrasound_file(
             truncated_nbytes=report.file_size - report.valid_bytes,
         )
 
+    # Index reconstruction is also an explicit mutation. Merely calling this
+    # function with its defaults remains strictly read-only.
     if rebuild_idx:
         # After a safe truncation (or a clean scan), this strict second scan
         # both validates the result and atomically publishes the derived index.

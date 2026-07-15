@@ -76,6 +76,21 @@ def test_abort_and_recovery_edges_match_architecture() -> None:
     assert rejected_recovery.state is TrialState.ABORTED
 
 
+def test_start_and_stop_failures_reach_legal_failure_states() -> None:
+    start_failed = TrialStateMachine(TrialState.READY)
+    start_failed.transition(TrialState.FAILED, reason="device failed to start")
+    assert start_failed.state is TrialState.FAILED
+    assert start_failed.is_terminal
+
+    stop_interrupted = TrialStateMachine(TrialState.STOPPING)
+    stop_interrupted.transition(
+        TrialState.RECOVERABLE,
+        reason="writer did not close cleanly",
+    )
+    assert stop_interrupted.state is TrialState.RECOVERABLE
+    assert not stop_interrupted.is_terminal
+
+
 def test_state_is_read_only() -> None:
     machine = TrialStateMachine()
     with pytest.raises(AttributeError):
@@ -96,4 +111,3 @@ def test_transition_audit_timestamp_requires_timezone() -> None:
         occurred_at_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
     assert record.occurred_at_utc.utcoffset().total_seconds() == 0
-

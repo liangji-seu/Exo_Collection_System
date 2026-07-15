@@ -158,6 +158,13 @@ def test_manifest_rejects_draft_state() -> None:
         TrialManifest.model_validate(payload)
 
 
+def test_manifest_rejects_unknown_schema_version() -> None:
+    payload = make_manifest().model_dump()
+    payload["schema_version"] = "2.0.0"
+    with pytest.raises(ValidationError, match="unsupported Manifest schema_version"):
+        TrialManifest.model_validate(payload)
+
+
 @pytest.mark.parametrize(
     "path",
     [

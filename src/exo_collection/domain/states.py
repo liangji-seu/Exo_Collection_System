@@ -39,9 +39,11 @@ class TrialState(StrEnum):
 TRIAL_TRANSITIONS: Final[dict[TrialState, frozenset[TrialState]]] = {
     TrialState.IDLE: frozenset({TrialState.PREPARING}),
     TrialState.PREPARING: frozenset({TrialState.READY, TrialState.FAILED}),
-    TrialState.READY: frozenset({TrialState.RECORDING}),
+    TrialState.READY: frozenset({TrialState.RECORDING, TrialState.FAILED}),
     TrialState.RECORDING: frozenset({TrialState.STOPPING, TrialState.ABORTED}),
-    TrialState.STOPPING: frozenset({TrialState.FINALIZING}),
+    TrialState.STOPPING: frozenset(
+        {TrialState.FINALIZING, TrialState.RECOVERABLE}
+    ),
     TrialState.FINALIZING: frozenset(
         {TrialState.FINALIZED, TrialState.RECOVERABLE}
     ),
@@ -168,4 +170,3 @@ class TrialStateMachine:
         self._state = target_state
         self._history.append(record)
         return record
-

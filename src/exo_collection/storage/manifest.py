@@ -467,9 +467,20 @@ class TrialManifest(ManifestModel):
     abnormal_termination: AbnormalTermination = Field(
         default_factory=AbnormalTermination
     )
+
     external_artifacts: list[ExternalArtifactReference] = Field(default_factory=list)
     upload_records: list[UploadRecordReference] = Field(default_factory=list)
     created_at_utc: UTCDateTime = Field(default_factory=utc_now)
+
+    @field_validator("schema_version")
+    @classmethod
+    def require_supported_schema_version(cls, value: str) -> str:
+        if value != MANIFEST_SCHEMA_VERSION:
+            raise ValueError(
+                f"unsupported Manifest schema_version {value}; "
+                f"this build supports {MANIFEST_SCHEMA_VERSION}"
+            )
+        return value
 
     @field_validator("state")
     @classmethod
@@ -666,4 +677,3 @@ def export_manifest_json_schema(
         raise FileExistsError(f"schema already exists: {target}")
     _atomic_json_write(target, manifest_json_schema())
     return target
-

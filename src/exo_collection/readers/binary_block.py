@@ -28,6 +28,7 @@ from exo_collection.writers.binary_block import (
     CRCMismatchError,
     IndexEntry,
     IndexFormatError,
+    SampleIndexDiscontinuityError,
     SequenceDiscontinuityError,
     TruncatedBlockError,
     companion_paths,
@@ -67,6 +68,20 @@ class BinaryFileScan:
     @property
     def is_clean(self) -> bool:
         return self.error is None and self.valid_bytes == self.file_size
+
+    @property
+    def sequence_gap_ranges(self) -> tuple[tuple[int, int], ...]:
+        gaps: list[tuple[int, int]] = []
+        expected = 0
+        for header in self.headers:
+            if header.sequence > expected:
+                gaps.append((expected, header.sequence - 1))
+            expected = header.sequence + 1
+        return tuple(gaps)
+
+    @property
+    def sequence_gap_count(self) -> int:
+        return sum(end - start + 1 for start, end in self.sequence_gap_ranges)
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,7 +139,8 @@ def scan_binary_file(
     headers: list[BlockHeader] = []
     valid_bytes = 0
     error: BinaryBlockError | None = None
-    expected_sequence = 0
+    previous_sequence: int | None = None
+    minimum_sample_index = 0
 
     with path.open("rb") as stream:
         while valid_bytes < file_size:
@@ -143,11 +159,18 @@ def scan_binary_file(
             except BinaryBlockError as exc:
                 error = exc
                 break
-            if header.sequence != expected_sequence:
+            if previous_sequence is not None and header.sequence <= previous_sequence:
                 error = SequenceDiscontinuityError(
                     offset=block_offset,
-                    expected=expected_sequence,
+                    expected=previous_sequence + 1,
                     actual=header.sequence,
+                )
+                break
+            if header.first_sample_index < minimum_sample_index:
+                error = SampleIndexDiscontinuityError(
+                    offset=block_offset,
+                    minimum=minimum_sample_index,
+                    actual=header.first_sample_index,
                 )
                 break
 
@@ -199,7 +222,8 @@ def scan_binary_file(
             )
             headers.append(header)
             valid_bytes = payload_offset + header.payload_nbytes
-            expected_sequence += 1
+            previous_sequence = header.sequence
+            minimum_sample_index = header.first_sample_index + header.sample_count
 
     return BinaryFileScan(
         data_path=path,
@@ -272,18 +296,24 @@ def validate_index(
     path = Path(data_path)
     file_size = path.stat().st_size
     expected_offset = 0
-    expected_sequence = 0
+    previous_sequence: int | None = None
+    minimum_sample_index = 0
     with path.open("rb") as stream:
         for ordinal, entry in enumerate(entries):
-            if entry.sequence != expected_sequence:
+            if previous_sequence is not None and entry.sequence <= previous_sequence:
                 raise IndexFormatError(
                     f"index sequence at ordinal {ordinal} is {entry.sequence}; "
-                    f"expected {expected_sequence}"
+                    f"expected at least {previous_sequence + 1}"
                 )
             if entry.file_offset != expected_offset:
                 raise IndexFormatError(
                     f"index offset at ordinal {ordinal} is {entry.file_offset}; "
                     f"expected {expected_offset}"
+                )
+            if entry.first_sample_index < minimum_sample_index:
+                raise IndexFormatError(
+                    f"index sample at ordinal {ordinal} is {entry.first_sample_index}; "
+                    f"expected at least {minimum_sample_index}"
                 )
             try:
                 header = _read_header_at(
@@ -312,7 +342,8 @@ def validate_index(
                     offset=entry.file_offset,
                 )
             expected_offset = block_end
-            expected_sequence += 1
+            previous_sequence = entry.sequence
+            minimum_sample_index = header.first_sample_index + header.sample_count
     if expected_offset != file_size:
         raise IndexFormatError(
             f"index covers {expected_offset} bytes but data file has {file_size} bytes",
@@ -373,7 +404,7 @@ class BlockBinaryReader:
         meta_path: str | os.PathLike[str] | None = None,
         index_path: str | os.PathLike[str] | None = None,
         validate_crc: bool = True,
-        auto_rebuild_index: bool = True,
+        auto_rebuild_index: bool = False,
     ) -> None:
         self.data_path = Path(data_path)
         derived_meta, derived_index = companion_paths(self.data_path)

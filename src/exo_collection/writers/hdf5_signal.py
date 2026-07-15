@@ -139,6 +139,21 @@ class Hdf5SignalWriter:
             chunks=vector_chunk,
             dtype=np.uint64,
         )
+        self._host_utc_ns = sample_group.create_dataset(
+            "host_utc_ns",
+            shape=(0,),
+            maxshape=(None,),
+            chunks=vector_chunk,
+            dtype=np.uint64,
+        )
+        self._source_sequence = sample_group.create_dataset(
+            "source_sequence",
+            shape=(0,),
+            maxshape=(None,),
+            chunks=vector_chunk,
+            dtype=np.uint64,
+        )
+        self._source_sequence.attrs["unknown_value"] = np.uint64(np.iinfo(np.uint64).max)
 
         string_dtype = h5py.string_dtype(encoding="utf-8")
         event_group = self._file.create_group("events")
@@ -197,6 +212,8 @@ class Hdf5SignalWriter:
         sample_index: int | Sequence[int] | np.ndarray | None = None,
         device_time: int | float | Sequence[int | float] | np.ndarray | None = None,
         host_monotonic_ns: int | Sequence[int] | np.ndarray,
+        host_utc_ns: int | Sequence[int] | np.ndarray | None = None,
+        source_sequence: int | None = None,
         sample_rate_hz: float | None = None,
         device_time_step: int | float | None = None,
         events: Iterable[Any] | None = None,
@@ -212,6 +229,18 @@ class Hdf5SignalWriter:
         host_times = self._normalise_host_times(
             host_monotonic_ns, count=count, sample_rate_hz=sample_rate_hz
         )
+        if host_utc_ns is None:
+            utc_times = np.zeros(count, dtype=np.uint64)
+        else:
+            utc_times = self._normalise_host_times(
+                host_utc_ns, count=count, sample_rate_hz=sample_rate_hz
+            )
+        if source_sequence is None:
+            source_sequences = np.full(count, np.iinfo(np.uint64).max, dtype=np.uint64)
+        else:
+            if source_sequence < 0:
+                raise ValueError("source_sequence must be non-negative")
+            source_sequences = np.full(count, source_sequence, dtype=np.uint64)
         device_times = self._normalise_device_times(
             device_time,
             count=count,
@@ -238,17 +267,23 @@ class Hdf5SignalWriter:
             self._sample_index,
             self._device_time,
             self._host_monotonic_ns,
+            self._host_utc_ns,
+            self._source_sequence,
         )
         try:
             self._data.resize((new_size, *self.sample_shape))
             self._sample_index.resize((new_size,))
             self._device_time.resize((new_size,))
             self._host_monotonic_ns.resize((new_size,))
+            self._host_utc_ns.resize((new_size,))
+            self._source_sequence.resize((new_size,))
             target = slice(old_size, new_size)
             self._data[target] = array
             self._sample_index[target] = indices
             self._device_time[target] = device_times
             self._host_monotonic_ns[target] = host_times
+            self._host_utc_ns[target] = utc_times
+            self._source_sequence[target] = source_sequences
         except BaseException:
             self._data.resize((old_size, *self.sample_shape))
             for dataset in datasets[1:]:
@@ -291,6 +326,8 @@ class Hdf5SignalWriter:
             sample_index=batch.first_sample_index,
             device_time=device_value,
             host_monotonic_ns=host_value,
+            host_utc_ns=batch.host_utc_ns,
+            source_sequence=batch.sequence_number,
             sample_rate_hz=batch.sample_rate_hz or self._nominal_rate_hz,
             device_time_step=device_time_step,
             events=events,

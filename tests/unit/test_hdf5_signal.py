@@ -46,6 +46,8 @@ def test_writer_creates_canonical_structure_and_appends_chunks(tmp_path) -> None
             "sample_index",
             "device_time",
             "host_monotonic_ns",
+            "host_utc_ns",
+            "source_sequence",
         }
         assert "discontinuities" in handle["events"]
         assert handle["samples/data"].shape == (5, 3)
@@ -101,6 +103,8 @@ def test_append_batch_supports_multidevice_shape_and_optional_events(tmp_path) -
 
     with h5py.File(path, "r") as handle:
         assert handle["samples/data"].shape == (4, 2, 12)
+        assert np.all(handle["samples/source_sequence"][:] == 2)
+        assert np.all(handle["samples/host_utc_ns"][:] > 0)
         assert len(handle["events/records"]) == 1
         payload = json.loads(handle["events/records"][0])
         assert payload["event_type"] == "sync_pulse"

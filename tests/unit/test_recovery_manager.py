@@ -3,8 +3,10 @@ from __future__ import annotations
 from uuid import uuid4
 
 import numpy as np
+import pytest
 
 from exo_collection.domain.states import TrialState
+from exo_collection.storage.activity import AcquisitionLock
 from exo_collection.storage.layout import TrialLayout
 from exo_collection.storage.recovery_manager import (
     discover_recoverable_trials,
@@ -55,3 +57,25 @@ def test_interrupted_trial_is_discovered_and_safely_repaired(tmp_path) -> None:
     assert not layout.final_directory.exists()
     assert inspect_recording_directory(layout.recording_directory).state is TrialState.RECOVERABLE
 
+
+def test_repair_refuses_to_touch_an_active_recording(tmp_path) -> None:
+    layout = TrialLayout.build(tmp_path, uuid4(), uuid4(), uuid4(), uuid4())
+    layout.create_recording()
+    ultrasound_path = layout.partial_path("raw/ultrasound.bin")
+    with BlockBinaryWriter(
+        ultrasound_path,
+        dtype="uint16",
+        sample_shape=(4,),
+        metadata={"clock_domain": "sim_clock"},
+    ) as writer:
+        writer.append(np.arange(8, dtype=np.uint16).reshape(2, 4), host_monotonic_ns=10)
+    with ultrasound_path.open("ab") as stream:
+        stream.write(b"incomplete-tail")
+    original = ultrasound_path.read_bytes()
+
+    with AcquisitionLock(tmp_path, layout.trial_uuid):
+        with pytest.raises(FileExistsError, match="collector lock"):
+            repair_recording_directory(layout.recording_directory)
+
+    assert ultrasound_path.read_bytes() == original
+    assert not tuple((layout.recording_directory / "reports").glob("recovery-*.json*"))

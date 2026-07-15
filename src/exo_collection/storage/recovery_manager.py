@@ -8,12 +8,13 @@ import json
 import os
 from pathlib import Path
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import h5py
 
 from exo_collection.domain.states import TrialState
 
+from .activity import AcquisitionLock
 from .layout import iter_recording_directories
 from .recovery import UltrasoundRecoveryResult, recover_ultrasound_file, scan_ultrasound_file
 
@@ -55,7 +56,12 @@ def _inspect_hdf5(path: Path) -> Hdf5RecoveryStatus:
             index_count = int(file["samples/sample_index"].shape[0])
             device_count = int(file["samples/device_time"].shape[0])
             host_count = int(file["samples/host_monotonic_ns"].shape[0])
-            if len({data_count, index_count, device_count, host_count}) != 1:
+            optional_counts = [
+                int(file[f"samples/{name}"].shape[0])
+                for name in ("host_utc_ns", "source_sequence")
+                if f"samples/{name}" in file
+            ]
+            if len({data_count, index_count, device_count, host_count, *optional_counts}) != 1:
                 raise ValueError("sample datasets have inconsistent lengths")
             clean = bool(file.attrs.get("closed_cleanly", False))
             declared = int(file.attrs.get("sample_count", data_count))
@@ -118,18 +124,6 @@ def repair_recording_directory(
     `RECOVERABLE`; an operator must later decide whether to finalize or abort it.
     """
 
-    before = inspect_recording_directory(recording_directory)
-    if before.ultrasound is not None:
-        recover_ultrasound_file(
-            before.ultrasound.data_path,
-            truncate=truncate_ultrasound_tail,
-            rebuild_idx=True,
-        )
-    after = inspect_recording_directory(recording_directory)
-    report_path = after.recording_directory / "reports/recovery_report.json"
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    partial = report_path.with_name(report_path.name + ".partial")
-
     def encode(value: Any) -> Any:
         if isinstance(value, Path):
             return str(value)
@@ -141,30 +135,80 @@ def repair_recording_directory(
             return value.value
         raise TypeError(type(value).__name__)
 
-    document = {
-        "schema_version": "1.0.0",
-        "action": "explicit_recovery",
-        "before": asdict(before),
-        "after": asdict(after),
-        "raw_data_policy": "Only an objectively incomplete ultrasound tail may be truncated; HDF5 is not rewritten.",
-    }
-    with partial.open("x", encoding="utf-8", newline="\n") as stream:
-        json.dump(document, stream, default=encode, ensure_ascii=False, indent=2, sort_keys=True)
-        stream.write("\n")
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(partial, report_path)
-    return TrialRecoveryReport(
-        recording_directory=after.recording_directory,
-        trial_uuid=after.trial_uuid,
-        state=after.state,
-        ultrasound=after.ultrasound,
-        hdf5_files=after.hdf5_files,
-        partial_files=after.partial_files,
-        recoverable=after.recoverable,
-        inspected_at_utc=after.inspected_at_utc,
-        repair_log_path=report_path,
-    )
+    directory = Path(recording_directory).expanduser().resolve()
+    if len(directory.parents) < 5:
+        raise ValueError("recording directory is outside the canonical dataset layout")
+    dataset_root = directory.parents[4]
+    operation_uuid = uuid4()
+    report_directory = directory / "reports"
+    intent_path = report_directory / f"recovery-{operation_uuid}.intent.json"
+    report_path = report_directory / f"recovery-{operation_uuid}.result.json"
+
+    def publish_document(path: Path, document: dict[str, Any]) -> None:
+        partial = path.with_name(path.name + ".partial")
+        with partial.open("x", encoding="utf-8", newline="\n") as stream:
+            json.dump(document, stream, default=encode, ensure_ascii=False, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(partial, path)
+
+    # Recovery owns the same dataset-root lease as Collector. This prevents a
+    # repair from truncating files that are still open in an active writer.
+    with AcquisitionLock(dataset_root, _trial_uuid(directory)):
+        before = inspect_recording_directory(directory)
+        report_directory.mkdir(parents=True, exist_ok=True)
+        intent = {
+            "schema_version": "1.0.0",
+            "operation_uuid": str(operation_uuid),
+            "action": "explicit_recovery",
+            "status": "INTENT_RECORDED",
+            "before": asdict(before),
+            "raw_data_policy": (
+                "Only an objectively incomplete ultrasound tail may be truncated; "
+                "HDF5 is not rewritten."
+            ),
+        }
+        publish_document(intent_path, intent)
+
+        try:
+            if before.ultrasound is not None:
+                recover_ultrasound_file(
+                    before.ultrasound.data_path,
+                    truncate=truncate_ultrasound_tail,
+                    rebuild_idx=True,
+                )
+            after = inspect_recording_directory(directory)
+            document = {
+                **intent,
+                "status": "COMPLETED",
+                "after": asdict(after),
+            }
+            publish_document(report_path, document)
+        except BaseException as exc:
+            failed_path = report_directory / f"recovery-{operation_uuid}.failed.json"
+            failure = {
+                **intent,
+                "status": "FAILED",
+                "exception_type": type(exc).__name__,
+                "message": str(exc),
+            }
+            try:
+                publish_document(failed_path, failure)
+            except BaseException:
+                pass
+            raise
+        return TrialRecoveryReport(
+            recording_directory=after.recording_directory,
+            trial_uuid=after.trial_uuid,
+            state=after.state,
+            ultrasound=after.ultrasound,
+            hdf5_files=after.hdf5_files,
+            partial_files=after.partial_files,
+            recoverable=after.recoverable,
+            inspected_at_utc=after.inspected_at_utc,
+            repair_log_path=report_path,
+        )
 
 
 __all__ = [
@@ -174,4 +218,3 @@ __all__ = [
     "inspect_recording_directory",
     "repair_recording_directory",
 ]
-
