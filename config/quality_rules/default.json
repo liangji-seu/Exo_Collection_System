@@ -1,0 +1,7 @@
+{
+  "schema_version": "1.0.0",
+  "required_modalities": ["ultrasound", "imu", "encoder"],
+  "maximum_sequence_gaps": 0,
+  "minimum_sync_pulses": 1
+}
+

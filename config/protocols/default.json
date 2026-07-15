@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0.0",
+  "protocol_version": "1.0.0",
+  "conditions": [
+    {
+      "condition_code": "STAND",
+      "condition_name": "静止站立",
+      "condition_level": 1,
+      "parameters": {"assist_level": 0, "load_kg": 0}
+    },
+    {
+      "condition_code": "WALK_LEVEL",
+      "condition_name": "平地行走",
+      "condition_level": 2,
+      "parameters": {"speed_mps": 0.8, "assist_level": 3, "load_kg": 0, "slope_deg": 0}
+    }
+  ]
+}
+

@@ -1,0 +1,8 @@
+{
+  "schema_version": "1.0.0",
+  "data_root": "./runtime_data",
+  "minimum_free_space_gib": 2,
+  "ultrasound_block_frames": 8,
+  "hdf5_chunk_samples": 256
+}
+

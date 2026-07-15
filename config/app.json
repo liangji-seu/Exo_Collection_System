@@ -1,0 +1,6 @@
+{
+  "schema_version": "1.0.0",
+  "preview_refresh_hz": 15,
+  "lightweight_mode_during_acquisition": true
+}
+

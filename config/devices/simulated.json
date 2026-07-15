@@ -1,0 +1,42 @@
+{
+  "schema_version": "1.0.0",
+  "devices": [
+    {
+      "id": "ultrasound_sim",
+      "modality": "ultrasound",
+      "adapter": "exo_collection.adapters.simulated.SimulatedUltrasoundAdapter",
+      "writer": "block_binary",
+      "required": true,
+      "clock_domain": "ultrasound_sim_clock",
+      "parameters": {"frame_rate_hz": 30, "frame_shape": [64, 64], "dtype": "uint16"}
+    },
+    {
+      "id": "imu_sim",
+      "modality": "imu",
+      "adapter": "exo_collection.adapters.simulated.SimulatedImuAdapter",
+      "writer": "hdf5_signal",
+      "required": true,
+      "clock_domain": "imu_sim_clock",
+      "parameters": {"sample_rate_hz": 200}
+    },
+    {
+      "id": "encoder_sim",
+      "modality": "encoder",
+      "adapter": "exo_collection.adapters.simulated.SimulatedEncoderAdapter",
+      "writer": "hdf5_signal",
+      "required": true,
+      "clock_domain": "encoder_sim_clock",
+      "parameters": {"sample_rate_hz": 100}
+    },
+    {
+      "id": "sync_pulse_sim",
+      "modality": "sync_pulse",
+      "adapter": "exo_collection.adapters.simulated.SimulatedSyncPulseAdapter",
+      "writer": "hdf5_signal",
+      "required": false,
+      "clock_domain": "sync_pulse_sim_clock",
+      "parameters": {"sample_rate_hz": 1000, "pulse_interval_s": 1.0, "pulse_width_ms": 20}
+    }
+  ]
+}
+
