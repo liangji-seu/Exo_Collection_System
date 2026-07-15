@@ -32,3 +32,15 @@ exo-data-studio --data-root .\runtime_data
 
 无显示器环境可使用 `--smoke-test` 验证两个 UI 能创建并正常退出。
 
+也可以不激活虚拟环境，直接使用模块入口：
+
+```powershell
+.\.venv\Scripts\python.exe -m exo_collection.apps.collector.main --data-root .\runtime_data
+.\.venv\Scripts\python.exe -m exo_collection.apps.data_studio.main --data-root .\runtime_data
+```
+
+构建两个 Windows 可执行入口：
+
+```powershell
+.\packaging\build_windows.ps1
+```
