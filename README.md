@@ -29,6 +29,16 @@
 
 ## Windows 开发环境
 
+新电脑首次使用时，先安装 **64 位 Python 3.11**（包含 Windows `py` launcher），然后在项目根目录双击或运行：
+
+```powershell
+.\First_Time_Setup_And_Build.cmd
+```
+
+该入口会检查 Python 3.11，创建缺失的 `.venv`，安装项目及开发/打包依赖，并生成两个 exe。若 `.venv` 已存在，脚本只校验并复用它；版本不是 Python 3.11 或环境不完整时会停止并提示，绝不会自动删除或覆盖已有环境。若软件源暂时不可用，但现有环境的完整依赖和当前仓库 editable 路径均通过严格检查，脚本会警告后复用该环境，且不会改动用户的代理设置。
+
+如需手工配置，执行：
+
 ```powershell
 py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
