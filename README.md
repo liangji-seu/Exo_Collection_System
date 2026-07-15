@@ -7,6 +7,26 @@
 
 两者共享 `exo_collection` 核心包。架构和数据契约以 [ARCHITECTURE.md](ARCHITECTURE.md) 为准。
 
+## 日常运行（推荐，无需命令行参数）
+
+完成一次 Windows 打包后，直接双击项目根目录中的脚本：
+
+- `Run_ExoCollector.cmd`：启动采集端；
+- `Run_ExoDataStudio.cmd`：启动数据管理端。
+
+也可以在 PowerShell 中运行相同脚本：
+
+```powershell
+.\Run_ExoCollector.cmd
+.\Run_ExoDataStudio.cmd
+```
+
+脚本会根据自身位置寻找 `dist` 中的程序，因此从其他工作目录运行、或项目路径中包含空格和中文时也不需要修改路径。它们不会向桌面应用传入任何命令行参数。
+
+成品版 `Run_*.cmd` 会异步启动 GUI；如需查看源码日志并让脚本返回应用退出码，请使用下文的 `Run_*_From_Source.cmd`。
+
+首次启动后，在 UI 的“数据根目录”处点击“选择…”指定数据目录。该选择会保存在当前 Windows 用户的应用设置中，后续启动自动作为默认目录；需要更换时仍在 UI 中重新选择。Collector 与 Data Studio 应使用同一个数据根目录。
+
 ## Windows 开发环境
 
 ```powershell
@@ -22,44 +42,40 @@ python -m pip install -e ".[dev,packaging]"
 python -m pytest
 ```
 
-运行模拟采集和两个桌面入口：
+## 从源码运行（开发调试）
+
+无需激活虚拟环境，也无需给应用传参数：
 
 ```powershell
-exo-simulate-trial --data-root .\runtime_data --duration 3
-exo-collector --data-root .\runtime_data
-exo-data-studio --data-root .\runtime_data
+.\Run_ExoCollector_From_Source.cmd
+.\Run_ExoDataStudio_From_Source.cmd
 ```
 
-无显示器环境可使用 `--smoke-test` 验证两个 UI 能创建并正常退出。
+源码脚本会检查 `.venv`、Python 3.11 和必要依赖，并在缺少环境时显示可直接执行的修复命令。源码运行时会保留终端窗口，便于查看调试输出。
 
-执行完整的“独立 Worker → 四模态模拟采集 → 原子最终化”启动检查：
+## 编译打包 Windows 可执行文件
+
+推荐使用项目根目录的统一入口：
 
 ```powershell
-.\.venv\Scripts\python.exe -m exo_collection.apps.collector.main `
-  --collect-smoke-test --data-root .\runtime_data --duration 0.5
+.\Build_Windows.cmd
 ```
 
-也可以不激活虚拟环境，直接使用模块入口：
+该入口内部调用 `packaging\build_windows.ps1`。如需直接调用 PowerShell 脚本：
 
 ```powershell
-.\.venv\Scripts\python.exe -m exo_collection.apps.collector.main --data-root .\runtime_data
-.\.venv\Scripts\python.exe -m exo_collection.apps.data_studio.main --data-root .\runtime_data
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\packaging\build_windows.ps1
 ```
 
-构建两个 Windows 可执行入口：
+构建脚本会检查 `.venv` 是否使用 Python 3.11、PyInstaller 是否已安装，以及每一步的退出码。成功后生成：
 
-```powershell
-.\packaging\build_windows.ps1
+```text
+dist\ExoCollector.exe
+dist\ExoDataStudio.exe
 ```
 
-冻结版启动与采集检查：
-
-```powershell
-.\dist\ExoCollector.exe --smoke-test --data-root .\runtime_data
-.\dist\ExoDataStudio.exe --smoke-test --data-root .\runtime_data
-.\dist\ExoCollector.exe --collect-smoke-test `
-  --data-root .\runtime_data --duration 0.5
-```
+随后使用本页开头的两个 `Run_*.cmd` 即可日常启动。
 
 采集期间不要运行全盘校验、回放或上传；Data Studio 检测到 Collector
 活动租约后会自动进入轻量模式。`.recording` Trial 只能通过显式恢复流程检查，
