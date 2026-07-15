@@ -9,6 +9,7 @@ from .binary_block import (
     BlockWriteResult,
     IndexEntry,
 )
+from .hdf5_signal import Hdf5SignalWriter, Hdf5SignalWriterError
 
 __all__ = [
     "BLOCK_HEADER_SIZE",
@@ -18,4 +19,6 @@ __all__ = [
     "BlockHeader",
     "BlockWriteResult",
     "IndexEntry",
+    "Hdf5SignalWriter",
+    "Hdf5SignalWriterError",
 ]

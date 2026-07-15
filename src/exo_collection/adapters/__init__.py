@@ -1,0 +1,53 @@
+"""Unified modality adapter API and built-in simulators."""
+
+from .base import (
+    AdapterError,
+    AdapterLifecycleError,
+    AdapterState,
+    DeviceConfig,
+    ModalityAdapter,
+    ModalityDescriptor,
+    PreparedInfo,
+    RawQueueOverflowError,
+    SimulationConfig,
+    StartToken,
+    StopReport,
+    TrialContext,
+)
+from .simulated import (
+    SimulatedEncoderAdapter,
+    SimulatedEncoderConfig,
+    SimulatedIMUAdapter,
+    SimulatedIMUConfig,
+    SimulatedImuAdapter,
+    SimulatedImuConfig,
+    SimulatedSyncPulseAdapter,
+    SimulatedSyncPulseConfig,
+    SimulatedUltrasoundAdapter,
+    SimulatedUltrasoundConfig,
+)
+
+__all__ = [
+    "AdapterError",
+    "AdapterLifecycleError",
+    "AdapterState",
+    "DeviceConfig",
+    "ModalityAdapter",
+    "ModalityDescriptor",
+    "PreparedInfo",
+    "RawQueueOverflowError",
+    "SimulationConfig",
+    "SimulatedEncoderAdapter",
+    "SimulatedEncoderConfig",
+    "SimulatedIMUAdapter",
+    "SimulatedIMUConfig",
+    "SimulatedImuAdapter",
+    "SimulatedImuConfig",
+    "SimulatedSyncPulseAdapter",
+    "SimulatedSyncPulseConfig",
+    "SimulatedUltrasoundAdapter",
+    "SimulatedUltrasoundConfig",
+    "StartToken",
+    "StopReport",
+    "TrialContext",
+]
