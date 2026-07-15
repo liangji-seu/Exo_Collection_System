@@ -64,7 +64,18 @@ def _run_collection_smoke(data_root: Path, duration_s: float) -> int:
             time.sleep(0.02)
     if terminal is None and worker.is_alive:
         worker.request_stop()
-    exitcode = worker.join(timeout=10)
+    shutdown_deadline = time.monotonic() + 20
+    while worker.is_alive and time.monotonic() < shutdown_deadline:
+        for event in worker.poll_events(limit=1000):
+            if event.event_type in {WorkerEventType.COMPLETED, WorkerEventType.FAILED}:
+                terminal = event
+        worker.join(timeout=0.05)
+    if worker.is_alive:
+        worker.terminate_for_recovery()
+    exitcode = worker.join(timeout=2)
+    for event in worker.poll_events(limit=1000):
+        if event.event_type in {WorkerEventType.COMPLETED, WorkerEventType.FAILED}:
+            terminal = event
     try:
         return int(
             terminal is None
@@ -97,6 +108,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     if options.smoke_test:
         QTimer.singleShot(50, app.quit)
     exit_code = int(app.exec())
+    # QApplication.quit()/Windows session shutdown can end the Qt event loop
+    # before closeEvent has completed a live Trial. Keep pumping the existing
+    # window until its controlled stop, Writer flush and worker release finish.
+    window.close()
+    shutdown_deadline = time.monotonic() + 60
+    while window.worker is not None:
+        window.poll_worker_events()
+        app.processEvents()
+        if time.monotonic() >= shutdown_deadline and window.worker is not None:
+            terminate = getattr(window.worker, "terminate_for_recovery", None)
+            if callable(terminate):
+                terminate()
+            shutdown_deadline = float("inf")
+        time.sleep(0.02)
     window.close()
     return exit_code
 

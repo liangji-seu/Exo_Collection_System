@@ -12,27 +12,47 @@ from exo_collection.acquisition.messages import WorkerEvent, WorkerEventType
 from exo_collection.orchestration.models import TrialRunRequest
 
 
-def _put_worker_event(queue: Queue[Any], event: WorkerEvent) -> None:
+LOSSY_EVENT_TYPES = {
+    WorkerEventType.PREVIEW,
+    WorkerEventType.HEALTH,
+    WorkerEventType.METRIC,
+}
+
+
+def _put_worker_event(
+    telemetry_queue: Queue[Any],
+    control_queue: Queue[Any],
+    event: WorkerEvent,
+) -> None:
     payload = event.model_dump(mode="json")
-    try:
-        queue.put(payload, timeout=0.25)
-    except Full:
-        if event.event_type is WorkerEventType.PREVIEW:
-            return  # preview is explicitly lossy
-        queue.put(payload, timeout=5.0)
+    if event.event_type in LOSSY_EVENT_TYPES:
+        try:
+            telemetry_queue.put_nowait(payload)
+        except Full:
+            pass  # every telemetry/preview event is replaceable and lossy
+        return
+    # State and terminal events have their own small queue. Their bounded count
+    # cannot be exhausted by a stalled preview consumer.
+    control_queue.put(payload, timeout=2.0)
 
 
 def _trial_worker_entry(
     request_payload: dict[str, Any],
-    event_queue: Queue[Any],
+    telemetry_queue: Queue[Any],
+    control_queue: Queue[Any],
     stop_event: Any,
 ) -> None:
     """Import the orchestration implementation inside the spawned process."""
 
+    # Telemetry is explicitly lossy.  If the UI stops consuming it, a Windows
+    # multiprocessing.Queue feeder can otherwise keep this process alive after
+    # the Trial has already finalized.  Only the small control queue is allowed
+    # to participate in the child process's exit flush.
+    telemetry_queue.cancel_join_thread()
     request = TrialRunRequest.model_validate(request_payload)
 
     def publish(event: WorkerEvent) -> None:
-        _put_worker_event(event_queue, event)
+        _put_worker_event(telemetry_queue, control_queue, event)
 
     try:
         from exo_collection.orchestration.simulated import run_simulated_trial
@@ -67,10 +87,16 @@ class CollectorWorker:
         self.request = request
         self._context = mp.get_context("spawn")
         self._events = self._context.Queue(maxsize=queue_capacity)
+        self._control_events = self._context.Queue(maxsize=32)
         self._stop_requested = self._context.Event()
         self._process = self._context.Process(
             target=_trial_worker_entry,
-            args=(request.model_dump(mode="json"), self._events, self._stop_requested),
+            args=(
+                request.model_dump(mode="json"),
+                self._events,
+                self._control_events,
+                self._stop_requested,
+            ),
             name=f"collector-core-{str(request.trial_uuid)[:8]}",
             daemon=False,
         )
@@ -99,16 +125,34 @@ class CollectorWorker:
         if limit <= 0:
             return []
         events: list[WorkerEvent] = []
-        for _ in range(limit):
-            try:
-                payload = self._events.get_nowait()
-            except Empty:
-                break
-            events.append(WorkerEvent.model_validate(payload))
+        for queue in (self._control_events, self._events):
+            while len(events) < limit:
+                try:
+                    payload = queue.get_nowait()
+                except Empty:
+                    break
+                events.append(WorkerEvent.model_validate(payload))
         return events
 
     def join(self, timeout: float | None = None) -> int | None:
         self._process.join(timeout)
+        return self._process.exitcode
+
+    def terminate_for_recovery(self, timeout: float = 5.0) -> int | None:
+        """Last-resort shutdown after a controlled stop timeout.
+
+        A forced process exit intentionally leaves the Trial as `.recording`;
+        the normal startup recovery workflow will inspect it before publication.
+        """
+
+        if timeout < 0:
+            raise ValueError("timeout must be non-negative")
+        if self._process.is_alive():
+            self._process.terminate()
+            self._process.join(timeout)
+        if self._process.is_alive():
+            self._process.kill()
+            self._process.join(timeout)
         return self._process.exitcode
 
     def close(self) -> None:
@@ -116,5 +160,6 @@ class CollectorWorker:
             raise RuntimeError("cannot close a running Collector worker; request a controlled stop first")
         self._events.close()
         self._events.join_thread()
+        self._control_events.close()
+        self._control_events.join_thread()
         self._process.close()
-

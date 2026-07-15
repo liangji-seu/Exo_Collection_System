@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import asdict
 from datetime import datetime, timezone
 import hashlib
+from importlib import resources
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ import subprocess
 import time
 from typing import Any, Protocol
 from uuid import UUID
+from uuid import uuid4
 
 import h5py
 import numpy as np
@@ -27,6 +29,10 @@ from exo_collection.adapters.sync_pulse.simulated import SimulatedSyncPulseAdapt
 from exo_collection.adapters.ultrasound.simulated import SimulatedUltrasoundAdapter
 from exo_collection.catalog import Catalog
 from exo_collection.catalog.repositories import CatalogRepository
+from exo_collection.configuration.device_profiles import (
+    SimulatedDeviceProfileDocument,
+    load_simulated_device_profile,
+)
 from exo_collection.domain.events import FrameBatch, HealthStatus, SampleBatch, SyncPulseEvent
 from exo_collection.domain.models import (
     ArtifactKind,
@@ -66,7 +72,7 @@ from exo_collection.storage.package import (
     publish_json,
 )
 from exo_collection.timing.clock_model import fit_affine_clock
-from exo_collection.writers.binary_block import BlockBinaryWriter
+from exo_collection.writers.block_binary_process import BlockBinaryWriterProcess
 from exo_collection.writers.hdf5_signal import Hdf5SignalWriter
 
 from .models import TrialRunRequest, TrialRunResult
@@ -98,12 +104,29 @@ class _JsonlJournal:
         record = {
             "timestamp_utc": utc_now().isoformat().replace("+00:00", "Z"),
             "host_monotonic_ns": time.perf_counter_ns(),
+            "level": "ERROR" if "exception_type" in payload else "INFO",
             "process": "collector-core",
             "event_type": event_type,
+            "session_uuid": str(self.layout.session_uuid),
+            "trial_uuid": str(self.layout.trial_uuid),
+            "device_id": payload.get("device_id"),
+            "message": payload.get("message") or payload.get("reason"),
+            "exception": (
+                {
+                    "type": payload.get("exception_type"),
+                    "message": payload.get("message"),
+                }
+                if "exception_type" in payload
+                else None
+            ),
             **payload,
         }
         self._stream.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
         self._stream.flush()
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
 
     def close_and_publish(self) -> Path:
         if not self._closed:
@@ -122,10 +145,25 @@ class _JsonlJournal:
 
 def _publish(callback: PublishCallback | None, event: WorkerEvent) -> None:
     if callback is not None:
-        callback(event)
+        try:
+            callback(event)
+        except Exception:
+            # UI/control-plane telemetry is best-effort and must never change
+            # the raw acquisition or package-publication result.
+            pass
 
 
 def _git_commit() -> str:
+    explicit = os.environ.get("EXO_GIT_COMMIT", "").strip()
+    if explicit:
+        return explicit
+    try:
+        bundled = resources.files("exo_collection").joinpath("build-info.json")
+        value = json.loads(bundled.read_text(encoding="utf-8")).get("git_commit", "").strip()
+        if value:
+            return value
+    except (FileNotFoundError, ModuleNotFoundError, json.JSONDecodeError, OSError, AttributeError):
+        pass
     root = Path(__file__).resolve().parents[3]
     try:
         completed = subprocess.run(
@@ -146,9 +184,16 @@ def _git_commit() -> str:
 def _write_session_file(layout: TrialLayout, session: Session) -> None:
     destination = layout.session_directory / "session.json"
     if destination.exists():
+        existing = Session.model_validate_json(destination.read_text(encoding="utf-8"))
+        if (
+            existing.session_uuid != session.session_uuid
+            or existing.project_uuid != session.project_uuid
+            or existing.subject_uuid != session.subject_uuid
+        ):
+            raise ValueError(f"existing session.json has conflicting hierarchy UUIDs: {destination}")
         return
     destination.parent.mkdir(parents=True, exist_ok=True)
-    partial = destination.with_name("session.json.partial")
+    partial = destination.with_name(f"session.json.{uuid4().hex}.partial")
     with partial.open("x", encoding="utf-8", newline="\n") as stream:
         stream.write(session.model_dump_json(indent=2))
         stream.write("\n")
@@ -161,29 +206,33 @@ def _write_session_file(layout: TrialLayout, session: Session) -> None:
         raise
 
 
-def _make_adapters(request: TrialRunRequest) -> dict[str, QueuedSimulatedAdapter[Any]]:
-    configs: dict[str, dict[str, Any]] = {
-        "ultrasound": {"frame_rate_hz": 30.0, "frame_shape": (64, 64), "queue_capacity": 128},
-        "imu": {"sample_rate_hz": 200.0, "samples_per_batch": 20, "queue_capacity": 128},
-        "encoder": {"sample_rate_hz": 100.0, "samples_per_batch": 10, "queue_capacity": 128},
-        "sync_pulse": {
-            "sample_rate_hz": 1000.0,
-            "samples_per_batch": 50,
-            "pulse_interval_s": 1.0,
-            "pulse_width_s": 0.02,
-            "queue_capacity": 128,
-        },
-    }
-    for modality, overrides in request.simulation.items():
-        if modality not in configs:
-            raise ValueError(f"Unknown simulated modality: {modality}")
-        configs[modality].update(overrides)
-    return {
-        "ultrasound": SimulatedUltrasoundAdapter(configs["ultrasound"]),
-        "imu": SimulatedImuAdapter(configs["imu"]),
-        "encoder": SimulatedEncoderAdapter(configs["encoder"]),
-        "sync_pulse": SimulatedSyncPulseAdapter(configs["sync_pulse"]),
-    }
+_SIMULATED_ADAPTER_TYPES: dict[str, type[QueuedSimulatedAdapter[Any]]] = {
+    "ultrasound": SimulatedUltrasoundAdapter,
+    "imu": SimulatedImuAdapter,
+    "encoder": SimulatedEncoderAdapter,
+    "sync_pulse": SimulatedSyncPulseAdapter,
+}
+
+
+def _make_adapters(
+    request: TrialRunRequest,
+    profile: SimulatedDeviceProfileDocument | None = None,
+) -> dict[str, QueuedSimulatedAdapter[Any]]:
+    """Build only statically registered simulators from a validated profile."""
+
+    resolved_profile = profile or load_simulated_device_profile()
+    devices = resolved_profile.by_modality()
+    unknown_overrides = set(request.simulation) - set(devices)
+    if unknown_overrides:
+        display = ", ".join(sorted(unknown_overrides))
+        raise ValueError(f"Unknown simulated modality override(s): {display}")
+
+    adapters: dict[str, QueuedSimulatedAdapter[Any]] = {}
+    for modality, device in devices.items():
+        configuration = device.adapter_configuration()
+        configuration.update(request.simulation.get(modality, {}))
+        adapters[modality] = _SIMULATED_ADAPTER_TYPES[modality](configuration)
+    return adapters
 
 
 def _create_hdf5_writer(path: Path, adapter: QueuedSimulatedAdapter[Any]) -> Hdf5SignalWriter:
@@ -310,7 +359,9 @@ def run_simulated_trial(
         request.trial_uuid,
     )
     machine = TrialStateMachine()
-    adapters = _make_adapters(request)
+    device_profile = load_simulated_device_profile()
+    profiles_by_modality = device_profile.by_modality()
+    adapters = _make_adapters(request, device_profile)
     descriptors = {name: adapter.descriptor() for name, adapter in adapters.items()}
     condition = Condition(
         condition_code=request.condition_code,
@@ -324,9 +375,13 @@ def run_simulated_trial(
         DeviceReference(
             device_id=descriptor.device_id,
             modality=descriptor.modality,
-            required=descriptor.modality != "sync_pulse",
+            required=profiles_by_modality[descriptor.modality].required,
             clock_domain=descriptor.clock_domain,
-            metadata={"simulated": True},
+            metadata={
+                "simulated": True,
+                "profile_adapter": profiles_by_modality[descriptor.modality].adapter,
+                "writer": profiles_by_modality[descriptor.modality].writer,
+            },
         )
         for descriptor in descriptors.values()
     ]
@@ -355,31 +410,37 @@ def run_simulated_trial(
         devices=device_refs,
     )
 
-    catalog = Catalog(root / "catalog.sqlite3")
-    catalog.migrate()
-    repository = CatalogRepository(catalog)
-    repository.register_hierarchy(project, subject, visit)
-    _write_session_file(layout, visit)
-    layout.create_recording()
-    journal = _JsonlJournal(layout)
+    catalog: Catalog | None = None
+    repository: CatalogRepository | None = None
+    journal: _JsonlJournal | None = None
     writers: dict[str, Any] = {}
     stop_reports: dict[str, Any] = {}
     counts = {name: 0 for name in adapters}
     pulse_event_count = 0
     anchors: dict[str, list[tuple[float, int]]] = {name: [] for name in adapters}
     last_preview_ns = {name: 0 for name in adapters}
+    sample_bounds: dict[str, list[int | None]] = {
+        name: [None, None] for name in adapters
+    }
+
+    def record_sample_bounds(modality: str, first_index: int, sample_count: int) -> None:
+        last_index = first_index + sample_count - 1
+        bounds = sample_bounds[modality]
+        bounds[0] = first_index if bounds[0] is None else min(bounds[0], first_index)
+        bounds[1] = last_index if bounds[1] is None else max(bounds[1], last_index)
 
     def transition(target: TrialState, reason: str) -> None:
         record = machine.transition(target, reason=reason)
-        journal.write(
-            "trial_state_transition",
-            {
-                "trial_uuid": str(request.trial_uuid),
-                "from_state": record.from_state.value,
-                "to_state": record.to_state.value,
-                "reason": reason,
-            },
-        )
+        if journal is not None and not journal.closed:
+            journal.write(
+                "trial_state_transition",
+                {
+                    "trial_uuid": str(request.trial_uuid),
+                    "from_state": record.from_state.value,
+                    "to_state": record.to_state.value,
+                    "reason": reason,
+                },
+            )
         _publish(
             publish,
             WorkerEvent(
@@ -390,8 +451,23 @@ def run_simulated_trial(
             ),
         )
 
+    activity_lock = AcquisitionLock(
+        root,
+        request.trial_uuid,
+        release_on_exception=False,
+    )
     try:
-        with AcquisitionLock(root, request.trial_uuid) as activity:
+        with activity_lock as activity:
+            # The dataset-root lease is acquired before Catalog, Session or
+            # Trial-directory side effects, so a losing Collector leaves no
+            # orphan `.recording` package.
+            catalog = Catalog(root / "catalog.sqlite3")
+            catalog.migrate()
+            repository = CatalogRepository(catalog)
+            repository.register_hierarchy(project, subject, visit)
+            _write_session_file(layout, visit)
+            layout.create_recording()
+            journal = _JsonlJournal(layout)
             transition(TrialState.PREPARING, "checking and preparing simulated devices")
             trial_context = TrialContext(
                 trial_uuid=request.trial_uuid,
@@ -403,7 +479,7 @@ def run_simulated_trial(
                 adapter.connect()
                 adapter.prepare(trial_context)
 
-            writers["ultrasound"] = BlockBinaryWriter(
+            writers["ultrasound"] = BlockBinaryWriterProcess(
                 layout.partial_path("raw/ultrasound.bin"),
                 dtype=descriptors["ultrasound"].dtype,
                 sample_shape=descriptors["ultrasound"].sample_shape,
@@ -449,6 +525,9 @@ def run_simulated_trial(
                                 first_sample_index=event.first_frame_index,
                                 sequence=event.sequence_number,
                             )
+                            record_sample_bounds(
+                                modality, event.first_frame_index, event.frame_count
+                            )
                             counts[modality] += event.frame_count
                             if event.device_timestamp is not None:
                                 anchors[modality].append(
@@ -456,6 +535,9 @@ def run_simulated_trial(
                                 )
                         elif isinstance(event, SampleBatch):
                             writers[modality].append_batch(event)
+                            record_sample_bounds(
+                                modality, event.first_sample_index, event.sample_count
+                            )
                             counts[modality] += event.sample_count
                             if event.device_timestamp is not None:
                                 anchors[modality].append(
@@ -526,11 +608,17 @@ def run_simulated_trial(
                             first_sample_index=event.first_frame_index,
                             sequence=event.sequence_number,
                         )
+                        record_sample_bounds(
+                            modality, event.first_frame_index, event.frame_count
+                        )
                         counts[modality] += event.frame_count
                         if event.device_timestamp is not None:
                             anchors[modality].append((float(event.device_timestamp), event.host_monotonic_ns))
                     elif isinstance(event, SampleBatch):
                         writers[modality].append_batch(event)
+                        record_sample_bounds(
+                            modality, event.first_sample_index, event.sample_count
+                        )
                         counts[modality] += event.sample_count
                         if event.device_timestamp is not None:
                             anchors[modality].append((float(event.device_timestamp), event.host_monotonic_ns))
@@ -550,6 +638,14 @@ def run_simulated_trial(
             ultrasound_scan = scan_binary_file(layout.partial_path("raw/ultrasound.bin"))
             if ultrasound_scan.error is not None or ultrasound_scan.complete_block_count == 0:
                 raise RuntimeError(f"ultrasound integrity check failed: {ultrasound_scan.error}")
+            ultrasound_writer = writers["ultrasound"]
+            if (
+                not isinstance(ultrasound_writer, BlockBinaryWriterProcess)
+                or ultrasound_scan.complete_block_count != ultrasound_writer.written_count
+                or sum(header.sample_count for header in ultrasound_scan.headers)
+                != counts["ultrasound"]
+            ):
+                raise RuntimeError("ultrasound Writer count differs from the verified binary file")
             for modality in ("imu", "encoder", "sync_pulse"):
                 _verify_hdf5(layout.partial_path(f"raw/{modality}.h5"), counts[modality])
 
@@ -606,9 +702,44 @@ def run_simulated_trial(
                 "issues": [issue.model_dump(mode="json") for issue in issues],
                 "algorithm_version": "milestone-basic-quality-1.0.0",
             }
+            configuration_document = {
+                "schema_version": "1.0.0",
+                "config_version": request.config_version,
+                "protocol": condition.model_dump(mode="json"),
+                "simulated_devices": {
+                    modality: {
+                        "profile": profiles_by_modality[modality].model_dump(
+                            mode="json", by_alias=True
+                        ),
+                        "resolved_configuration": adapter.configuration_snapshot(),
+                    }
+                    for modality, adapter in adapters.items()
+                },
+            }
+            configuration_bytes = json.dumps(
+                configuration_document,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
             publish_json(layout, "derived/statistics.json", statistics)
+            publish_json(
+                layout,
+                "derived/configuration_snapshot.json",
+                configuration_document,
+            )
             publish_json(layout, "reports/quality_report.json", quality_report)
-            transition(TrialState.FINALIZED, "files closed and integrity checks passed")
+            assert journal is not None
+            journal.write(
+                "trial_publication_intent",
+                {
+                    "trial_uuid": str(request.trial_uuid),
+                    "from_state": TrialState.FINALIZING.value,
+                    "target_state": TrialState.FINALIZED.value,
+                    "reason": "artifacts verified; preparing atomic directory publication",
+                },
+            )
+            activity.heartbeat()
             journal.close_and_publish()
 
             draft_by_key: dict[str, ArtifactDraft] = {
@@ -669,6 +800,14 @@ def run_simulated_trial(
                     "derived/statistics.json",
                     created_at_utc=finalized_at_utc,
                 ),
+                "configuration": ArtifactDraft(
+                    request.trial_uuid,
+                    "trial",
+                    ArtifactKind.DERIVED,
+                    "application/json",
+                    "derived/configuration_snapshot.json",
+                    created_at_utc=finalized_at_utc,
+                ),
                 "quality": ArtifactDraft(
                     request.trial_uuid,
                     "trial",
@@ -712,29 +851,34 @@ def run_simulated_trial(
                 )
                 kwargs: dict[str, Any] = {
                     "modality": modality,
-                    "required": modality != "sync_pulse",
+                    "required": profiles_by_modality[modality].required,
                     "adapter_type": f"{adapters[modality].__class__.__module__}.{adapters[modality].__class__.__name__}",
-                    "writer_type": "block_binary" if modality == "ultrasound" else "hdf5_signal",
+                    "writer_type": profiles_by_modality[modality].writer,
                     "clock_domain": descriptor.clock_domain,
                     "device_ids": [descriptor.device_id],
                     "artifact_uuids": [artifact_map[key].artifact_uuid for key in keys],
                     "channels": list(descriptor.channels),
                     "units": list(descriptor.units),
-                    "first_sample_index": 0,
-                    "last_sample_index": counts[modality] - 1,
-                    "sequence_gap_count": stop_reports[modality].injected_dropped_batches,
+                    "first_sample_index": sample_bounds[modality][0],
+                    "last_sample_index": sample_bounds[modality][1],
+                    "sequence_gap_count": (
+                        ultrasound_scan.sequence_gap_count
+                        if modality == "ultrasound"
+                        else stop_reports[modality].injected_dropped_batches
+                    ),
                     "nominal_sample_rate_hz": descriptor.nominal_rate_hz,
                     "metadata": {"simulated": True, **dict(descriptor.metadata)},
                 }
                 if modality == "ultrasound":
                     kwargs["frame_count"] = counts[modality]
+                    kwargs["metadata"]["source_sequence_gap_ranges"] = [
+                        list(item) for item in ultrasound_scan.sequence_gap_ranges
+                    ]
                 else:
                     kwargs["sample_count"] = counts[modality]
                 modalities.append(ModalityManifest(**kwargs))
 
-            config_hash = hashlib.sha256(
-                request.model_dump_json(exclude={"data_root"}).encode("utf-8")
-            ).hexdigest()
+            config_hash = hashlib.sha256(configuration_bytes).hexdigest()
             manifest = TrialManifest(
                 project_uuid=request.project_uuid,
                 subject_uuid=request.subject_uuid,
@@ -762,6 +906,7 @@ def run_simulated_trial(
                     protocol_version=request.protocol_version,
                     condition_definition_version=request.protocol_version,
                     content_sha256=config_hash,
+                    snapshot_relative_path="derived/configuration_snapshot.json",
                 ),
                 devices=[
                     DeviceProvenance(
@@ -770,7 +915,12 @@ def run_simulated_trial(
                         adapter_type=f"{adapters[modality].__class__.__module__}.{adapters[modality].__class__.__name__}",
                         manufacturer="simulator",
                         model="deterministic built-in simulator",
-                        metadata={"simulated": True},
+                        metadata={
+                            "simulated": True,
+                            "profile_required": profiles_by_modality[modality].required,
+                            "profile_clock_domain": profiles_by_modality[modality].clock_domain,
+                            "writer": profiles_by_modality[modality].writer,
+                        },
                     )
                     for modality, descriptor in descriptors.items()
                 ],
@@ -793,10 +943,29 @@ def run_simulated_trial(
                     report_artifact_uuid=artifact_map["quality"].artifact_uuid,
                 ),
             )
+            activity.heartbeat()
             final_directory = finalize_trial_package(layout, manifest)
             final_manifest_path = final_directory / "manifest.json"
-            repository.index_manifest(manifest, final_manifest_path)
-            catalog.close()
+            transition(TrialState.FINALIZED, "Trial directory atomically published")
+            assert repository is not None
+            try:
+                repository.index_manifest(manifest, final_manifest_path)
+            except Exception as catalog_error:
+                # Catalog is a rebuildable index. A transient SQLite failure
+                # cannot invalidate an already atomically published Trial.
+                _publish(
+                    publish,
+                    WorkerEvent(
+                        event_type=WorkerEventType.ALERT,
+                        trial_uuid=str(request.trial_uuid),
+                        message="Trial finalized; Catalog indexing deferred",
+                        payload={
+                            "catalog_index_deferred": True,
+                            "exception_type": type(catalog_error).__name__,
+                            "message": str(catalog_error),
+                        },
+                    ),
+                )
             return TrialRunResult(
                 trial_uuid=request.trial_uuid,
                 state=TrialState.FINALIZED.value,
@@ -808,18 +977,53 @@ def run_simulated_trial(
                 quality_grade=grade.value,
             )
     except BaseException as exc:
-        journal.write(
-            "trial_failure",
-            {
-                "trial_uuid": str(request.trial_uuid),
-                "state": machine.state.value,
-                "exception_type": type(exc).__name__,
-                "message": str(exc),
-            },
-        )
+        failure_target = {
+            TrialState.PREPARING: TrialState.FAILED,
+            TrialState.READY: TrialState.FAILED,
+            TrialState.RECORDING: TrialState.ABORTED,
+            TrialState.STOPPING: TrialState.RECOVERABLE,
+            TrialState.FINALIZING: TrialState.RECOVERABLE,
+        }.get(machine.state)
+        failure_payload = {
+            "trial_uuid": str(request.trial_uuid),
+            "state": machine.state.value,
+            "recovery_state": failure_target.value if failure_target is not None else None,
+            "exception_type": type(exc).__name__,
+            "message": str(exc),
+        }
+        if journal is not None and not journal.closed:
+            try:
+                journal.write("trial_failure", failure_payload)
+            except BaseException:
+                pass
+        elif layout.recording_directory.is_dir():
+            # The normal journal is intentionally immutable once published.
+            # A finalization failure therefore gets a separate recovery report.
+            try:
+                publish_json(
+                    layout,
+                    f"reports/finalization-failure-{uuid4()}.json",
+                    {
+                        "schema_version": "1.0.0",
+                        **failure_payload,
+                    },
+                )
+            except BaseException:
+                pass
+
+        if failure_target is not None and machine.can_transition_to(failure_target):
+            try:
+                transition(
+                    failure_target,
+                    f"{type(exc).__name__} during {machine.state.value}",
+                )
+            except BaseException:
+                pass
         for writer in writers.values():
             try:
-                if isinstance(writer, Hdf5SignalWriter):
+                if isinstance(writer, BlockBinaryWriterProcess):
+                    writer.abort()
+                elif isinstance(writer, Hdf5SignalWriter):
                     writer.close(clean=False)
                 else:
                     writer.close()
@@ -830,9 +1034,19 @@ def run_simulated_trial(
                 adapter.close()
             except BaseException:
                 pass
-        journal.close_incomplete()
-        catalog.close()
+        if journal is not None:
+            try:
+                journal.close_incomplete()
+            except BaseException:
+                pass
         raise
+    finally:
+        if catalog is not None:
+            try:
+                catalog.close()
+            except BaseException:
+                pass
+        activity_lock.release()
 
 
 __all__ = ["run_simulated_trial"]

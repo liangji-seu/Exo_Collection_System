@@ -32,6 +32,13 @@ exo-data-studio --data-root .\runtime_data
 
 无显示器环境可使用 `--smoke-test` 验证两个 UI 能创建并正常退出。
 
+执行完整的“独立 Worker → 四模态模拟采集 → 原子最终化”启动检查：
+
+```powershell
+.\.venv\Scripts\python.exe -m exo_collection.apps.collector.main `
+  --collect-smoke-test --data-root .\runtime_data --duration 0.5
+```
+
 也可以不激活虚拟环境，直接使用模块入口：
 
 ```powershell
@@ -44,3 +51,16 @@ exo-data-studio --data-root .\runtime_data
 ```powershell
 .\packaging\build_windows.ps1
 ```
+
+冻结版启动与采集检查：
+
+```powershell
+.\dist\ExoCollector.exe --smoke-test --data-root .\runtime_data
+.\dist\ExoDataStudio.exe --smoke-test --data-root .\runtime_data
+.\dist\ExoCollector.exe --collect-smoke-test `
+  --data-root .\runtime_data --duration 0.5
+```
+
+采集期间不要运行全盘校验、回放或上传；Data Studio 检测到 Collector
+活动租约后会自动进入轻量模式。`.recording` Trial 只能通过显式恢复流程检查，
+不会被 Data Studio 当成已最终化数据打开。
