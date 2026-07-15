@@ -34,30 +34,16 @@ from PySide6.QtWidgets import (
 from exo_collection.acquisition.messages import WorkerEvent, WorkerEventType
 from exo_collection.acquisition.workers import CollectorWorker
 from exo_collection.orchestration.models import TrialRunRequest
+from exo_collection.protocols import load_default_protocol
 
 
 MODALITIES = ("ultrasound", "imu", "encoder", "sync_pulse")
 MAX_PREVIEW_POINTS = 4096
 MAX_SIGNAL_HISTORY_POINTS = 3000
 
-CONDITIONS: tuple[dict[str, Any], ...] = (
-    {
-        "condition_code": "STAND",
-        "condition_name": "静止站立",
-        "condition_level": 1,
-        "parameters": {"assist_level": 0, "load_kg": 0},
-    },
-    {
-        "condition_code": "WALK_LEVEL",
-        "condition_name": "平地行走",
-        "condition_level": 2,
-        "parameters": {
-            "speed_mps": 0.8,
-            "assist_level": 3,
-            "load_kg": 0,
-            "slope_deg": 0,
-        },
-    },
+_PROTOCOL = load_default_protocol()
+CONDITIONS: tuple[dict[str, Any], ...] = tuple(
+    condition.model_dump(mode="json") for condition in _PROTOCOL.conditions
 )
 
 
@@ -366,7 +352,7 @@ class CollectorWindow(QMainWindow):
             condition_level=condition.get("condition_level"),
             condition_parameters=dict(condition.get("parameters", {})),
             repeat_index=self.repeat_spin.value(),
-            protocol_version="1.0.0",
+            protocol_version=_PROTOCOL.protocol_version,
             config_version="1.0.0",
         )
 
@@ -500,6 +486,8 @@ class CollectorWindow(QMainWindow):
             self._handle_health(event)
         elif event.event_type is WorkerEventType.METRIC:
             self._handle_metric(event.payload)
+        elif event.event_type is WorkerEventType.ALERT:
+            self._append_alert(event.message or "Collector Worker 报告需要关注的事件。")
         elif event.event_type is WorkerEventType.PREVIEW:
             self._handle_preview(event)
         elif event.event_type is WorkerEventType.COMPLETED:

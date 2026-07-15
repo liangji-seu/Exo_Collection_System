@@ -181,6 +181,8 @@ class ModalityAdapter(Protocol):
 
     def descriptor(self) -> ModalityDescriptor: ...
 
+    def configuration_snapshot(self) -> Mapping[str, Any]: ...
+
     def connect(self, config: Any = None) -> None: ...
 
     def prepare(self, trial: TrialContext) -> PreparedInfo: ...
@@ -267,6 +269,11 @@ class QueuedSimulatedAdapter(ABC, Generic[ConfigT]):
         """Low-volume status/metric events, separate from raw data."""
 
         return self._control_queue
+
+    def configuration_snapshot(self) -> Mapping[str, Any]:
+        """Return the fully resolved simulator configuration for provenance."""
+
+        return asdict(self._config)
 
     @abstractmethod
     def descriptor(self) -> ModalityDescriptor:

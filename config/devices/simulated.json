@@ -35,8 +35,7 @@
       "writer": "hdf5_signal",
       "required": false,
       "clock_domain": "sync_pulse_sim_clock",
-      "parameters": {"sample_rate_hz": 1000, "pulse_interval_s": 1.0, "pulse_width_ms": 20}
+      "parameters": {"sample_rate_hz": 1000, "pulse_interval_s": 1.0, "pulse_width_s": 0.02}
     }
   ]
 }
-

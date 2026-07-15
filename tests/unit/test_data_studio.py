@@ -159,9 +159,15 @@ def test_window_refreshes_in_background_and_enforces_lightweight_mode(
 ) -> None:
     manifest = _make_manifest()
     _publish_manifest(tmp_path, manifest)
+    # Index once before acquisition. While the activity lock exists, Data
+    # Studio must browse this Catalog snapshot without walking all Manifests.
+    assert load_catalog_snapshot(tmp_path).statistics["trial_count"] == 1
     app = QApplication.instance() or QApplication(["test-data-studio"])
 
     with AcquisitionLock(tmp_path, manifest.trial_uuid):
+        lightweight_snapshot = load_catalog_snapshot(tmp_path)
+        assert lightweight_snapshot.scan_report.indexed == 0
+        assert lightweight_snapshot.statistics["trial_count"] == 1
         window = DataStudioWindow(tmp_path, autostart_refresh=False)
         completions: list[bool] = []
         window.refresh_finished.connect(completions.append)

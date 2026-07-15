@@ -13,6 +13,7 @@ class WorkerEventType(StrEnum):
     PREVIEW = "preview"
     HEALTH = "health"
     METRIC = "metric"
+    ALERT = "alert"
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -25,4 +26,3 @@ class WorkerEvent(BaseModel):
     modality: str | None = None
     message: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
-

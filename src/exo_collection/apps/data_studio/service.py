@@ -53,7 +53,15 @@ def load_catalog_snapshot(data_root: str | Path) -> DataStudioSnapshot:
     try:
         catalog.migrate()
         repository = CatalogRepository(catalog)
-        report = repository.scan_dataset(root)
+        # Lightweight mode browses the existing SQLite summaries only. Even a
+        # Manifest-only full-tree walk is deferred so Data Studio does not add
+        # disk activity while Collector owns the dataset root.
+        activity_for_scan = activity_before or read_activity(root)
+        report = (
+            ScanReport()
+            if activity_for_scan is not None
+            else repository.scan_dataset(root)
+        )
         tree = repository.tree()
         statistics = repository.statistics()
     finally:
@@ -65,6 +73,5 @@ def load_catalog_snapshot(data_root: str | Path) -> DataStudioSnapshot:
         tree=tree,
         statistics=statistics,
         scan_report=report,
-        acquisition_activity=activity_after or activity_before,
+        acquisition_activity=activity_after or activity_for_scan,
     )
-
