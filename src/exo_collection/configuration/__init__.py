@@ -1,5 +1,6 @@
 """Validated local configuration contracts."""
 
+from .app_settings import SharedAppSettings, default_data_root
 from .device_profiles import (
     SimulatedDeviceProfile,
     SimulatedDeviceProfileDocument,
@@ -8,8 +9,10 @@ from .device_profiles import (
 )
 
 __all__ = [
+    "SharedAppSettings",
     "SimulatedDeviceProfile",
     "SimulatedDeviceProfileDocument",
+    "default_data_root",
     "default_simulated_device_profile_path",
     "load_simulated_device_profile",
 ]

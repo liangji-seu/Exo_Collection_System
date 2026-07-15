@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from exo_collection.configuration import SharedAppSettings
 from exo_collection.storage.activity import AcquisitionActivity, read_activity
 
 from .service import DataStudioSnapshot, load_catalog_snapshot
@@ -73,10 +74,12 @@ class DataStudioWindow(QMainWindow):
         self,
         data_root: str | Path,
         *,
+        settings: SharedAppSettings | None = None,
         autostart_refresh: bool = True,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        self._settings = settings if settings is not None else SharedAppSettings()
         self._data_root = Path(data_root).expanduser().resolve()
         self._thread_pool = QThreadPool(self)
         self._thread_pool.setMaxThreadCount(1)
@@ -219,7 +222,7 @@ class DataStudioWindow(QMainWindow):
     def set_data_root(self, data_root: str | Path, *, refresh: bool = True) -> None:
         if self.refresh_in_progress:
             raise RuntimeError("Cannot change data root while Catalog refresh is running")
-        self._data_root = Path(data_root).expanduser().resolve()
+        self._data_root = self._settings.set_data_root(data_root)
         self.data_root_edit.setText(str(self._data_root))
         self.tree_widget.clear()
         self._statistics = {}

@@ -7,10 +7,12 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
 
 from exo_collection.acquisition.messages import WorkerEvent, WorkerEventType
 from exo_collection.apps.collector import CollectorWindow
+from exo_collection.configuration import SharedAppSettings
 from exo_collection.orchestration.models import TrialRunRequest
 
 
@@ -82,6 +84,12 @@ def _window_with_fake(
 
     window = CollectorWindow(
         tmp_path,
+        settings=SharedAppSettings(
+            QSettings(
+                str(tmp_path / "ui-settings.ini"),
+                QSettings.Format.IniFormat,
+            )
+        ),
         worker_factory=factory,
         poll_interval_ms=5,
     )
@@ -234,4 +242,3 @@ def test_collector_shows_failed_worker_error_without_blocking_ui(tmp_path: Path)
     assert window.start_button.isEnabled()
     assert worker.closed
     window.close()
-

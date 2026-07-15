@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 
 from exo_collection.acquisition.messages import WorkerEvent, WorkerEventType
 from exo_collection.acquisition.workers import CollectorWorker
+from exo_collection.configuration import SharedAppSettings
 from exo_collection.orchestration.models import TrialRunRequest
 from exo_collection.protocols import load_default_protocol
 
@@ -78,6 +79,7 @@ class CollectorWindow(QMainWindow):
         self,
         data_root: str | Path,
         *,
+        settings: SharedAppSettings | None = None,
         worker_factory: WorkerFactory = CollectorWorker,
         poll_interval_ms: int = 50,
         parent: QWidget | None = None,
@@ -85,6 +87,7 @@ class CollectorWindow(QMainWindow):
         super().__init__(parent)
         if poll_interval_ms <= 0:
             raise ValueError("poll_interval_ms must be positive")
+        self._settings = settings if settings is not None else SharedAppSettings()
         self._worker_factory = worker_factory
         self._worker: WorkerHandle | None = None
         self._terminal_event_received = False
@@ -300,7 +303,12 @@ class CollectorWindow(QMainWindow):
             QFileDialog.Option.ShowDirsOnly,
         )
         if selected:
-            self.data_root_edit.setText(selected)
+            self.set_data_root(selected)
+
+    def set_data_root(self, data_root: str | Path) -> Path:
+        normalized = self._settings.set_data_root(data_root)
+        self.data_root_edit.setText(str(normalized))
+        return normalized
 
     def _refresh_identity_context(
         self, data_root: Path, project_name: str, subject_code: str, operator: str
@@ -327,7 +335,7 @@ class CollectorWindow(QMainWindow):
         data_root_text = self.data_root_edit.text().strip()
         if not data_root_text:
             raise ValueError("数据根目录不能为空")
-        data_root = Path(data_root_text).expanduser().resolve()
+        data_root = self.set_data_root(data_root_text)
         project_name = self.project_name_edit.text().strip()
         subject_code = self.subject_code_edit.text().strip()
         operator = self.operator_edit.text().strip()

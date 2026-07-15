@@ -8,24 +8,21 @@ import os
 import sys
 import time
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Sequence
 
-from PySide6.QtCore import QStandardPaths, QTimer
+from PySide6.QtCore import QSettings, QTimer
 from PySide6.QtWidgets import QApplication
 
 from exo_collection.acquisition.messages import WorkerEventType
 from exo_collection.acquisition.workers import CollectorWorker
 from exo_collection.apps.collector.window import CollectorWindow
+from exo_collection.configuration import SharedAppSettings
 from exo_collection.orchestration.models import TrialRunRequest
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="exo-collector")
-    parser.add_argument(
-        "--data-root",
-        type=Path,
-        help="Local Exo Collection dataset root (selectable again in the UI)",
-    )
     parser.add_argument(
         "--smoke-test",
         action="store_true",
@@ -43,11 +40,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Simulated duration for --collect-smoke-test",
     )
     return parser
-
-
-def _default_data_root() -> Path:
-    base = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppLocalDataLocation)
-    return Path(base or Path.home() / "ExoCollectionSystem") / "data"
 
 
 def _run_collection_smoke(data_root: Path, duration_s: float) -> int:
@@ -87,25 +79,31 @@ def _run_collection_smoke(data_root: Path, duration_s: float) -> int:
             worker.close()
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    multiprocessing.freeze_support()
-    arguments = list(argv) if argv is not None else sys.argv[1:]
-    options = _build_parser().parse_args(arguments)
-    data_root = options.data_root or _default_data_root()
-    if options.collect_smoke_test:
-        return _run_collection_smoke(data_root, options.duration)
-    if options.smoke_test:
-        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+def _temporary_settings(data_root: Path) -> SharedAppSettings:
+    return SharedAppSettings(
+        QSettings(
+            str(data_root / ".smoke-settings.ini"),
+            QSettings.Format.IniFormat,
+        )
+    )
 
+
+def _run_ui(
+    arguments: list[str],
+    data_root: Path,
+    settings: SharedAppSettings,
+    *,
+    smoke_test: bool,
+) -> int:
     QApplication.setOrganizationName("Exo Collection System")
     QApplication.setApplicationName("Exo Collector")
     app = QApplication.instance()
     if app is None:
         app = QApplication(["exo-collector", *arguments])
 
-    window = CollectorWindow(data_root)
+    window = CollectorWindow(data_root, settings=settings)
     window.show()
-    if options.smoke_test:
+    if smoke_test:
         QTimer.singleShot(50, app.quit)
     exit_code = int(app.exec())
     # QApplication.quit()/Windows session shutdown can end the Qt event loop
@@ -124,6 +122,37 @@ def main(argv: Sequence[str] | None = None) -> int:
         time.sleep(0.02)
     window.close()
     return exit_code
+
+
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    settings: SharedAppSettings | None = None,
+) -> int:
+    multiprocessing.freeze_support()
+    arguments = list(argv) if argv is not None else sys.argv[1:]
+    options = _build_parser().parse_args(arguments)
+    if options.collect_smoke_test:
+        with TemporaryDirectory(prefix="exo-collector-collect-smoke-") as directory:
+            return _run_collection_smoke(Path(directory), options.duration)
+    if options.smoke_test:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        with TemporaryDirectory(prefix="exo-collector-ui-smoke-") as directory:
+            data_root = Path(directory)
+            return _run_ui(
+                arguments,
+                data_root,
+                _temporary_settings(data_root),
+                smoke_test=True,
+            )
+
+    settings_store = settings if settings is not None else SharedAppSettings()
+    return _run_ui(
+        arguments,
+        settings_store.data_root,
+        settings_store,
+        smoke_test=False,
+    )
 
 
 if __name__ == "__main__":
