@@ -8,9 +8,21 @@ __pycache__/
 htmlcov/
 build/
 dist/
+release/
 *.spec.bak
 *.log
 *.sqlite3
 *.db
 runtime_data/
 
+# Windows filesystem guards
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+*.wixpdb
+*.wixobj
+*.msi
+*.tmp
+$RECYCLE.BIN/
+*.db-journal
+*.wal

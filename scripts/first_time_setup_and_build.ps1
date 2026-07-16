@@ -16,6 +16,26 @@ foreach ($RequiredFile in @($BuildScript, $PyProject)) {
     }
 }
 
+$GitCommand = Get-Command "git.exe" -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($null -eq $GitCommand) {
+    throw @"
+Git for Windows was not found. A default release build requires a verified,
+clean Git checkout so BUILD_MANIFEST.json can identify its exact source.
+
+Install Git for Windows, clone the repository, and run First_Time_Setup.cmd
+again from that clean checkout.
+"@
+}
+$InsideWorkTree = & $GitCommand.Source -C $ProjectRoot rev-parse --is-inside-work-tree 2>$null
+if ($LASTEXITCODE -ne 0 -or ([string]($InsideWorkTree | Select-Object -Last 1)).Trim() -ne "true") {
+    throw @"
+This directory is not a verified Git checkout:
+$ProjectRoot
+
+Clone the repository with Git and run First_Time_Setup.cmd from the clone.
+"@
+}
+
 $PyLauncherCommand = Get-Command "py.exe" -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($null -eq $PyLauncherCommand) {
     throw @"
@@ -25,7 +45,7 @@ Install 64-bit Python 3.11 from:
   https://www.python.org/downloads/windows/
 
 During installation, enable the Python launcher option. Then reopen the terminal
-and run First_Time_Setup_And_Build.cmd again. No project files were removed.
+and run First_Time_Setup.cmd again. No project files were removed.
 "@
 }
 $PyLauncher = $PyLauncherCommand.Source
@@ -91,7 +111,7 @@ if ($VenvVersion -ne "3.11") {
 The existing .venv uses Python $VenvVersion, but this project requires Python 3.11.
 
 This script will never delete or replace an existing .venv. Move or rename it
-manually after checking its contents, then run First_Time_Setup_And_Build.cmd again.
+manually after checking its contents, then run First_Time_Setup.cmd again.
 "@
 }
 Write-Host "Virtual environment Python version is $VenvVersion."
@@ -212,11 +232,14 @@ not clear, bypass, or otherwise change any proxy setting.
         Write-Warning "pip install failed, but every required dependency is importable and exo_collection points to the current $ProjectRoot\src. Reusing the complete existing environment and continuing; proxy settings were not changed."
     }
 
-    Write-Host "[3/3] Building the Windows applications..."
+    Write-Host "[3/3] Running tests, building both applications, smoke-checking, and creating the release bundle..."
     & $BuildScript
+    if ($LASTEXITCODE -ne 0) {
+        throw "Windows release build failed with exit code $LASTEXITCODE."
+    }
 }
 finally {
     Pop-Location
 }
 
-Write-Host "First-time setup and build completed successfully."
+Write-Host "First-time setup and Windows release bundle completed successfully."

@@ -28,18 +28,20 @@ if not exist "%SETUP_SCRIPT%" (
     exit /b 1
 )
 
+echo Exo Collection System - first-time Windows setup and release build
+echo.
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%SETUP_SCRIPT%"
 set "EXIT_CODE=%ERRORLEVEL%"
 echo.
 if not "%EXIT_CODE%"=="0" (
-    echo [ERROR] First-time setup or Windows packaging failed.
+    echo [ERROR] First-time setup or Windows release build failed.
     echo Review the message above, fix the reported issue, and run this script again.
     pause
     endlocal & exit /b %EXIT_CODE%
 )
 
-echo First-time setup and Windows release bundle completed successfully.
+echo Setup, tests, packaging, smoke checks, and bundle creation completed.
 echo The distributable ZIP is in the release folder.
-echo You can now run Run_ExoCollector.cmd or Run_ExoDataStudio.cmd.
+echo For daily use in this checkout, run Run_ExoCollector.cmd or Run_ExoDataStudio.cmd.
 pause
 endlocal & exit /b 0
