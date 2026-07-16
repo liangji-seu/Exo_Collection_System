@@ -38,6 +38,13 @@ def _writer(path: Path, *, mode: str = "x") -> BlockBinaryWriter:
     )
 
 
+def test_companion_paths_recognize_mixed_case_partial_suffix(tmp_path: Path) -> None:
+    metadata, index = companion_paths(tmp_path / "ultrasound.bin.PARTIAL")
+
+    assert metadata.name == "ultrasound.meta.json.partial"
+    assert index.name == "ultrasound.idx.partial"
+
+
 def test_header_is_fixed_explicit_little_endian_and_metadata_is_complete(
     tmp_path: Path,
 ) -> None:

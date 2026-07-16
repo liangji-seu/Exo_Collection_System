@@ -107,6 +107,21 @@ def normalize_relative_path(value: str) -> str:
         raise ValueError("relative_path must not be absolute")
     if any(part in {"", ".", ".."} for part in path.parts):
         raise ValueError("relative_path may not contain '.' or '..' components")
+    windows_reserved = {"CON", "PRN", "AUX", "NUL"} | {
+        f"{prefix}{number}"
+        for prefix in ("COM", "LPT")
+        for number in range(1, 10)
+    }
+    for part in path.parts:
+        if (
+            any(ord(character) < 32 for character in part)
+            or any(character in '<>:"|?*' for character in part)
+            or part.endswith((" ", "."))
+            or part.split(".", 1)[0].upper() in windows_reserved
+        ):
+            raise ValueError(
+                "relative_path contains a component that is unsafe on Windows"
+            )
     return path.as_posix()
 
 
@@ -147,6 +162,7 @@ class ArtifactKind(StrEnum):
 
 class Project(DomainModel):
     project_uuid: UUID = Field(default_factory=uuid4)
+    project_code: NonEmptyStr | None = None
     project_name: NonEmptyStr
     principal_investigator: NonEmptyStr
     protocol_version: NonEmptyStr

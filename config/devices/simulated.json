@@ -8,7 +8,7 @@
       "writer": "block_binary",
       "required": true,
       "clock_domain": "ultrasound_sim_clock",
-      "parameters": {"frame_rate_hz": 30, "frame_shape": [64, 64], "dtype": "uint16"}
+      "parameters": {"frame_rate_hz": 20, "channel_count": 4, "samples_per_channel": 1000, "dtype": "uint16"}
     },
     {
       "id": "imu_sim",
@@ -33,9 +33,9 @@
       "modality": "sync_pulse",
       "adapter": "exo_collection.adapters.simulated.SimulatedSyncPulseAdapter",
       "writer": "hdf5_signal",
-      "required": false,
+      "required": true,
       "clock_domain": "sync_pulse_sim_clock",
-      "parameters": {"sample_rate_hz": 1000, "pulse_interval_s": 1.0, "pulse_width_s": 0.02}
+      "parameters": {"sample_rate_hz": 1000, "pulse_interval_s": 1.0, "pulse_width_s": 0.02, "first_pulse_s": 0.25}
     }
   ]
 }

@@ -1,0 +1,1711 @@
+{
+  "$defs": {
+    "AbnormalTermination": {
+      "additionalProperties": false,
+      "properties": {
+        "occurred": {
+          "default": false,
+          "title": "Occurred",
+          "type": "boolean"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "error_code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Code"
+        },
+        "last_state": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TrialState"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "occurred_at_utc": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Occurred At Utc"
+        },
+        "related_event_uuids": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": "Related Event Uuids",
+          "type": "array"
+        },
+        "recovery_notes": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Recovery Notes"
+        }
+      },
+      "title": "AbnormalTermination",
+      "type": "object"
+    },
+    "AlignmentQuality": {
+      "enum": [
+        "GOOD",
+        "ACCEPTABLE",
+        "POOR",
+        "UNAVAILABLE"
+      ],
+      "title": "AlignmentQuality",
+      "type": "string"
+    },
+    "AlignmentRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "alignment_uuid": {
+          "format": "uuid",
+          "title": "Alignment Uuid",
+          "type": "string"
+        },
+        "source_artifact_uuid": {
+          "format": "uuid",
+          "title": "Source Artifact Uuid",
+          "type": "string"
+        },
+        "source_clock_domain": {
+          "minLength": 1,
+          "title": "Source Clock Domain",
+          "type": "string"
+        },
+        "pulse_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Pulse Ids",
+          "type": "array"
+        },
+        "mapping_uuid": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mapping Uuid"
+        },
+        "offset_only": {
+          "default": false,
+          "title": "Offset Only",
+          "type": "boolean"
+        },
+        "quality": {
+          "$ref": "#/$defs/AlignmentQuality",
+          "default": "UNAVAILABLE"
+        },
+        "match_error_rms_ns": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Match Error Rms Ns"
+        },
+        "algorithm_version": {
+          "minLength": 1,
+          "title": "Algorithm Version",
+          "type": "string"
+        },
+        "derived_artifact_uuid": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Derived Artifact Uuid"
+        },
+        "created_at_utc": {
+          "format": "date-time",
+          "title": "Created At Utc",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_artifact_uuid",
+        "source_clock_domain",
+        "algorithm_version"
+      ],
+      "title": "AlignmentRecord",
+      "type": "object"
+    },
+    "ArtifactKind": {
+      "enum": [
+        "raw",
+        "derived",
+        "report",
+        "external",
+        "log"
+      ],
+      "title": "ArtifactKind",
+      "type": "string"
+    },
+    "ClockAndAlignment": {
+      "additionalProperties": false,
+      "properties": {
+        "common_clock_domain": {
+          "const": "host_monotonic",
+          "default": "host_monotonic",
+          "title": "Common Clock Domain",
+          "type": "string"
+        },
+        "host_clock_api": {
+          "const": "time.perf_counter_ns",
+          "default": "time.perf_counter_ns",
+          "title": "Host Clock Api",
+          "type": "string"
+        },
+        "clock_domains": {
+          "items": {
+            "$ref": "#/$defs/ClockDomainManifest"
+          },
+          "title": "Clock Domains",
+          "type": "array"
+        },
+        "mappings": {
+          "items": {
+            "$ref": "#/$defs/ClockMapping"
+          },
+          "title": "Mappings",
+          "type": "array"
+        },
+        "raw_sync_pulse_artifact_uuids": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": "Raw Sync Pulse Artifact Uuids",
+          "type": "array"
+        },
+        "sync_event_artifact_uuids": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": "Sync Event Artifact Uuids",
+          "type": "array"
+        },
+        "alignments": {
+          "items": {
+            "$ref": "#/$defs/AlignmentRecord"
+          },
+          "title": "Alignments",
+          "type": "array"
+        }
+      },
+      "title": "ClockAndAlignment",
+      "type": "object"
+    },
+    "ClockDomainKind": {
+      "enum": [
+        "host_monotonic",
+        "device_tick",
+        "device_timestamp",
+        "external"
+      ],
+      "title": "ClockDomainKind",
+      "type": "string"
+    },
+    "ClockDomainManifest": {
+      "additionalProperties": false,
+      "properties": {
+        "clock_domain": {
+          "minLength": 1,
+          "title": "Clock Domain",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ClockDomainKind"
+        },
+        "unit": {
+          "minLength": 1,
+          "title": "Unit",
+          "type": "string"
+        },
+        "device_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Device Id"
+        },
+        "nominal_rate_hz": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Nominal Rate Hz"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        }
+      },
+      "required": [
+        "clock_domain",
+        "kind",
+        "unit"
+      ],
+      "title": "ClockDomainManifest",
+      "type": "object"
+    },
+    "ClockMapping": {
+      "additionalProperties": false,
+      "description": "Persisted ``t_target_ns = a * t_source + b`` clock model.",
+      "properties": {
+        "mapping_uuid": {
+          "format": "uuid",
+          "title": "Mapping Uuid",
+          "type": "string"
+        },
+        "source_clock_domain": {
+          "minLength": 1,
+          "title": "Source Clock Domain",
+          "type": "string"
+        },
+        "target_clock_domain": {
+          "default": "host_monotonic",
+          "minLength": 1,
+          "title": "Target Clock Domain",
+          "type": "string"
+        },
+        "scale_a": {
+          "title": "Scale A",
+          "type": "number"
+        },
+        "offset_b_ns": {
+          "title": "Offset B Ns",
+          "type": "number"
+        },
+        "valid_source_start": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Valid Source Start"
+        },
+        "valid_source_end": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Valid Source End"
+        },
+        "anchor_count": {
+          "minimum": 1,
+          "title": "Anchor Count",
+          "type": "integer"
+        },
+        "residuals": {
+          "$ref": "#/$defs/ResidualStatistics"
+        },
+        "algorithm_version": {
+          "minLength": 1,
+          "title": "Algorithm Version",
+          "type": "string"
+        },
+        "created_at_utc": {
+          "format": "date-time",
+          "title": "Created At Utc",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_clock_domain",
+        "scale_a",
+        "offset_b_ns",
+        "anchor_count",
+        "residuals",
+        "algorithm_version"
+      ],
+      "title": "ClockMapping",
+      "type": "object"
+    },
+    "Condition": {
+      "additionalProperties": false,
+      "description": "Frozen snapshot of the condition selected before recording starts.\n\nCondition and signal quality are intentionally separate concepts.  A Trial\nembeds this snapshot; quality is recorded in ``Trial.quality_grade`` and the\nManifest quality summary.",
+      "properties": {
+        "condition_code": {
+          "minLength": 1,
+          "title": "Condition Code",
+          "type": "string"
+        },
+        "condition_name": {
+          "minLength": 1,
+          "title": "Condition Name",
+          "type": "string"
+        },
+        "condition_level": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Condition Level"
+        },
+        "levels": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "title": "Levels",
+          "type": "object"
+        },
+        "parameters": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Parameters",
+          "type": "object"
+        },
+        "repeat_index": {
+          "minimum": 1,
+          "title": "Repeat Index",
+          "type": "integer"
+        },
+        "protocol_version": {
+          "minLength": 1,
+          "title": "Protocol Version",
+          "type": "string"
+        },
+        "grading_rule_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Grading Rule Version"
+        },
+        "selected_at_utc": {
+          "format": "date-time",
+          "title": "Selected At Utc",
+          "type": "string"
+        }
+      },
+      "required": [
+        "condition_code",
+        "condition_name",
+        "repeat_index",
+        "protocol_version"
+      ],
+      "title": "Condition",
+      "type": "object"
+    },
+    "ConfigurationSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "config_version": {
+          "minLength": 1,
+          "title": "Config Version",
+          "type": "string"
+        },
+        "protocol_version": {
+          "minLength": 1,
+          "title": "Protocol Version",
+          "type": "string"
+        },
+        "condition_definition_version": {
+          "minLength": 1,
+          "title": "Condition Definition Version",
+          "type": "string"
+        },
+        "content_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Sha256",
+          "type": "string"
+        },
+        "snapshot_relative_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Snapshot Relative Path"
+        },
+        "source_files": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Source Files",
+          "type": "array"
+        }
+      },
+      "required": [
+        "config_version",
+        "protocol_version",
+        "condition_definition_version",
+        "content_sha256"
+      ],
+      "title": "ConfigurationSnapshot",
+      "type": "object"
+    },
+    "DeviceProvenance": {
+      "additionalProperties": false,
+      "properties": {
+        "device_id": {
+          "minLength": 1,
+          "title": "Device Id",
+          "type": "string"
+        },
+        "modality": {
+          "minLength": 1,
+          "title": "Modality",
+          "type": "string"
+        },
+        "adapter_type": {
+          "minLength": 1,
+          "title": "Adapter Type",
+          "type": "string"
+        },
+        "manufacturer": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Manufacturer"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "serial_number": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Serial Number"
+        },
+        "firmware_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Firmware Version"
+        },
+        "driver_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Driver Version"
+        },
+        "calibration_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Calibration Version"
+        },
+        "calibration_artifact_uuid": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Calibration Artifact Uuid"
+        },
+        "metadata": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Metadata",
+          "type": "object"
+        }
+      },
+      "required": [
+        "device_id",
+        "modality",
+        "adapter_type"
+      ],
+      "title": "DeviceProvenance",
+      "type": "object"
+    },
+    "ExternalArtifactReference": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_uuid": {
+          "format": "uuid",
+          "title": "Artifact Uuid",
+          "type": "string"
+        },
+        "source_system": {
+          "minLength": 1,
+          "title": "Source System",
+          "type": "string"
+        },
+        "external_clock_domain": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "External Clock Domain"
+        },
+        "original_filename": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Original Filename"
+        },
+        "imported_at_utc": {
+          "format": "date-time",
+          "title": "Imported At Utc",
+          "type": "string"
+        },
+        "alignment_uuid": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Alignment Uuid"
+        }
+      },
+      "required": [
+        "artifact_uuid",
+        "source_system",
+        "imported_at_utc"
+      ],
+      "title": "ExternalArtifactReference",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "ManifestArtifact": {
+      "additionalProperties": false,
+      "description": "An Artifact after Writer closure and integrity calculation.",
+      "properties": {
+        "artifact_uuid": {
+          "format": "uuid",
+          "title": "Artifact Uuid",
+          "type": "string"
+        },
+        "trial_uuid": {
+          "format": "uuid",
+          "title": "Trial Uuid",
+          "type": "string"
+        },
+        "modality": {
+          "minLength": 1,
+          "title": "Modality",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ArtifactKind"
+        },
+        "media_type": {
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "relative_path": {
+          "minLength": 1,
+          "title": "Relative Path",
+          "type": "string"
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "created_at_utc": {
+          "format": "date-time",
+          "title": "Created At Utc",
+          "type": "string"
+        },
+        "finalized_at_utc": {
+          "format": "date-time",
+          "title": "Finalized At Utc",
+          "type": "string"
+        },
+        "source_artifact_uuids": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": "Source Artifact Uuids",
+          "type": "array"
+        },
+        "immutable": {
+          "default": true,
+          "title": "Immutable",
+          "type": "boolean"
+        },
+        "metadata": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Metadata",
+          "type": "object"
+        }
+      },
+      "required": [
+        "trial_uuid",
+        "modality",
+        "kind",
+        "media_type",
+        "relative_path",
+        "size_bytes",
+        "sha256",
+        "finalized_at_utc"
+      ],
+      "title": "ManifestArtifact",
+      "type": "object"
+    },
+    "ModalityManifest": {
+      "additionalProperties": false,
+      "properties": {
+        "modality": {
+          "minLength": 1,
+          "title": "Modality",
+          "type": "string"
+        },
+        "required": {
+          "default": true,
+          "title": "Required",
+          "type": "boolean"
+        },
+        "adapter_type": {
+          "minLength": 1,
+          "title": "Adapter Type",
+          "type": "string"
+        },
+        "writer_type": {
+          "minLength": 1,
+          "title": "Writer Type",
+          "type": "string"
+        },
+        "clock_domain": {
+          "minLength": 1,
+          "title": "Clock Domain",
+          "type": "string"
+        },
+        "device_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Device Ids",
+          "type": "array"
+        },
+        "artifact_uuids": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": "Artifact Uuids",
+          "type": "array"
+        },
+        "channels": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Channels",
+          "type": "array"
+        },
+        "units": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Units",
+          "type": "array"
+        },
+        "sample_count": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sample Count"
+        },
+        "frame_count": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Frame Count"
+        },
+        "first_sample_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "First Sample Index"
+        },
+        "last_sample_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Last Sample Index"
+        },
+        "sequence_gap_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Sequence Gap Count",
+          "type": "integer"
+        },
+        "nominal_sample_rate_hz": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Nominal Sample Rate Hz"
+        },
+        "actual_sample_rate_hz": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actual Sample Rate Hz"
+        },
+        "metadata": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Metadata",
+          "type": "object"
+        }
+      },
+      "required": [
+        "modality",
+        "adapter_type",
+        "writer_type",
+        "clock_domain"
+      ],
+      "title": "ModalityManifest",
+      "type": "object"
+    },
+    "QualityGrade": {
+      "enum": [
+        "A",
+        "B",
+        "C",
+        "INVALID"
+      ],
+      "title": "QualityGrade",
+      "type": "string"
+    },
+    "QualityIssue": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "minLength": 1,
+          "title": "Code",
+          "type": "string"
+        },
+        "severity": {
+          "$ref": "#/$defs/QualityIssueSeverity"
+        },
+        "message": {
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "modality": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Modality"
+        },
+        "artifact_uuid": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Artifact Uuid"
+        },
+        "metric": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Metric"
+        },
+        "observed_value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonValue"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "threshold": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonValue"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "code",
+        "severity",
+        "message"
+      ],
+      "title": "QualityIssue",
+      "type": "object"
+    },
+    "QualityIssueSeverity": {
+      "enum": [
+        "INFO",
+        "WARNING",
+        "ERROR"
+      ],
+      "title": "QualityIssueSeverity",
+      "type": "string"
+    },
+    "QualitySummary": {
+      "additionalProperties": false,
+      "description": "Computed result plus a non-destructive optional human review.",
+      "properties": {
+        "computed_grade": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QualityGrade"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "required_artifacts_complete": {
+          "default": false,
+          "title": "Required Artifacts Complete",
+          "type": "boolean"
+        },
+        "integrity_checks_passed": {
+          "default": false,
+          "title": "Integrity Checks Passed",
+          "type": "boolean"
+        },
+        "algorithm_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Algorithm Version"
+        },
+        "assessed_at_utc": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Assessed At Utc"
+        },
+        "issues": {
+          "items": {
+            "$ref": "#/$defs/QualityIssue"
+          },
+          "title": "Issues",
+          "type": "array"
+        },
+        "metric_count": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Metric Count",
+          "type": "integer"
+        },
+        "report_artifact_uuid": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Report Artifact Uuid"
+        },
+        "reviewed_grade": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QualityGrade"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "reviewed_by": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reviewed By"
+        },
+        "reviewed_at_utc": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reviewed At Utc"
+        },
+        "review_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Review Reason"
+        }
+      },
+      "title": "QualitySummary",
+      "type": "object"
+    },
+    "ResidualStatistics": {
+      "additionalProperties": false,
+      "properties": {
+        "count": {
+          "minimum": 0,
+          "title": "Count",
+          "type": "integer"
+        },
+        "mean_ns": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mean Ns"
+        },
+        "rms_ns": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rms Ns"
+        },
+        "standard_deviation_ns": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Standard Deviation Ns"
+        },
+        "p95_absolute_ns": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "P95 Absolute Ns"
+        },
+        "max_absolute_ns": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Absolute Ns"
+        }
+      },
+      "required": [
+        "count"
+      ],
+      "title": "ResidualStatistics",
+      "type": "object"
+    },
+    "SoftwareProvenance": {
+      "additionalProperties": false,
+      "properties": {
+        "application": {
+          "minLength": 1,
+          "title": "Application",
+          "type": "string"
+        },
+        "application_version": {
+          "minLength": 1,
+          "title": "Application Version",
+          "type": "string"
+        },
+        "core_version": {
+          "minLength": 1,
+          "title": "Core Version",
+          "type": "string"
+        },
+        "git_commit": {
+          "minLength": 1,
+          "title": "Git Commit",
+          "type": "string"
+        },
+        "python_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Python Version"
+        },
+        "build_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Build Id"
+        }
+      },
+      "required": [
+        "application",
+        "application_version",
+        "core_version",
+        "git_commit"
+      ],
+      "title": "SoftwareProvenance",
+      "type": "object"
+    },
+    "TrialState": {
+      "description": "Persistent states for a single atomic Trial.",
+      "enum": [
+        "IDLE",
+        "PREPARING",
+        "READY",
+        "WAITING_SYNC",
+        "RECORDING",
+        "STOPPING",
+        "FINALIZING",
+        "FINALIZED",
+        "FAILED",
+        "ABORTED",
+        "RECOVERABLE"
+      ],
+      "title": "TrialState",
+      "type": "string"
+    },
+    "TrialTiming": {
+      "additionalProperties": false,
+      "description": "Both audit time and the non-jumping common acquisition time.",
+      "properties": {
+        "started_at_utc": {
+          "format": "date-time",
+          "title": "Started At Utc",
+          "type": "string"
+        },
+        "stopped_at_utc": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stopped At Utc"
+        },
+        "finalized_at_utc": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Finalized At Utc"
+        },
+        "start_host_monotonic_ns": {
+          "minimum": 0,
+          "title": "Start Host Monotonic Ns",
+          "type": "integer"
+        },
+        "stop_host_monotonic_ns": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stop Host Monotonic Ns"
+        },
+        "finalize_host_monotonic_ns": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Finalize Host Monotonic Ns"
+        }
+      },
+      "required": [
+        "started_at_utc",
+        "start_host_monotonic_ns"
+      ],
+      "title": "TrialTiming",
+      "type": "object"
+    },
+    "UploadRecordReference": {
+      "additionalProperties": false,
+      "description": "Reference only: credentials and passwords never belong in a Manifest.",
+      "properties": {
+        "transfer_batch_uuid": {
+          "format": "uuid",
+          "title": "Transfer Batch Uuid",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/UploadState"
+        },
+        "catalog_record_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Catalog Record Id"
+        },
+        "remote_profile_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Remote Profile Name"
+        },
+        "remote_relative_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Remote Relative Path"
+        },
+        "created_at_utc": {
+          "format": "date-time",
+          "title": "Created At Utc",
+          "type": "string"
+        },
+        "verified_at_utc": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Verified At Utc"
+        }
+      },
+      "required": [
+        "transfer_batch_uuid",
+        "status",
+        "created_at_utc"
+      ],
+      "title": "UploadRecordReference",
+      "type": "object"
+    },
+    "UploadState": {
+      "enum": [
+        "NOT_SELECTED",
+        "QUEUED",
+        "TRANSFERRING",
+        "TRANSFERRED",
+        "VERIFYING",
+        "VERIFIED",
+        "FAILED"
+      ],
+      "title": "UploadState",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "schema_version": {
+            "const": "1.1.0"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "project_code": {
+            "enum": [
+              "F",
+              "T"
+            ]
+          },
+          "subject_code": {
+            "pattern": "^[0-9]{3}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_code",
+          "subject_code"
+        ]
+      }
+    }
+  ],
+  "description": "Schema for a single UUID-linked Trial package.",
+  "properties": {
+    "schema_version": {
+      "default": "1.1.0",
+      "enum": [
+        "1.0.0",
+        "1.1.0"
+      ],
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "manifest_uuid": {
+      "format": "uuid",
+      "title": "Manifest Uuid",
+      "type": "string"
+    },
+    "project_uuid": {
+      "format": "uuid",
+      "title": "Project Uuid",
+      "type": "string"
+    },
+    "project_code": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Project Code"
+    },
+    "project_name": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Project Name"
+    },
+    "subject_uuid": {
+      "format": "uuid",
+      "title": "Subject Uuid",
+      "type": "string"
+    },
+    "subject_code": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Subject Code"
+    },
+    "session_uuid": {
+      "format": "uuid",
+      "title": "Session Uuid",
+      "type": "string"
+    },
+    "trial_uuid": {
+      "format": "uuid",
+      "title": "Trial Uuid",
+      "type": "string"
+    },
+    "state": {
+      "$ref": "#/$defs/TrialState"
+    },
+    "condition": {
+      "$ref": "#/$defs/Condition"
+    },
+    "timing": {
+      "$ref": "#/$defs/TrialTiming"
+    },
+    "software": {
+      "$ref": "#/$defs/SoftwareProvenance"
+    },
+    "configuration": {
+      "$ref": "#/$defs/ConfigurationSnapshot"
+    },
+    "devices": {
+      "items": {
+        "$ref": "#/$defs/DeviceProvenance"
+      },
+      "title": "Devices",
+      "type": "array"
+    },
+    "modalities": {
+      "items": {
+        "$ref": "#/$defs/ModalityManifest"
+      },
+      "title": "Modalities",
+      "type": "array"
+    },
+    "artifacts": {
+      "items": {
+        "$ref": "#/$defs/ManifestArtifact"
+      },
+      "title": "Artifacts",
+      "type": "array"
+    },
+    "clock_and_alignment": {
+      "$ref": "#/$defs/ClockAndAlignment"
+    },
+    "quality": {
+      "$ref": "#/$defs/QualitySummary"
+    },
+    "abnormal_termination": {
+      "$ref": "#/$defs/AbnormalTermination"
+    },
+    "external_artifacts": {
+      "items": {
+        "$ref": "#/$defs/ExternalArtifactReference"
+      },
+      "title": "External Artifacts",
+      "type": "array"
+    },
+    "upload_records": {
+      "items": {
+        "$ref": "#/$defs/UploadRecordReference"
+      },
+      "title": "Upload Records",
+      "type": "array"
+    },
+    "created_at_utc": {
+      "format": "date-time",
+      "title": "Created At Utc",
+      "type": "string"
+    }
+  },
+  "required": [
+    "project_uuid",
+    "subject_uuid",
+    "session_uuid",
+    "trial_uuid",
+    "state",
+    "condition",
+    "timing",
+    "software",
+    "configuration"
+  ],
+  "title": "Exo Collection Trial Manifest 1.1.0",
+  "type": "object",
+  "$id": "https://exo-collection.local/schemas/manifest/1.1.0.json"
+}

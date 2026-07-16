@@ -37,6 +37,7 @@ class Hdf5SignalWriter:
         channels: Sequence[str],
         units: Sequence[str],
         device_metadata: Mapping[str, Any] | str,
+        trial_metadata: Mapping[str, Any] | None = None,
         clock_model: Mapping[str, Any] | None = None,
         dtype: str | np.dtype[Any] = np.float32,
         sample_shape: Sequence[int] | None = None,
@@ -90,6 +91,7 @@ class Hdf5SignalWriter:
             if isinstance(device_metadata, str)
             else dict(device_metadata)
         )
+        self._trial_metadata = dict(trial_metadata or {})
         self._clock_model = dict(clock_model or {})
 
         self._file = h5py.File(self.path, "w", libver="latest")
@@ -189,6 +191,9 @@ class Hdf5SignalWriter:
         )
         metadata_group.create_dataset(
             "device", data=self._json(self._device_metadata), dtype=string_dtype
+        )
+        metadata_group.create_dataset(
+            "trial", data=self._json(self._trial_metadata), dtype=string_dtype
         )
         metadata_group.create_dataset(
             "clock_model", data=self._json(self._clock_model), dtype=string_dtype

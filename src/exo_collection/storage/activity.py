@@ -47,6 +47,39 @@ def _pid_is_alive(pid: int) -> bool:
         return False
     if pid == os.getpid():
         return True
+    if os.name == "nt":
+        # ``os.kill(pid, 0)`` is not a harmless existence probe on Windows.
+        # CPython routes non-console signals (including 0) through
+        # TerminateProcess, which can kill the active Collector we are trying
+        # to protect. Query a process handle without termination rights.
+        import ctypes
+        from ctypes import wintypes
+
+        process_query_limited_information = 0x1000
+        still_active = 259
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        open_process = kernel32.OpenProcess
+        open_process.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        open_process.restype = wintypes.HANDLE
+        get_exit_code = kernel32.GetExitCodeProcess
+        get_exit_code.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        get_exit_code.restype = wintypes.BOOL
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = (wintypes.HANDLE,)
+        close_handle.restype = wintypes.BOOL
+
+        handle = open_process(process_query_limited_information, False, pid)
+        if not handle:
+            # ERROR_INVALID_PARAMETER means no such PID. Access denied and
+            # unknown failures are treated conservatively as alive.
+            return ctypes.get_last_error() != 87
+        try:
+            exit_code = wintypes.DWORD()
+            if not get_exit_code(handle, ctypes.byref(exit_code)):
+                return True
+            return exit_code.value == still_active
+        finally:
+            close_handle(handle)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -249,13 +282,43 @@ class AcquisitionLock:
 
 
 def read_activity(dataset_root: str | Path, stale_after_s: float = 5.0) -> AcquisitionActivity | None:
+    if stale_after_s <= 0:
+        raise ValueError("stale_after_s must be positive")
     path = Path(dataset_root).expanduser().resolve() / LOCK_NAME
     try:
         activity = _decode_activity(path)
     except (FileNotFoundError, json.JSONDecodeError, KeyError, TypeError, ValueError, OSError):
-        return None
+        # Fail closed while a recently-written lock document is temporarily
+        # unreadable (for example during an interrupted heartbeat replace).
+        # Treating that situation as idle could let Data Studio start a large
+        # checksum, recovery mutation or upload while Collector still owns the
+        # dataset. An old malformed file is ignored after the normal lease
+        # timeout, so a damaged lock cannot block the system forever.
+        try:
+            modified_utc_ns = path.stat().st_mtime_ns
+        except OSError:
+            return None
+        age_ns = max(0, time.time_ns() - modified_utc_ns)
+        if age_ns > int(stale_after_s * 1_000_000_000):
+            return None
+        return AcquisitionActivity(
+            pid=0,
+            hostname="unreadable-lock",
+            trial_uuid=None,
+            heartbeat_monotonic_ns=time.perf_counter_ns(),
+            heartbeat_utc_ns=modified_utc_ns,
+            owner_token="unreadable-lock",
+        )
     age_ns = _activity_age_ns(activity)
-    return activity if age_ns <= int(stale_after_s * 1_000_000_000) else None
+    if age_ns <= int(stale_after_s * 1_000_000_000):
+        return activity
+    # A heartbeat can be delayed by a temporarily saturated disk or scheduler
+    # while the Collector process is still actively writing raw data.  On the
+    # local host, process liveness is stronger evidence than lease age; keep
+    # Data Studio in lightweight mode until that owner actually exits.
+    if activity.hostname == socket.gethostname() and _pid_is_alive(activity.pid):
+        return activity
+    return None
 
 
 __all__ = ["AcquisitionActivity", "AcquisitionLock", "LOCK_NAME", "read_activity"]

@@ -2,6 +2,7 @@
 
 from .manifest import (
     MANIFEST_SCHEMA_VERSION,
+    SUPPORTED_MANIFEST_SCHEMA_VERSIONS,
     AbnormalTermination,
     AlignmentQuality,
     AlignmentRecord,
@@ -31,6 +32,7 @@ from .manifest import (
 
 __all__ = [
     "MANIFEST_SCHEMA_VERSION",
+    "SUPPORTED_MANIFEST_SCHEMA_VERSIONS",
     "AbnormalTermination",
     "AlignmentQuality",
     "AlignmentRecord",

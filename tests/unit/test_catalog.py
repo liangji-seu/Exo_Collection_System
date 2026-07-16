@@ -17,6 +17,7 @@ from exo_collection.catalog import Catalog
 from exo_collection.catalog import repositories as catalog_repositories
 from exo_collection.catalog.models import (
     ArtifactRow,
+    ConditionRow,
     ProjectRow,
     SessionRow,
     SubjectRow,
@@ -120,7 +121,10 @@ def make_manifest() -> TrialManifest:
     trial_uuid = uuid4()
     return TrialManifest(
         project_uuid=uuid4(),
+        project_code="F",
+        project_name="Formal",
         subject_uuid=uuid4(),
+        subject_code="001",
         session_uuid=uuid4(),
         trial_uuid=trial_uuid,
         state=TrialState.FINALIZED,
@@ -221,6 +225,112 @@ def test_manifest_scan_rebuilds_tree_and_statistics(tmp_path) -> None:
     assert statistics["finalized_count"] == 1
     assert statistics["total_duration_s"] == 4.0
     assert statistics["by_condition"]["WALK_LEVEL"]["trial_count"] == 1
+
+
+@pytest.mark.parametrize(
+    "package_suffix",
+    [".RECORDING", ".PaRtIaL", ".AbOrTeD", ".BUILDING"],
+)
+def test_catalog_direct_index_rejects_mixed_case_unpublished_packages(
+    tmp_path,
+    package_suffix: str,
+) -> None:
+    manifest = make_manifest()
+    path = tmp_path / f"{manifest.trial_uuid}{package_suffix}" / "manifest.json"
+
+    with Catalog(tmp_path / "catalog.sqlite3") as catalog:
+        repository = CatalogRepository(catalog)
+        with pytest.raises(ValueError, match="unpublished"):
+            repository.index_manifest(manifest, path)
+
+
+def test_catalog_rejects_trial_uuid_identity_conflict_without_changes(
+    tmp_path,
+) -> None:
+    manifest = make_manifest()
+    original_path = tmp_path / "original" / "manifest.json"
+    conflicting_path = tmp_path / "conflicting" / "manifest.json"
+
+    with Catalog(tmp_path / "catalog.sqlite3") as catalog:
+        repository = CatalogRepository(catalog)
+        repository.index_manifest(manifest, original_path)
+
+        with catalog.session() as db:
+            original_row = db.get(TrialRow, str(manifest.trial_uuid))
+            assert original_row is not None
+            original_identity = {
+                "project_uuid": original_row.project_uuid,
+                "subject_uuid": original_row.subject_uuid,
+                "session_uuid": original_row.session_uuid,
+                "condition_uuid": original_row.condition_uuid,
+                "condition_code": original_row.condition_code,
+                "repeat_index": original_row.repeat_index,
+                "manifest_path": original_row.manifest_path,
+                "updated_utc": original_row.updated_utc,
+            }
+
+        conflicting_payload = manifest.model_dump(mode="python")
+        conflicting_payload.update(
+            project_uuid=uuid4(),
+            project_code="T",
+            project_name="Test",
+            subject_uuid=uuid4(),
+            subject_code="002",
+            session_uuid=uuid4(),
+        )
+        conflicting_payload["condition"]["condition_code"] = "STAIR_UP"
+        conflicting_payload["condition"]["condition_name"] = "Stair ascent"
+        conflicting_payload["condition"]["repeat_index"] = 2
+        conflicting = TrialManifest.model_validate(conflicting_payload)
+
+        with pytest.raises(ValueError, match="immutable identity differs"):
+            repository.index_manifest(conflicting, conflicting_path)
+
+        with catalog.session() as db:
+            unchanged_row = db.get(TrialRow, str(manifest.trial_uuid))
+            assert unchanged_row is not None
+            assert {
+                "project_uuid": unchanged_row.project_uuid,
+                "subject_uuid": unchanged_row.subject_uuid,
+                "session_uuid": unchanged_row.session_uuid,
+                "condition_uuid": unchanged_row.condition_uuid,
+                "condition_code": unchanged_row.condition_code,
+                "repeat_index": unchanged_row.repeat_index,
+                "manifest_path": unchanged_row.manifest_path,
+                "updated_utc": unchanged_row.updated_utc,
+            } == original_identity
+            assert db.query(ProjectRow).count() == 1
+            assert db.query(SubjectRow).count() == 1
+            assert db.query(SessionRow).count() == 1
+            assert db.query(ConditionRow).count() == 1
+            assert db.query(TrialRow).count() == 1
+            assert db.query(ArtifactRow).count() == len(manifest.artifacts)
+
+
+def test_manifest_scan_rejects_a_valid_manifest_copied_to_the_wrong_trial_path(
+    tmp_path,
+) -> None:
+    manifest = make_manifest()
+    wrong = (
+        tmp_path
+        / str(manifest.project_uuid)
+        / str(manifest.subject_uuid)
+        / str(manifest.session_uuid)
+        / "trials"
+        / str(uuid4())
+        / "manifest.json"
+    )
+    save_manifest(wrong, manifest)
+
+    with Catalog(tmp_path / "catalog.sqlite3") as catalog:
+        repository = CatalogRepository(catalog)
+        report = repository.scan_dataset(tmp_path)
+        statistics = repository.statistics()
+
+    assert report.indexed == 0
+    assert str(wrong) in report.failures
+    assert "trial_uuid" in report.failures[str(wrong)]
+    assert statistics["trial_count"] == 0
 
 
 def test_register_hierarchy_preserves_creation_and_session_start_times(tmp_path) -> None:

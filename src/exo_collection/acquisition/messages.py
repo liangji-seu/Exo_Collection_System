@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class WorkerEventType(StrEnum):
     STATE = "state"
+    SYNC = "sync"
     PREVIEW = "preview"
     HEALTH = "health"
     METRIC = "metric"

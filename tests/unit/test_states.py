@@ -18,6 +18,7 @@ def test_happy_path_reaches_finalized_and_records_audit_history() -> None:
     path = [
         TrialState.PREPARING,
         TrialState.READY,
+        TrialState.WAITING_SYNC,
         TrialState.RECORDING,
         TrialState.STOPPING,
         TrialState.FINALIZING,
@@ -81,6 +82,13 @@ def test_start_and_stop_failures_reach_legal_failure_states() -> None:
     start_failed.transition(TrialState.FAILED, reason="device failed to start")
     assert start_failed.state is TrialState.FAILED
     assert start_failed.is_terminal
+
+    missing_trigger = TrialStateMachine(TrialState.WAITING_SYNC)
+    missing_trigger.transition(
+        TrialState.RECOVERABLE,
+        reason="stopped before synchronization trigger",
+    )
+    assert missing_trigger.state is TrialState.RECOVERABLE
 
     stop_interrupted = TrialStateMachine(TrialState.STOPPING)
     stop_interrupted.transition(

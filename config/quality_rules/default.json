@@ -1,7 +1,39 @@
 {
   "schema_version": "1.0.0",
-  "required_modalities": ["ultrasound", "imu", "encoder"],
-  "maximum_sequence_gaps": 0,
-  "minimum_sync_pulses": 1
+  "algorithm_version": "exo-quality-rules-1.0.0",
+  "required_modalities": ["ultrasound", "imu", "encoder", "sync_pulse"],
+  "structural": {
+    "minimum_formal_duration_s": 0.000001,
+    "maximum_sequence_gaps": 0,
+    "maximum_dropped_batches": 0
+  },
+  "sync": {
+    "minimum_rising_edges": 1,
+    "minimum_complete_pulses": 1,
+    "minimum_mapping_anchors": 2,
+    "pulse_width_ns": {"minimum": 1000000, "maximum": null},
+    "pulse_interval_ns": {"minimum": null, "maximum": null},
+    "maximum_mapping_rms_residual_ns": null
+  },
+  "ultrasound": {
+    "all_zero_fraction_warning": 1.0,
+    "saturation_fraction_warning": null,
+    "calibration_reference": null
+  },
+  "imu": {
+    "constant_tolerance": 0.0,
+    "calibrated_minimum": null,
+    "calibrated_maximum": null,
+    "maximum_absolute_jump": null,
+    "calibration_reference": null,
+    "calibrated_violation_severity": "WARNING"
+  },
+  "encoder": {
+    "constant_tolerance": 0.0,
+    "calibrated_minimum": null,
+    "calibrated_maximum": null,
+    "maximum_absolute_jump": null,
+    "calibration_reference": null,
+    "calibrated_violation_severity": "WARNING"
+  }
 }
-

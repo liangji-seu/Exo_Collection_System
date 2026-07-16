@@ -95,6 +95,7 @@ class SimulatedSyncPulseAdapter(QueuedSimulatedAdapter[SimulatedSyncPulseConfig]
                 "simulated": True,
                 "pulse_interval_s": cfg.pulse_interval_s,
                 "pulse_width_s": cfg.pulse_width_s,
+                "first_pulse_s": cfg.first_pulse_s,
                 "high_threshold": cfg.high_threshold,
                 "low_threshold": cfg.low_threshold,
                 "samples_per_batch": cfg.samples_per_batch,

@@ -17,7 +17,10 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from exo_collection.domain.models import Project, Session as DomainSession, Subject
-from exo_collection.storage.layout import iter_finalized_manifest_paths
+from exo_collection.storage.layout import (
+    iter_finalized_manifest_paths,
+    path_has_unpublished_component,
+)
 from exo_collection.storage.manifest import TrialManifest, load_manifest
 
 from .db import Catalog
@@ -64,6 +67,42 @@ def _is_sqlite_lock_error(exc: OperationalError) -> bool:
     return "locked" in message and ("database" in message or "table" in message)
 
 
+def _validate_scanned_manifest_location(
+    path: Path,
+    manifest: TrialManifest,
+) -> None:
+    """Reject copied/misplaced Manifests before they can replace Catalog paths.
+
+    UUIDs in the Manifest remain authoritative.  Human F/T and subject-code
+    folders are accepted only when they agree with those same Manifest labels;
+    the legacy UUID directory layout remains readable.
+    """
+
+    if path.name != "manifest.json" or len(path.parents) < 6:
+        raise ValueError("Manifest is not in a canonical Trial directory")
+    trial_directory = path.parent
+    trials_directory = trial_directory.parent
+    session_directory = trials_directory.parent
+    subject_directory = session_directory.parent
+    project_directory = subject_directory.parent
+    if trials_directory.name.casefold() != "trials":
+        raise ValueError("Manifest parent hierarchy is missing the trials directory")
+    if trial_directory.name.casefold() != str(manifest.trial_uuid).casefold():
+        raise ValueError("Trial directory does not match Manifest trial_uuid")
+    if session_directory.name.casefold() != str(manifest.session_uuid).casefold():
+        raise ValueError("Session directory does not match Manifest session_uuid")
+    accepted_subjects = {str(manifest.subject_uuid).casefold()}
+    if manifest.subject_code:
+        accepted_subjects.add(manifest.subject_code.casefold())
+    if subject_directory.name.casefold() not in accepted_subjects:
+        raise ValueError("Subject directory does not match Manifest identity")
+    accepted_projects = {str(manifest.project_uuid).casefold()}
+    if manifest.project_code:
+        accepted_projects.add(manifest.project_code.casefold())
+    if project_directory.name.casefold() not in accepted_projects:
+        raise ValueError("Project directory does not match Manifest identity")
+
+
 class CatalogRepository:
     def __init__(self, catalog: Catalog) -> None:
         self.catalog = catalog
@@ -89,7 +128,10 @@ class CatalogRepository:
             raise ValueError("Subject does not belong to Project")
         if visit.project_uuid != project.project_uuid or visit.subject_uuid != subject.subject_uuid:
             raise ValueError("Session hierarchy UUIDs are inconsistent")
-        project_code = f"{project.project_name}-{str(project.project_uuid)[:8]}"
+        project_code = (
+            project.project_code
+            or f"{project.project_name}-{str(project.project_uuid)[:8]}"
+        )
         project_id = str(project.project_uuid)
         subject_id = str(subject.subject_uuid)
         session_id = str(visit.session_uuid)
@@ -163,8 +205,8 @@ class CatalogRepository:
         """Upsert one immutable Manifest and its Artifact summaries."""
 
         path = Path(manifest_path).expanduser().resolve()
-        if any(part.endswith(".recording") for part in path.parts):
-            raise ValueError("Catalog must not index an active .recording Trial")
+        if path_has_unpublished_component(path):
+            raise ValueError("Catalog must not index an unpublished Trial package")
         condition_id = _condition_uuid(manifest)
         quality = manifest.quality.reviewed_grade or manifest.quality.computed_grade
         quality_value = quality.value if quality is not None else "INVALID"
@@ -181,6 +223,33 @@ class CatalogRepository:
 
         def index(db: Session) -> None:
             now = datetime.now(timezone.utc)
+            existing_trial = db.get(TrialRow, str(manifest.trial_uuid))
+            if existing_trial is not None:
+                expected_identity = {
+                    "project_uuid": str(manifest.project_uuid),
+                    "subject_uuid": str(manifest.subject_uuid),
+                    "session_uuid": str(manifest.session_uuid),
+                    "condition_uuid": condition_id,
+                    "condition_code": manifest.condition.condition_code,
+                    "repeat_index": manifest.condition.repeat_index,
+                }
+                conflicts = {
+                    field_name: (
+                        getattr(existing_trial, field_name),
+                        expected_value,
+                    )
+                    for field_name, expected_value in expected_identity.items()
+                    if getattr(existing_trial, field_name) != expected_value
+                }
+                if conflicts:
+                    details = ", ".join(
+                        f"{field_name}: catalog={actual!r}, manifest={expected!r}"
+                        for field_name, (actual, expected) in sorted(conflicts.items())
+                    )
+                    raise ValueError(
+                        f"Catalog trial_uuid conflict for {manifest.trial_uuid}: "
+                        f"immutable identity differs ({details})"
+                    )
             self._ensure_fallback_hierarchy(db, manifest, path)
             condition_values = {
                 "condition_uuid": condition_id,
@@ -287,8 +356,8 @@ class CatalogRepository:
         session_id = str(manifest.session_uuid)
         project_insert = sqlite_insert(ProjectRow).values(
             project_uuid=project_id,
-            project_code=f"project-{project_id[:8]}",
-            name=f"Project {project_id[:8]}",
+            project_code=manifest.project_code or f"project-{project_id[:8]}",
+            name=manifest.project_name or f"Project {project_id[:8]}",
             principal_investigator=None,
             protocol_version=manifest.condition.protocol_version,
             data_root=str(path.parents[5] if len(path.parents) > 5 else path.parent),
@@ -300,7 +369,7 @@ class CatalogRepository:
         subject_insert = sqlite_insert(SubjectRow).values(
             subject_uuid=subject_id,
             project_uuid=project_id,
-            subject_code=f"subject-{subject_id[:8]}",
+            subject_code=manifest.subject_code or f"subject-{subject_id[:8]}",
             group_label=None,
             attributes_json="{}",
             created_utc=manifest.created_at_utc,
@@ -327,6 +396,7 @@ class CatalogRepository:
         for path in iter_finalized_manifest_paths(dataset_root):
             try:
                 manifest = load_manifest(path)
+                _validate_scanned_manifest_location(path, manifest)
                 self.index_manifest(manifest, path)
                 report.indexed += 1
             except Exception as exc:  # each immutable Trial is independently recoverable

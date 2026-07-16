@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Any, Literal, Mapping
+from typing import Any, Literal, Mapping
 from uuid import UUID, uuid4
 
 from pydantic import (
@@ -19,7 +20,6 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
-    StringConstraints,
     field_validator,
     model_validator,
 )
@@ -37,17 +37,14 @@ from exo_collection.domain.models import (
     utc_now,
 )
 from exo_collection.domain.states import TrialState
+from exo_collection.storage.layout import (
+    name_has_storage_suffix,
+    path_has_unpublished_component,
+)
 
 
-MANIFEST_SCHEMA_VERSION = "1.0.0"
-SemVer = Annotated[
-    str,
-    StringConstraints(
-        pattern=r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
-        r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
-        r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
-    ),
-]
+MANIFEST_SCHEMA_VERSION = "1.1.0"
+SUPPORTED_MANIFEST_SCHEMA_VERSIONS = frozenset({"1.0.0", MANIFEST_SCHEMA_VERSION})
 
 
 class ManifestModel(BaseModel):
@@ -67,10 +64,8 @@ class ManifestArtifact(Artifact):
 
     @model_validator(mode="after")
     def reject_temporary_artifact(self) -> ManifestArtifact:
-        components = self.relative_path.replace("\\", "/").split("/")
-        if any(
-            component.endswith(".partial") or component.endswith(".recording")
-            for component in components
+        if path_has_unpublished_component(
+            Path(self.relative_path.replace("\\", "/"))
         ):
             raise ValueError("Manifest Artifacts may not refer to temporary paths")
         return self
@@ -446,10 +441,37 @@ PUBLISHED_MANIFEST_STATES = frozenset(
 class TrialManifest(ManifestModel):
     """Schema for a single UUID-linked Trial package."""
 
-    schema_version: SemVer = MANIFEST_SCHEMA_VERSION
+    model_config = ConfigDict(
+        json_schema_extra={
+            "allOf": [
+                {
+                    "if": {
+                        "properties": {
+                            "schema_version": {"const": MANIFEST_SCHEMA_VERSION}
+                        }
+                    },
+                    "then": {
+                        "properties": {
+                            "project_code": {"enum": ["F", "T"]},
+                            "subject_code": {
+                                "pattern": r"^[0-9]{3}$",
+                                "type": "string",
+                            },
+                        },
+                        "required": ["project_code", "subject_code"],
+                    },
+                }
+            ]
+        }
+    )
+
+    schema_version: Literal["1.0.0", "1.1.0"] = MANIFEST_SCHEMA_VERSION
     manifest_uuid: UUID = Field(default_factory=uuid4)
     project_uuid: UUID
+    project_code: NonEmptyStr | None = None
+    project_name: NonEmptyStr | None = None
     subject_uuid: UUID
+    subject_code: NonEmptyStr | None = None
     session_uuid: UUID
     trial_uuid: UUID
     state: TrialState
@@ -472,13 +494,17 @@ class TrialManifest(ManifestModel):
     upload_records: list[UploadRecordReference] = Field(default_factory=list)
     created_at_utc: UTCDateTime = Field(default_factory=utc_now)
 
-    @field_validator("schema_version")
+    @field_validator("schema_version", mode="before")
     @classmethod
-    def require_supported_schema_version(cls, value: str) -> str:
-        if value != MANIFEST_SCHEMA_VERSION:
+    def require_supported_schema_version(cls, value: object) -> object:
+        if (
+            not isinstance(value, str)
+            or value not in SUPPORTED_MANIFEST_SCHEMA_VERSIONS
+        ):
+            supported = ", ".join(sorted(SUPPORTED_MANIFEST_SCHEMA_VERSIONS))
             raise ValueError(
                 f"unsupported Manifest schema_version {value}; "
-                f"this build supports {MANIFEST_SCHEMA_VERSION}"
+                f"this build supports {supported}"
             )
         return value
 
@@ -492,6 +518,18 @@ class TrialManifest(ManifestModel):
 
     @model_validator(mode="after")
     def validate_references(self) -> TrialManifest:
+        if self.schema_version == MANIFEST_SCHEMA_VERSION:
+            if self.project_code not in {"F", "T"}:
+                raise ValueError(
+                    "Manifest schema 1.1.0 requires project_code to be F or T"
+                )
+            if self.subject_code is None or re.fullmatch(
+                r"[0-9]{3}", self.subject_code
+            ) is None:
+                raise ValueError(
+                    "Manifest schema 1.1.0 requires subject_code as exactly "
+                    "three ASCII digits"
+                )
         if self.state is TrialState.FINALIZED:
             if (
                 self.timing.stopped_at_utc is None
@@ -611,7 +649,9 @@ def manifest_json_schema() -> dict[str, Any]:
 
 
 def _reject_partial_path(path: Path) -> None:
-    if any(part.endswith(".partial") for part in path.parts):
+    if any(
+        name_has_storage_suffix(part, (".partial",)) for part in path.parts
+    ):
         raise ValueError("refusing to read or publish a .partial Manifest path")
 
 

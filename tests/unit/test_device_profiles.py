@@ -26,9 +26,15 @@ def test_default_simulated_device_profile_is_typed_and_complete() -> None:
     assert isinstance(devices["imu"].parameters, ImuSimulationParameters)
     assert devices["ultrasound"].writer == "block_binary"
     assert devices["ultrasound"].required
-    assert not devices["sync_pulse"].required
+    assert devices["ultrasound"].parameters.frame_shape is None
+    assert devices["ultrasound"].parameters.channel_count == 4
+    assert devices["ultrasound"].parameters.samples_per_channel == 1000
+    assert devices["ultrasound"].parameters.frame_rate_hz == 20
+    assert devices["sync_pulse"].required
     assert devices["sync_pulse"].clock_domain == "sync_pulse_sim_clock"
     assert devices["sync_pulse"].parameters.pulse_width_s == 0.02
+    assert devices["sync_pulse"].parameters.first_pulse_s == 0.25
+    assert TrialRunRequest(data_root=path.parent).duration_s is None
 
 
 def test_profile_rejects_unapproved_adapter_unknown_parameters_and_missing_modality(

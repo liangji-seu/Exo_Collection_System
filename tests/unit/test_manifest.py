@@ -53,7 +53,10 @@ def make_manifest() -> TrialManifest:
     )
     return TrialManifest(
         project_uuid=uuid4(),
+        project_code="F",
+        project_name="正式",
         subject_uuid=uuid4(),
+        subject_code="001",
         session_uuid=uuid4(),
         trial_uuid=trial_uuid,
         state=TrialState.FINALIZED,
@@ -147,6 +150,8 @@ def test_manifest_round_trip_and_uuid_links(tmp_path) -> None:
         restored.artifacts[0].artifact_uuid
     ]
     assert restored.condition.condition_code == "WALK_LEVEL"
+    assert restored.project_code == "F"
+    assert restored.subject_code == "001"
     assert restored.quality.computed_grade is QualityGrade.A
     assert restored.created_at_utc.utcoffset() == timedelta(0)
 
@@ -165,6 +170,42 @@ def test_manifest_rejects_unknown_schema_version() -> None:
         TrialManifest.model_validate(payload)
 
 
+@pytest.mark.parametrize("project_code", [None, "", "X", "f", "FT"])
+def test_manifest_v1_1_requires_formal_or_test_project_code(
+    project_code: str | None,
+) -> None:
+    payload = make_manifest().model_dump()
+    payload["project_code"] = project_code
+
+    with pytest.raises(ValidationError):
+        TrialManifest.model_validate(payload)
+
+
+@pytest.mark.parametrize("subject_code", [None, "", "1", "01", "0001", "00A", "００１"])
+def test_manifest_v1_1_requires_three_ascii_digit_subject_code(
+    subject_code: str | None,
+) -> None:
+    payload = make_manifest().model_dump()
+    payload["subject_code"] = subject_code
+
+    with pytest.raises(ValidationError):
+        TrialManifest.model_validate(payload)
+
+
+def test_manifest_reader_accepts_legacy_v1_0_without_new_labels() -> None:
+    payload = make_manifest().model_dump(mode="json")
+    payload["schema_version"] = "1.0.0"
+    payload.pop("project_code")
+    payload.pop("project_name")
+    payload.pop("subject_code")
+
+    restored = TrialManifest.model_validate(payload)
+
+    assert restored.schema_version == "1.0.0"
+    assert restored.project_code is None
+    assert restored.subject_code is None
+
+
 @pytest.mark.parametrize(
     "path",
     [
@@ -172,6 +213,9 @@ def test_manifest_rejects_unknown_schema_version() -> None:
         "/absolute/raw/imu.h5",
         "raw/../outside.bin",
         "raw/data.partial",
+        "raw/imu.h5:hidden",
+        "raw/CON",
+        "raw/report?.json",
     ],
 )
 def test_manifest_rejects_unsafe_or_temporary_artifact_path(path: str) -> None:
@@ -218,12 +262,62 @@ def test_save_is_immutable_by_default_and_partial_load_is_refused(tmp_path) -> N
         load_manifest(partial)
 
 
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "raw/data.RECORDING",
+        "raw/data.PaRtIaL",
+        "raw/data.AbOrTeD",
+        "raw/.data.BUILDING",
+    ],
+)
+def test_manifest_artifact_rejects_mixed_case_unpublished_suffixes(
+    relative_path: str,
+) -> None:
+    values = make_manifest().artifacts[0].model_dump(mode="python")
+    values["relative_path"] = relative_path
+
+    with pytest.raises(ValidationError, match="temporary paths"):
+        ManifestArtifact.model_validate(values)
+
+
+def test_manifest_partial_guard_is_case_insensitive_without_prefix_false_positive(
+    tmp_path,
+) -> None:
+    manifest = make_manifest()
+    uppercase_partial = tmp_path / "manifest.json.PARTIAL"
+    uppercase_partial.write_text(manifest.model_dump_json(), encoding="utf-8")
+    with pytest.raises(ValueError, match="partial"):
+        load_manifest(uppercase_partial)
+
+    ordinary = tmp_path / "trial.partial.backup" / "manifest.json"
+    ordinary.parent.mkdir()
+    save_manifest(ordinary, manifest)
+    assert load_manifest(ordinary) == manifest
+
+
 def test_json_schema_can_be_exported(tmp_path) -> None:
     schema = manifest_json_schema()
-    assert schema["$id"].endswith("/1.0.0.json")
+    assert schema["$id"].endswith("/1.1.0.json")
     assert "schema_version" in schema["properties"]
     assert "condition" in schema["properties"]
     assert "clock_and_alignment" in schema["properties"]
+    assert schema["properties"]["schema_version"]["enum"] == ["1.0.0", "1.1.0"]
+    versioned_identity = schema["allOf"][0]
+    assert versioned_identity["if"]["properties"]["schema_version"] == {
+        "const": "1.1.0"
+    }
+    assert versioned_identity["then"]["required"] == [
+        "project_code",
+        "subject_code",
+    ]
+    assert versioned_identity["then"]["properties"]["project_code"] == {
+        "enum": ["F", "T"]
+    }
+    assert versioned_identity["then"]["properties"]["subject_code"] == {
+        "pattern": r"^[0-9]{3}$",
+        "type": "string",
+    }
 
     output = export_manifest_json_schema(tmp_path / "manifest.schema.json")
     assert output.is_file()

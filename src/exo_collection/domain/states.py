@@ -25,6 +25,7 @@ class TrialState(StrEnum):
     IDLE = "IDLE"
     PREPARING = "PREPARING"
     READY = "READY"
+    WAITING_SYNC = "WAITING_SYNC"
     RECORDING = "RECORDING"
     STOPPING = "STOPPING"
     FINALIZING = "FINALIZING"
@@ -39,7 +40,10 @@ class TrialState(StrEnum):
 TRIAL_TRANSITIONS: Final[dict[TrialState, frozenset[TrialState]]] = {
     TrialState.IDLE: frozenset({TrialState.PREPARING}),
     TrialState.PREPARING: frozenset({TrialState.READY, TrialState.FAILED}),
-    TrialState.READY: frozenset({TrialState.RECORDING, TrialState.FAILED}),
+    TrialState.READY: frozenset({TrialState.WAITING_SYNC, TrialState.FAILED}),
+    TrialState.WAITING_SYNC: frozenset(
+        {TrialState.RECORDING, TrialState.RECOVERABLE}
+    ),
     TrialState.RECORDING: frozenset({TrialState.STOPPING, TrialState.ABORTED}),
     TrialState.STOPPING: frozenset(
         {TrialState.FINALIZING, TrialState.RECOVERABLE}

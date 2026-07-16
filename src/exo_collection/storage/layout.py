@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from uuid import UUID
+
+from exo_collection.domain.models import normalize_relative_path
 
 
 TRIAL_SUBDIRECTORIES = (
@@ -15,15 +18,39 @@ TRIAL_SUBDIRECTORIES = (
     "logs",
 )
 
+# NTFS is normally case-insensitive, so every trust boundary must treat these
+# lifecycle suffixes identically regardless of spelling.  Keeping the leading
+# dot and checking only the end of one path component avoids classifying names
+# such as ``recording-notes.txt`` or ``trial.partial.backup`` as package state.
+UNPUBLISHED_STORAGE_SUFFIXES = (
+    ".recording",
+    ".partial",
+    ".aborted",
+    ".building",
+)
+
+
+def name_has_storage_suffix(
+    name: str,
+    suffixes: tuple[str, ...] = UNPUBLISHED_STORAGE_SUFFIXES,
+) -> bool:
+    """Apply Windows-style case-insensitive suffix semantics to one name."""
+
+    folded = name.casefold()
+    return any(folded.endswith(suffix.casefold()) for suffix in suffixes)
+
+
+def path_has_unpublished_component(path: str | Path) -> bool:
+    """Return whether any complete path component has a reserved state suffix."""
+
+    return any(name_has_storage_suffix(part) for part in Path(path).parts)
+
 
 def safe_relative_path(value: str | Path) -> PurePosixPath:
-    text = str(value).replace("\\", "/")
-    relative = PurePosixPath(text)
-    if relative.is_absolute() or not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
-        raise ValueError(f"Expected a safe Trial-relative path, got {value!r}")
-    if ":" in relative.parts[0]:
-        raise ValueError(f"Drive-qualified paths are forbidden: {value!r}")
-    return relative
+    try:
+        return PurePosixPath(normalize_relative_path(str(value)))
+    except ValueError as exc:
+        raise ValueError(f"Expected a safe Trial-relative path, got {value!r}") from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +60,8 @@ class TrialLayout:
     subject_uuid: UUID
     session_uuid: UUID
     trial_uuid: UUID
+    project_partition: str | None = None
+    subject_code: str | None = None
 
     @classmethod
     def build(
@@ -42,12 +71,39 @@ class TrialLayout:
         subject_uuid: UUID,
         session_uuid: UUID,
         trial_uuid: UUID,
+        project_partition: str | None = None,
+        subject_code: str | None = None,
     ) -> TrialLayout:
-        return cls(Path(dataset_root).expanduser().resolve(), project_uuid, subject_uuid, session_uuid, trial_uuid)
+        partition = None
+        if project_partition is not None:
+            partition = project_partition.strip().upper()
+            if partition not in {"F", "T"}:
+                raise ValueError("project_partition must be 'F' or 'T'")
+        readable_subject = None
+        if subject_code is not None:
+            readable_subject = subject_code.strip()
+            if re.fullmatch(r"\d{3}", readable_subject) is None:
+                raise ValueError("subject_code must contain exactly three digits")
+        return cls(
+            Path(dataset_root).expanduser().resolve(),
+            project_uuid,
+            subject_uuid,
+            session_uuid,
+            trial_uuid,
+            partition,
+            readable_subject,
+        )
 
     @property
     def session_directory(self) -> Path:
-        return self.dataset_root / str(self.project_uuid) / str(self.subject_uuid) / str(self.session_uuid)
+        project_directory = self.project_partition or str(self.project_uuid)
+        subject_directory = self.subject_code or str(self.subject_uuid)
+        return (
+            self.dataset_root
+            / project_directory
+            / subject_directory
+            / str(self.session_uuid)
+        )
 
     @property
     def trials_directory(self) -> Path:
@@ -92,10 +148,17 @@ class TrialLayout:
     def assert_ready_to_finalize(self) -> None:
         if not self.recording_directory.is_dir():
             raise FileNotFoundError(self.recording_directory)
-        partials = list(self.recording_directory.rglob("*.partial"))
-        if partials:
-            display = ", ".join(str(path.relative_to(self.recording_directory)) for path in partials[:5])
-            raise RuntimeError(f"Trial still contains partial files: {display}")
+        unpublished = [
+            path
+            for path in self.recording_directory.rglob("*")
+            if name_has_storage_suffix(path.name)
+        ]
+        if unpublished:
+            display = ", ".join(
+                str(path.relative_to(self.recording_directory))
+                for path in unpublished[:5]
+            )
+            raise RuntimeError(f"Trial still contains unpublished paths: {display}")
         if not (self.recording_directory / "manifest.json").is_file():
             raise RuntimeError("manifest.json must be published before finalizing a Trial")
         if not (self.recording_directory / "checksums.sha256").is_file():
@@ -113,7 +176,32 @@ class TrialLayout:
 
 def iter_recording_directories(dataset_root: str | Path) -> list[Path]:
     root = Path(dataset_root).expanduser().resolve()
-    return sorted(path for path in root.rglob("*.recording") if path.is_dir()) if root.exists() else []
+    return (
+        sorted(
+            path
+            for path in root.rglob("*")
+            if name_has_storage_suffix(path.name, (".recording",))
+            and path.is_dir()
+        )
+        if root.exists()
+        else []
+    )
+
+
+def iter_aborted_directories(dataset_root: str | Path) -> list[Path]:
+    """Return retained recovery packages explicitly marked ``.aborted``."""
+
+    root = Path(dataset_root).expanduser().resolve()
+    return (
+        sorted(
+            path
+            for path in root.rglob("*")
+            if name_has_storage_suffix(path.name, (".aborted",))
+            and path.is_dir()
+        )
+        if root.exists()
+        else []
+    )
 
 
 def iter_finalized_manifest_paths(dataset_root: str | Path) -> list[Path]:
@@ -125,6 +213,6 @@ def iter_finalized_manifest_paths(dataset_root: str | Path) -> list[Path]:
     return sorted(
         path
         for path in root.rglob("manifest.json")
-        if path.is_file() and not any(part.endswith(".recording") for part in path.parts)
+        if path.is_file()
+        and not path_has_unpublished_component(path)
     )
-

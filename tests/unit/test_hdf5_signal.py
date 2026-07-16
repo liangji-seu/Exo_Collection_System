@@ -18,6 +18,7 @@ def test_writer_creates_canonical_structure_and_appends_chunks(tmp_path) -> None
         channels=("ax", "ay", "az"),
         units=("m/s2",) * 3,
         device_metadata={"device_id": "imu_1", "serial": "SIM"},
+        trial_metadata={"trial_uuid": "trial-001", "subject_code": "001"},
         clock_model={"a": 1.0, "b": 0.0},
         sample_shape=(3,),
         chunk_rows=4,
@@ -59,6 +60,10 @@ def test_writer_creates_canonical_structure_and_appends_chunks(tmp_path) -> None
         assert json.loads(handle["metadata/device"][()]) == {
             "device_id": "imu_1",
             "serial": "SIM",
+        }
+        assert json.loads(handle["metadata/trial"][()]) == {
+            "subject_code": "001",
+            "trial_uuid": "trial-001",
         }
 
 

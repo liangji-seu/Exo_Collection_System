@@ -196,7 +196,7 @@ def companion_paths(data_path: str | os.PathLike[str]) -> tuple[Path, Path]:
     """
 
     path = Path(data_path)
-    partial = path.name.endswith(".partial")
+    partial = path.name.casefold().endswith(".partial")
     core_name = path.name[: -len(".partial")] if partial else path.name
     core = Path(core_name)
     stem = core.name[: -len(core.suffix)] if core.suffix else core.name
