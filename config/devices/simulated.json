@@ -17,7 +17,10 @@
       "writer": "hdf5_signal",
       "required": true,
       "clock_domain": "imu_sim_clock",
-      "parameters": {"sample_rate_hz": 200}
+      "parameters": {
+        "sample_rate_hz": 200,
+        "device_ids": ["imu_trunk", "imu_left", "imu_right"]
+      }
     },
     {
       "id": "encoder_sim",

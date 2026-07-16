@@ -62,11 +62,11 @@ from exo_collection.quality import load_storage_policy
 MODALITIES = ("ultrasound", "imu", "encoder", "sync_pulse")
 CRITICAL_MODALITIES = frozenset(MODALITIES)
 MAX_PREVIEW_POINTS = 4096
-MAX_SIGNAL_HISTORY_POINTS = 3000
-WATERFALL_WINDOW_NS = 8_000_000_000
-MAX_WATERFALL_ROWS = 300
-MAX_ULTRASOUND_TREND_POINTS = 300
 MAX_TIMELINE_EVENTS = 300
+SIGNAL_RING_CAPACITY = 1000
+ULTRASOUND_PREVIEW_SAMPLES = 512
+IMU_PREVIEW_LABELS = ("imu_trunk", "imu_left", "imu_right")
+ENCODER_PREVIEW_LABELS = ("left_position", "right_position")
 DEFAULT_OPERATOR = "not_recorded"
 DEFAULT_CONTROLLED_STOP_TIMEOUT_S = 30.0
 
@@ -400,6 +400,102 @@ class ExperimentMetadataDialog(QDialog):
         super().accept()
 
 
+class RingTrace:
+    """Ring-buffer trace backed by a fixed-size numpy array for pyqtgraph.
+
+    The buffer is always SIZE elements long.  Unwritten positions are filled
+    with NaN so that the curve renders only valid data.  Cursor wraps
+    circularly within [0, SIZE-1] and an InfiniteLine marks its position.
+    """
+
+    __slots__ = (
+        "_buffer",
+        "_capacity",
+        "_count",
+        "_cursor",
+        "_x",
+        "curve",
+        "cursor_line",
+    )
+
+    def __init__(
+        self,
+        plot: "pg.PlotWidget",
+        pen: str,
+        label: str,
+        *,
+        capacity: int = SIGNAL_RING_CAPACITY,
+    ) -> None:
+        if capacity < 2:
+            raise ValueError("ring trace capacity must be at least two")
+        self._capacity = int(capacity)
+        self._buffer = np.full(self._capacity, np.nan, dtype=np.float64)
+        self._x = np.arange(self._capacity, dtype=np.float64)
+        self._cursor = 0
+        self._count = 0
+
+        self.curve = plot.plot(pen=pg.mkPen(pen, width=1.2))
+        self.cursor_line = pg.InfiniteLine(
+            pos=0.0,
+            angle=90,
+            pen=pg.mkPen("#dc3545", width=2),
+        )
+        plot.addItem(self.cursor_line)
+        plot.setTitle(label)
+        plot.setBackground("w")
+        plot.setXRange(0, self._capacity - 1, padding=0)
+        plot.setLimits(
+            xMin=0,
+            xMax=self._capacity - 1,
+            minXRange=self._capacity - 1,
+            maxXRange=self._capacity - 1,
+        )
+        plot.setMouseEnabled(x=False, y=True)
+        plot.setLabel("bottom", "循环帧位置")
+        plot.showGrid(x=True, y=True, alpha=0.2)
+        self.curve.setData(self._x, self._buffer)
+
+    def append(self, values: np.ndarray | list[float]) -> None:
+        arr = np.asarray(values, dtype=np.float64).reshape(-1)
+        n = int(arr.size)
+        if n == 0:
+            return
+        next_cursor = (self._cursor + n) % self._capacity
+        if n >= self._capacity:
+            # Only the newest full screen matters.  Its first value belongs at
+            # next_cursor because all older values have already been overwritten.
+            tail = arr[-self._capacity :]
+            split = self._capacity - next_cursor
+            self._buffer[next_cursor:] = tail[:split]
+            self._buffer[:next_cursor] = tail[split:]
+        else:
+            first_count = min(n, self._capacity - self._cursor)
+            self._buffer[self._cursor : self._cursor + first_count] = arr[:first_count]
+            overflow = n - first_count
+            if overflow:
+                self._buffer[:overflow] = arr[first_count:]
+        self._cursor = next_cursor
+        self._count = min(self._capacity, self._count + n)
+        self._render()
+
+    def _render(self) -> None:
+        display = self._buffer.copy()
+        if self._count == self._capacity:
+            # The next overwrite position separates newest data on its left
+            # from the oldest retained data on its right.
+            display[self._cursor] = np.nan
+        self.curve.setData(self._x, display)
+        if self._count:
+            self.cursor_line.setPos((self._cursor - 1) % self._capacity)
+
+    def reset(self) -> None:
+        self._buffer.fill(np.nan)
+        self._cursor = 0
+        self._count = 0
+        self.curve.setData(self._x, self._buffer)
+        self.cursor_line.setPos(0.0)
+
+
 class CollectorWindow(QMainWindow):
     """Collect one Trial at a time through a non-blocking worker boundary."""
 
@@ -459,27 +555,12 @@ class CollectorWindow(QMainWindow):
 
         self._health_rows = {name: index for index, name in enumerate(MODALITIES)}
         self._last_health_status: dict[str, str] = {}
-        self._signal_history: dict[str, tuple[list[float], list[float]]] = {
-            "imu": ([], []),
-            "encoder": ([], []),
-        }
-        self._ultrasound_histories: dict[
-            int, deque[tuple[int, np.ndarray]]
-        ] = {}
-        self._latest_ultrasound_channels: list[list[float]] = []
-        self._ultrasound_trend_starts: dict[int, int] = {}
-        self._ultrasound_trend_times: dict[int, deque[float]] = {}
-        self._ultrasound_peak_depths: dict[int, deque[float]] = {}
-        self._ultrasound_peak_strengths: dict[int, deque[float]] = {}
-        self._ultrasound_format_metrics: dict[int, dict[str, Any]] = {}
+        self._us_plots: list["pg.PlotWidget"] = []
+        self._us_curves: list["pg.PlotDataItem"] = []
+        self._us_x = np.arange(ULTRASOUND_PREVIEW_SAMPLES, dtype=np.float64)
         self._ultrasound_format_alerted: set[tuple[int, str]] = set()
-        # Backward-compatible selected-channel aliases used by UI tests and
-        # lightweight diagnostics. Switching channels rebinds rather than
-        # clearing these histories.
-        self._ultrasound_history = self._channel_waterfall_history(0)
-        self._ultrasound_trend_x = self._channel_trend_times(0)
-        self._ultrasound_peak_depth = self._channel_peak_depths(0)
-        self._ultrasound_peak_strength = self._channel_peak_strengths(0)
+        self._imu_traces: dict[str, RingTrace] = {}
+        self._enc_traces: dict[str, RingTrace] = {}
         self._timeline_started_at = time.monotonic()
         self._timeline_x: deque[float] = deque(maxlen=MAX_TIMELINE_EVENTS)
         self._timeline_y: deque[float] = deque(maxlen=MAX_TIMELINE_EVENTS)
@@ -698,91 +779,71 @@ class CollectorWindow(QMainWindow):
         controls_layout.addWidget(self.manifest_label)
         body.addWidget(controls)
 
-        preview_box = QGroupBox("实时预览（共享内存降采样；不参与原始写盘）")
+        preview_box = QGroupBox("实时预览（固定长度循环显示；不参与原始写盘）")
         preview_layout = QVBoxLayout(preview_box)
-        preview_splitter = QSplitter(Qt.Orientation.Vertical)
         pg.setConfigOptions(antialias=False, imageAxisOrder="row-major")
 
-        ultrasound_box = QGroupBox("Ultrasound A-scan 与最近 8 秒瀑布")
-        ultrasound_layout = QVBoxLayout(ultrasound_box)
-        ultrasound_controls = QHBoxLayout()
-        ultrasound_controls.addWidget(QLabel("预览通道："))
-        self.ultrasound_channel_combo = QComboBox()
-        self.ultrasound_channel_combo.setObjectName("ultrasound_channel")
-        self.ultrasound_channel_combo.addItem("通道 1", 0)
-        self.ultrasound_channel_combo.currentIndexChanged.connect(
-            self._on_ultrasound_channel_changed
-        )
-        ultrasound_controls.addWidget(self.ultrasound_channel_combo)
-        self.ultrasound_peak_label = QLabel(
-            "峰值：等待数据 · 自动阈值待真实设备标定"
-        )
-        self.ultrasound_peak_label.setObjectName("ultrasound_peak_metrics")
-        self.ultrasound_peak_label.setWordWrap(True)
-        self.ultrasound_peak_label.setStyleSheet("color:#6c757d;")
-        ultrasound_controls.addWidget(self.ultrasound_peak_label, 1)
-        ultrasound_layout.addLayout(ultrasound_controls)
-        self.ultrasound_plot = pg.PlotWidget(title="A-scan")
-        self.ultrasound_plot.setObjectName("ultrasound_preview")
-        self.ultrasound_plot.setBackground("w")
-        self.ultrasound_plot.showGrid(x=True, y=True, alpha=0.2)
-        self.ultrasound_curve = self.ultrasound_plot.plot(
-            pen=pg.mkPen("#2457c5", width=1.3)
-        )
-        ultrasound_layout.addWidget(self.ultrasound_plot, 1)
-        peak_trends = QWidget()
-        peak_trends_layout = QHBoxLayout(peak_trends)
-        peak_trends_layout.setContentsMargins(0, 0, 0, 0)
-        self.ultrasound_peak_depth_plot = pg.PlotWidget(title="峰值深度趋势")
-        self.ultrasound_peak_depth_plot.setObjectName("ultrasound_peak_depth")
-        self.ultrasound_peak_depth_plot.setBackground("w")
-        self.ultrasound_peak_depth_plot.showGrid(x=True, y=True, alpha=0.2)
-        self.ultrasound_peak_depth_curve = self.ultrasound_peak_depth_plot.plot(
-            pen=pg.mkPen("#0d6efd", width=1.2)
-        )
-        peak_trends_layout.addWidget(self.ultrasound_peak_depth_plot, 1)
-        self.ultrasound_peak_strength_plot = pg.PlotWidget(title="峰值强度趋势")
-        self.ultrasound_peak_strength_plot.setObjectName("ultrasound_peak_strength")
-        self.ultrasound_peak_strength_plot.setBackground("w")
-        self.ultrasound_peak_strength_plot.showGrid(x=True, y=True, alpha=0.2)
-        self.ultrasound_peak_strength_curve = self.ultrasound_peak_strength_plot.plot(
-            pen=pg.mkPen("#fd7e14", width=1.2)
-        )
-        peak_trends_layout.addWidget(self.ultrasound_peak_strength_plot, 1)
-        peak_trends.setMaximumHeight(150)
-        ultrasound_layout.addWidget(peak_trends)
-        self.ultrasound_waterfall_plot = pg.PlotWidget(title="灰度瀑布 · 最近 8 秒")
-        self.ultrasound_waterfall_plot.setObjectName("ultrasound_waterfall")
-        self.ultrasound_waterfall_plot.setBackground("#111111")
-        self.ultrasound_waterfall_plot.setLabel("left", "时间")
-        self.ultrasound_waterfall_plot.setLabel("bottom", "A-scan sample")
-        self.ultrasound_waterfall_image = pg.ImageItem(axisOrder="row-major")
-        self.ultrasound_waterfall_plot.addItem(self.ultrasound_waterfall_image)
-        ultrasound_layout.addWidget(self.ultrasound_waterfall_plot, 1)
-        preview_splitter.addWidget(ultrasound_box)
+        # ── Row 1: 4-channel ultrasound A-scan 2×2 grid ──
+        us_grid = QGroupBox("超声 · 4 通道当前单帧")
+        us_grid.setObjectName("ultrasound_grid")
+        us_grid_layout = QGridLayout(us_grid)
+        us_grid_layout.setContentsMargins(0, 0, 0, 0)
+        for i in range(4):
+            plot = pg.PlotWidget(title=f"超声通道 {i + 1} · 当前帧")
+            plot.setObjectName(f"ultrasound_preview_ch{i}")
+            plot.setBackground("w")
+            plot.setXRange(0, ULTRASOUND_PREVIEW_SAMPLES - 1, padding=0)
+            plot.setLimits(
+                xMin=0,
+                xMax=ULTRASOUND_PREVIEW_SAMPLES - 1,
+                minXRange=ULTRASOUND_PREVIEW_SAMPLES - 1,
+                maxXRange=ULTRASOUND_PREVIEW_SAMPLES - 1,
+            )
+            plot.setMouseEnabled(x=False, y=True)
+            plot.setLabel("bottom", "单帧采样点")
+            plot.showGrid(x=True, y=True, alpha=0.2)
+            curve = plot.plot(pen=pg.mkPen("#2457c5", width=1.2))
+            curve.setData(
+                self._us_x,
+                np.full(ULTRASOUND_PREVIEW_SAMPLES, np.nan, dtype=np.float64),
+            )
+            self._us_plots.append(plot)
+            self._us_curves.append(curve)
+            us_grid_layout.addWidget(plot, i // 2, i % 2)
+        preview_layout.addWidget(us_grid, 4)
 
-        signals_box = QWidget()
-        signals_layout = QHBoxLayout(signals_box)
-        signals_layout.setContentsMargins(0, 0, 0, 0)
-        self.imu_plot = pg.PlotWidget(title="IMU 实时曲线")
-        self.imu_plot.setObjectName("imu_preview")
-        self.imu_plot.setBackground("w")
-        self.imu_plot.setLabel("bottom", "Trial time", units="s")
-        self.imu_plot.showGrid(x=True, y=True, alpha=0.2)
-        self.imu_curve = self.imu_plot.plot(pen=pg.mkPen("#1a936f", width=1.4))
-        signals_layout.addWidget(self.imu_plot, 1)
+        # ── Row 2: 3 IMU ring traces ──
+        imu_grid = QGroupBox("IMU · 3 个传感器 acc_x 循环帧")
+        imu_grid.setObjectName("imu_ring_grid")
+        imu_layout = QHBoxLayout(imu_grid)
+        imu_layout.setContentsMargins(0, 0, 0, 0)
+        for index, label in enumerate(IMU_PREVIEW_LABELS):
+            plot = pg.PlotWidget()
+            plot.setObjectName(f"imu_ring_{label}")
+            trace = RingTrace(
+                plot,
+                "#1a936f",
+                f"IMU {index + 1} · {label} · acc_x",
+            )
+            self._imu_traces[label] = trace
+            imu_layout.addWidget(plot, 1)
+        preview_layout.addWidget(imu_grid, 2)
 
-        self.encoder_plot = pg.PlotWidget(title="Encoder 实时曲线")
-        self.encoder_plot.setObjectName("encoder_preview")
-        self.encoder_plot.setBackground("w")
-        self.encoder_plot.setLabel("bottom", "Trial time", units="s")
-        self.encoder_plot.showGrid(x=True, y=True, alpha=0.2)
-        self.encoder_curve = self.encoder_plot.plot(
-            pen=pg.mkPen("#d97706", width=1.4)
-        )
-        signals_layout.addWidget(self.encoder_plot, 1)
-        preview_splitter.addWidget(signals_box)
+        # ── Row 3: 2 encoder ring traces ──
+        enc_grid = QGroupBox("电机编码器 · 左右位置循环帧")
+        enc_grid.setObjectName("encoder_ring_grid")
+        enc_layout = QHBoxLayout(enc_grid)
+        enc_layout.setContentsMargins(0, 0, 0, 0)
+        for label in ENCODER_PREVIEW_LABELS:
+            plot = pg.PlotWidget()
+            plot.setObjectName(f"encoder_ring_{label}")
+            side = "左侧" if label.startswith("left") else "右侧"
+            trace = RingTrace(plot, "#d97706", f"{side}电机编码器 · position")
+            self._enc_traces[label] = trace
+            enc_layout.addWidget(plot, 1)
+        preview_layout.addWidget(enc_grid, 2)
 
+        # ── Row 4: Event timeline ──
         timeline_box = QWidget()
         timeline_layout = QVBoxLayout(timeline_box)
         timeline_layout.setContentsMargins(0, 0, 0, 0)
@@ -804,9 +865,8 @@ class CollectorWindow(QMainWindow):
         self.timeline_last_event_label = QLabel("尚无事件")
         self.timeline_last_event_label.setObjectName("timeline_last_event")
         timeline_layout.addWidget(self.timeline_last_event_label)
-        preview_splitter.addWidget(timeline_box)
-        preview_splitter.setSizes([410, 230, 160])
-        preview_layout.addWidget(preview_splitter, 1)
+        timeline_box.setMaximumHeight(125)
+        preview_layout.addWidget(timeline_box, 1)
         body.addWidget(preview_box)
         body.setSizes([470, 790])
         outer.addWidget(body, 1)
@@ -1350,26 +1410,18 @@ class CollectorWindow(QMainWindow):
             self.health_table.item(row, 4).setText("-")
             self.health_table.item(row, 5).setText("-")
             self.health_table.item(row, 6).setText("-")
-        self.ultrasound_curve.setData([], [])
-        self._latest_ultrasound_channels.clear()
-        self._ultrasound_histories.clear()
-        self._ultrasound_trend_starts.clear()
-        self._ultrasound_trend_times.clear()
-        self._ultrasound_peak_depths.clear()
-        self._ultrasound_peak_strengths.clear()
-        self._ultrasound_format_metrics.clear()
-        self._ultrasound_format_alerted.clear()
-        self._bind_selected_ultrasound_history(
-            max(0, self.ultrasound_channel_combo.currentIndex())
+        empty_ultrasound = np.full(
+            ULTRASOUND_PREVIEW_SAMPLES,
+            np.nan,
+            dtype=np.float64,
         )
-        self.ultrasound_waterfall_image.clear()
-        self._clear_ultrasound_trends()
-        for modality, curve in (
-            ("imu", self.imu_curve),
-            ("encoder", self.encoder_curve),
-        ):
-            self._signal_history[modality] = ([], [])
-            curve.setData([], [])
+        for curve in self._us_curves:
+            curve.setData(self._us_x, empty_ultrasound)
+        self._ultrasound_format_alerted.clear()
+        for trace in self._imu_traces.values():
+            trace.reset()
+        for trace in self._enc_traces.values():
+            trace.reset()
         self._timeline_started_at = time.monotonic()
         self._timeline_x.clear()
         self._timeline_y.clear()
@@ -1635,225 +1687,115 @@ class CollectorWindow(QMainWindow):
 
     def _handle_preview(self, event: WorkerEvent) -> None:
         modality = self._normalize_modality(event.modality or "")
+
         if modality == "ultrasound":
-            channels: list[list[float]] = []
             raw_channels = event.payload.get("channels")
-            if isinstance(raw_channels, (list, tuple)):
-                channels = [
-                    converted
-                    for raw_channel in raw_channels
-                    if (converted := self._numeric_values(raw_channel))
-                ]
-            if channels:
-                raw_metrics = event.payload.get("format_metrics")
-                if isinstance(raw_metrics, (list, tuple)):
-                    for metric_index, metric in enumerate(raw_metrics):
-                        if metric_index >= len(channels) or not isinstance(metric, dict):
-                            continue
-                        self._ultrasound_format_metrics[metric_index] = dict(metric)
-                        if bool(metric.get("all_zero")):
-                            alert_key = (metric_index, "ALL_ZERO")
-                            if alert_key not in self._ultrasound_format_alerted:
-                                message = (
-                                    f"ultrasound 通道 {metric_index + 1} 当前帧全零；"
-                                    "请检查探头、通道和设备连接。"
-                                )
-                                self._append_alert(message)
-                                self._add_timeline_event(2, message)
-                                self._ultrasound_format_alerted.add(alert_key)
-                self._latest_ultrasound_channels = channels
-                self._set_ultrasound_channel_count(len(channels))
-                timestamp_ns = self._preview_timestamp_ns(event.payload)
-                for channel_index, channel_values in enumerate(channels):
-                    self._record_ultrasound_channel(
-                        channel_index,
-                        channel_values,
-                        timestamp_ns,
+            if not isinstance(raw_channels, (list, tuple)):
+                legacy_values = event.payload.get("values")
+                raw_channels = [legacy_values] if legacy_values is not None else []
+            raw_metrics = event.payload.get("format_metrics")
+            if isinstance(raw_metrics, (list, tuple)):
+                for channel_index, metric in enumerate(raw_metrics[:4]):
+                    if not isinstance(metric, Mapping) or not bool(metric.get("all_zero")):
+                        continue
+                    alert_key = (channel_index, "ALL_ZERO")
+                    if alert_key in self._ultrasound_format_alerted:
+                        continue
+                    message = (
+                        f"ultrasound 通道 {channel_index + 1} 当前帧全零；"
+                        "请检查探头、通道和设备连接。"
                     )
-                selected_index = min(
-                    self.ultrasound_channel_combo.currentIndex(),
-                    len(channels) - 1,
-                )
-                values = channels[selected_index]
-            else:
-                values = self._numeric_values(event.payload.get("values"))
-                selected_index = max(0, self.ultrasound_channel_combo.currentIndex())
+                    self._append_alert(message)
+                    self._add_timeline_event(2, message)
+                    self._ultrasound_format_alerted.add(alert_key)
+            for i, raw_channel in enumerate(raw_channels):
+                if i >= len(self._us_curves):
+                    break
+                values = self._numeric_values(raw_channel)
                 if values:
-                    self._record_ultrasound_channel(
-                        selected_index,
-                        values,
-                        self._preview_timestamp_ns(event.payload),
+                    self._us_curves[i].setData(
+                        self._us_x,
+                        self._fixed_ultrasound_frame(values),
                     )
-            if values:
-                self.ultrasound_curve.setData(list(range(len(values))), values)
-                self._render_ultrasound_channel(selected_index)
             return
-        if modality not in {"imu", "encoder"}:
+
+        if modality == "imu":
+            for label, values in self._preview_series(
+                event.payload,
+                IMU_PREVIEW_LABELS,
+            ):
+                trace = self._imu_traces.get(label)
+                numeric = self._numeric_values(values)
+                if trace is not None and numeric:
+                    trace.append(numeric)
             return
-        values_raw = event.payload.get("values")
-        x_raw = event.payload.get("x")
-        if not isinstance(values_raw, (list, tuple)):
+
+        if modality == "encoder":
+            for label, values in self._preview_series(
+                event.payload,
+                ENCODER_PREVIEW_LABELS,
+            ):
+                trace = self._enc_traces.get(label)
+                numeric = self._numeric_values(values)
+                if trace is not None and numeric:
+                    trace.append(numeric)
             return
-        if not isinstance(x_raw, (list, tuple)) or len(x_raw) != len(values_raw):
-            x_raw = list(range(len(values_raw)))
-        pairs: list[tuple[float, float]] = []
-        for x_value, y_value in zip(x_raw, values_raw, strict=False):
-            try:
-                x_number = float(x_value)
-                y_number = float(y_value)
-            except (TypeError, ValueError):
-                continue
-            if math.isfinite(x_number) and math.isfinite(y_number):
-                pairs.append((x_number, y_number))
-            if len(pairs) >= MAX_PREVIEW_POINTS:
-                break
-        if not pairs:
-            return
-        history_x, history_y = self._signal_history[modality]
-        history_x.extend(pair[0] for pair in pairs)
-        history_y.extend(pair[1] for pair in pairs)
-        if len(history_x) > MAX_SIGNAL_HISTORY_POINTS:
-            del history_x[:-MAX_SIGNAL_HISTORY_POINTS]
-            del history_y[:-MAX_SIGNAL_HISTORY_POINTS]
-        curve = self.imu_curve if modality == "imu" else self.encoder_curve
-        curve.setData(history_x, history_y)
-        channel = event.payload.get("channel")
-        if channel:
-            plot = self.imu_plot if modality == "imu" else self.encoder_plot
-            plot.setTitle(f"{modality.upper()} 实时曲线 · {channel}")
+
+    def _fixed_ultrasound_frame(self, values: list[float]) -> np.ndarray:
+        source = np.asarray(values, dtype=np.float64)
+        if source.size > ULTRASOUND_PREVIEW_SAMPLES:
+            indices = np.linspace(
+                0,
+                source.size - 1,
+                ULTRASOUND_PREVIEW_SAMPLES,
+                dtype=np.int64,
+            )
+            source = source[indices]
+        display = np.full(
+            ULTRASOUND_PREVIEW_SAMPLES,
+            np.nan,
+            dtype=np.float64,
+        )
+        display[: source.size] = source
+        return display
 
     @staticmethod
-    def _preview_timestamp_ns(payload: Mapping[str, Any]) -> int:
-        try:
-            return int(payload.get("host_monotonic_ns") or time.monotonic_ns())
-        except (TypeError, ValueError):
-            return time.monotonic_ns()
-
-    def _channel_waterfall_history(
-        self, channel_index: int
-    ) -> deque[tuple[int, np.ndarray]]:
-        return self._ultrasound_histories.setdefault(channel_index, deque())
-
-    def _channel_trend_times(self, channel_index: int) -> deque[float]:
-        return self._ultrasound_trend_times.setdefault(
-            channel_index,
-            deque(maxlen=MAX_ULTRASOUND_TREND_POINTS),
-        )
-
-    def _channel_peak_depths(self, channel_index: int) -> deque[float]:
-        return self._ultrasound_peak_depths.setdefault(
-            channel_index,
-            deque(maxlen=MAX_ULTRASOUND_TREND_POINTS),
-        )
-
-    def _channel_peak_strengths(self, channel_index: int) -> deque[float]:
-        return self._ultrasound_peak_strengths.setdefault(
-            channel_index,
-            deque(maxlen=MAX_ULTRASOUND_TREND_POINTS),
-        )
-
-    def _bind_selected_ultrasound_history(self, channel_index: int) -> None:
-        self._ultrasound_history = self._channel_waterfall_history(channel_index)
-        self._ultrasound_trend_x = self._channel_trend_times(channel_index)
-        self._ultrasound_peak_depth = self._channel_peak_depths(channel_index)
-        self._ultrasound_peak_strength = self._channel_peak_strengths(channel_index)
-
-    def _record_ultrasound_channel(
-        self,
-        channel_index: int,
-        values: list[float],
-        timestamp_ns: int,
-    ) -> None:
-        history = self._channel_waterfall_history(channel_index)
-        row = np.asarray(values, dtype=np.float32)
-        if history and history[-1][1].size != row.size:
-            history.clear()
-        history.append((timestamp_ns, row))
-        cutoff = timestamp_ns - WATERFALL_WINDOW_NS
-        while history and (
-            history[0][0] < cutoff
-            or len(history) > MAX_WATERFALL_ROWS
-        ):
-            history.popleft()
-        peak_index = int(np.argmax(np.abs(row)))
-        peak_strength = float(row[peak_index])
-        start_ns = self._ultrasound_trend_starts.setdefault(
-            channel_index, timestamp_ns
-        )
-        elapsed_s = max(
-            0.0,
-            (timestamp_ns - start_ns) / 1_000_000_000,
-        )
-        self._channel_trend_times(channel_index).append(elapsed_s)
-        self._channel_peak_depths(channel_index).append(float(peak_index))
-        self._channel_peak_strengths(channel_index).append(peak_strength)
-
-    def _render_ultrasound_channel(self, channel_index: int) -> None:
-        self._bind_selected_ultrasound_history(channel_index)
-        if self._ultrasound_history:
-            image = np.stack(
-                [item[1] for item in self._ultrasound_history], axis=0
-            )
-            self.ultrasound_waterfall_image.setImage(image, autoLevels=True)
-        else:
-            self.ultrasound_waterfall_image.clear()
-        self.ultrasound_peak_depth_curve.setData(
-            list(self._ultrasound_trend_x),
-            list(self._ultrasound_peak_depth),
-        )
-        self.ultrasound_peak_strength_curve.setData(
-            list(self._ultrasound_trend_x),
-            list(self._ultrasound_peak_strength),
-        )
-        if self._ultrasound_peak_depth and self._ultrasound_peak_strength:
-            peak_index = int(self._ultrasound_peak_depth[-1])
-            peak_strength = float(self._ultrasound_peak_strength[-1])
-            metric = self._ultrasound_format_metrics.get(channel_index, {})
-            zero_fraction = metric.get("zero_fraction")
-            full_scale_fraction = metric.get("full_scale_fraction")
-            format_text = "格式指标：等待"
-            if isinstance(zero_fraction, (int, float)):
-                format_text = f"零值 {float(zero_fraction):.2%}"
-                if isinstance(full_scale_fraction, (int, float)):
-                    format_text += f" / 满量程 {float(full_scale_fraction):.2%}"
-            self.ultrasound_peak_label.setText(
-                f"通道 {channel_index + 1} · 峰值深度索引 {peak_index} · "
-                f"峰值强度 {peak_strength:.3g} · {format_text} · "
-                "信号弱/边界/滑移：UNASSESSED（待真实设备标定）"
-            )
-        else:
-            self.ultrasound_peak_label.setText(
-                f"通道 {channel_index + 1} · 等待数据 · 自动阈值待真实设备标定"
-            )
-
-    def _set_ultrasound_channel_count(self, channel_count: int) -> None:
-        if channel_count <= 0 or self.ultrasound_channel_combo.count() == channel_count:
-            return
-        previous = self.ultrasound_channel_combo.currentIndex()
-        self.ultrasound_channel_combo.blockSignals(True)
-        self.ultrasound_channel_combo.clear()
-        for index in range(channel_count):
-            self.ultrasound_channel_combo.addItem(f"通道 {index + 1}", index)
-        self.ultrasound_channel_combo.setCurrentIndex(min(previous, channel_count - 1))
-        self.ultrasound_channel_combo.blockSignals(False)
-
-    @Slot(int)
-    def _on_ultrasound_channel_changed(self, index: int) -> None:
-        if 0 <= index < len(self._latest_ultrasound_channels):
-            values = self._latest_ultrasound_channels[index]
-            self.ultrasound_curve.setData(list(range(len(values))), values)
-            self.ultrasound_plot.setTitle(f"A-scan · 通道 {index + 1}")
-        self._render_ultrasound_channel(max(index, 0))
-
-    def _clear_ultrasound_trends(self) -> None:
-        self._ultrasound_trend_x.clear()
-        self._ultrasound_peak_depth.clear()
-        self._ultrasound_peak_strength.clear()
-        self.ultrasound_peak_depth_curve.setData([], [])
-        self.ultrasound_peak_strength_curve.setData([], [])
-        self.ultrasound_peak_label.setText(
-            "峰值：等待数据 · 自动阈值待真实设备标定"
-        )
+    def _preview_series(
+        payload: Mapping[str, Any],
+        expected_labels: tuple[str, ...],
+    ) -> list[tuple[str, object]]:
+        channels = payload.get("channels")
+        if isinstance(channels, Mapping):
+            return [
+                (label, channels[label])
+                for label in expected_labels
+                if label in channels
+            ]
+        if isinstance(channels, (list, tuple)):
+            labels = payload.get("labels")
+            provided_labels = labels if isinstance(labels, (list, tuple)) else ()
+            result: list[tuple[str, object]] = []
+            for index, values in enumerate(channels[: len(expected_labels)]):
+                candidate = (
+                    str(provided_labels[index])
+                    if index < len(provided_labels)
+                    else expected_labels[index]
+                )
+                label = candidate if candidate in expected_labels else expected_labels[index]
+                result.append((label, values))
+            return result
+        streams = payload.get("streams")
+        if isinstance(streams, (list, tuple)):
+            result = []
+            for index, stream in enumerate(streams[: len(expected_labels)]):
+                if not isinstance(stream, Mapping):
+                    continue
+                candidate = str(stream.get("label") or expected_labels[index])
+                label = candidate if candidate in expected_labels else expected_labels[index]
+                result.append((label, stream.get("values")))
+            return result
+        legacy_values = payload.get("values")
+        return [(expected_labels[0], legacy_values)] if legacy_values is not None else []
 
     def _add_timeline_event(self, category: int, text: str) -> None:
         elapsed = max(0.0, time.monotonic() - self._timeline_started_at)

@@ -454,29 +454,47 @@ def _preview_event(event: FrameBatch | SampleBatch, trial_uuid: UUID) -> WorkerE
             "shape": [int(value) for value in frame.shape],
             "preview_sample_count": int(channels[0].size),
             "geometry": "a_line" if is_multichannel_a_line else "frame",
-            # These are format-level observations, not uncalibrated claims
-            # about weak signal, anatomy boundaries or probe slip.
             "format_metrics": [format_metrics(channel) for channel in source_channels],
         }
     else:
-        modality = event.modality
-        if modality == "imu":
-            signal = values[:, 0, 0]
-            channel = "acc_x"
-        elif modality == "encoder":
-            signal = values[:, 0]
-            channel = "left_position"
+        if event.modality == "imu":
+            labels = ("imu_trunk", "imu_left", "imu_right")
+            channels = [
+                values[:, device_index, 0].astype(float).tolist()
+                for device_index in range(min(values.shape[1], len(labels)))
+            ]
+            payload = {
+                "host_monotonic_ns": event.host_monotonic_ns,
+                "values": channels[0] if channels else [],
+                "channels": channels,
+                "labels": list(labels[: len(channels)]),
+                "channel": "acc_x",
+                "channel_count": len(channels),
+            }
+        elif event.modality == "encoder":
+            labels = ("left_position", "right_position")
+            channels = [
+                values[:, 0].astype(float).tolist(),
+                values[:, 3].astype(float).tolist(),
+            ]
+            payload = {
+                "host_monotonic_ns": event.host_monotonic_ns,
+                "values": channels[0],
+                "channels": channels,
+                "labels": list(labels),
+                "channel": "position",
+                "channel_count": len(channels),
+            }
         else:
             signal = values[:, 0]
-            channel = "voltage"
-        rate = event.sample_rate_hz or 1.0
-        x = (event.first_sample_index + np.arange(signal.size)) / rate
-        payload = {
-            "host_monotonic_ns": event.host_monotonic_ns,
-            "x": x.astype(float).tolist(),
-            "values": signal.astype(float).tolist(),
-            "channel": channel,
-        }
+            rate = event.sample_rate_hz or 1.0
+            x = (event.first_sample_index + np.arange(signal.size)) / rate
+            payload = {
+                "host_monotonic_ns": event.host_monotonic_ns,
+                "x": x.astype(float).tolist(),
+                "values": signal.astype(float).tolist(),
+                "channel": "voltage",
+            }
     return WorkerEvent(
         event_type=WorkerEventType.PREVIEW,
         trial_uuid=str(trial_uuid),

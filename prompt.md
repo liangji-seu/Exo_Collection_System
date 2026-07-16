@@ -168,9 +168,11 @@ git remote -v
 - 顶部总状态：未连接、等待同步、可采集、采集中、保存中、失败。
 - 设备表：连接/健康、样本或帧数、实际速率、丢包、队列、最近更新时间。
 - 同步面板：状态、trigger 计数、首触发、质量。
-- 四通道 A-mode 预览：当前 A-scan、最近 8 秒灰度瀑布、峰值深度趋势、峰值强度趋势；切换通道不能混淆历史。
-- IMU、Encoder 实时曲线和同步/状态/告警时间线。
-- 全零等格式级异常可直接报警；弱信号、边界、滑移和依赖真实标定的阈值必须明确显示 `UNASSESSED`。
+- 四通道 A-mode 预览：四个窗口同时显示各通道当前单帧，固定横轴长度；Collector 不显示灰度瀑布、峰值深度趋势或峰值强度趋势，也不使用通道切换框。
+- 三个 IMU 各一个固定长度循环曲线窗口；左右两个电机编码器各一个固定长度循环曲线窗口。新帧从左到右原位覆盖，到达右边界后从左侧继续，红色竖线标记最新更新帧；横轴不能随采集增长、整体滚动或由用户缩放改变。
+- IMU 多设备和编码器左右通道必须通过带标签的多通道共享内存 preview payload 传输，不能重复单路数据或把批量数组直接塞进 UI 进程队列。
+- 全零等格式级异常可直接报警；依赖真实标定的弱信号、边界或滑移阈值不得擅自虚构。
+- 保留同步/状态/告警时间线，但不得挤占核心 4 + 3 + 2 个预览窗口。
 - 实验元数据对话框：身高、体重、腿长、性别、年龄、肌肉、左右侧、近中远位置、4 通道映射、固定方式、绑带压力描述、是否重贴、跑台速度、助力、负载、坡度和 Trial 备注。
 - 元数据已按 `(project_code, subject_code)` 隔离，受试者切换不能串数据；工况切换应清除 measured condition 和 trial notes；一次性备注/重贴字段在 Trial 后不能静默沿用。必须复核这一实现是否完整。
 - WorkerEvent 必须校验 `trial_uuid`，其他 Trial 的事件不能改变当前 Trial UI 或最终状态。
@@ -750,7 +752,7 @@ src/exo_collection/catalog/repositories.py
 建议消息：
 
 ```text
-Complete Collector preflight sync workflow and A-mode quality preview
+Complete Collector preflight sync workflow and fixed multimodal preview
 ```
 
 包含：

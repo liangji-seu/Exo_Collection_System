@@ -49,7 +49,7 @@ IMU_UNITS = (
 class SimulatedImuConfig(SimulationConfig):
     device_id: str = "imu_sim"
     clock_domain: str = "imu_sim_clock"
-    device_ids: tuple[str, ...] = ("imu_left", "imu_right")
+    device_ids: tuple[str, ...] = ("imu_trunk", "imu_left", "imu_right")
     sample_rate_hz: float = 200.0
     samples_per_batch: int = 20
     noise_fraction: float = 0.002

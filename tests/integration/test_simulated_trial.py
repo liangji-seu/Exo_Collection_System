@@ -330,9 +330,29 @@ def test_collector_worker_runs_acquisition_outside_ui_process(tmp_path) -> None:
         ]
         assert signal_previews
         for preview in signal_previews:
-            assert len(preview.payload["x"]) == len(preview.payload["values"])
             marker = preview.payload["shared_preview"]
             assert marker["observed_generation"] == marker["generation"]
+            assert len(preview.payload["channels"]) == marker["channel_count"]
+            assert len(preview.payload["labels"]) == marker["channel_count"]
+            assert all(
+                len(channel) == marker["points_per_channel"]
+                for channel in preview.payload["channels"]
+            )
+        latest_imu = next(
+            event for event in reversed(signal_previews) if event.modality == "imu"
+        )
+        latest_encoder = next(
+            event for event in reversed(signal_previews) if event.modality == "encoder"
+        )
+        assert latest_imu.payload["labels"] == [
+            "imu_trunk",
+            "imu_left",
+            "imu_right",
+        ]
+        assert latest_encoder.payload["labels"] == [
+            "left_position",
+            "right_position",
+        ]
     finally:
         worker.close()
 
