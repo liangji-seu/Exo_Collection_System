@@ -104,7 +104,28 @@ def _run_ui(
     window = CollectorWindow(data_root, settings=settings)
     window.show()
     if smoke_test:
-        QTimer.singleShot(50, app.quit)
+        # The existing internal UI smoke also exercises the spawn-based device
+        # preflight. This is essential for PyInstaller: a window-only check
+        # cannot detect missing frozen child modules or broken freeze_support.
+        smoke_deadline = time.monotonic() + 30.0
+        smoke_started = {"value": False}
+
+        def poll_preflight_smoke() -> None:
+            if not smoke_started["value"]:
+                smoke_started["value"] = True
+                window.run_preflight()
+            if not window.preflight_in_progress:
+                app.exit(0 if window.preflight_ready else 1)
+                return
+            if time.monotonic() >= smoke_deadline:
+                window.statusBar().showMessage(
+                    "Frozen preflight smoke timed out; terminating child process."
+                )
+                app.exit(2)
+                return
+            QTimer.singleShot(50, poll_preflight_smoke)
+
+        QTimer.singleShot(0, poll_preflight_smoke)
     exit_code = int(app.exec())
     # QApplication.quit()/Windows session shutdown can end the Qt event loop
     # before closeEvent has completed a live Trial. Keep pumping the existing
