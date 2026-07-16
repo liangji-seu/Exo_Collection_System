@@ -188,6 +188,9 @@ def test_waterfall_peak_trend_combo_removed(tmp_path: Path) -> None:
     assert window.findChild(QWidget, "ultrasound_peak_depth") is None
     assert window.findChild(QWidget, "ultrasound_peak_strength") is None
     assert window.findChild(QWidget, "ultrasound_peak_metrics") is None
+    assert window.findChild(QWidget, "event_timeline") is None
+    assert not hasattr(window, "timeline_plot")
+    assert not hasattr(window, "timeline_curve")
     window.close()
 
 
@@ -278,6 +281,7 @@ def test_ring_trace_wraps_at_capacity() -> None:
     assert list(x_data) == [0.0, 1.0, 2.0, 3.0, 4.0]
     assert np.isnan(y_data[2])  # break between newest and oldest retained data
     assert plot.getViewBox().state["limits"]["xLimits"] == [0, 4]
+    assert plot.getViewBox().state["mouseEnabled"] == [False, False]
     app.processEvents()
 
 
@@ -417,6 +421,61 @@ def test_preferred_labeled_channel_payload_updates_each_ring(tmp_path: Path) -> 
     assert window._imu_traces["imu_trunk"]._buffer[0] == 1.0
     assert window._imu_traces["imu_left"]._buffer[0] == 2.0
     assert window._imu_traces["imu_right"]._buffer[0] == 3.0
+    window.close()
+
+
+def test_preview_y_axes_lock_once_and_are_shared_per_modality(tmp_path: Path) -> None:
+    _app, window, _created = _window_with_fake(tmp_path)
+    events = (
+        WorkerEvent(
+            event_type=WorkerEventType.PREVIEW,
+            modality="ultrasound",
+            payload={"channels": [[0.0, 100.0], [0.0, 200.0]] * 2},
+        ),
+        WorkerEvent(
+            event_type=WorkerEventType.PREVIEW,
+            modality="imu",
+            payload={
+                "labels": ["imu_trunk", "imu_left", "imu_right"],
+                "channels": [[-1.0, 0.5], [-0.5, 1.0], [-0.75, 0.75]],
+            },
+        ),
+        WorkerEvent(
+            event_type=WorkerEventType.PREVIEW,
+            modality="encoder",
+            payload={
+                "labels": ["left_position", "right_position"],
+                "channels": [[-0.4, 0.4], [0.4, -0.4]],
+            },
+        ),
+    )
+    for event in events:
+        window._handle_worker_event(event)
+
+    plot_groups = {
+        "ultrasound": window._us_plots,
+        "imu": [trace.plot for trace in window._imu_traces.values()],
+        "encoder": [trace.plot for trace in window._enc_traces.values()],
+    }
+    locked = dict(window._preview_y_ranges)
+    assert set(locked) == {"ultrasound", "imu", "encoder"}
+    for modality, plots in plot_groups.items():
+        expected = locked[modality]
+        for plot in plots:
+            assert np.allclose(plot.getViewBox().viewRange()[1], expected)
+            assert plot.getViewBox().state["mouseEnabled"] == [False, False]
+
+    # Later out-of-range samples must not silently rescale any vertical axis.
+    window._handle_worker_event(
+        WorkerEvent(
+            event_type=WorkerEventType.PREVIEW,
+            modality="imu",
+            payload={"labels": ["imu_trunk"], "channels": [[-100.0, 100.0]]},
+        )
+    )
+    assert window._preview_y_ranges == locked
+    for plot in plot_groups["imu"]:
+        assert np.allclose(plot.getViewBox().viewRange()[1], locked["imu"])
     window.close()
 
 
@@ -717,7 +776,8 @@ def test_collector_locks_condition_polls_events_and_finalizes(tmp_path: Path) ->
     assert window.sync_quality_label.text() == "PASS"
     assert window.trigger_count_label.text() == "1"
     assert "123456" in window.first_trigger_label.text()
-    assert len(window.timeline_curve.getData()[0]) >= 4
+    assert len(window._timeline_x) >= 4
+    assert len(window._timeline_text) == len(window._timeline_x)
 
     window.stop_button.click()
     assert worker.stop_requests == 1
@@ -896,8 +956,9 @@ def test_missing_sync_trigger_is_prominent_and_never_looks_recording(
     alerts = window.alerts_edit.toPlainText()
     assert alerts.count("未检测到合格同步触发") == 1
     assert "background:#f8d7da" in window.sync_status_label.styleSheet()
-    assert "MISSING_TRIGGER" in window.timeline_last_event_label.text() or "FAILED" in (
-        window.timeline_last_event_label.text()
+    assert any(
+        "MISSING_TRIGGER" in text or "FAILED" in text
+        for text in window._timeline_text
     )
     window.close()
 

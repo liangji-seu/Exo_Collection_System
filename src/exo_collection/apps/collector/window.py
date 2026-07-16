@@ -416,6 +416,7 @@ class RingTrace:
         "_x",
         "curve",
         "cursor_line",
+        "plot",
     )
 
     def __init__(
@@ -433,6 +434,7 @@ class RingTrace:
         self._x = np.arange(self._capacity, dtype=np.float64)
         self._cursor = 0
         self._count = 0
+        self.plot = plot
 
         self.curve = plot.plot(pen=pg.mkPen(pen, width=1.2))
         self.cursor_line = pg.InfiniteLine(
@@ -450,7 +452,7 @@ class RingTrace:
             minXRange=self._capacity - 1,
             maxXRange=self._capacity - 1,
         )
-        plot.setMouseEnabled(x=False, y=True)
+        plot.setMouseEnabled(x=False, y=False)
         plot.setLabel("bottom", "循环帧位置")
         plot.showGrid(x=True, y=True, alpha=0.2)
         self.curve.setData(self._x, self._buffer)
@@ -561,9 +563,11 @@ class CollectorWindow(QMainWindow):
         self._ultrasound_format_alerted: set[tuple[int, str]] = set()
         self._imu_traces: dict[str, RingTrace] = {}
         self._enc_traces: dict[str, RingTrace] = {}
+        self._preview_y_ranges: dict[str, tuple[float, float]] = {}
         self._timeline_started_at = time.monotonic()
         self._timeline_x: deque[float] = deque(maxlen=MAX_TIMELINE_EVENTS)
         self._timeline_y: deque[float] = deque(maxlen=MAX_TIMELINE_EVENTS)
+        self._timeline_text: deque[str] = deque(maxlen=MAX_TIMELINE_EVENTS)
 
         self.setWindowTitle("Exo Collector")
         self.resize(1280, 820)
@@ -799,7 +803,7 @@ class CollectorWindow(QMainWindow):
                 minXRange=ULTRASOUND_PREVIEW_SAMPLES - 1,
                 maxXRange=ULTRASOUND_PREVIEW_SAMPLES - 1,
             )
-            plot.setMouseEnabled(x=False, y=True)
+            plot.setMouseEnabled(x=False, y=False)
             plot.setLabel("bottom", "单帧采样点")
             plot.showGrid(x=True, y=True, alpha=0.2)
             curve = plot.plot(pen=pg.mkPen("#2457c5", width=1.2))
@@ -843,30 +847,6 @@ class CollectorWindow(QMainWindow):
             enc_layout.addWidget(plot, 1)
         preview_layout.addWidget(enc_grid, 2)
 
-        # ── Row 4: Event timeline ──
-        timeline_box = QWidget()
-        timeline_layout = QVBoxLayout(timeline_box)
-        timeline_layout.setContentsMargins(0, 0, 0, 0)
-        self.timeline_plot = pg.PlotWidget(title="同步 / 事件时间线")
-        self.timeline_plot.setObjectName("event_timeline")
-        self.timeline_plot.setBackground("w")
-        self.timeline_plot.setLabel("bottom", "UI elapsed", units="s")
-        self.timeline_plot.getAxis("left").setTicks(
-            [[(0, "状态"), (1, "同步"), (2, "告警")]]
-        )
-        self.timeline_plot.setYRange(-0.5, 2.5, padding=0)
-        self.timeline_curve = self.timeline_plot.plot(
-            pen=None,
-            symbol="o",
-            symbolSize=7,
-            symbolBrush="#6f42c1",
-        )
-        timeline_layout.addWidget(self.timeline_plot, 1)
-        self.timeline_last_event_label = QLabel("尚无事件")
-        self.timeline_last_event_label.setObjectName("timeline_last_event")
-        timeline_layout.addWidget(self.timeline_last_event_label)
-        timeline_box.setMaximumHeight(125)
-        preview_layout.addWidget(timeline_box, 1)
         body.addWidget(preview_box)
         body.setSizes([470, 790])
         outer.addWidget(body, 1)
@@ -1425,8 +1405,7 @@ class CollectorWindow(QMainWindow):
         self._timeline_started_at = time.monotonic()
         self._timeline_x.clear()
         self._timeline_y.clear()
-        self.timeline_curve.setData([], [])
-        self.timeline_last_event_label.setText("Trial 已创建，等待同步")
+        self._timeline_text.clear()
         self._add_timeline_event(0, "PREPARING")
 
     @Slot()
@@ -1708,38 +1687,95 @@ class CollectorWindow(QMainWindow):
                     self._append_alert(message)
                     self._add_timeline_event(2, message)
                     self._ultrasound_format_alerted.add(alert_key)
+            prepared_channels: list[tuple[int, list[float]]] = []
             for i, raw_channel in enumerate(raw_channels):
                 if i >= len(self._us_curves):
                     break
                 values = self._numeric_values(raw_channel)
                 if values:
-                    self._us_curves[i].setData(
-                        self._us_x,
-                        self._fixed_ultrasound_frame(values),
-                    )
+                    prepared_channels.append((i, values))
+            self._lock_preview_y_axis(
+                "ultrasound",
+                [values for _index, values in prepared_channels],
+                self._us_plots,
+            )
+            for index, values in prepared_channels:
+                self._us_curves[index].setData(
+                    self._us_x,
+                    self._fixed_ultrasound_frame(values),
+                )
             return
 
         if modality == "imu":
+            prepared_series: list[tuple[str, list[float]]] = []
             for label, values in self._preview_series(
                 event.payload,
                 IMU_PREVIEW_LABELS,
             ):
-                trace = self._imu_traces.get(label)
                 numeric = self._numeric_values(values)
-                if trace is not None and numeric:
-                    trace.append(numeric)
+                if label in self._imu_traces and numeric:
+                    prepared_series.append((label, numeric))
+            self._lock_preview_y_axis(
+                "imu",
+                [values for _label, values in prepared_series],
+                [trace.plot for trace in self._imu_traces.values()],
+            )
+            for label, values in prepared_series:
+                self._imu_traces[label].append(values)
             return
 
         if modality == "encoder":
+            prepared_series = []
             for label, values in self._preview_series(
                 event.payload,
                 ENCODER_PREVIEW_LABELS,
             ):
-                trace = self._enc_traces.get(label)
                 numeric = self._numeric_values(values)
-                if trace is not None and numeric:
-                    trace.append(numeric)
+                if label in self._enc_traces and numeric:
+                    prepared_series.append((label, numeric))
+            self._lock_preview_y_axis(
+                "encoder",
+                [values for _label, values in prepared_series],
+                [trace.plot for trace in self._enc_traces.values()],
+            )
+            for label, values in prepared_series:
+                self._enc_traces[label].append(values)
             return
+
+    def _lock_preview_y_axis(
+        self,
+        modality: str,
+        series: list[list[float]],
+        plots: list["pg.PlotWidget"],
+    ) -> None:
+        if modality in self._preview_y_ranges or not series:
+            return
+        values = np.concatenate(
+            [np.asarray(channel, dtype=np.float64) for channel in series]
+        )
+        finite = values[np.isfinite(values)]
+        if not finite.size:
+            return
+        minimum = float(np.min(finite))
+        maximum = float(np.max(finite))
+        if modality == "ultrasound" and minimum >= 0:
+            lower = 0.0
+            upper = max(1.0, maximum * 1.1)
+        else:
+            extent = max(abs(minimum), abs(maximum), 1e-6) * 1.1
+            lower = -extent
+            upper = extent
+        span = upper - lower
+        self._preview_y_ranges[modality] = (lower, upper)
+        for plot in plots:
+            plot.setYRange(lower, upper, padding=0)
+            plot.setLimits(
+                yMin=lower,
+                yMax=upper,
+                minYRange=span,
+                maxYRange=span,
+            )
+            plot.setMouseEnabled(x=False, y=False)
 
     def _fixed_ultrasound_frame(self, values: list[float]) -> np.ndarray:
         source = np.asarray(values, dtype=np.float64)
@@ -1801,8 +1837,7 @@ class CollectorWindow(QMainWindow):
         elapsed = max(0.0, time.monotonic() - self._timeline_started_at)
         self._timeline_x.append(elapsed)
         self._timeline_y.append(float(category))
-        self.timeline_curve.setData(list(self._timeline_x), list(self._timeline_y))
-        self.timeline_last_event_label.setText(text)
+        self._timeline_text.append(text)
 
     @staticmethod
     def _numeric_values(value: object) -> list[float]:
