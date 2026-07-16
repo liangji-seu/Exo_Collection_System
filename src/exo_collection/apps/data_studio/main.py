@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import multiprocessing
 import os
 import sys
 from pathlib import Path
@@ -58,23 +59,51 @@ def _run_ui(
     if not smoke_test:
         return int(app.exec())
 
-    result = {"completed": False, "succeeded": False}
+    result = {
+        "catalog_completed": False,
+        "catalog_succeeded": False,
+        "management_completed": False,
+        "management_succeeded": False,
+    }
 
-    def finish(succeeded: bool) -> None:
-        result["completed"] = True
-        result["succeeded"] = succeeded
-        QTimer.singleShot(0, app.quit)
+    def catalog_finished(succeeded: bool) -> None:
+        result["catalog_completed"] = True
+        result["catalog_succeeded"] = succeeded
+        if result["management_completed"]:
+            window._thread_pool.waitForDone(10_000)
+            QTimer.singleShot(0, app.quit)
 
-    window.refresh_finished.connect(finish)
+    def management_finished(succeeded: bool) -> None:
+        result["management_completed"] = True
+        result["management_succeeded"] = succeeded
+        if result["catalog_completed"]:
+            window._thread_pool.waitForDone(10_000)
+            QTimer.singleShot(0, app.quit)
+
+    window.refresh_finished.connect(catalog_finished)
+    window.management_refresh_finished.connect(management_finished)
     # The timeout is a test failure, while still guaranteeing a non-hanging
-    # packaging/startup probe on machines with a broken SQLite environment.
-    QTimer.singleShot(10_000, app.quit)
+    # packaging/startup probe on machines with a broken SQLite or Windows
+    # spawn environment. Success requires both the Catalog thread and the
+    # management/annex process to import, execute and return a result.
+    QTimer.singleShot(30_000, app.quit)
     window.refresh_catalog()
     exit_code = int(app.exec())
+    # The QRunnable may still hold SQLAlchemy objects when app.quit() fires.
+    # Wait synchronously so Python GC on the main thread does not collide with
+    # the worker thread's still-live SQLAlchemy C extensions.
+    window._thread_pool.waitForDone(10_000)
     window.close()
     if exit_code != 0:
         return exit_code
-    return 0 if result["completed"] and result["succeeded"] else 1
+    return (
+        0
+        if result["catalog_completed"]
+        and result["catalog_succeeded"]
+        and result["management_completed"]
+        and result["management_succeeded"]
+        else 1
+    )
 
 
 def main(
@@ -82,6 +111,7 @@ def main(
     *,
     settings: SharedAppSettings | None = None,
 ) -> int:
+    multiprocessing.freeze_support()
     arguments = list(argv) if argv is not None else sys.argv[1:]
     options = _build_parser().parse_args(arguments)
     if options.smoke_test:
