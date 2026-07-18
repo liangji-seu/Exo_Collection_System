@@ -7,11 +7,18 @@ import pytest
 from pydantic import ValidationError
 
 from exo_collection.configuration.device_profiles import (
+    HardwareDeviceProfileDocument,
     ImuSimulationParameters,
     SimulatedDeviceProfileDocument,
     default_simulated_device_profile_path,
+    load_device_profile,
     load_simulated_device_profile,
 )
+from exo_collection.configuration.adapter_registry import build_adapters
+from exo_collection.adapters.encoder.teensy_serial import TeensySerialEncoderAdapter
+from exo_collection.adapters.imu.xsens_awinda import XsensAwindaImuAdapter
+from exo_collection.adapters.sync_pulse.simulated import SimulatedSyncPulseAdapter
+from exo_collection.adapters.ultrasound.elonxi import ElonxiUltrasoundAdapter
 from exo_collection.orchestration.models import TrialRunRequest
 from exo_collection.orchestration.simulated import _make_adapters
 
@@ -98,3 +105,36 @@ def test_static_adapter_factory_applies_profile_then_request_overrides(tmp_path:
     )
     with pytest.raises(ValueError, match="Unknown simulated modality override"):
         _make_adapters(invalid_request, profile)
+
+
+def test_hardware_profile_is_strict_and_explicitly_has_simulated_sync() -> None:
+    profile = load_device_profile("hardware")
+    assert isinstance(profile, HardwareDeviceProfileDocument)
+    assert profile.display_name == "真实三设备 + 模拟同步（台架验证）"
+    assert profile.laboratory_sync_ready is False
+    devices = profile.by_modality()
+    assert [devices[name].simulated for name in devices] == [False, False, False, True]
+    assert devices["ultrasound"].parameters.sdk_path is None
+    assert devices["imu"].parameters.sensor_ids == ()
+    assert devices["encoder"].parameters.port is None
+
+
+def test_hardware_registry_constructs_without_loading_vendor_sdks() -> None:
+    adapters = build_adapters(load_device_profile("hardware"))
+    assert isinstance(adapters["ultrasound"], ElonxiUltrasoundAdapter)
+    assert isinstance(adapters["imu"], XsensAwindaImuAdapter)
+    assert isinstance(adapters["encoder"], TeensySerialEncoderAdapter)
+    assert isinstance(adapters["sync_pulse"], SimulatedSyncPulseAdapter)
+    assert adapters["ultrasound"].descriptor().metadata["simulated"] is False
+
+
+def test_hardware_overrides_are_strictly_revalidated() -> None:
+    profile = load_device_profile("hardware")
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        build_adapters(profile, {"imu": {"invented": 1}})
+    with pytest.raises(ValidationError, match="expected_device_count"):
+        build_adapters(profile, {"imu": {"expected_device_count": 2}})
+    with pytest.raises(ValidationError, match="channels"):
+        build_adapters(profile, {"ultrasound": {"channels": [1, 2, 3, 9]}})
+    with pytest.raises(ValueError, match="unknown device override modality"):
+        build_adapters(profile, {"camera": {}})

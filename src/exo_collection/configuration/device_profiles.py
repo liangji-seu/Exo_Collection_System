@@ -31,6 +31,13 @@ ULTRASOUND_ADAPTER = "exo_collection.adapters.simulated.SimulatedUltrasoundAdapt
 IMU_ADAPTER = "exo_collection.adapters.simulated.SimulatedImuAdapter"
 ENCODER_ADAPTER = "exo_collection.adapters.simulated.SimulatedEncoderAdapter"
 SYNC_PULSE_ADAPTER = "exo_collection.adapters.simulated.SimulatedSyncPulseAdapter"
+ELONXI_ULTRASOUND_ADAPTER = (
+    "exo_collection.adapters.ultrasound.ElonxiUltrasoundAdapter"
+)
+XSENS_AWINDA_ADAPTER = "exo_collection.adapters.imu.XsensAwindaImuAdapter"
+TEENSY_ENCODER_ADAPTER = (
+    "exo_collection.adapters.encoder.TeensySerialEncoderAdapter"
+)
 
 
 class ProfileModel(BaseModel):
@@ -176,6 +183,8 @@ SimulatedDeviceProfile: TypeAlias = Annotated[
 
 
 class SimulatedDeviceProfileDocument(ProfileModel):
+    profile_kind: Literal["simulated"] = "simulated"
+    display_name: NonEmptyStr = "内置模拟设备"
     schema_version: Literal["1.0.0"]
     devices: tuple[SimulatedDeviceProfile, ...]
 
@@ -197,6 +206,143 @@ class SimulatedDeviceProfileDocument(ProfileModel):
 
     def by_modality(self) -> dict[str, SimulatedDeviceProfile]:
         return {device.modality: device for device in self.devices}
+
+
+class HardwareUltrasoundParameters(ProfileModel):
+    sdk_path: NonEmptyStr | None = None
+    device_ip: NonEmptyStr | None = None
+    port: int = Field(default=1430, ge=1, le=65535)
+    channels: tuple[int, int, int, int] = (1, 2, 3, 4)
+    samples_per_channel: int = Field(default=1000, gt=0)
+    nominal_rate_hz: float = Field(default=20.0, gt=0)
+    queue_capacity: int = Field(default=64, gt=0)
+    discovery_timeout_s: float = Field(default=10.0, ge=0)
+
+    @field_validator("channels")
+    @classmethod
+    def validate_channels(cls, value: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+        if tuple(value) != (1, 2, 3, 4):
+            raise ValueError("Elonxi channels must be exactly [1, 2, 3, 4]")
+        return value
+
+
+class HardwareImuParameters(ProfileModel):
+    radio_channel: int = Field(default=25, ge=11, le=25)
+    sample_rate_hz: float = Field(default=200.0, gt=0)
+    expected_device_count: Literal[3] = 3
+    sensor_ids: tuple[NonEmptyStr, ...] = ()
+    wait_timeout_s: float = Field(default=15.0, gt=0)
+    stable_wait_s: float = Field(default=3.0, ge=0)
+    poll_interval_s: float = Field(default=0.25, gt=0)
+    pending_group_limit: int = Field(default=128, gt=0)
+    queue_capacity: int = Field(default=256, gt=0)
+
+    @field_validator("sensor_ids")
+    @classmethod
+    def validate_sensor_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if value and (len(value) != 3 or len(set(value)) != 3):
+            raise ValueError("sensor_ids must be empty or contain three unique IDs")
+        return value
+
+
+class HardwareEncoderParameters(ProfileModel):
+    port: NonEmptyStr | None = None
+    baudrate: int = Field(default=9600, gt=0)
+    vid: int = Field(default=0x16C0, ge=0, le=0xFFFF)
+    pid: int = Field(default=0x0483, ge=0, le=0xFFFF)
+    nominal_rate_hz: float = Field(default=100.0, gt=0)
+    batch_size: int = Field(default=20, gt=0)
+    queue_capacity: int = Field(default=256, gt=0)
+    read_size: int = Field(default=128, gt=0)
+    read_timeout_s: float = Field(default=0.05, gt=0)
+
+
+class HardwareDeviceProfileBase(ProfileModel):
+    device_id: NonEmptyStr = Field(alias="id")
+    required: bool
+    clock_domain: NonEmptyStr
+    simulated: bool
+
+    def adapter_configuration(self) -> dict[str, Any]:
+        parameters = self.parameters.model_dump(exclude_none=True)  # type: ignore[attr-defined]
+        return {
+            "device_id": self.device_id,
+            "clock_domain": self.clock_domain,
+            **parameters,
+        }
+
+
+class HardwareUltrasoundDeviceProfile(HardwareDeviceProfileBase):
+    modality: Literal["ultrasound"]
+    adapter: Literal[ELONXI_ULTRASOUND_ADAPTER]
+    writer: Literal["block_binary"]
+    simulated: Literal[False]
+    parameters: HardwareUltrasoundParameters
+
+
+class HardwareImuDeviceProfile(HardwareDeviceProfileBase):
+    modality: Literal["imu"]
+    adapter: Literal[XSENS_AWINDA_ADAPTER]
+    writer: Literal["hdf5_signal"]
+    simulated: Literal[False]
+    parameters: HardwareImuParameters
+
+
+class HardwareEncoderDeviceProfile(HardwareDeviceProfileBase):
+    modality: Literal["encoder"]
+    adapter: Literal[TEENSY_ENCODER_ADAPTER]
+    writer: Literal["hdf5_signal"]
+    simulated: Literal[False]
+    parameters: HardwareEncoderParameters
+
+
+class HardwareSyncPulseDeviceProfile(DeviceProfileBase):
+    modality: Literal["sync_pulse"]
+    adapter: Literal[SYNC_PULSE_ADAPTER]
+    writer: Literal["hdf5_signal"]
+    simulated: Literal[True]
+    parameters: SyncPulseSimulationParameters
+
+
+HardwareDeviceProfile: TypeAlias = Annotated[
+    HardwareUltrasoundDeviceProfile
+    | HardwareImuDeviceProfile
+    | HardwareEncoderDeviceProfile
+    | HardwareSyncPulseDeviceProfile,
+    Field(discriminator="modality"),
+]
+
+
+class HardwareDeviceProfileDocument(ProfileModel):
+    profile_kind: Literal["hardware"]
+    display_name: NonEmptyStr = "真实三设备 + 模拟同步（台架验证）"
+    schema_version: Literal["1.0.0"]
+    laboratory_sync_ready: Literal[False]
+    devices: tuple[HardwareDeviceProfile, ...]
+
+    @model_validator(mode="after")
+    def validate_complete_profile(self) -> HardwareDeviceProfileDocument:
+        modalities = [device.modality for device in self.devices]
+        expected = {"ultrasound", "imu", "encoder", "sync_pulse"}
+        if set(modalities) != expected or len(modalities) != len(expected):
+            raise ValueError(
+                "hardware profile must define ultrasound, imu, encoder, and sync_pulse exactly once"
+            )
+        device_ids = [device.device_id for device in self.devices]
+        clock_domains = [device.clock_domain for device in self.devices]
+        if len(device_ids) != len(set(device_ids)):
+            raise ValueError("hardware device ids must be unique")
+        if len(clock_domains) != len(set(clock_domains)):
+            raise ValueError("hardware clock domains must be unique")
+        return self
+
+    def by_modality(self) -> dict[str, HardwareDeviceProfile]:
+        return {device.modality: device for device in self.devices}
+
+
+DeviceProfileDocument: TypeAlias = (
+    SimulatedDeviceProfileDocument | HardwareDeviceProfileDocument
+)
 
 
 def _default_profile_candidates() -> list[Path]:
@@ -247,3 +393,36 @@ def load_simulated_device_profile(
     except json.JSONDecodeError as exc:
         raise ValueError(f"invalid simulated device profile JSON at {source}: {exc}") from exc
     return SimulatedDeviceProfileDocument.model_validate(payload)
+
+
+def default_device_profile_path(key: Literal["simulated", "hardware"]) -> Path:
+    filename = f"{key}.json"
+    candidates = [candidate.with_name(filename) for candidate in _default_profile_candidates()]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    searched = "\n".join(f"- {candidate}" for candidate in candidates)
+    raise FileNotFoundError(f"{key} device profile not found; searched:\n{searched}")
+
+
+def load_device_profile(
+    key_or_path: Literal["simulated", "hardware"] | str | Path = "simulated",
+) -> DeviceProfileDocument:
+    text = str(key_or_path)
+    source = (
+        default_device_profile_path(text)  # type: ignore[arg-type]
+        if text in {"simulated", "hardware"}
+        else Path(key_or_path).expanduser().resolve()
+    )
+    if not source.is_file():
+        raise FileNotFoundError(source)
+    try:
+        payload = json.loads(source.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid device profile JSON at {source}: {exc}") from exc
+    profile_kind = payload.get("profile_kind", "simulated")
+    if profile_kind == "simulated":
+        return SimulatedDeviceProfileDocument.model_validate(payload)
+    if profile_kind == "hardware":
+        return HardwareDeviceProfileDocument.model_validate(payload)
+    raise ValueError(f"unsupported device profile kind: {profile_kind!r}")

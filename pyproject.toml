@@ -13,7 +13,8 @@ authors = [{ name = "Exo Collection System Team" }]
 dependencies = [
   "alembic>=1.13,<2",
   "h5py>=3.10,<4",
-  "numpy>=1.26,<3",
+  # Xsens MT SDK 2025.2 cp311 wheel is built against the NumPy 1.x ABI.
+  "numpy>=1.26,<2",
   "paramiko>=3.4,<5",
   "pydantic>=2.7,<3",
   "PySide6>=6.7,<7",
@@ -29,6 +30,11 @@ dev = [
   "pytest-cov>=5,<7",
 ]
 packaging = ["pyinstaller>=6.8,<7"]
+hardware = [
+  "pyserial>=3.5,<4",
+  "pythonnet>=3.0,<4",
+  "zeroconf>=0.132,<1",
+]
 
 [project.scripts]
 exo-collector = "exo_collection.apps.collector.main:main"
@@ -56,4 +62,3 @@ markers = [
 [tool.coverage.run]
 branch = true
 source = ["exo_collection"]
-

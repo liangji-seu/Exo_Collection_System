@@ -1,0 +1,82 @@
+{
+  "profile_kind": "hardware",
+  "display_name": "真实三设备 + 模拟同步（台架验证）",
+  "schema_version": "1.0.0",
+  "laboratory_sync_ready": false,
+  "devices": [
+    {
+      "id": "ultrasound_elonxi",
+      "modality": "ultrasound",
+      "adapter": "exo_collection.adapters.ultrasound.ElonxiUltrasoundAdapter",
+      "writer": "block_binary",
+      "required": true,
+      "clock_domain": "ultrasound_elonxi_clock",
+      "simulated": false,
+      "parameters": {
+        "sdk_path": null,
+        "device_ip": null,
+        "port": 1430,
+        "channels": [1, 2, 3, 4],
+        "samples_per_channel": 1000,
+        "nominal_rate_hz": 20.0,
+        "queue_capacity": 64,
+        "discovery_timeout_s": 10.0
+      }
+    },
+    {
+      "id": "imu_xsens_awinda",
+      "modality": "imu",
+      "adapter": "exo_collection.adapters.imu.XsensAwindaImuAdapter",
+      "writer": "hdf5_signal",
+      "required": true,
+      "clock_domain": "imu_xsens_awinda_clock",
+      "simulated": false,
+      "parameters": {
+        "radio_channel": 25,
+        "sample_rate_hz": 200.0,
+        "expected_device_count": 3,
+        "sensor_ids": [],
+        "wait_timeout_s": 15.0,
+        "stable_wait_s": 3.0,
+        "poll_interval_s": 0.25,
+        "pending_group_limit": 128,
+        "queue_capacity": 256
+      }
+    },
+    {
+      "id": "encoder_teensy",
+      "modality": "encoder",
+      "adapter": "exo_collection.adapters.encoder.TeensySerialEncoderAdapter",
+      "writer": "hdf5_signal",
+      "required": true,
+      "clock_domain": "encoder_teensy_clock",
+      "simulated": false,
+      "parameters": {
+        "port": null,
+        "baudrate": 9600,
+        "vid": 5824,
+        "pid": 1155,
+        "nominal_rate_hz": 100.0,
+        "batch_size": 20,
+        "queue_capacity": 256,
+        "read_size": 128,
+        "read_timeout_s": 0.05
+      }
+    },
+    {
+      "id": "sync_pulse_sim_for_hardware_bench",
+      "modality": "sync_pulse",
+      "adapter": "exo_collection.adapters.simulated.SimulatedSyncPulseAdapter",
+      "writer": "hdf5_signal",
+      "required": true,
+      "clock_domain": "sync_pulse_bench_sim_clock",
+      "simulated": true,
+      "parameters": {
+        "sample_rate_hz": 1000,
+        "pulse_interval_s": 1.0,
+        "pulse_width_s": 0.02,
+        "first_pulse_s": 0.25
+      }
+    }
+  ]
+}
