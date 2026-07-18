@@ -590,6 +590,29 @@ def test_trial_start_resets_all_ring_traces(tmp_path: Path) -> None:
 
 # ── Basic integration test ──
 
+def test_real_device_profile_is_selected_in_ui_and_copied_to_worker_request(
+    tmp_path: Path,
+) -> None:
+    _app, window, _created = _window_with_fake(tmp_path)
+    hardware_index = window.device_profile_combo.findData("hardware")
+    assert hardware_index >= 0
+    window.device_profile_combo.setCurrentIndex(hardware_index)
+    window._settings.set_hardware_device_overrides(
+        {
+            "ultrasound": {"sdk_path": "D:/Elonxi", "port": 1430},
+            "imu": {"radio_channel": 25},
+            "encoder": {"port": "COM7", "baudrate": 9600},
+        }
+    )
+
+    request = window.build_request()
+    assert request.device_profile_key == "hardware"
+    assert request.device_overrides["encoder"]["port"] == "COM7"
+    assert window.hardware_settings_button.isEnabled()
+    assert "模拟台架" in window.device_profile_label.text()
+    window.close()
+
+
 def test_collector_locks_condition_polls_events_and_finalizes(tmp_path: Path) -> None:
     app, window, created = _window_with_fake(tmp_path)
     assert [window.project_combo.itemText(index) for index in range(2)] == [

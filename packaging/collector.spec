@@ -1,9 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
 from pathlib import Path
+import importlib.util
 import json
 import os
 import subprocess
 from PyInstaller.utils.hooks import collect_submodules
+
+
+def optional_submodules(package):
+    """Collect a hardware package only when it is installed for this build."""
+
+    return collect_submodules(package) if importlib.util.find_spec(package) else []
 
 project_root = Path(SPECPATH).parent
 source_root = project_root / "src"
@@ -72,6 +79,11 @@ hiddenimports = sorted(
         + collect_submodules("exo_collection.quality")
         + collect_submodules("exo_collection.reporting")
         + collect_submodules("exo_collection.writers")
+        + optional_submodules("serial")
+        + optional_submodules("zeroconf")
+        + optional_submodules("pythonnet")
+        + optional_submodules("clr")
+        + optional_submodules("xsensdeviceapi")
     )
 )
 

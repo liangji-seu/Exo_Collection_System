@@ -1,4 +1,4 @@
-"""End-to-end simulated Trial acquisition and immutable package publication."""
+"""End-to-end Trial acquisition and immutable package publication."""
 
 from __future__ import annotations
 
@@ -24,20 +24,18 @@ from exo_collection import __version__
 from exo_collection.acquisition.messages import WorkerEvent, WorkerEventType
 from exo_collection.adapters.base import (
     AdapterError,
-    QueuedSimulatedAdapter,
+    ModalityAdapter,
     StartToken,
     TrialContext,
 )
-from exo_collection.adapters.encoder.simulated import SimulatedEncoderAdapter
-from exo_collection.adapters.imu.simulated import SimulatedImuAdapter
-from exo_collection.adapters.sync_pulse.simulated import SimulatedSyncPulseAdapter
-from exo_collection.adapters.ultrasound.simulated import SimulatedUltrasoundAdapter
 from exo_collection.catalog import Catalog
 from exo_collection.catalog.repositories import CatalogRepository
 from exo_collection.configuration.device_profiles import (
+    DeviceProfileDocument,
     SimulatedDeviceProfileDocument,
-    load_simulated_device_profile,
+    load_device_profile,
 )
+from exo_collection.configuration.adapter_registry import build_adapters
 from exo_collection.domain.events import (
     EdgeType,
     FrameBatch,
@@ -336,38 +334,27 @@ def _publish_text(layout: TrialLayout, relative_path: str, content: str) -> Path
     return layout.publish_partial(relative_path)
 
 
-_SIMULATED_ADAPTER_TYPES: dict[str, type[QueuedSimulatedAdapter[Any]]] = {
-    "ultrasound": SimulatedUltrasoundAdapter,
-    "imu": SimulatedImuAdapter,
-    "encoder": SimulatedEncoderAdapter,
-    "sync_pulse": SimulatedSyncPulseAdapter,
-}
-
-
 def _make_adapters(
     request: TrialRunRequest,
-    profile: SimulatedDeviceProfileDocument | None = None,
-) -> dict[str, QueuedSimulatedAdapter[Any]]:
-    """Build only statically registered simulators from a validated profile."""
+    profile: DeviceProfileDocument | None = None,
+) -> dict[str, ModalityAdapter]:
+    """Build adapters only through the fixed registry and validated profile."""
 
-    resolved_profile = profile or load_simulated_device_profile()
-    devices = resolved_profile.by_modality()
-    unknown_overrides = set(request.simulation) - set(devices)
-    if unknown_overrides:
-        display = ", ".join(sorted(unknown_overrides))
-        raise ValueError(f"Unknown simulated modality override(s): {display}")
-
-    adapters: dict[str, QueuedSimulatedAdapter[Any]] = {}
-    for modality, device in devices.items():
-        configuration = device.adapter_configuration()
-        configuration.update(request.simulation.get(modality, {}))
-        adapters[modality] = _SIMULATED_ADAPTER_TYPES[modality](configuration)
-    return adapters
+    resolved_profile = profile or load_device_profile(request.device_profile_key)
+    if isinstance(resolved_profile, SimulatedDeviceProfileDocument):
+        overrides = request.simulation
+        unknown_overrides = set(overrides) - set(resolved_profile.by_modality())
+        if unknown_overrides:
+            display = ", ".join(sorted(unknown_overrides))
+            raise ValueError(f"Unknown simulated modality override(s): {display}")
+    else:
+        overrides = request.device_overrides
+    return build_adapters(resolved_profile, overrides)
 
 
 def _create_hdf5_writer(
     path: Path,
-    adapter: QueuedSimulatedAdapter[Any],
+    adapter: ModalityAdapter,
     *,
     trial_metadata: Mapping[str, Any],
 ) -> Hdf5SignalWriter:
@@ -572,13 +559,17 @@ def _ultrasound_formal_frame_count(
     return count
 
 
-def run_simulated_trial(
+def run_trial(
     request: TrialRunRequest,
     *,
     stop_requested: StopSignal | None = None,
     publish: PublishCallback | None = None,
+    adapter_factory: Callable[
+        [TrialRunRequest, DeviceProfileDocument], dict[str, ModalityAdapter]
+    ]
+    | None = None,
 ) -> TrialRunResult:
-    """Collect four simulated modalities and atomically publish one Trial."""
+    """Collect the selected four-modality profile and publish one Trial."""
 
     stop_signal = stop_requested or _NeverStop()
     root = request.data_root.expanduser().resolve()
@@ -599,10 +590,20 @@ def run_simulated_trial(
         subject_code=request.subject_code,
     )
     machine = TrialStateMachine()
-    device_profile = load_simulated_device_profile()
+    device_profile = load_device_profile(request.device_profile_key)
     profiles_by_modality = device_profile.by_modality()
-    adapters = _make_adapters(request, device_profile)
+    adapters = (adapter_factory or _make_adapters)(request, device_profile)
     descriptors = {name: adapter.descriptor() for name, adapter in adapters.items()}
+    simulated_by_modality = {
+        modality: bool(
+            getattr(
+                profile,
+                "simulated",
+                isinstance(device_profile, SimulatedDeviceProfileDocument),
+            )
+        )
+        for modality, profile in profiles_by_modality.items()
+    }
     condition = Condition(
         condition_code=request.condition_code,
         condition_name=request.condition_name,
@@ -618,7 +619,7 @@ def run_simulated_trial(
             required=profiles_by_modality[descriptor.modality].required,
             clock_domain=descriptor.clock_domain,
             metadata={
-                "simulated": True,
+                "simulated": simulated_by_modality[descriptor.modality],
                 "profile_adapter": profiles_by_modality[descriptor.modality].adapter,
                 "writer": profiles_by_modality[descriptor.modality].writer,
             },
@@ -633,14 +634,14 @@ def run_simulated_trial(
         protocol_version=request.protocol_version,
         data_root=str(root),
         condition_definition_version=request.protocol_version,
-        default_device_config={"profile": "simulated"},
+        default_device_config={"profile": request.device_profile_key},
     )
     subject = Subject(
         subject_uuid=request.subject_uuid,
         project_uuid=request.project_uuid,
         subject_code=request.subject_code,
         group=request.subject_group,
-        attributes={"simulated": True},
+        attributes={"device_profile": request.device_profile_key},
     )
     visit = Session(
         session_uuid=request.session_uuid,
@@ -715,7 +716,10 @@ def run_simulated_trial(
             _write_session_file(layout, visit)
             layout.create_recording()
             journal = _JsonlJournal(layout)
-            transition(TrialState.PREPARING, "checking and preparing simulated devices")
+            transition(
+                TrialState.PREPARING,
+                f"checking and preparing {request.device_profile_key} devices",
+            )
             trial_context = TrialContext(
                 trial_uuid=request.trial_uuid,
                 session_uuid=request.session_uuid,
@@ -726,6 +730,13 @@ def run_simulated_trial(
                 adapter.connect()
                 adapter.prepare(trial_context)
 
+            # Hardware discovery can resolve physical IDs, ports, addresses,
+            # and actual sample rates. Refresh descriptors only after connect
+            # so Writers and provenance capture those resolved facts.
+            descriptors = {
+                name: adapter.descriptor() for name, adapter in adapters.items()
+            }
+
             writers["ultrasound"] = BlockBinaryWriterProcess(
                 layout.partial_path("raw/ultrasound.bin"),
                 dtype=descriptors["ultrasound"].dtype,
@@ -735,7 +746,10 @@ def run_simulated_trial(
                     "clock_domain": descriptors["ultrasound"].clock_domain,
                     "nominal_frame_rate_hz": descriptors["ultrasound"].nominal_rate_hz,
                     "unit": "a.u.",
-                    "device": {"device_id": descriptors["ultrasound"].device_id, "simulated": True},
+                    "device": {
+                        "device_id": descriptors["ultrasound"].device_id,
+                        "simulated": simulated_by_modality["ultrasound"],
+                    },
                 },
             )
             hdf5_trial_metadata = {
@@ -784,7 +798,7 @@ def run_simulated_trial(
                     trial_metadata=hdf5_trial_metadata,
                 )
 
-            transition(TrialState.READY, "all required simulated devices are ready")
+            transition(TrialState.READY, "all required devices are ready")
             start_token = StartToken()
             for adapter in adapters.values():
                 adapter.start(start_token)
@@ -1553,14 +1567,23 @@ def run_simulated_trial(
                     "quality_rules": quality_rules.model_dump(mode="json"),
                     "storage_policy": storage_policy.model_dump(mode="json"),
                 },
-                "simulated_devices": {
-                    modality: {
-                        "profile": profiles_by_modality[modality].model_dump(
-                            mode="json", by_alias=True
-                        ),
-                        "resolved_configuration": adapter.configuration_snapshot(),
-                    }
-                    for modality, adapter in adapters.items()
+                "device_profile": {
+                    "key": request.device_profile_key,
+                    "kind": device_profile.profile_kind,
+                    "display_name": device_profile.display_name,
+                    "laboratory_sync_ready": bool(
+                        getattr(device_profile, "laboratory_sync_ready", True)
+                    ),
+                    "devices": {
+                        modality: {
+                            "simulated": simulated_by_modality[modality],
+                            "profile": profiles_by_modality[modality].model_dump(
+                                mode="json", by_alias=True
+                            ),
+                            "resolved_configuration": adapter.configuration_snapshot(),
+                        }
+                        for modality, adapter in adapters.items()
+                    },
                 },
             }
             publish_json(layout, "derived/statistics.json", statistics)
@@ -1816,10 +1839,16 @@ def run_simulated_trial(
                 ClockDomainManifest(
                     clock_domain=descriptor.clock_domain,
                     kind=ClockDomainKind.DEVICE_TICK,
-                    unit="tick" if modality == "encoder" else "ns",
+                    unit=str(
+                        descriptor.metadata.get("device_timestamp_unit")
+                        or descriptor.metadata.get("device_time_unit")
+                        or "tick"
+                    ),
                     device_id=descriptor.device_id,
                     nominal_rate_hz=descriptor.nominal_rate_hz,
-                    description="Simulated device clock; mapped to host monotonic time from batch anchors",
+                    description=(
+                        "Device clock mapped to host monotonic time from batch anchors"
+                    ),
                 )
                 for modality, descriptor in descriptors.items()
             ]
@@ -1836,6 +1865,9 @@ def run_simulated_trial(
                     "adapter_type": f"{adapters[modality].__class__.__module__}.{adapters[modality].__class__.__name__}",
                     "writer_type": profiles_by_modality[modality].writer,
                     "clock_domain": descriptor.clock_domain,
+                    # The aggregate Adapter owns one catalog/manifest device
+                    # reference. Physical sensor IDs (for example three MTw
+                    # units) remain preserved in descriptor metadata.
                     "device_ids": [descriptor.device_id],
                     "artifact_uuids": [artifact_map[key].artifact_uuid for key in keys],
                     "channels": list(descriptor.channels),
@@ -1845,10 +1877,13 @@ def run_simulated_trial(
                     "sequence_gap_count": (
                         ultrasound_scan.sequence_gap_count
                         if modality == "ultrasound"
-                        else stop_reports[modality].injected_dropped_batches
+                        else sequence_gap_counts[modality]
                     ),
                     "nominal_sample_rate_hz": descriptor.nominal_rate_hz,
-                    "metadata": {"simulated": True, **dict(descriptor.metadata)},
+                    "metadata": {
+                        **dict(descriptor.metadata),
+                        "simulated": simulated_by_modality[modality],
+                    },
                 }
                 if modality == "ultrasound":
                     kwargs["frame_count"] = counts[modality]
@@ -1896,10 +1931,27 @@ def run_simulated_trial(
                         device_id=descriptor.device_id,
                         modality=modality,
                         adapter_type=f"{adapters[modality].__class__.__module__}.{adapters[modality].__class__.__name__}",
-                        manufacturer="simulator",
-                        model="deterministic built-in simulator",
+                        manufacturer=str(
+                            descriptor.metadata.get("manufacturer")
+                            or (
+                                "simulator"
+                                if simulated_by_modality[modality]
+                                else "not_reported"
+                            )
+                        ),
+                        model=str(
+                            descriptor.metadata.get("model")
+                            or (
+                                "deterministic built-in simulator"
+                                if simulated_by_modality[modality]
+                                else descriptor.display_name
+                            )
+                        ),
                         metadata={
-                            "simulated": True,
+                            "simulated": simulated_by_modality[modality],
+                            "physical_device_ids": list(
+                                descriptor.metadata.get("device_ids") or []
+                            ),
                             "profile_required": profiles_by_modality[modality].required,
                             "profile_clock_domain": profiles_by_modality[modality].clock_domain,
                             "writer": profiles_by_modality[modality].writer,
@@ -2117,4 +2169,19 @@ def run_simulated_trial(
         activity_lock.release()
 
 
-__all__ = ["MissingSyncTriggerError", "run_simulated_trial"]
+def run_simulated_trial(
+    request: TrialRunRequest,
+    *,
+    stop_requested: StopSignal | None = None,
+    publish: PublishCallback | None = None,
+) -> TrialRunResult:
+    """Backward-compatible entry point; the request selects the profile."""
+
+    return run_trial(
+        request,
+        stop_requested=stop_requested,
+        publish=publish,
+    )
+
+
+__all__ = ["MissingSyncTriggerError", "run_simulated_trial", "run_trial"]

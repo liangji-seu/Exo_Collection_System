@@ -111,6 +111,8 @@ class TrialExperimentMetadata(OrchestrationModel):
 
 class TrialRunRequest(OrchestrationModel):
     data_root: Path
+    device_profile_key: Literal["simulated", "hardware"] = "simulated"
+    device_overrides: dict[str, dict[str, Any]] = Field(default_factory=dict)
     # Interactive collection has no predetermined duration.  CLI/smoke callers
     # can still provide a finite duration, measured from the qualified sync
     # trigger rather than from device start-up.
@@ -141,6 +143,19 @@ class TrialRunRequest(OrchestrationModel):
         default_factory=TrialExperimentMetadata
     )
     simulation: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+    @field_validator("device_overrides")
+    @classmethod
+    def validate_device_override_modalities(
+        cls, value: dict[str, dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        allowed = {"ultrasound", "imu", "encoder", "sync_pulse"}
+        unknown = set(value) - allowed
+        if unknown:
+            raise ValueError(
+                "unknown device override modalities: " + ", ".join(sorted(unknown))
+            )
+        return value
 
     @model_validator(mode="before")
     @classmethod

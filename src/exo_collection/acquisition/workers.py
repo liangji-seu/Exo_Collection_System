@@ -126,9 +126,9 @@ def _trial_worker_entry(
         _put_worker_event(telemetry_queue, control_queue, event)
 
     try:
-        from exo_collection.orchestration.simulated import run_simulated_trial
+        from exo_collection.orchestration.simulated import run_trial
 
-        result = run_simulated_trial(request, stop_requested=stop_event, publish=publish)
+        result = run_trial(request, stop_requested=stop_event, publish=publish)
         publish(
             WorkerEvent(
                 event_type=WorkerEventType.COMPLETED,

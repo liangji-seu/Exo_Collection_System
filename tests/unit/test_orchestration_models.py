@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from uuid import uuid4
 
+import pytest
+
 from exo_collection.orchestration.models import TrialRunRequest
 
 
@@ -49,3 +51,19 @@ def test_explicit_hierarchy_uuids_are_never_rewritten(tmp_path) -> None:
 
     assert request.project_uuid == project_uuid
     assert request.subject_uuid == subject_uuid
+
+
+def test_trial_request_device_profile_defaults_and_validation(tmp_path) -> None:
+    default = TrialRunRequest(data_root=tmp_path)
+    assert default.device_profile_key == "simulated"
+    assert default.device_overrides == {}
+    hardware = TrialRunRequest(
+        data_root=tmp_path,
+        device_profile_key="hardware",
+        device_overrides={"encoder": {"port": "COM7"}},
+    )
+    restored = TrialRunRequest.model_validate(hardware.model_dump(mode="json"))
+    assert restored.device_profile_key == "hardware"
+    assert restored.device_overrides["encoder"]["port"] == "COM7"
+    with pytest.raises(ValueError, match="unknown device override"):
+        TrialRunRequest(data_root=tmp_path, device_overrides={"camera": {}})

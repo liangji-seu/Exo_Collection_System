@@ -92,6 +92,32 @@ def test_data_root_round_trips_through_separate_settings_instances(
     assert _file_settings(settings_path).data_root == selected.resolve()
 
 
+def test_hardware_profile_and_non_secret_device_settings_are_persistent(
+    tmp_path: Path,
+) -> None:
+    settings_path = tmp_path / "shared.ini"
+    first = _file_settings(settings_path)
+    assert first.device_profile_key == "simulated"
+    first.set_device_profile_key("hardware")
+    first.set_hardware_device_overrides(
+        {
+            "ultrasound": {
+                "sdk_path": "D:/vendor/elonxi",
+                "device_ip": "192.168.1.20",
+                "port": 1430,
+            },
+            "imu": {"radio_channel": 25, "sensor_ids": ["A", "B", "C"]},
+            "encoder": {"port": "COM7", "baudrate": 9600},
+        }
+    )
+
+    restored = _file_settings(settings_path)
+    assert restored.device_profile_key == "hardware"
+    assert restored.hardware_device_overrides["ultrasound"]["device_ip"] == "192.168.1.20"
+    assert restored.hardware_device_overrides["imu"]["sensor_ids"] == ["A", "B", "C"]
+    assert restored.hardware_device_overrides["encoder"]["port"] == "COM7"
+
+
 @pytest.mark.parametrize(
     ("status", "message"),
     [

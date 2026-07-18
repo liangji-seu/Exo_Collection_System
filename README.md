@@ -157,3 +157,35 @@ ZIP 内同时包含两个应用、启动脚本、使用说明和 `BUILD_MANIFEST
 采集期间不要运行全盘校验、回放或上传；Data Studio 检测到 Collector
 活动租约后会自动进入轻量模式。`.recording` Trial 只能通过显式恢复流程检查，
 不会被 Data Studio 当成已最终化数据打开。
+
+## 真实设备环境与 UI 配置
+
+真实设备不使用命令行参数。在 Collector 的“设备配置”中选择“真实超声 + 3×IMU +
+电机编码器”，再点击“真实设备设置…”填写 Elonxi SDK 目录、可选设备 IP、
+Awinda 信道/采样率/3 个 MTw ID，以及 Teensy 串口参数。选择会写入当前
+Windows 用户的 QSettings，以后启动默认沿用。密码和凭据不在该设置中。
+
+源码环境需先安装通用硬件依赖：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[hardware]"
+```
+
+Xsens Python 绑定由 MT SDK 提供，不从 PyPI 猜测安装。当前旧系统中已有与
+Python 3.11 x64 匹配的官方 wheel，可在两个项目共存时执行：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install `
+  "..\Exo_data_capture_system\MT SDK\Python\x64\xsensdeviceapi-2025.2.0-cp311-none-win_amd64.whl"
+```
+
+该 Xsens 2025.2 wheel 使用 NumPy 1.x ABI，所以本项目明确约束 `numpy>=1.26,<2`。
+不要单独升级到 NumPy 2.x，否则 `xsensdeviceapi` 会在导入阶段因 ABI 不匹配失败。
+
+Elonxi 设置选择的目录必须包含 `Elonxi_SDK.dll`。正式打包真实设备版本时，
+必须在构建用的 `.venv` 中先安装上述硬件依赖和 Xsens wheel，PyInstaller
+才会收集相应模块。
+
+> 当前 `hardware` Profile 的超声、三台 IMU 和电机编码器为真实适配；
+> `sync_pulse` 仍是台架模拟信号。这一模式用于验证三类设备接入，不得宣称为
+> 测力台/动捕正式同步已完成。

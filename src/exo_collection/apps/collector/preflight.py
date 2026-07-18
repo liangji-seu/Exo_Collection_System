@@ -15,12 +15,23 @@ import traceback
 from typing import Any
 from uuid import uuid4
 
-from exo_collection.adapters.base import QueuedSimulatedAdapter, StartToken, TrialContext
+from exo_collection.adapters.base import (
+    AdapterError,
+    ModalityAdapter,
+    QueuedSimulatedAdapter,
+    StartToken,
+    TrialContext,
+)
 from exo_collection.adapters.encoder.simulated import SimulatedEncoderAdapter
 from exo_collection.adapters.imu.simulated import SimulatedImuAdapter
 from exo_collection.adapters.sync_pulse.simulated import SimulatedSyncPulseAdapter
 from exo_collection.adapters.ultrasound.simulated import SimulatedUltrasoundAdapter
-from exo_collection.configuration.device_profiles import load_simulated_device_profile
+from exo_collection.configuration.adapter_registry import build_adapters
+from exo_collection.configuration.device_profiles import (
+    HardwareDeviceProfileDocument,
+    load_device_profile,
+    load_simulated_device_profile,
+)
 from exo_collection.domain.events import EdgeType, FrameBatch, SampleBatch, SyncPulseEvent
 
 
@@ -58,6 +69,8 @@ class CollectorPreflightReport:
     measured_write_mib_s: float
     minimum_write_mib_s: float | None
     elapsed_s: float
+    profile_kind: str = "simulated"
+    profile_key: str = "simulated"
 
     @property
     def ready(self) -> bool:
@@ -92,6 +105,25 @@ def _simulated_preflight_process_entry(
         result_queue.put(("failed", traceback.format_exc(limit=30)))
 
 
+def _device_preflight_process_entry(
+    data_root: str,
+    keyword_arguments: dict[str, Any],
+    result_queue: Queue[Any],
+) -> None:
+    """Spawn entry point for device/storage preflight (simulated or hardware).
+
+    Device discovery, vendor SDK calls and the fsync write probe must never
+    run on Qt's GUI thread.  This entry point supports both simulated and
+    hardware profiles via ``device_profile_key`` and ``device_overrides``.
+    """
+
+    try:
+        result = run_device_preflight(data_root, **keyword_arguments)
+        result_queue.put(("completed", result))
+    except BaseException:
+        result_queue.put(("failed", traceback.format_exc(limit=30)))
+
+
 class CollectorPreflightWorker:
     """Own one spawned preflight process and a single-result queue."""
 
@@ -99,6 +131,8 @@ class CollectorPreflightWorker:
         self,
         data_root: str | Path,
         *,
+        device_profile_key: str = "simulated",
+        device_overrides: dict[str, dict[str, Any]] | None = None,
         minimum_free_space_gib: float = 2.0,
         minimum_write_mib_s: float | None = None,
         write_probe_mib: float = 1.0,
@@ -108,16 +142,20 @@ class CollectorPreflightWorker:
         self.data_root = Path(data_root).expanduser().resolve()
         self._context = context or mp.get_context("spawn")
         self._result_queue = self._context.Queue(maxsize=1)
+        kwargs = {
+            "device_profile_key": device_profile_key,
+            "minimum_free_space_gib": minimum_free_space_gib,
+            "minimum_write_mib_s": minimum_write_mib_s,
+            "write_probe_mib": write_probe_mib,
+            "timeout_s": timeout_s,
+        }
+        if device_overrides is not None:
+            kwargs["device_overrides"] = device_overrides
         self._process = self._context.Process(
-            target=_simulated_preflight_process_entry,
+            target=_device_preflight_process_entry,
             args=(
                 str(self.data_root),
-                {
-                    "minimum_free_space_gib": minimum_free_space_gib,
-                    "minimum_write_mib_s": minimum_write_mib_s,
-                    "write_probe_mib": write_probe_mib,
-                    "timeout_s": timeout_s,
-                },
+                kwargs,
                 self._result_queue,
             ),
             name="collector-device-preflight",
@@ -414,9 +452,268 @@ def run_simulated_preflight(
     )
 
 
+def run_device_preflight(
+    data_root: str | Path,
+    *,
+    device_profile_key: str = "simulated",
+    device_overrides: dict[str, dict[str, Any]] | None = None,
+    minimum_free_space_gib: float = 2.0,
+    minimum_write_mib_s: float | None = None,
+    write_probe_mib: float = 1.0,
+    timeout_s: float = 1.25,
+) -> CollectorPreflightReport:
+    """Connect, prepare and briefly sample every device in the selected profile.
+
+    Supports both ``"simulated"`` and ``"hardware"`` device profiles via
+    :func:`~exo_collection.configuration.adapter_registry.build_adapters`.
+
+    The probe deliberately creates no Project, Catalog, Session or Trial
+    package.  It exercises the same Adapter lifecycle and validates raw data
+    and the analog sync rising edge before the UI enables collection.
+    """
+
+    if minimum_free_space_gib < 0:
+        raise ValueError("minimum_free_space_gib must be non-negative")
+    if minimum_write_mib_s is not None and minimum_write_mib_s <= 0:
+        raise ValueError("minimum_write_mib_s must be positive when configured")
+    if write_probe_mib <= 0:
+        raise ValueError("write_probe_mib must be positive")
+    if timeout_s <= 0:
+        raise ValueError("timeout_s must be positive")
+    started = time.perf_counter()
+    root = Path(data_root).expanduser().resolve()
+    minimum_free_bytes = int(minimum_free_space_gib * 1024**3)
+    write_probe_bytes = max(1, int(write_probe_mib * 1024**2))
+    (
+        storage_ready,
+        free_bytes,
+        write_probe_elapsed_s,
+        measured_write_mib_s,
+    ) = _probe_storage(root, minimum_free_bytes, write_probe_bytes)
+    profile = load_device_profile(device_profile_key)
+    adapters: dict[str, ModalityAdapter] = {}
+
+    try:
+        adapters = build_adapters(profile, device_overrides or {})
+    except Exception as exc:
+        # SDK or hardware dependency missing — report as an overall failure
+        results: dict[str, DevicePreflightResult] = {}
+        devices = profile.by_modality()
+        for modality in devices:
+            results[modality] = DevicePreflightResult(
+                modality=modality,
+                status="FAILED",
+                device_id=devices[modality].device_id,
+                nominal_rate_hz=0.0,
+                actual_rate_hz=None,
+                channel_count=0,
+                queue_capacity=0,
+                observed_raw_data=False,
+                observed_sync_rising_edge=None,
+                message=f"{type(exc).__name__}: {exc}",
+            )
+        return CollectorPreflightReport(
+            devices=results,
+            data_root=root,
+            writable=storage_ready,
+            disk_free_bytes=free_bytes,
+            minimum_free_bytes=minimum_free_bytes,
+            write_probe_bytes=write_probe_bytes,
+            write_probe_elapsed_s=write_probe_elapsed_s,
+            measured_write_mib_s=measured_write_mib_s,
+            minimum_write_mib_s=minimum_write_mib_s,
+            elapsed_s=max(0.0, time.perf_counter() - started),
+            profile_kind=profile.profile_kind,
+            profile_key=device_profile_key,
+        )
+
+    prepared: dict[str, Any] = {}
+    observed_raw: dict[str, bool] = {
+        modality: False for modality in adapters
+    }
+    observed_sync_rising = False
+    failures: dict[str, str] = {}
+    started_modalities: set[str] = set()
+
+    context = TrialContext(
+        trial_uuid=uuid4(),
+        session_uuid=uuid4(),
+        condition={"purpose": "preflight_only"},
+        recording_dir=None,
+    )
+    try:
+        for modality, adapter in adapters.items():
+            try:
+                descriptor = adapter.descriptor()
+                device = profile.by_modality().get(modality)
+                if device is not None:
+                    if descriptor.modality != device.modality:
+                        raise ValueError("descriptor modality differs from profile")
+                    if descriptor.device_id != device.device_id:
+                        raise ValueError("descriptor device_id differs from profile")
+                    if descriptor.clock_domain != device.clock_domain:
+                        raise ValueError("descriptor clock domain differs from profile")
+                if not descriptor.channels or len(descriptor.channels) != len(descriptor.units):
+                    raise ValueError("channel/unit declaration is invalid")
+                adapter.connect()
+                info = adapter.prepare(context)
+                if not adapter.health().ready:
+                    raise RuntimeError("adapter did not report READY after prepare")
+                prepared[modality] = info
+            except Exception as exc:
+                failures[modality] = f"{type(exc).__name__}: {exc}"
+
+        if prepared:
+            token = StartToken()
+            for modality in prepared:
+                try:
+                    adapters[modality].start(token)
+                    started_modalities.add(modality)
+                except Exception as exc:
+                    failures.setdefault(
+                        modality, f"{type(exc).__name__}: {exc}"
+                    )
+            deadline = time.perf_counter() + timeout_s
+            while time.perf_counter() < deadline:
+                for modality in started_modalities:
+                    adapter = adapters[modality]
+                    for _ in range(64):
+                        event = adapter.get_event(timeout=0)
+                        if event is None:
+                            break
+                        if isinstance(event, (FrameBatch, SampleBatch)):
+                            observed_raw[modality] = True
+                        elif (
+                            modality == "sync_pulse"
+                            and isinstance(event, SyncPulseEvent)
+                            and event.edge_type is EdgeType.RISING
+                        ):
+                            observed_sync_rising = True
+                if all(observed_raw[name] for name in started_modalities) and (
+                    "sync_pulse" not in started_modalities
+                    or observed_sync_rising
+                ):
+                    break
+                time.sleep(0.002)
+            for modality in started_modalities:
+                adapter = adapters[modality]
+                if not observed_raw[modality]:
+                    failures.setdefault(
+                        modality, "no raw batch observed during preflight"
+                    )
+                try:
+                    adapter.raise_if_faulted()
+                except Exception as exc:
+                    failures.setdefault(modality, f"{type(exc).__name__}: {exc}")
+            if "sync_pulse" in started_modalities and not observed_sync_rising:
+                failures.setdefault(
+                    "sync_pulse", "no qualified analog sync rising edge observed"
+                )
+    finally:
+        for modality, adapter in adapters.items():
+            if modality in started_modalities:
+                try:
+                    stop_report = adapter.stop()
+                    if stop_report.fault:
+                        failures.setdefault(
+                            modality, f"stop reported fault: {stop_report.fault}"
+                        )
+                except Exception as exc:
+                    failures.setdefault(
+                        modality, f"stop failed: {type(exc).__name__}: {exc}"
+                    )
+            try:
+                adapter.close()
+            except Exception as exc:
+                failures.setdefault(
+                    modality, f"close failed: {type(exc).__name__}: {exc}"
+                )
+
+    results: dict[str, DevicePreflightResult] = {}
+    devices_by_modality = profile.by_modality()
+    for modality, device in devices_by_modality.items():
+        adapter = adapters.get(modality)
+        descriptor = adapter.descriptor() if adapter is not None else None
+        info = prepared.get(modality)
+        message = failures.get(
+            modality, "Adapter lifecycle and sample probe passed"
+        )
+        health = adapter.health() if adapter is not None else None
+
+        # For hardware profiles, annotate sync_pulse as a simulated bench-only
+        # bridge.  This keeps the report honest without blocking the probe.
+        if (
+            isinstance(profile, HardwareDeviceProfileDocument)
+            and modality == "sync_pulse"
+            and message == "Adapter lifecycle and sample probe passed"
+        ):
+            message += " (模拟同步 — 台架验证 only)"
+
+        results[modality] = DevicePreflightResult(
+            modality=modality,
+            status="FAILED" if modality in failures else "READY",
+            device_id=device.device_id,
+            nominal_rate_hz=descriptor.nominal_rate_hz if descriptor else 0.0,
+            actual_rate_hz=(
+                float(health.actual_sample_rate_hz)
+                if health is not None and health.actual_sample_rate_hz is not None
+                else None
+            ),
+            channel_count=len(descriptor.channels) if descriptor else 0,
+            queue_capacity=int(info.queue_capacity) if info is not None else 0,
+            observed_raw_data=observed_raw.get(modality, False),
+            observed_sync_rising_edge=(
+                observed_sync_rising if modality == "sync_pulse" else None
+            ),
+            message=message,
+        )
+
+    throughput_ready = (
+        minimum_write_mib_s is None
+        or measured_write_mib_s >= minimum_write_mib_s
+    )
+    if not storage_ready or free_bytes < minimum_free_bytes or not throughput_ready:
+        if not storage_ready:
+            storage_message = "data root is not writable"
+        elif free_bytes < minimum_free_bytes:
+            storage_message = (
+                f"free space {free_bytes} B is below minimum {minimum_free_bytes} B"
+            )
+        else:
+            assert minimum_write_mib_s is not None
+            storage_message = (
+                f"write probe {measured_write_mib_s:.2f} MiB/s is below "
+                f"configured minimum {minimum_write_mib_s:.2f} MiB/s"
+            )
+        results = {
+            modality: replace(
+                item,
+                status="FAILED",
+                message=f"{item.message}; {storage_message}",
+            )
+            for modality, item in results.items()
+        }
+
+    return CollectorPreflightReport(
+        devices=results,
+        data_root=root,
+        writable=storage_ready,
+        disk_free_bytes=free_bytes,
+        minimum_free_bytes=minimum_free_bytes,
+        write_probe_bytes=write_probe_bytes,
+        write_probe_elapsed_s=write_probe_elapsed_s,
+        measured_write_mib_s=measured_write_mib_s,
+        minimum_write_mib_s=minimum_write_mib_s,
+        elapsed_s=max(0.0, time.perf_counter() - started),
+        profile_kind=profile.profile_kind,
+        profile_key=device_profile_key,
+    )
+
+
 __all__ = [
     "CollectorPreflightWorker",
     "CollectorPreflightReport",
     "DevicePreflightResult",
+    "run_device_preflight",
     "run_simulated_preflight",
 ]

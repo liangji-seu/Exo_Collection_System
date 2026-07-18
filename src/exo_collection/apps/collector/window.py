@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
@@ -44,7 +45,7 @@ from PySide6.QtWidgets import (
 
 from exo_collection.acquisition.messages import WorkerEvent, WorkerEventType
 from exo_collection.acquisition.workers import CollectorWorker
-from exo_collection.configuration import SharedAppSettings
+from exo_collection.configuration import SharedAppSettings, build_adapters, load_device_profile
 from exo_collection.apps.collector.preflight import (
     CollectorPreflightReport,
     CollectorPreflightWorker,
@@ -122,15 +123,21 @@ class PreflightWorkerHandle(Protocol):
     def close(self) -> None: ...
 
 
-PreflightWorkerFactory = Callable[[Path], PreflightWorkerHandle]
+PreflightWorkerFactory = Callable[..., PreflightWorkerHandle]
 
 
-def simulated_preflight_worker_factory(data_root: Path) -> PreflightWorkerHandle:
-    """Build the production spawn boundary for simulator/device preflight."""
+def simulated_preflight_worker_factory(
+    data_root: Path,
+    device_profile_key: str = "simulated",
+    device_overrides: dict[str, dict[str, Any]] | None = None,
+) -> PreflightWorkerHandle:
+    """Build the production spawn boundary for the selected device profile."""
 
     storage_policy = load_storage_policy()
     return CollectorPreflightWorker(
         data_root,
+        device_profile_key=device_profile_key,
+        device_overrides=device_overrides,
         minimum_free_space_gib=storage_policy.minimum_free_space_gib,
     )
 
@@ -145,6 +152,148 @@ def simulated_profile_preflight(
         data_root,
         minimum_free_space_gib=storage_policy.minimum_free_space_gib,
     )
+
+
+class HardwareDeviceSettingsDialog(QDialog):
+    """Persistent, non-secret settings for the three supported real devices."""
+
+    def __init__(
+        self,
+        overrides: Mapping[str, Mapping[str, Any]],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("真实设备设置")
+        self.setMinimumWidth(680)
+        self._validated_overrides: dict[str, dict[str, Any]] | None = None
+        current = {name: dict(values) for name, values in overrides.items()}
+        ultrasound = current.get("ultrasound", {})
+        imu = current.get("imu", {})
+        encoder = current.get("encoder", {})
+
+        outer = QVBoxLayout(self)
+        form = QFormLayout()
+
+        sdk_row = QHBoxLayout()
+        self.sdk_path_edit = QLineEdit(str(ultrasound.get("sdk_path") or ""))
+        self.sdk_path_edit.setObjectName("hardware_elonxi_sdk_path")
+        sdk_row.addWidget(self.sdk_path_edit, 1)
+        browse = QPushButton("选择…")
+        browse.clicked.connect(self._choose_sdk_directory)
+        sdk_row.addWidget(browse)
+        form.addRow("Elonxi SDK 目录：", sdk_row)
+
+        self.ultrasound_ip_edit = QLineEdit(
+            str(ultrasound.get("device_ip") or "")
+        )
+        self.ultrasound_ip_edit.setPlaceholderText("留空时使用局域网发现")
+        form.addRow("Elonxi 设备 IP：", self.ultrasound_ip_edit)
+        self.ultrasound_port_edit = QLineEdit(
+            str(ultrasound.get("port", 1430))
+        )
+        self.ultrasound_port_edit.setValidator(QIntValidator(1, 65535, self))
+        form.addRow("Elonxi UDP 端口：", self.ultrasound_port_edit)
+
+        self.awinda_channel_edit = QLineEdit(
+            str(imu.get("radio_channel", 25))
+        )
+        self.awinda_channel_edit.setValidator(QIntValidator(11, 25, self))
+        form.addRow("Awinda 无线信道：", self.awinda_channel_edit)
+        self.awinda_rate_edit = QLineEdit(str(imu.get("sample_rate_hz", 200.0)))
+        self.awinda_rate_edit.setValidator(QDoubleValidator(1.0, 2000.0, 3, self))
+        form.addRow("Awinda 采样率 (Hz)：", self.awinda_rate_edit)
+        self.awinda_ids_edit = QLineEdit(
+            ", ".join(str(item) for item in imu.get("sensor_ids", ()))
+        )
+        self.awinda_ids_edit.setPlaceholderText(
+            "可留空；或按躯干、左腿、右腿顺序填写 3 个 MTw ID"
+        )
+        form.addRow("3 个 MTw ID：", self.awinda_ids_edit)
+
+        self.encoder_port_edit = QLineEdit(str(encoder.get("port") or ""))
+        self.encoder_port_edit.setPlaceholderText("留空时按 VID/PID 自动发现")
+        form.addRow("Teensy 串口：", self.encoder_port_edit)
+        self.encoder_baud_edit = QLineEdit(str(encoder.get("baudrate", 9600)))
+        self.encoder_baud_edit.setValidator(QIntValidator(1, 10_000_000, self))
+        form.addRow("Teensy 波特率：", self.encoder_baud_edit)
+        self.encoder_vid_edit = QLineEdit(
+            f"0x{int(encoder.get('vid', 0x16C0)):04X}"
+        )
+        form.addRow("Teensy VID：", self.encoder_vid_edit)
+        self.encoder_pid_edit = QLineEdit(
+            f"0x{int(encoder.get('pid', 0x0483)):04X}"
+        )
+        form.addRow("Teensy PID：", self.encoder_pid_edit)
+
+        fixed = QLabel(
+            "固定配置：超声 4 通道 × 1000 点；IMU 3 台；编码器左右 2 侧。"
+            "密码或凭据不会写入这里。"
+        )
+        fixed.setWordWrap(True)
+        outer.addLayout(form)
+        outer.addWidget(fixed)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        outer.addWidget(buttons)
+
+    @property
+    def validated_overrides(self) -> dict[str, dict[str, Any]]:
+        if self._validated_overrides is None:
+            raise RuntimeError("hardware settings have not been accepted")
+        return self._validated_overrides
+
+    @Slot()
+    def _choose_sdk_directory(self) -> None:
+        selected = QFileDialog.getExistingDirectory(
+            self,
+            "选择包含 Elonxi_SDK.dll 的目录",
+            self.sdk_path_edit.text(),
+            QFileDialog.Option.ShowDirsOnly,
+        )
+        if selected:
+            self.sdk_path_edit.setText(selected)
+
+    @Slot()
+    def accept(self) -> None:
+        try:
+            sensor_ids = tuple(
+                item.strip()
+                for item in self.awinda_ids_edit.text().split(",")
+                if item.strip()
+            )
+            sdk_path = self.sdk_path_edit.text().strip()
+            device_ip = self.ultrasound_ip_edit.text().strip()
+            encoder_port = self.encoder_port_edit.text().strip()
+            overrides: dict[str, dict[str, Any]] = {
+                "ultrasound": {
+                    "sdk_path": sdk_path or None,
+                    "device_ip": device_ip or None,
+                    "port": int(self.ultrasound_port_edit.text()),
+                },
+                "imu": {
+                    "radio_channel": int(self.awinda_channel_edit.text()),
+                    "sample_rate_hz": float(self.awinda_rate_edit.text()),
+                    "sensor_ids": sensor_ids,
+                },
+                "encoder": {
+                    "port": encoder_port or None,
+                    "baudrate": int(self.encoder_baud_edit.text()),
+                    "vid": int(self.encoder_vid_edit.text().strip(), 0),
+                    "pid": int(self.encoder_pid_edit.text().strip(), 0),
+                },
+            }
+            # Registry construction validates every field but performs no
+            # vendor import or hardware I/O; those remain in the worker.
+            build_adapters(load_device_profile("hardware"), overrides)
+        except Exception as exc:
+            QMessageBox.warning(self, "真实设备设置无效", str(exc))
+            return
+        self._validated_overrides = overrides
+        super().accept()
 
 
 class ExperimentMetadataDialog(QDialog):
@@ -645,6 +794,29 @@ class CollectorWindow(QMainWindow):
         root_row.addWidget(self.browse_button)
         form.addRow("数据根目录：", root_row)
 
+        device_row = QHBoxLayout()
+        self.device_profile_combo = QComboBox()
+        self.device_profile_combo.setObjectName("device_profile")
+        self.device_profile_combo.addItem("内置模拟设备", "simulated")
+        self.device_profile_combo.addItem(
+            "真实超声 + 3×IMU + 电机编码器（模拟同步台架）",
+            "hardware",
+        )
+        stored_profile = self._settings.device_profile_key
+        stored_index = self.device_profile_combo.findData(stored_profile)
+        self.device_profile_combo.setCurrentIndex(max(0, stored_index))
+        self.device_profile_combo.currentIndexChanged.connect(
+            self._handle_device_profile_changed
+        )
+        device_row.addWidget(self.device_profile_combo, 1)
+        self.hardware_settings_button = QPushButton("真实设备设置…")
+        self.hardware_settings_button.setObjectName("hardware_device_settings")
+        self.hardware_settings_button.clicked.connect(
+            self.edit_hardware_device_settings
+        )
+        device_row.addWidget(self.hardware_settings_button)
+        form.addRow("设备配置：", device_row)
+
         self.project_combo = QComboBox()
         self.project_combo.setObjectName("project")
         for project in PROJECTS:
@@ -857,12 +1029,55 @@ class CollectorWindow(QMainWindow):
         self._configuration_widgets = (
             self.data_root_edit,
             self.browse_button,
+            self.device_profile_combo,
+            self.hardware_settings_button,
             self.project_combo,
             self.subject_code_edit,
             self.condition_combo,
             self.repeat_spin,
             self.experiment_metadata_button,
             self.preflight_button,
+        )
+        self._render_device_profile()
+
+    def _selected_device_profile_key(self) -> str:
+        value = str(self.device_profile_combo.currentData() or "simulated")
+        return "hardware" if value == "hardware" else "simulated"
+
+    def _render_device_profile(self) -> None:
+        hardware = self._selected_device_profile_key() == "hardware"
+        self.hardware_settings_button.setEnabled(
+            hardware and not self._configuration_locked and not self._preflight_busy
+        )
+        if hardware:
+            self.device_profile_label.setText(
+                "当前设备：真实 Elonxi 超声 + 3 台 Xsens MTw + Teensy 电机编码器；"
+                "同步脉冲仍为模拟台架信号，不能作为正式实验同步。"
+            )
+            self.device_profile_label.setStyleSheet("color:#842029;font-weight:600;")
+        else:
+            self.device_profile_label.setText("当前设备：全部使用内置模拟设备。")
+            self.device_profile_label.setStyleSheet("")
+
+    @Slot()
+    def _handle_device_profile_changed(self) -> None:
+        self._settings.set_device_profile_key(self._selected_device_profile_key())
+        self._render_device_profile()
+        self._invalidate_preflight()
+
+    @Slot()
+    def edit_hardware_device_settings(self) -> None:
+        dialog = HardwareDeviceSettingsDialog(
+            self._settings.hardware_device_overrides,
+            self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._settings.set_hardware_device_overrides(dialog.validated_overrides)
+        self._invalidate_preflight()
+        self.statusBar().showMessage(
+            "真实设备设置已保存；后续启动默认沿用，请重新执行设备预检。",
+            8000,
         )
 
     @Slot()
@@ -1099,7 +1314,22 @@ class CollectorWindow(QMainWindow):
             if not root_text:
                 raise ValueError("数据根目录不能为空")
             root = self.set_data_root(root_text)
-            worker = self._preflight_worker_factory(root)
+            profile_key = self._selected_device_profile_key()
+            overrides = (
+                self._settings.hardware_device_overrides
+                if profile_key == "hardware"
+                else None
+            )
+            if self._preflight_worker_factory is simulated_preflight_worker_factory:
+                worker = self._preflight_worker_factory(
+                    root,
+                    profile_key,
+                    overrides,
+                )
+            else:
+                # Existing injected/test factories keep their one-argument
+                # contract; only the production factory owns device settings.
+                worker = self._preflight_worker_factory(root)
             self._preflight_worker = worker
             self._preflight_root = root
             self._preflight_result_handled = False
@@ -1207,6 +1437,8 @@ class CollectorWindow(QMainWindow):
                     and report.data_root.resolve() != self._preflight_root.resolve()
                 ):
                     raise ValueError("设备预检结果来自不同的数据根目录")
+                if report.profile_key != self._selected_device_profile_key():
+                    raise ValueError("设备预检结果来自不同的设备配置")
                 reported = {
                     modality: item.status
                     for modality, item in report.devices.items()
@@ -1308,6 +1540,12 @@ class CollectorWindow(QMainWindow):
         self._refresh_identity_context(data_root, project_code, subject_code)
         payload: dict[str, Any] = {
             "data_root": data_root,
+            "device_profile_key": self._selected_device_profile_key(),
+            "device_overrides": (
+                self._settings.hardware_device_overrides
+                if self._selected_device_profile_key() == "hardware"
+                else {}
+            ),
             "duration_s": None,
             "session_uuid": self._session_uuid,
             "project_code": project_code,
@@ -1932,6 +2170,7 @@ class CollectorWindow(QMainWindow):
         enabled = not self._configuration_locked and not self._preflight_busy
         for widget in self._configuration_widgets:
             widget.setEnabled(enabled)
+        self._render_device_profile()
         self._update_start_button()
 
     @Slot()
