@@ -251,6 +251,23 @@ class PlaybackDialog(QDialog):
                 f"{playback.formal_t0_host_monotonic_ns} ns · 图形为有界降采样视图"
             )
         )
+        if (
+            playback.ultrasound is not None
+            and not playback.ultrasound.device_synchronized
+        ):
+            alignment_notice = QLabel(
+                "⚠ Raw Ethernet 超声：独立通道包按到达序号组合，"
+                "仅用于回放，不代表设备同步。"
+                f" 原始包数 {playback.ultrasound.source_packet_count}，"
+                f" 完整四通道组数 {playback.ultrasound.source_frame_count}。"
+            )
+            alignment_notice.setObjectName("playback_ultrasound_alignment_notice")
+            alignment_notice.setWordWrap(True)
+            alignment_notice.setStyleSheet(
+                "QLabel { color: #8a3b00; background: #fff0d6; "
+                "border: 1px solid #e2a64a; padding: 7px; font-weight: 600; }"
+            )
+            layout.addWidget(alignment_notice)
         controls = QHBoxLayout()
         self.play_button = QPushButton("播放")
         self.play_button.setObjectName("playback_play_pause")

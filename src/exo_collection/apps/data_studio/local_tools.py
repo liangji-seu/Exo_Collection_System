@@ -20,6 +20,9 @@ import h5py
 import numpy as np
 from numpy.typing import NDArray
 
+from exo_collection.adapters.ultrasound.raw_ethernet import (
+    decode_raw_ethernet_flags,
+)
 from exo_collection.domain.states import TrialState
 from exo_collection.readers.binary_block import BlockBinaryReader
 from exo_collection.storage.activity import read_activity
@@ -58,6 +61,10 @@ class UltrasoundPlayback:
     latest_frame: NDArray[np.generic]
     channels: tuple[str, ...]
     source_frame_count: int
+    source_packet_count: int = 0
+    source_trailer_packet_count: int = 0
+    alignment_semantics: str = "device_synchronized_frames"
+    device_synchronized: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -315,6 +322,150 @@ def _read_hdf5_signal(
     )
 
 
+def _is_raw_ethernet_ultrasound(metadata: dict[str, Any]) -> bool:
+    """Return whether binary metadata declares the packet-per-channel format."""
+
+    protocol = str(metadata.get("protocol", "")).strip().casefold()
+    transport = str(metadata.get("transport", "")).strip().casefold()
+    return protocol == "raw_ethernet_uint8" or transport in {
+        "raw_ethernet",
+        "raw_ethernet_scapy_npcap",
+    }
+
+
+def _raw_ultrasound_channel_labels(metadata: dict[str, Any]) -> tuple[str, ...]:
+    raw_channels = metadata.get("channels")
+    if isinstance(raw_channels, list) and len(raw_channels) == 4:
+        labels: list[str] = []
+        for index, value in enumerate(raw_channels):
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                labels.append(f"ch_{int(value)}")
+            else:
+                label = str(value).strip()
+                labels.append(label or f"ch_{index + 1}")
+        return tuple(labels)
+    return ("ch_1", "ch_2", "ch_3", "ch_4")
+
+
+def _read_raw_ethernet_ultrasound(
+    reader: BlockBinaryReader,
+    *,
+    formal_t0_ns: int,
+    max_frames: int,
+    max_depth_points: int,
+    idle_check: Callable[[], None],
+) -> UltrasoundPlayback:
+    """Load independent channel packets without claiming device synchrony.
+
+    The raw Ethernet device emits one channel per packet.  Offline display
+    pairs the kth packet received for each channel, solely to make a bounded
+    four-channel playback view.  The authoritative binary order and packet
+    CRC are still read sequentially before this derived grouping is formed.
+    """
+
+    channel_counts = [0, 0, 0, 0]
+    source_packet_count = 0
+    trailer_packet_count = 0
+    depth_count = int(reader.metadata.get("sample_shape", [0])[-1])
+    depth_selector = _even_indices(depth_count, max_depth_points)
+
+    # First pass validates every packet/CRC in authoritative storage order and
+    # establishes how many complete four-channel ordinals exist.  Keeping only
+    # counters here avoids loading an arbitrarily long Trial into RAM.
+    for ordinal in range(reader.block_count):
+        idle_check()
+        record = reader.read_block(ordinal=ordinal)
+        if record.header.sample_count != 1 or len(record.data) != 1:
+            raise DataStudioToolError(
+                "Raw Ethernet ultrasound blocks must contain exactly one packet"
+            )
+        decoded = decode_raw_ethernet_flags(record.header.flags)
+        packet = np.asarray(record.data[0])
+        if packet.ndim != 1:
+            raise DataStudioToolError(
+                "Raw Ethernet ultrasound packets must be one-dimensional A-lines"
+            )
+        channel_counts[decoded.channel] += 1
+        source_packet_count += 1
+        trailer_packet_count += int(decoded.has_trailer)
+
+    channels = _raw_ultrasound_channel_labels(reader.metadata)
+    complete_count = min(channel_counts)
+    retained_depth = min(depth_count, max_depth_points)
+    if complete_count == 0:
+        return UltrasoundPlayback(
+            time_s=np.empty((0,), dtype=np.float64),
+            waterfall=np.empty((4, 0, retained_depth), dtype=reader.dtype),
+            latest_frame=np.empty((0, retained_depth), dtype=reader.dtype),
+            channels=channels,
+            source_frame_count=0,
+            source_packet_count=source_packet_count,
+            source_trailer_packet_count=trailer_packet_count,
+            alignment_semantics="independent_channel_arrival_ordinal_for_playback_only",
+            device_synchronized=False,
+        )
+
+    keep = _even_indices(complete_count, max_frames)
+    complete_ordinals = np.arange(complete_count, dtype=np.int64)[keep]
+    retained_ordinals = {int(value) for value in complete_ordinals}
+    channel_ordinals = [0, 0, 0, 0]
+    channel_packets: list[list[NDArray[np.generic]]] = [[], [], [], []]
+    channel_arrival_ns: list[list[int]] = [[], [], [], []]
+
+    # Second pass still follows exact binary packet order, but retains only
+    # the bounded ordinal set selected for playback.
+    for ordinal in range(reader.block_count):
+        idle_check()
+        record = reader.read_block(ordinal=ordinal)
+        decoded = decode_raw_ethernet_flags(record.header.flags)
+        channel_ordinal = channel_ordinals[decoded.channel]
+        channel_ordinals[decoded.channel] += 1
+        if channel_ordinal not in retained_ordinals:
+            continue
+        channel_packets[decoded.channel].append(
+            np.asarray(record.data[0][depth_selector]).copy()
+        )
+        channel_arrival_ns[decoded.channel].append(
+            int(record.header.host_monotonic_ns)
+        )
+
+    frames = np.stack(
+        [
+            np.stack(
+                [channel_packets[channel][position] for channel in range(4)],
+                axis=0,
+            )
+            for position in range(len(complete_ordinals))
+        ],
+        axis=0,
+    )
+    times = np.asarray(
+        [
+            (
+                max(
+                    channel_arrival_ns[channel][position]
+                    for channel in range(4)
+                )
+                - formal_t0_ns
+            )
+            / 1e9
+            for position in range(len(complete_ordinals))
+        ],
+        dtype=np.float64,
+    )
+    return UltrasoundPlayback(
+        time_s=times,
+        waterfall=np.transpose(frames, (1, 0, 2)),
+        latest_frame=np.asarray(frames[-1]),
+        channels=channels,
+        source_frame_count=complete_count,
+        source_packet_count=source_packet_count,
+        source_trailer_packet_count=trailer_packet_count,
+        alignment_semantics="independent_channel_arrival_ordinal_for_playback_only",
+        device_synchronized=False,
+    )
+
+
 def _read_ultrasound(
     path: Path,
     *,
@@ -333,6 +484,14 @@ def _read_ultrasound(
         auto_rebuild_index=False,
     ) as reader:
         block_count = reader.block_count
+        if _is_raw_ethernet_ultrasound(reader.metadata):
+            return _read_raw_ethernet_ultrasound(
+                reader,
+                formal_t0_ns=formal_t0_ns,
+                max_frames=max_frames,
+                max_depth_points=max_depth_points,
+                idle_check=idle_check,
+            )
         if block_count == 0:
             return UltrasoundPlayback(
                 time_s=np.empty((0,), dtype=np.float64),

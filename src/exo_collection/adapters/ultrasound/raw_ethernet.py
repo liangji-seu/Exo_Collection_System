@@ -118,6 +118,13 @@ class NormalizedPacket(NamedTuple):
     has_trailer: bool
 
 
+class RawEthernetBlockFlags(NamedTuple):
+    """Decoded semantic fields from one raw-ultrasound block header."""
+
+    channel: int
+    has_trailer: bool
+
+
 def mac_to_channel(dst_mac: str | bytes) -> int | None:
     """Extract the channel index (0-3) from a destination MAC address.
 
@@ -607,15 +614,38 @@ def encode_raw_ethernet_flags(channel: int | None, tail_flags: int) -> int:
     return int(result)
 
 
+def decode_raw_ethernet_flags(flags: int) -> RawEthernetBlockFlags:
+    """Decode the channel and optional-trailer bits written by the adapter.
+
+    Bits 3-31 are reserved by format version 1.  Rejecting non-zero reserved
+    bits prevents a future packet format from being silently misinterpreted
+    as the current four-channel protocol during offline playback.
+    """
+
+    if isinstance(flags, bool) or not isinstance(flags, (int, np.integer)):
+        raise TypeError("raw Ethernet ultrasound flags must be an integer")
+    value = int(flags)
+    if not 0 <= value <= 0xFFFFFFFF:
+        raise ValueError("raw Ethernet ultrasound flags must be uint32")
+    if value & ~0b111:
+        raise ValueError("raw Ethernet ultrasound flags contain reserved bits")
+    return RawEthernetBlockFlags(
+        channel=value & 0b11,
+        has_trailer=bool(value & 0b100),
+    )
+
+
 __all__ = [
     "CH_FROM_DST_MAC_BYTE1",
     "US_DEPTH",
     "NormalizedPacket",
     "RawEthernetBackend",
+    "RawEthernetBlockFlags",
     "RawEthernetUltrasoundAdapter",
     "RawEthernetUltrasoundConfig",
     "ScapyRawEthernetBackend",
     "classify_raw_payload",
+    "decode_raw_ethernet_flags",
     "encode_raw_ethernet_flags",
     "enumerate_network_interfaces",
     "mac_to_channel",

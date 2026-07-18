@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -15,12 +16,16 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
+    QLabel,
     QPushButton,
     QSlider,
     QTabWidget,
     QTableWidget,
 )
 
+from exo_collection.adapters.ultrasound.raw_ethernet import (
+    encode_raw_ethernet_flags,
+)
 from exo_collection.apps.data_studio.local_dialogs import (
     ChecksumDialog,
     FullStatisticsDialog,
@@ -340,6 +345,108 @@ def test_ultrasound_downsampling_preserves_source_frame_time_offsets(
         playback.waterfall[0, :, 0], [0, 5, 100, 105]
     )
     assert playback.source_frame_count == 12
+    assert playback.source_packet_count == 0
+    assert playback.device_synchronized is True
+
+
+def _write_raw_ethernet_playback_file(
+    path: Path,
+    packets: list[tuple[int, int, int, bool]],
+) -> tuple[Path, Path]:
+    with BlockBinaryWriter(
+        path,
+        dtype=np.uint8,
+        sample_shape=(8,),
+        metadata={
+            "clock_domain": "raw_ultrasound_clock",
+            "channels": [1, 2, 3, 4],
+            "protocol": "raw_ethernet_uint8",
+            "transport": "raw_ethernet_scapy_npcap",
+            "nominal_frame_rate_hz": 20.0,
+        },
+    ) as writer:
+        for channel, value, host_ns, has_trailer in packets:
+            writer.append(
+                np.full((1, 8), value, dtype=np.uint8),
+                host_monotonic_ns=host_ns,
+                host_utc_ns=host_ns + 10_000_000_000,
+                flags=encode_raw_ethernet_flags(channel, int(has_trailer)),
+            )
+        return writer.meta_path, writer.index_path
+
+
+def test_raw_ethernet_playback_groups_channels_by_arrival_ordinal(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "ultrasound.bin"
+    meta_path, index_path = _write_raw_ethernet_playback_file(
+        path,
+        [
+            (2, 30, 1_010_000_000, False),
+            (0, 10, 1_020_000_000, False),
+            (3, 40, 1_030_000_000, True),
+            (1, 20, 1_040_000_000, False),
+            (0, 11, 1_050_000_000, False),
+            (3, 41, 1_060_000_000, False),
+            (1, 21, 1_070_000_000, False),
+            (2, 31, 1_080_000_000, False),
+        ],
+    )
+
+    playback = _read_ultrasound(
+        path,
+        meta_path=meta_path,
+        index_path=index_path,
+        formal_t0_ns=1_000_000_000,
+        max_frames=10,
+        max_depth_points=8,
+        idle_check=lambda: None,
+    )
+
+    assert playback.waterfall.shape == (4, 2, 8)
+    for channel, expected in enumerate(([10, 11], [20, 21], [30, 31], [40, 41])):
+        np.testing.assert_array_equal(playback.waterfall[channel, :, 0], expected)
+    np.testing.assert_allclose(playback.time_s, [0.04, 0.08])
+    assert playback.source_frame_count == 2
+    assert playback.source_packet_count == 8
+    assert playback.source_trailer_packet_count == 1
+    assert playback.channels == ("ch_1", "ch_2", "ch_3", "ch_4")
+    assert playback.device_synchronized is False
+    assert (
+        playback.alignment_semantics
+        == "independent_channel_arrival_ordinal_for_playback_only"
+    )
+
+
+def test_raw_ethernet_playback_never_zero_fills_a_missing_channel(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "ultrasound.bin"
+    meta_path, index_path = _write_raw_ethernet_playback_file(
+        path,
+        [
+            (0, 10, 1_010_000_000, False),
+            (1, 20, 1_020_000_000, False),
+            (2, 30, 1_030_000_000, False),
+        ],
+    )
+
+    playback = _read_ultrasound(
+        path,
+        meta_path=meta_path,
+        index_path=index_path,
+        formal_t0_ns=1_000_000_000,
+        max_frames=10,
+        max_depth_points=8,
+        idle_check=lambda: None,
+    )
+
+    assert playback.waterfall.shape == (4, 0, 8)
+    assert playback.waterfall.size == 0
+    assert playback.latest_frame.shape == (0, 8)
+    assert playback.source_frame_count == 0
+    assert playback.source_packet_count == 3
+    assert playback.device_synchronized is False
 
 
 def test_checksum_quality_and_full_statistics_are_manifest_driven(tmp_path: Path) -> None:
@@ -581,6 +688,31 @@ def test_local_result_dialogs_render_all_published_evidence(tmp_path: Path) -> N
     assert dialogs[3].findChild(QTableWidget, "quality_sync") is not None
     for dialog in dialogs:
         dialog.close()
+    app.processEvents()
+
+
+def test_raw_ultrasound_playback_dialog_warns_alignment_is_not_sync(
+    tmp_path: Path,
+) -> None:
+    app = QApplication.instance() or QApplication(["test-raw-playback-notice"])
+    manifest_path, _manifest = _build_finalized_trial(tmp_path)
+    playback = load_trial_playback(manifest_path, data_root=tmp_path)
+    assert playback.ultrasound is not None
+    raw_ultrasound = replace(
+        playback.ultrasound,
+        source_frame_count=7,
+        source_packet_count=31,
+        alignment_semantics="independent_channel_arrival_ordinal_for_playback_only",
+        device_synchronized=False,
+    )
+    dialog = PlaybackDialog(replace(playback, ultrasound=raw_ultrasound))
+
+    notice = dialog.findChild(QLabel, "playback_ultrasound_alignment_notice")
+    assert notice is not None
+    assert "独立通道包按到达序号组合" in notice.text()
+    assert "不代表设备同步" in notice.text()
+    assert "原始包数 31" in notice.text()
+    dialog.close()
     app.processEvents()
 
 
