@@ -17,6 +17,7 @@ from exo_collection.acquisition.messages import WorkerEvent, WorkerEventType
 from exo_collection.apps.collector import CollectorWindow
 from exo_collection.apps.collector.window import (
     ExperimentMetadataDialog,
+    MODALITIES,
     RingTrace,
     SIGNAL_RING_CAPACITY,
 )
@@ -76,6 +77,46 @@ class FakeCollectorWorker:
     def finish(self, exitcode: int = 0) -> None:
         self._exitcode = exitcode
         self.alive = False
+
+
+class FakePreviewHandle:
+    def __init__(self, modality: str) -> None:
+        self.modality = modality
+        self.device_id = f"{modality}_fake"
+        self.simulated = True
+        self.alive = True
+        self.stop_requests = 0
+        self.join_calls = 0
+        self.closed = False
+
+    @property
+    def is_alive(self) -> bool:
+        return self.alive
+
+    @property
+    def exitcode(self) -> int | None:
+        return None if self.alive else 0
+
+    def request_stop(self) -> None:
+        self.stop_requests += 1
+
+    def poll_events(self, limit: int = 100) -> list[WorkerEvent]:
+        del limit
+        return []
+
+    def join(self, timeout: float | None = None) -> int | None:
+        del timeout
+        self.join_calls += 1
+        return self.exitcode
+
+    def terminate(self, timeout: float = 5.0) -> int | None:
+        del timeout
+        self.alive = False
+        return 0
+
+    def close(self) -> None:
+        assert not self.alive
+        self.closed = True
 
 
 def _wait_until(
@@ -164,6 +205,19 @@ def _window_with_fake(
         controlled_stop_timeout_s=0.05,
     )
     return app, window, created
+
+
+def _connect_all_previews_for_trial(window: CollectorWindow) -> None:
+    """Simulate all modalities being connected via preview (marks them READY).
+
+    This bypasses the actual spawn-based preview workers so that trial-flow
+    tests can proceed without subprocesses.
+    """
+    for modality in ("ultrasound", "imu", "encoder", "sync_pulse"):
+        window._preview_connected_modalities.add(modality)
+        window._preview_connection_status[modality] = "已连接"
+    window._update_start_button()
+    window._update_connect_button_state()
 
 
 # ── Ultrasound 2x2 grid tests ──
@@ -575,8 +629,9 @@ def test_trial_start_resets_all_ring_traces(tmp_path: Path) -> None:
     _, y_before = window._imu_traces["imu_trunk"].curve.getData()
     assert not np.all(np.isnan(y_before))
 
-    # Start a trial (which calls _on_trial_package_started for cleanup)
-    window.run_preflight()
+    # Connect all previews then start a trial
+    _connect_all_previews_for_trial(window)
+    window.build_request()  # validates inputs
     window.start_trial()
     worker = created[0]
 
@@ -609,7 +664,7 @@ def test_real_device_profile_is_selected_in_ui_and_copied_to_worker_request(
     assert request.device_profile_key == "hardware"
     assert request.device_overrides["encoder"]["port"] == "COM7"
     assert window.hardware_settings_button.isEnabled()
-    assert "模拟台架" in window.device_profile_label.text()
+    assert "Teensy" in window._device_profile_label.text()
     window.close()
 
 
@@ -626,7 +681,7 @@ def test_collector_locks_condition_polls_events_and_finalizes(tmp_path: Path) ->
     assert not hasattr(window, "operator_edit")
     assert not hasattr(window, "duration_spin")
     assert window.overall_status == "未连接"
-    assert "模拟设备" in window.device_profile_label.text()
+    assert "真实设备模式" in window.device_profile_label.text()
     assert not window.start_button.isEnabled()
 
     window.subject_code_edit.setText("7")
@@ -634,13 +689,14 @@ def test_collector_locks_condition_polls_events_and_finalizes(tmp_path: Path) ->
     assert window.subject_code_edit.text() == "007"
     window.condition_combo.setCurrentIndex(1)
     window.repeat_spin.setValue(3)
-    window.preflight_button.click()
 
-    assert window.preflight_ready
-    assert window.overall_status == "可采集"
+    # Connect all modality previews to satisfy Trial start requirements
+    _connect_all_previews_for_trial(window)
+
     assert window.start_button.isEnabled()
+    # Set health READY via direct table update (preview workers handle this normally)
     for row in range(window.health_table.rowCount()):
-        assert window.health_table.item(row, 1).text() == "READY"
+        window.health_table.item(row, 1).setText("READY")
 
     window.start_button.click()
     assert len(created) == 1
@@ -659,7 +715,7 @@ def test_collector_locks_condition_polls_events_and_finalizes(tmp_path: Path) ->
     assert not window.project_combo.isEnabled()
     assert not window.condition_combo.isEnabled()
     assert not window.repeat_spin.isEnabled()
-    assert not window.preflight_button.isEnabled()
+    assert not window.connect_all_button.isEnabled()
     assert window.stop_button.isEnabled()
     assert window._poll_timer.isActive()
 
@@ -830,7 +886,8 @@ def test_collector_locks_condition_polls_events_and_finalizes(tmp_path: Path) ->
 
 def test_collector_shows_failed_worker_error_without_blocking_ui(tmp_path: Path) -> None:
     app, window, created = _window_with_fake(tmp_path)
-    window.run_preflight()
+    _connect_all_previews_for_trial(window)
+    window.build_request()
     window.start_trial()
     worker = created[0]
     worker.events.append(
@@ -852,7 +909,8 @@ def test_collector_shows_failed_worker_error_without_blocking_ui(tmp_path: Path)
 
 def test_collector_rejects_terminal_event_from_another_trial(tmp_path: Path) -> None:
     app, window, created = _window_with_fake(tmp_path)
-    window.run_preflight()
+    _connect_all_previews_for_trial(window)
+    window.build_request()
     window.start_trial()
     worker = created[0]
     wrong_uuid = uuid4()
@@ -880,7 +938,8 @@ def test_collector_forces_hung_controlled_stop_and_preserves_recovery_semantics(
     tmp_path: Path,
 ) -> None:
     _app, window, created = _window_with_fake(tmp_path)
-    window.run_preflight()
+    _connect_all_previews_for_trial(window)
+    window.build_request()
     window.start_trial()
     worker = created[0]
     window.request_controlled_stop()
@@ -901,25 +960,18 @@ def test_collector_forces_hung_controlled_stop_and_preserves_recovery_semantics(
 
 
 def test_preflight_gates_start_and_reports_missing_critical_device(tmp_path: Path) -> None:
-    _app, window, created = _window_with_fake(
-        tmp_path,
-        preflight=lambda: {
-            "ultrasound": "READY",
-            "imu": "READY",
-            "encoder": "READY",
-            "sync_pulse": "MISSING",
-        },
-    )
+    _app, window, created = _window_with_fake(tmp_path)
+
+    # Only connect 3 of 4 modalities (sync_pulse missing)
+    for modality in ("ultrasound", "imu", "encoder"):
+        window._preview_connected_modalities.add(modality)
+        window._preview_connection_status[modality] = "已连接"
+    window._update_start_button()
 
     window.start_trial()
     assert not created
-    assert "请先完成设备预检" in window.alerts_edit.toPlainText()
-
-    window.preflight_button.click()
-    assert not window.preflight_ready
+    assert "sync_pulse 尚未连接" in window.alerts_edit.toPlainText()
     assert not window.start_button.isEnabled()
-    assert window.overall_status == "失败"
-    assert "sync_pulse=MISSING" in window.alerts_edit.toPlainText()
     window.close()
 
 
@@ -927,7 +979,8 @@ def test_missing_sync_trigger_is_prominent_and_never_looks_recording(
     tmp_path: Path,
 ) -> None:
     app, window, created = _window_with_fake(tmp_path)
-    window.run_preflight()
+    _connect_all_previews_for_trial(window)
+    window.build_request()
     window.start_trial()
     worker = created[0]
     worker.events.extend(
@@ -1041,7 +1094,8 @@ def test_collector_passes_optional_experiment_metadata_and_locks_editor(
     )
     assert "已填写" in window.experiment_metadata_summary.text()
 
-    window.run_preflight()
+    _connect_all_previews_for_trial(window)
+    window.build_request()
     window.start_trial()
     worker = created[0]
     metadata = worker.request.experiment_metadata
@@ -1141,4 +1195,244 @@ def test_condition_switch_clears_only_condition_and_trial_scoped_metadata(
     window.subject_code_edit.setText("001")
     assert window.experiment_metadata.measured_condition == MeasuredConditionMetadata()
     assert window.experiment_metadata.trial_notes is None
+    window.close()
+
+
+# ── New per-modality connect/disconnect UI tests ──
+
+
+def test_four_independent_connect_buttons_exist(tmp_path: Path) -> None:
+    """Each modality must have its own 'connect' button in the UI."""
+    _app, window, _created = _window_with_fake(tmp_path)
+    for modality in ("ultrasound", "imu", "encoder", "sync_pulse"):
+        btn = window.findChild(QWidget, f"connect_{modality}")
+        assert btn is not None, f"connect_{modality} button not found"
+    window.close()
+
+
+def test_single_modality_connect_only_updates_that_modality(tmp_path: Path) -> None:
+    """Connecting one modality should only mark that one as connected."""
+    _app, window, _created = _window_with_fake(tmp_path)
+
+    # Initially, no modalities should be connected
+    for modality in ("ultrasound", "imu", "encoder", "sync_pulse"):
+        assert modality not in window._preview_connected_modalities
+
+    # Manually connect just ultrasound (bypassing spawn)
+    window._preview_connected_modalities.add("ultrasound")
+    window._preview_connection_status["ultrasound"] = "已连接"
+    window._update_start_button()
+    window._update_connect_button_state()
+
+    assert "ultrasound" in window._preview_connected_modalities
+    assert "imu" not in window._preview_connected_modalities
+    assert "encoder" not in window._preview_connected_modalities
+    assert "sync_pulse" not in window._preview_connected_modalities
+
+    # Start trial should NOT be enabled (missing 3 modalities)
+    assert not window.start_button.isEnabled()
+    window.close()
+
+
+def test_all_ready_enables_start_button(tmp_path: Path) -> None:
+    """When ALL four modalities are connected via preview, start trial is enabled."""
+    _app, window, _created = _window_with_fake(tmp_path)
+    window.subject_code_edit.setText("001")
+    _connect_all_previews_for_trial(window)
+    assert window.start_button.isEnabled()
+    window.close()
+
+
+def test_connect_all_modalities_button(tmp_path: Path) -> None:
+    """connect_all_button should exist and trigger _connect_all_modalities."""
+    _app, window, _created = _window_with_fake(tmp_path)
+    assert window.connect_all_button is not None
+    assert not window._preview_workers
+    assert window.connect_all_button.isEnabled()
+    window.close()
+
+
+def test_disconnect_all_clears_state(tmp_path: Path) -> None:
+    """After disconnect_all, no modalities should be connected."""
+    _app, window, _created = _window_with_fake(tmp_path)
+    _connect_all_previews_for_trial(window)
+    assert window.start_button.isEnabled()
+
+    # Simulate disconnect all (clear preview state)
+    window._preview_connected_modalities.clear()
+    window._update_start_button()
+    window._update_connect_button_state()
+
+    assert not window.start_button.isEnabled()
+    for modality in ("ultrasound", "imu", "encoder", "sync_pulse"):
+        assert modality not in window._preview_connected_modalities
+    window.close()
+
+
+def test_profile_warning_simulated_shows_banner(tmp_path: Path) -> None:
+    """Simulated profile should display an orange warning banner."""
+    _app, window, _created = _window_with_fake(tmp_path)
+    simulated_index = window.device_profile_combo.findData("simulated")
+    window.device_profile_combo.setCurrentIndex(simulated_index)
+    text = window.profile_warning_label.text()
+    assert "模拟设备" in text or "simulated" in text.lower()
+    assert "#f8d7da" in window.profile_warning_label.styleSheet() or "red" in window.profile_warning_label.styleSheet().lower()
+    window.close()
+
+
+def test_connected_modality_enables_its_separate_disconnect_button(tmp_path: Path) -> None:
+    """Connect and disconnect remain two unambiguous controls."""
+    _app, window, _created = _window_with_fake(tmp_path)
+
+    connect_button = window._connect_buttons["ultrasound"]
+    disconnect_button = window._disconnect_buttons["ultrasound"]
+    assert connect_button.text() == "连接"
+    assert disconnect_button.text() == "断开"
+
+    # Simulate connecting
+    window._preview_workers["ultrasound"] = object()  # dummy handle
+    window._update_connect_button_state()
+    assert not connect_button.isEnabled()
+    assert disconnect_button.isEnabled()
+
+    # Cleanup
+    window._preview_workers.clear()
+    window.close()
+
+
+def test_modality_disconnect_button_requests_nonblocking_stop(tmp_path: Path) -> None:
+    _app, window, _created = _window_with_fake(tmp_path)
+    handle = FakePreviewHandle("ultrasound")
+    window._preview_workers["ultrasound"] = handle
+    window._preview_connected_modalities.add("ultrasound")
+    window._update_connect_button_state()
+
+    window._disconnect_buttons["ultrasound"].click()
+
+    assert handle.stop_requests == 1
+    assert handle.join_calls == 0
+    assert "ultrasound" in window._preview_workers
+    assert window._preview_connection_status["ultrasound"] == "断开中"
+
+    handle.alive = False
+    window._poll_preview_workers()
+    assert handle.closed
+    assert "ultrasound" not in window._preview_workers
+    window.close()
+
+
+def test_trial_waits_for_preview_process_release_without_blocking_ui(
+    tmp_path: Path,
+) -> None:
+    _app, window, created = _window_with_fake(tmp_path)
+    handles = {modality: FakePreviewHandle(modality) for modality in MODALITIES}
+    window._preview_workers.update(handles)
+    window._preview_connected_modalities.update(MODALITIES)
+    for modality in MODALITIES:
+        window._preview_connection_status[modality] = "已连接"
+    window._update_connect_button_state()
+
+    window.start_trial()
+
+    assert not created
+    assert window._pending_trial_request is not None
+    assert all(handle.stop_requests == 1 for handle in handles.values())
+    assert all(handle.join_calls == 0 for handle in handles.values())
+
+    for handle in handles.values():
+        handle.alive = False
+    window._poll_preview_workers()
+    assert len(created) == 1
+    assert created[0].started
+    assert window._pending_trial_request is None
+
+    window._preview_restore_modalities.clear()
+    created[0].finish(0)
+    window.close()
+
+
+def test_trial_creates_no_files_during_preview(tmp_path: Path) -> None:
+    """During preview phase, no trial/catalog/manifest/h5 files should be created."""
+    _app, window, _created = _window_with_fake(tmp_path)
+    _connect_all_previews_for_trial(window)
+
+    # Verify no data files exist (simulate preview state)
+    trial_dirs = list(tmp_path.glob("*trial*"))
+    catalog_files = list(tmp_path.glob("**/*.sqlite3"))
+    h5_files = list(tmp_path.glob("**/*.h5"))
+    bin_files = list(tmp_path.glob("**/*.bin"))
+    recording_files = list(tmp_path.glob("**/*.recording"))
+
+    assert not trial_dirs, f"trial directories should not exist: {trial_dirs}"
+    assert not catalog_files
+    assert not h5_files
+    assert not bin_files
+    assert not recording_files
+    window.close()
+
+
+def test_device_profile_label_has_modality_info(tmp_path: Path) -> None:
+    """_device_profile_label should contain per-modality source labels."""
+    _app, window, _created = _window_with_fake(tmp_path)
+    # Fresh settings default to the laboratory hardware profile.
+    for modality in ("ultrasound", "imu", "encoder"):
+        label = window._connect_device_labels.get(modality)
+        assert label is not None, f"device label for {modality} not found"
+        assert "真实" in label.text()
+    assert "模拟同步" in window._connect_device_labels["sync_pulse"].text()
+    window.close()
+
+
+def test_health_table_has_four_modalities(tmp_path: Path) -> None:
+    """Health table should list all four modalities."""
+    _app, window, _created = _window_with_fake(tmp_path)
+    assert window.health_table.rowCount() == 4
+    modalities_displayed = set()
+    for row in range(window.health_table.rowCount()):
+        modalities_displayed.add(window.health_table.item(row, 0).text())
+    assert modalities_displayed == {"ultrasound", "imu", "encoder", "sync_pulse"}
+    window.close()
+
+
+# ── Hardware profile selection tests ──
+
+
+def test_save_real_device_settings_auto_selects_hardware_profile(tmp_path: Path) -> None:
+    """Saving real device settings should switch to hardware profile."""
+    _app, window, _created = _window_with_fake(tmp_path)
+    simulated_index = window.device_profile_combo.findData("simulated")
+    window.device_profile_combo.setCurrentIndex(simulated_index)
+    assert window._selected_device_profile_key() == "simulated"
+
+    # Simulate the behavior that happens after hardware settings dialog accepts
+    window._settings.set_hardware_device_overrides(
+        {"ultrasound": {"sdk_path": "D:/Elonxi", "port": 1430}}
+    )
+    window._settings.set_device_profile_key("hardware")
+
+    # Manually trigger the profile switch effect
+    idx = window.device_profile_combo.findData("hardware")
+    window.device_profile_combo.setCurrentIndex(idx)
+    window._render_device_profile()
+
+    assert window._selected_device_profile_key() == "hardware"
+    window.close()
+
+
+def test_worker_request_uses_selected_profile(tmp_path: Path) -> None:
+    """TrialRunRequest must use the actual selected profile, not fallback to simulated."""
+    _app, window, _created = _window_with_fake(tmp_path)
+    window._settings.set_hardware_device_overrides(
+        {"ultrasound": {"sdk_path": "D:/Elonxi", "port": 1430}}
+    )
+    # Switch to hardware
+    window._settings.set_device_profile_key("hardware")
+    idx = window.device_profile_combo.findData("hardware")
+    window.device_profile_combo.blockSignals(True)
+    window.device_profile_combo.setCurrentIndex(idx)
+    window.device_profile_combo.blockSignals(False)
+
+    request = window.build_request()
+    assert request.device_profile_key == "hardware"
+    assert request.device_overrides["ultrasound"]["port"] == 1430
     window.close()

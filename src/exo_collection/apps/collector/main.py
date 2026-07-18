@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import multiprocessing
 import os
 import sys
@@ -18,6 +19,7 @@ from exo_collection.acquisition.messages import WorkerEventType
 from exo_collection.acquisition.workers import CollectorWorker
 from exo_collection.apps.collector.window import CollectorWindow
 from exo_collection.configuration import SharedAppSettings
+from exo_collection.logging_setup import setup_collector_logging
 from exo_collection.orchestration.models import TrialRunRequest
 
 
@@ -80,12 +82,15 @@ def _run_collection_smoke(data_root: Path, duration_s: float) -> int:
 
 
 def _temporary_settings(data_root: Path) -> SharedAppSettings:
-    return SharedAppSettings(
+    settings = SharedAppSettings(
         QSettings(
             str(data_root / ".smoke-settings.ini"),
             QSettings.Format.IniFormat,
         )
     )
+    # Frozen smoke tests must never probe laboratory hardware.
+    settings.set_device_profile_key("simulated")
+    return settings
 
 
 def _run_ui(
@@ -151,6 +156,9 @@ def main(
     settings: SharedAppSettings | None = None,
 ) -> int:
     multiprocessing.freeze_support()
+    setup_collector_logging()
+    logger = logging.getLogger("exo_collection.collector.main")
+    logger.info("Exo Collector application starting")
     arguments = list(argv) if argv is not None else sys.argv[1:]
     options = _build_parser().parse_args(arguments)
     if options.collect_smoke_test:
@@ -168,12 +176,15 @@ def main(
             )
 
     settings_store = settings if settings is not None else SharedAppSettings()
-    return _run_ui(
-        arguments,
-        settings_store.data_root,
-        settings_store,
-        smoke_test=False,
-    )
+    try:
+        return _run_ui(
+            arguments,
+            settings_store.data_root,
+            settings_store,
+            smoke_test=False,
+        )
+    finally:
+        logger.info("Exo Collector application exiting")
 
 
 if __name__ == "__main__":

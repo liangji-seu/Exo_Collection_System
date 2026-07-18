@@ -1,12 +1,21 @@
-"""Responsive PySide6 shell for the Collector worker process."""
+"""Responsive PySide6 shell for the Collector worker process.
+
+Per-modality preview connect/disconnect with independent subprocess workers.
+Trial lifecycle: stop previews → start CollectorWorker → restore previews.
+"""
 
 from __future__ import annotations
 
+import logging
 import math
+import os
+import subprocess
+import sys
 import time
 import traceback
 from collections import deque
 from collections.abc import Callable, Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 from uuid import uuid4
@@ -45,12 +54,23 @@ from PySide6.QtWidgets import (
 
 from exo_collection.acquisition.messages import WorkerEvent, WorkerEventType
 from exo_collection.acquisition.workers import CollectorWorker
-from exo_collection.configuration import SharedAppSettings, build_adapters, load_device_profile
+from exo_collection.apps.collector.device_preview import (
+    AdapterFactory,
+    ModalityPreviewHandle,
+    ModalityPreviewProcessHandle,
+    ProfileModalityAdapterFactory,
+)
 from exo_collection.apps.collector.preflight import (
     CollectorPreflightReport,
     CollectorPreflightWorker,
     run_simulated_preflight,
 )
+from exo_collection.configuration import (
+    SharedAppSettings,
+    build_adapters,
+    load_device_profile,
+)
+from exo_collection.logging_setup import collector_log_path, setup_collector_logging
 from exo_collection.orchestration.models import (
     MeasuredConditionMetadata,
     TrialExperimentMetadata,
@@ -59,6 +79,7 @@ from exo_collection.orchestration.models import (
 from exo_collection.protocols import load_default_protocol
 from exo_collection.quality import load_storage_policy
 
+LOG = logging.getLogger("exo_collection.collector.ui")
 
 MODALITIES = ("ultrasound", "imu", "encoder", "sync_pulse")
 CRITICAL_MODALITIES = frozenset(MODALITIES)
@@ -131,8 +152,6 @@ def simulated_preflight_worker_factory(
     device_profile_key: str = "simulated",
     device_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> PreflightWorkerHandle:
-    """Build the production spawn boundary for the selected device profile."""
-
     storage_policy = load_storage_policy()
     return CollectorPreflightWorker(
         data_root,
@@ -145,13 +164,14 @@ def simulated_preflight_worker_factory(
 def simulated_profile_preflight(
     data_root: Path,
 ) -> CollectorPreflightReport:
-    """Exercise real simulator lifecycle, sampling, trigger and storage checks."""
-
     storage_policy = load_storage_policy()
     return run_simulated_preflight(
         data_root,
         minimum_free_space_gib=storage_policy.minimum_free_space_gib,
     )
+
+
+# ── Hardware Device Settings Dialog ────────────────────────────────────────
 
 
 class HardwareDeviceSettingsDialog(QDialog):
@@ -226,7 +246,7 @@ class HardwareDeviceSettingsDialog(QDialog):
         form.addRow("Teensy PID：", self.encoder_pid_edit)
 
         fixed = QLabel(
-            "固定配置：超声 4 通道 × 1000 点；IMU 3 台；编码器左右 2 侧。"
+            "固定配置：超声 4 通道×1000点；IMU 3 台；编码器左右 2 侧。"
             "密码或凭据不会写入这里。"
         )
         fixed.setWordWrap(True)
@@ -286,14 +306,15 @@ class HardwareDeviceSettingsDialog(QDialog):
                     "pid": int(self.encoder_pid_edit.text().strip(), 0),
                 },
             }
-            # Registry construction validates every field but performs no
-            # vendor import or hardware I/O; those remain in the worker.
             build_adapters(load_device_profile("hardware"), overrides)
         except Exception as exc:
             QMessageBox.warning(self, "真实设备设置无效", str(exc))
             return
         self._validated_overrides = overrides
         super().accept()
+
+
+# ── Experiment Metadata Dialog ─────────────────────────────────────────────
 
 
 class ExperimentMetadataDialog(QDialog):
@@ -432,9 +453,7 @@ class ExperimentMetadataDialog(QDialog):
         return edit
 
     def _choice_combo(
-        self,
-        object_name: str,
-        choices: tuple[tuple[str, object], ...],
+        self, object_name: str, choices: tuple[tuple[str, object], ...]
     ) -> QComboBox:
         combo = QComboBox()
         combo.setObjectName(object_name)
@@ -458,21 +477,15 @@ class ExperimentMetadataDialog(QDialog):
         self._set_optional_number(self.leg_length_edit, subject.leg_length_cm)
         self._select_data(self.sex_combo, subject.sex)
         self._set_optional_number(self.age_edit, subject.age_years)
-
         probe = metadata.ultrasound_probe
         self.muscle_edit.setText(probe.muscle or "")
         self._select_data(self.laterality_combo, probe.laterality)
         self._select_data(self.position_combo, probe.longitudinal_position)
-        for edit, value in zip(
-            self.channel_mapping_edits,
-            probe.channel_mapping,
-            strict=True,
-        ):
+        for edit, value in zip(self.channel_mapping_edits, probe.channel_mapping, strict=True):
             edit.setText(value or "")
         self.fixation_edit.setText(probe.fixation_method or "")
         self.strap_pressure_edit.setText(probe.strap_pressure or "")
         self._select_data(self.reapplied_combo, probe.probe_reapplied)
-
         measured = metadata.measured_condition
         self._set_optional_number(self.speed_edit, measured.treadmill_speed_mps)
         self._set_optional_number(self.assist_edit, measured.assist_level)
@@ -504,9 +517,7 @@ class ExperimentMetadataDialog(QDialog):
                 "subject": {
                     "height_cm": self._optional_float(self.height_edit, "身高"),
                     "weight_kg": self._optional_float(self.weight_edit, "体重"),
-                    "leg_length_cm": self._optional_float(
-                        self.leg_length_edit, "腿长"
-                    ),
+                    "leg_length_cm": self._optional_float(self.leg_length_edit, "腿长"),
                     "sex": self.sex_combo.currentData(),
                     "age_years": self._optional_int(self.age_edit, "年龄"),
                 },
@@ -514,20 +525,14 @@ class ExperimentMetadataDialog(QDialog):
                     "muscle": self.muscle_edit.text(),
                     "laterality": self.laterality_combo.currentData(),
                     "longitudinal_position": self.position_combo.currentData(),
-                    "channel_mapping": [
-                        edit.text() for edit in self.channel_mapping_edits
-                    ],
+                    "channel_mapping": [edit.text() for edit in self.channel_mapping_edits],
                     "fixation_method": self.fixation_edit.text(),
                     "strap_pressure": self.strap_pressure_edit.text(),
                     "probe_reapplied": self.reapplied_combo.currentData(),
                 },
                 "measured_condition": {
-                    "treadmill_speed_mps": self._optional_float(
-                        self.speed_edit, "跑台速度"
-                    ),
-                    "assist_level": self._optional_float(
-                        self.assist_edit, "助力等级"
-                    ),
+                    "treadmill_speed_mps": self._optional_float(self.speed_edit, "跑台速度"),
+                    "assist_level": self._optional_float(self.assist_edit, "助力等级"),
                     "load_kg": self._optional_float(self.load_edit, "负载"),
                     "slope_deg": self._optional_float(self.slope_edit, "坡度"),
                 },
@@ -549,32 +554,20 @@ class ExperimentMetadataDialog(QDialog):
         super().accept()
 
 
-class RingTrace:
-    """Ring-buffer trace backed by a fixed-size numpy array for pyqtgraph.
+# ── Ring Trace (preview display) ───────────────────────────────────────────
 
-    The buffer is always SIZE elements long.  Unwritten positions are filled
-    with NaN so that the curve renders only valid data.  Cursor wraps
-    circularly within [0, SIZE-1] and an InfiniteLine marks its position.
-    """
+
+class RingTrace:
+    """Ring-buffer trace backed by a fixed-size numpy array for pyqtgraph."""
 
     __slots__ = (
-        "_buffer",
-        "_capacity",
-        "_count",
-        "_cursor",
-        "_x",
-        "curve",
-        "cursor_line",
-        "plot",
+        "_buffer", "_capacity", "_count", "_cursor", "_x",
+        "curve", "cursor_line", "plot",
     )
 
     def __init__(
-        self,
-        plot: "pg.PlotWidget",
-        pen: str,
-        label: str,
-        *,
-        capacity: int = SIGNAL_RING_CAPACITY,
+        self, plot: "pg.PlotWidget", pen: str, label: str,
+        *, capacity: int = SIGNAL_RING_CAPACITY,
     ) -> None:
         if capacity < 2:
             raise ValueError("ring trace capacity must be at least two")
@@ -584,23 +577,13 @@ class RingTrace:
         self._cursor = 0
         self._count = 0
         self.plot = plot
-
         self.curve = plot.plot(pen=pg.mkPen(pen, width=1.2))
-        self.cursor_line = pg.InfiniteLine(
-            pos=0.0,
-            angle=90,
-            pen=pg.mkPen("#dc3545", width=2),
-        )
+        self.cursor_line = pg.InfiniteLine(pos=0.0, angle=90, pen=pg.mkPen("#dc3545", width=2))
         plot.addItem(self.cursor_line)
         plot.setTitle(label)
         plot.setBackground("w")
         plot.setXRange(0, self._capacity - 1, padding=0)
-        plot.setLimits(
-            xMin=0,
-            xMax=self._capacity - 1,
-            minXRange=self._capacity - 1,
-            maxXRange=self._capacity - 1,
-        )
+        plot.setLimits(xMin=0, xMax=self._capacity - 1, minXRange=self._capacity - 1, maxXRange=self._capacity - 1)
         plot.setMouseEnabled(x=False, y=False)
         plot.setLabel("bottom", "循环帧位置")
         plot.showGrid(x=True, y=True, alpha=0.2)
@@ -613,8 +596,6 @@ class RingTrace:
             return
         next_cursor = (self._cursor + n) % self._capacity
         if n >= self._capacity:
-            # Only the newest full screen matters.  Its first value belongs at
-            # next_cursor because all older values have already been overwritten.
             tail = arr[-self._capacity :]
             split = self._capacity - next_cursor
             self._buffer[next_cursor:] = tail[:split]
@@ -632,8 +613,6 @@ class RingTrace:
     def _render(self) -> None:
         display = self._buffer.copy()
         if self._count == self._capacity:
-            # The next overwrite position separates newest data on its left
-            # from the oldest retained data on its right.
             display[self._cursor] = np.nan
         self.curve.setData(self._x, display)
         if self._count:
@@ -647,8 +626,13 @@ class RingTrace:
         self.cursor_line.setPos(0.0)
 
 
+# ── Preview Worker Factory Helpers ─────────────────────────────────────────
+
+# ── CollectorWindow ────────────────────────────────────────────────────────
+
+
 class CollectorWindow(QMainWindow):
-    """Collect one Trial at a time through a non-blocking worker boundary."""
+    """Collect one Trial at a time with per-modality preview workers."""
 
     trial_started = Signal(object)
     trial_finished = Signal(bool)
@@ -659,9 +643,8 @@ class CollectorWindow(QMainWindow):
         *,
         settings: SharedAppSettings | None = None,
         worker_factory: WorkerFactory = CollectorWorker,
-        preflight_worker_factory: PreflightWorkerFactory = (
-            simulated_preflight_worker_factory
-        ),
+        preflight_worker_factory: PreflightWorkerFactory = simulated_preflight_worker_factory,
+        preview_worker_factory: AdapterFactory | None = None,
         poll_interval_ms: int = 50,
         controlled_stop_timeout_s: float = DEFAULT_CONTROLLED_STOP_TIMEOUT_S,
         parent: QWidget | None = None,
@@ -694,10 +677,20 @@ class CollectorWindow(QMainWindow):
         self._worker_state = "IDLE"
         self._trial_succeeded = False
         self._missing_trigger_alerted = False
+
+        # Per-modality preview workers
+        self._preview_workers: dict[str, ModalityPreviewHandle] = {}
+        self._preview_connected_modalities: set[str] = set()
+        self._preview_connection_status: dict[str, str] = {
+            m: "未连接" for m in MODALITIES
+        }
+        self._preview_disconnect_deadlines: dict[str, float] = {}
+        self._preview_restore_modalities: set[str] = set()
+        self._pending_trial_request: TrialRunRequest | None = None
+        self._injected_preview_factory = preview_worker_factory
+
         self._experiment_metadata = TrialExperimentMetadata()
-        self._experiment_metadata_by_identity: dict[
-            tuple[str, str], TrialExperimentMetadata
-        ] = {}
+        self._experiment_metadata_by_identity: dict[tuple[str, str], TrialExperimentMetadata] = {}
         self._metadata_identity_key: tuple[str, str] | None = None
         self._metadata_condition_code: str | None = None
 
@@ -718,19 +711,19 @@ class CollectorWindow(QMainWindow):
         self._timeline_y: deque[float] = deque(maxlen=MAX_TIMELINE_EVENTS)
         self._timeline_text: deque[str] = deque(maxlen=MAX_TIMELINE_EVENTS)
 
+        # Per-modality connect buttons
+        self._connect_buttons: dict[str, QPushButton] = {}
+        self._disconnect_buttons: dict[str, QPushButton] = {}
+        self._connect_status_labels: dict[str, QLabel] = {}
+        self._connect_device_labels: dict[str, QLabel] = {}
+
         self.setWindowTitle("Exo Collector")
         self.resize(1280, 820)
         self._create_ui(Path(data_root).expanduser().resolve())
-        self.project_combo.currentIndexChanged.connect(
-            self._activate_selected_metadata_identity
-        )
-        self.subject_code_edit.textChanged.connect(
-            self._activate_selected_metadata_identity
-        )
+        self.project_combo.currentIndexChanged.connect(self._activate_selected_metadata_identity)
+        self.subject_code_edit.textChanged.connect(self._activate_selected_metadata_identity)
         self._activate_selected_metadata_identity()
-        self.condition_combo.currentIndexChanged.connect(
-            self._handle_metadata_condition_changed
-        )
+        self.condition_combo.currentIndexChanged.connect(self._handle_metadata_condition_changed)
         self._metadata_condition_code = self._selected_condition_code()
 
         self._poll_timer = QTimer(self)
@@ -739,8 +732,18 @@ class CollectorWindow(QMainWindow):
         self._preflight_timer = QTimer(self)
         self._preflight_timer.setInterval(max(20, poll_interval_ms))
         self._preflight_timer.timeout.connect(self.poll_preflight_worker)
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setInterval(max(20, poll_interval_ms))
+        self._preview_timer.timeout.connect(self._poll_preview_workers)
         self._set_trial_state("IDLE")
         self._update_start_button()
+
+        LOG.info(
+            "CollectorWindow 已初始化 data_root=%s profile=%s",
+            data_root, self._settings.device_profile_key,
+        )
+
+    # ── Properties ─────────────────────────────────────────────────────
 
     @property
     def worker(self) -> WorkerHandle | None:
@@ -759,6 +762,11 @@ class CollectorWindow(QMainWindow):
         return self._preflight_worker is not None
 
     @property
+    def device_profile_label(self) -> QLabel:
+        """Backward-compatible alias for _device_profile_label."""
+        return self._device_profile_label
+
+    @property
     def overall_status(self) -> str:
         return self.state_label.text().removeprefix("总状态：")
 
@@ -766,6 +774,7 @@ class CollectorWindow(QMainWindow):
         central = QWidget(self)
         outer = QVBoxLayout(central)
 
+        # ── Header ──
         header = QHBoxLayout()
         title = QLabel("Exo Collector · 多模态数据采集")
         title.setStyleSheet("font-size: 19px; font-weight: 600;")
@@ -782,6 +791,7 @@ class CollectorWindow(QMainWindow):
         controls = QWidget()
         controls_layout = QVBoxLayout(controls)
 
+        # ── Trial Settings ──
         metadata_box = QGroupBox("Trial 设置")
         form = QFormLayout(metadata_box)
         root_row = QHBoxLayout()
@@ -799,23 +809,24 @@ class CollectorWindow(QMainWindow):
         self.device_profile_combo.setObjectName("device_profile")
         self.device_profile_combo.addItem("内置模拟设备", "simulated")
         self.device_profile_combo.addItem(
-            "真实超声 + 3×IMU + 电机编码器（模拟同步台架）",
-            "hardware",
+            "真实超声 + 3×IMU + 电机编码器（模拟同步台架）", "hardware",
         )
         stored_profile = self._settings.device_profile_key
         stored_index = self.device_profile_combo.findData(stored_profile)
         self.device_profile_combo.setCurrentIndex(max(0, stored_index))
-        self.device_profile_combo.currentIndexChanged.connect(
-            self._handle_device_profile_changed
-        )
+        self.device_profile_combo.currentIndexChanged.connect(self._handle_device_profile_changed)
         device_row.addWidget(self.device_profile_combo, 1)
         self.hardware_settings_button = QPushButton("真实设备设置…")
         self.hardware_settings_button.setObjectName("hardware_device_settings")
-        self.hardware_settings_button.clicked.connect(
-            self.edit_hardware_device_settings
-        )
+        self.hardware_settings_button.clicked.connect(self.edit_hardware_device_settings)
         device_row.addWidget(self.hardware_settings_button)
         form.addRow("设备配置：", device_row)
+
+        # Profile warning banner
+        self.profile_warning_label = QLabel()
+        self.profile_warning_label.setObjectName("profile_warning")
+        self.profile_warning_label.setWordWrap(True)
+        controls_layout.addWidget(self.profile_warning_label)
 
         self.project_combo = QComboBox()
         self.project_combo.setObjectName("project")
@@ -866,16 +877,20 @@ class CollectorWindow(QMainWindow):
         experiment_layout.addWidget(self.experiment_metadata_summary, 1)
         controls_layout.addWidget(experiment_box)
 
+        # ── Trial buttons ──
         buttons = QHBoxLayout()
-        self.preflight_button = QPushButton("设备预检 / 连接")
-        self.preflight_button.setObjectName("preflight_devices")
-        self.preflight_button.clicked.connect(self.run_preflight)
-        buttons.addWidget(self.preflight_button)
+        self.connect_all_button = QPushButton("全部连接")
+        self.connect_all_button.setObjectName("connect_all")
+        self.connect_all_button.clicked.connect(self._connect_all_modalities)
+        buttons.addWidget(self.connect_all_button)
+        self.disconnect_all_button = QPushButton("全部断开")
+        self.disconnect_all_button.setObjectName("disconnect_all")
+        self.disconnect_all_button.clicked.connect(self._disconnect_all_modalities)
+        self.disconnect_all_button.setEnabled(False)
+        buttons.addWidget(self.disconnect_all_button)
         self.start_button = QPushButton("开始 Trial")
         self.start_button.setObjectName("start_trial")
-        self.start_button.setStyleSheet(
-            "QPushButton { font-weight: 600; padding: 8px; }"
-        )
+        self.start_button.setStyleSheet("QPushButton { font-weight: 600; padding: 8px; }")
         self.start_button.clicked.connect(self.start_trial)
         buttons.addWidget(self.start_button)
         self.stop_button = QPushButton("受控停止")
@@ -885,14 +900,61 @@ class CollectorWindow(QMainWindow):
         buttons.addWidget(self.stop_button)
         controls_layout.addLayout(buttons)
 
+        # ── Device Connection Area ──
+        connection_box = QGroupBox("设备连接")
+        connection_layout = QGridLayout(connection_box)
+        connection_layout.addWidget(QLabel("模态"), 0, 0)
+        connection_layout.addWidget(QLabel("来源 / 设备 ID"), 0, 1)
+        connection_layout.addWidget(QLabel("状态"), 0, 2)
+        connection_layout.addWidget(QLabel("操作"), 0, 3)
+
+        self._device_profile_label = QLabel()
+        self._device_profile_label.setObjectName("device_profile")
+        self._device_profile_label.setWordWrap(True)
+        connection_layout.addWidget(self._device_profile_label, len(MODALITIES) + 1, 0, 1, 4)
+
+        # Per-modality rows
+        _modality_labels = {
+            "ultrasound": "超声", "imu": "IMU", "encoder": "电机编码器", "sync_pulse": "同步脉冲",
+        }
+        for row_idx, modality in enumerate(MODALITIES, start=1):
+            connection_layout.addWidget(QLabel(_modality_labels[modality]), row_idx, 0)
+            device_label = QLabel("—")
+            device_label.setObjectName(f"device_label_{modality}")
+            connection_layout.addWidget(device_label, row_idx, 1)
+            self._connect_device_labels[modality] = device_label
+
+            status_label = QLabel("未连接")
+            status_label.setObjectName(f"connect_status_{modality}")
+            connection_layout.addWidget(status_label, row_idx, 2)
+            self._connect_status_labels[modality] = status_label
+
+            btn_container = QHBoxLayout()
+            connect_btn = QPushButton("连接")
+            connect_btn.setObjectName(f"connect_{modality}")
+            disconnect_btn = QPushButton("断开")
+            disconnect_btn.setObjectName(f"disconnect_{modality}")
+
+            def _make_connect_handler(m: str):
+                return lambda: self._connect_modality(m)
+            def _make_disconnect_handler(m: str):
+                return lambda: self._disconnect_modality(m)
+
+            connect_btn.clicked.connect(_make_connect_handler(modality))
+            disconnect_btn.clicked.connect(_make_disconnect_handler(modality))
+            disconnect_btn.setEnabled(False)
+
+            btn_container.addWidget(connect_btn)
+            btn_container.addWidget(disconnect_btn)
+            connection_layout.addLayout(btn_container, row_idx, 3)
+            self._connect_buttons[modality] = connect_btn
+            self._disconnect_buttons[modality] = disconnect_btn
+
+        controls_layout.addWidget(connection_box)
+
+        # ── Health Table ──
         health_box = QGroupBox("设备健康与样本计数")
         health_layout = QVBoxLayout(health_box)
-        self.device_profile_label = QLabel(
-            "当前设备配置：内置模拟设备（真实厂商 SDK 尚未接入）"
-        )
-        self.device_profile_label.setObjectName("device_profile")
-        self.device_profile_label.setStyleSheet("color:#6c757d;")
-        health_layout.addWidget(self.device_profile_label)
         self.health_table = QTableWidget(len(MODALITIES), 7)
         self.health_table.setObjectName("health_table")
         self.health_table.setHorizontalHeaderLabels(
@@ -913,6 +975,7 @@ class CollectorWindow(QMainWindow):
         health_layout.addWidget(self.health_table)
         controls_layout.addWidget(health_box)
 
+        # ── Sync Status ──
         sync_box = QGroupBox("同步状态")
         sync_layout = QGridLayout(sync_box)
         sync_layout.addWidget(QLabel("状态："), 0, 0)
@@ -926,9 +989,7 @@ class CollectorWindow(QMainWindow):
         sync_layout.addWidget(QLabel("首触发："), 1, 0)
         self.first_trigger_label = QLabel("—")
         self.first_trigger_label.setObjectName("first_trigger")
-        self.first_trigger_label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-        )
+        self.first_trigger_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         sync_layout.addWidget(self.first_trigger_label, 1, 1, 1, 3)
         sync_layout.addWidget(QLabel("质量："), 2, 0)
         self.sync_quality_label = QLabel("—")
@@ -936,30 +997,37 @@ class CollectorWindow(QMainWindow):
         sync_layout.addWidget(self.sync_quality_label, 2, 1, 1, 3)
         controls_layout.addWidget(sync_box)
 
-        alert_box = QGroupBox("告警与采集消息")
+        # ── Alert / Log Box ──
+        alert_box = QGroupBox("运行日志与告警")
         alert_layout = QVBoxLayout(alert_box)
         self.alerts_edit = QPlainTextEdit()
         self.alerts_edit.setObjectName("alerts")
         self.alerts_edit.setReadOnly(True)
-        self.alerts_edit.setMaximumBlockCount(300)
-        self.alerts_edit.setPlaceholderText("当前无告警。")
+        self.alerts_edit.setMaximumBlockCount(500)
+        self.alerts_edit.setPlaceholderText("系统日志与告警会显示在这里。")
         alert_layout.addWidget(self.alerts_edit)
+        # Open log directory button
+        log_btn_row = QHBoxLayout()
+        self.open_log_dir_button = QPushButton("打开日志目录")
+        self.open_log_dir_button.setObjectName("open_log_dir")
+        self.open_log_dir_button.clicked.connect(self._open_log_directory)
+        log_btn_row.addWidget(self.open_log_dir_button)
+        log_btn_row.addStretch(1)
+        alert_layout.addLayout(log_btn_row)
         controls_layout.addWidget(alert_box, 1)
 
         self.manifest_label = QLabel("Manifest：尚未生成")
         self.manifest_label.setObjectName("manifest_path")
         self.manifest_label.setWordWrap(True)
-        self.manifest_label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-        )
+        self.manifest_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         controls_layout.addWidget(self.manifest_label)
         body.addWidget(controls)
 
+        # ── Preview Plots ──
         preview_box = QGroupBox("实时预览（固定长度循环显示；不参与原始写盘）")
         preview_layout = QVBoxLayout(preview_box)
         pg.setConfigOptions(antialias=False, imageAxisOrder="row-major")
 
-        # ── Row 1: 4-channel ultrasound A-scan 2×2 grid ──
         us_grid = QGroupBox("超声 · 4 通道当前单帧")
         us_grid.setObjectName("ultrasound_grid")
         us_grid_layout = QGridLayout(us_grid)
@@ -970,8 +1038,7 @@ class CollectorWindow(QMainWindow):
             plot.setBackground("w")
             plot.setXRange(0, ULTRASOUND_PREVIEW_SAMPLES - 1, padding=0)
             plot.setLimits(
-                xMin=0,
-                xMax=ULTRASOUND_PREVIEW_SAMPLES - 1,
+                xMin=0, xMax=ULTRASOUND_PREVIEW_SAMPLES - 1,
                 minXRange=ULTRASOUND_PREVIEW_SAMPLES - 1,
                 maxXRange=ULTRASOUND_PREVIEW_SAMPLES - 1,
             )
@@ -979,16 +1046,12 @@ class CollectorWindow(QMainWindow):
             plot.setLabel("bottom", "单帧采样点")
             plot.showGrid(x=True, y=True, alpha=0.2)
             curve = plot.plot(pen=pg.mkPen("#2457c5", width=1.2))
-            curve.setData(
-                self._us_x,
-                np.full(ULTRASOUND_PREVIEW_SAMPLES, np.nan, dtype=np.float64),
-            )
+            curve.setData(self._us_x, np.full(ULTRASOUND_PREVIEW_SAMPLES, np.nan, dtype=np.float64))
             self._us_plots.append(plot)
             self._us_curves.append(curve)
             us_grid_layout.addWidget(plot, i // 2, i % 2)
         preview_layout.addWidget(us_grid, 4)
 
-        # ── Row 2: 3 IMU ring traces ──
         imu_grid = QGroupBox("IMU · 3 个传感器 acc_x 循环帧")
         imu_grid.setObjectName("imu_ring_grid")
         imu_layout = QHBoxLayout(imu_grid)
@@ -996,16 +1059,11 @@ class CollectorWindow(QMainWindow):
         for index, label in enumerate(IMU_PREVIEW_LABELS):
             plot = pg.PlotWidget()
             plot.setObjectName(f"imu_ring_{label}")
-            trace = RingTrace(
-                plot,
-                "#1a936f",
-                f"IMU {index + 1} · {label} · acc_x",
-            )
+            trace = RingTrace(plot, "#1a936f", f"IMU {index + 1} · {label} · acc_x")
             self._imu_traces[label] = trace
             imu_layout.addWidget(plot, 1)
         preview_layout.addWidget(imu_grid, 2)
 
-        # ── Row 3: 2 encoder ring traces ──
         enc_grid = QGroupBox("电机编码器 · 左右位置循环帧")
         enc_grid.setObjectName("encoder_ring_grid")
         enc_layout = QHBoxLayout(enc_grid)
@@ -1036,9 +1094,11 @@ class CollectorWindow(QMainWindow):
             self.condition_combo,
             self.repeat_spin,
             self.experiment_metadata_button,
-            self.preflight_button,
+            self.connect_all_button,
         )
         self._render_device_profile()
+
+    # ── Profile / Device Metadata ──────────────────────────────────────
 
     def _selected_device_profile_key(self) -> str:
         value = str(self.device_profile_combo.currentData() or "simulated")
@@ -1049,44 +1109,100 @@ class CollectorWindow(QMainWindow):
         self.hardware_settings_button.setEnabled(
             hardware and not self._configuration_locked and not self._preflight_busy
         )
+        overrides = self._settings.hardware_device_overrides if hardware else {}
+
+        # Update per-modality device labels
         if hardware:
-            self.device_profile_label.setText(
-                "当前设备：真实 Elonxi 超声 + 3 台 Xsens MTw + Teensy 电机编码器；"
-                "同步脉冲仍为模拟台架信号，不能作为正式实验同步。"
+            self._device_profile_label.setText(
+                "真实设备模式：Elonxi 超声 + Xsens MTw IMU + Teensy 编码器；"
+                "同步脉冲为模拟信号（仅台架验证）"
             )
-            self.device_profile_label.setStyleSheet("color:#842029;font-weight:600;")
+            self._device_profile_label.setStyleSheet("color:#842029;font-weight:600;")
+            # Warning banner
+            self.profile_warning_label.setText(
+                "真实设备模式 — 超声、IMU、编码器为真实设备；同步仍为模拟同步（仅台架验证）。"
+            )
+            self.profile_warning_label.setStyleSheet(
+                "QLabel { color:#664d03; background:#fff3cd; padding:6px; border:1px solid #ffecb5; border-radius:3px; }"
+            )
+
+            device_info = {
+                "ultrasound": f"真实 · Elonxi 超声 · {overrides.get('ultrasound', {}).get('device_ip') or '自动发现'}",
+                "imu": f"真实 · Xsens MTw · 信道 {overrides.get('imu', {}).get('radio_channel', 25)}",
+                "encoder": f"真实 · Teensy 编码器 · {overrides.get('encoder', {}).get('port') or '自动发现'}",
+                "sync_pulse": "模拟同步（仅台架验证）",
+            }
         else:
-            self.device_profile_label.setText("当前设备：全部使用内置模拟设备。")
-            self.device_profile_label.setStyleSheet("")
+            self._device_profile_label.setText("全部使用内置模拟设备")
+            self._device_profile_label.setStyleSheet("")
+            self.profile_warning_label.setText(
+                "当前为模拟设备，不会读取真实硬件"
+            )
+            self.profile_warning_label.setStyleSheet(
+                "QLabel { color:#842029; background:#f8d7da; padding:6px; border:1px solid #f5c2c7; border-radius:3px; font-weight:600; }"
+            )
+            device_info = {
+                m: f"模拟 · Simulated{m.capitalize()}Adapter" for m in MODALITIES
+            }
+
+        for modality in MODALITIES:
+            if modality in self._connect_device_labels:
+                self._connect_device_labels[modality].setText(device_info.get(modality, "—"))
 
     @Slot()
     def _handle_device_profile_changed(self) -> None:
-        self._settings.set_device_profile_key(self._selected_device_profile_key())
+        # Never relabel a live connection as belonging to a different profile.
+        if self._preview_workers:
+            QMessageBox.information(
+                self,
+                "请先断开设备",
+                "切换设备配置前，请先断开所有模态的实时预览连接。",
+            )
+            previous = self._settings.device_profile_key
+            idx = self.device_profile_combo.findData(previous)
+            self.device_profile_combo.blockSignals(True)
+            self.device_profile_combo.setCurrentIndex(max(0, idx))
+            self.device_profile_combo.blockSignals(False)
+            self._render_device_profile()
+            return
+
+        new_profile = self._selected_device_profile_key()
+        self._settings.set_device_profile_key(new_profile)
         self._render_device_profile()
         self._invalidate_preflight()
+        LOG.info("设备配置已切换为 %s", new_profile)
 
     @Slot()
     def edit_hardware_device_settings(self) -> None:
-        dialog = HardwareDeviceSettingsDialog(
-            self._settings.hardware_device_overrides,
-            self,
-        )
+        if self._preview_workers:
+            QMessageBox.information(
+                self,
+                "请先断开设备",
+                "修改真实设备设置前，请先断开所有模态的实时预览连接。",
+            )
+            return
+        dialog = HardwareDeviceSettingsDialog(self._settings.hardware_device_overrides, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         self._settings.set_hardware_device_overrides(dialog.validated_overrides)
         self._invalidate_preflight()
-        self.statusBar().showMessage(
-            "真实设备设置已保存；后续启动默认沿用，请重新执行设备预检。",
-            8000,
-        )
+        self._render_device_profile()
+        # Auto-switch to hardware profile
+        if self._selected_device_profile_key() != "hardware":
+            idx = self.device_profile_combo.findData("hardware")
+            self.device_profile_combo.blockSignals(True)
+            self.device_profile_combo.setCurrentIndex(max(0, idx))
+            self.device_profile_combo.blockSignals(False)
+            self._settings.set_device_profile_key("hardware")
+            self._render_device_profile()
+        self.statusBar().showMessage("真实设备设置已保存；已切换至真实设备模式。", 8000)
+        LOG.info("真实设备设置已保存并持久化")
 
     @Slot()
     def choose_data_root(self) -> None:
         selected = QFileDialog.getExistingDirectory(
-            self,
-            "选择外骨骼数据根目录",
-            self.data_root_edit.text(),
-            QFileDialog.Option.ShowDirsOnly,
+            self, "选择外骨骼数据根目录",
+            self.data_root_edit.text(), QFileDialog.Option.ShowDirsOnly,
         )
         if selected:
             self.set_data_root(selected)
@@ -1098,8 +1214,6 @@ class CollectorWindow(QMainWindow):
 
     @Slot()
     def _invalidate_preflight(self) -> None:
-        """A changed storage target or completed Worker requires a fresh probe."""
-
         if self._worker is not None or not self._preflight_ready:
             return
         self._preflight_ready = False
@@ -1107,48 +1221,34 @@ class CollectorWindow(QMainWindow):
             self.health_table.item(row, 1).setText("UNKNOWN")
             self.health_table.item(row, 1).setToolTip("")
         self._set_trial_state("IDLE")
-        self.statusBar().showMessage("配置或存储目标已变化，请重新执行设备预检。")
+        self.statusBar().showMessage("配置或存储目标已变化，请重新连接设备。")
         self._update_start_button()
 
     @property
     def experiment_metadata(self) -> TrialExperimentMetadata:
         return self._experiment_metadata
 
-    def set_experiment_metadata(
-        self,
-        metadata: TrialExperimentMetadata | Mapping[str, Any],
-    ) -> None:
+    def set_experiment_metadata(self, metadata: TrialExperimentMetadata | Mapping[str, Any]) -> None:
         self._experiment_metadata = TrialExperimentMetadata.model_validate(metadata)
         if self._metadata_identity_key is not None:
-            self._experiment_metadata_by_identity[self._metadata_identity_key] = (
-                self._experiment_metadata
-            )
+            self._experiment_metadata_by_identity[self._metadata_identity_key] = self._experiment_metadata
         self._render_experiment_metadata_summary()
 
     @staticmethod
     def _experiment_metadata_value_count(metadata: TrialExperimentMetadata) -> int:
         payload = metadata.model_dump(mode="python")
-
         def count_values(value: object) -> int:
             if isinstance(value, dict):
                 return sum(count_values(item) for item in value.values())
             if isinstance(value, (list, tuple)):
                 return sum(count_values(item) for item in value)
             return int(value is not None)
-
         return count_values(payload)
 
     def _render_experiment_metadata_summary(self, *, transition: str | None = None) -> None:
         value_count = self._experiment_metadata_value_count(self._experiment_metadata)
-        identity = (
-            "未识别受试者"
-            if self._metadata_identity_key is None
-            else f"{self._metadata_identity_key[0]}/{self._metadata_identity_key[1]}"
-        )
-        if value_count:
-            text = f"{identity} 已填写 {value_count} 项；同一受试者后续 Trial 默认沿用"
-        else:
-            text = f"{identity} 未填写；不影响采集"
+        identity = "未识别受试者" if self._metadata_identity_key is None else f"{self._metadata_identity_key[0]}/{self._metadata_identity_key[1]}"
+        text = f"{identity} 已填写 {value_count} 项；同一受试者后续 Trial 默认沿用" if value_count else f"{identity} 未填写；不影响采集"
         if transition:
             text = f"{transition}；{text}"
         self.experiment_metadata_summary.setText(text)
@@ -1180,8 +1280,7 @@ class CollectorWindow(QMainWindow):
             self._experiment_metadata = TrialExperimentMetadata()
             transition = (
                 "已切换受试者，实验元数据已清空以避免串写"
-                if previous_key is not None
-                and self._experiment_metadata_value_count(previous_metadata)
+                if previous_key is not None and self._experiment_metadata_value_count(previous_metadata)
                 else None
             )
             if transition and hasattr(self, "alerts_edit"):
@@ -1217,63 +1316,37 @@ class CollectorWindow(QMainWindow):
             )
         )
         self._experiment_metadata = self._experiment_metadata.model_copy(
-            update={
-                "measured_condition": MeasuredConditionMetadata(),
-                "trial_notes": None,
-            }
+            update={"measured_condition": MeasuredConditionMetadata(), "trial_notes": None}
         )
         for identity, cached in tuple(self._experiment_metadata_by_identity.items()):
             self._experiment_metadata_by_identity[identity] = cached.model_copy(
-                update={
-                    "measured_condition": MeasuredConditionMetadata(),
-                    "trial_notes": None,
-                }
+                update={"measured_condition": MeasuredConditionMetadata(), "trial_notes": None}
             )
         if self._metadata_identity_key is not None:
-            self._experiment_metadata_by_identity[self._metadata_identity_key] = (
-                self._experiment_metadata
-            )
+            self._experiment_metadata_by_identity[self._metadata_identity_key] = self._experiment_metadata
         transition = "工况已切换，实测工况与 Trial 备注已清空"
         self._render_experiment_metadata_summary(transition=transition)
         if had_condition_values and hasattr(self, "alerts_edit"):
             self._append_alert(
                 f"{transition}：{previous or '未选择'} → {selected}；人口学与探头固定信息保留。"
             )
-        self.statusBar().showMessage(
-            f"{transition}（{previous or '未选择'} → {selected}）。",
-            8000,
-        )
+        self.statusBar().showMessage(f"{transition}（{previous or '未选择'} → {selected}）。", 8000)
 
     def _clear_one_trial_metadata(self) -> None:
         probe = self._experiment_metadata.ultrasound_probe
         had_one_trial_values = bool(
-            self._experiment_metadata.trial_notes is not None
-            or probe.probe_reapplied is not None
+            self._experiment_metadata.trial_notes is not None or probe.probe_reapplied is not None
         )
         self._experiment_metadata = self._experiment_metadata.model_copy(
-            update={
-                "ultrasound_probe": probe.model_copy(
-                    update={"probe_reapplied": None}
-                ),
-                "trial_notes": None,
-            }
+            update={"ultrasound_probe": probe.model_copy(update={"probe_reapplied": None}), "trial_notes": None}
         )
         if self._metadata_identity_key is not None:
-            self._experiment_metadata_by_identity[self._metadata_identity_key] = (
-                self._experiment_metadata
-            )
-        transition = (
-            "上一 Trial 已结束，一次性备注与‘重新贴探头’已清空"
-            if had_one_trial_values
-            else None
-        )
+            self._experiment_metadata_by_identity[self._metadata_identity_key] = self._experiment_metadata
+        transition = "上一 Trial 已结束，一次性备注与'重新贴探头'已清空" if had_one_trial_values else None
         self._render_experiment_metadata_summary(transition=transition)
         if transition:
             self._append_alert(f"{transition}；人口学、探头位置与固定方式仍保留。")
-            self.statusBar().showMessage(
-                f"{transition}；下一个 Trial 开始前请重新确认。",
-                8000,
-            )
+            self.statusBar().showMessage(f"{transition}；下一个 Trial 开始前请重新确认。", 8000)
 
     @Slot()
     def edit_experiment_metadata(self) -> None:
@@ -1298,16 +1371,17 @@ class CollectorWindow(QMainWindow):
         self.subject_code_edit.setText(normalized)
         return normalized
 
+    # ── Legacy Preflight (kept as smoke-test entry point) ───────────────
+
     @Slot()
     def run_preflight(self) -> None:
+        """Legacy preflight — kept for test/smoke compatibility, not exposed as primary connect."""
         if self._worker is not None or self._preflight_worker is not None:
             return
         self._preflight_ready = False
         self._set_preflight_busy(True)
         self._set_trial_state("PREFLIGHT")
-        self.statusBar().showMessage(
-            "正在独立进程中连接、准备并短时采样四个模态，同时检查写入与磁盘空间…"
-        )
+        self.statusBar().showMessage("正在独立进程中执行旧版设备预检（测试兼容）…")
         worker: PreflightWorkerHandle | None = None
         try:
             root_text = self.data_root_edit.text().strip()
@@ -1315,20 +1389,10 @@ class CollectorWindow(QMainWindow):
                 raise ValueError("数据根目录不能为空")
             root = self.set_data_root(root_text)
             profile_key = self._selected_device_profile_key()
-            overrides = (
-                self._settings.hardware_device_overrides
-                if profile_key == "hardware"
-                else None
-            )
+            overrides = self._settings.hardware_device_overrides if profile_key == "hardware" else None
             if self._preflight_worker_factory is simulated_preflight_worker_factory:
-                worker = self._preflight_worker_factory(
-                    root,
-                    profile_key,
-                    overrides,
-                )
+                worker = self._preflight_worker_factory(root, profile_key, overrides)
             else:
-                # Existing injected/test factories keep their one-argument
-                # contract; only the production factory owns device settings.
                 worker = self._preflight_worker_factory(root)
             self._preflight_worker = worker
             self._preflight_root = root
@@ -1337,9 +1401,6 @@ class CollectorWindow(QMainWindow):
             worker.start()
         except Exception:
             details = traceback.format_exc()
-            # Factories and spawn may fail before a PID exists. Each production
-            # worker also performs its own partial-start cleanup; this fallback
-            # keeps injected implementations honest.
             if worker is not None:
                 try:
                     worker.terminate(timeout=0.25)
@@ -1359,10 +1420,7 @@ class CollectorWindow(QMainWindow):
             )
             self._apply_preflight_result(None, error=final_line)
             return
-
         self._preflight_timer.start()
-        # Non-blocking poll only. This lets deterministic test/injected workers
-        # complete immediately without ever executing device work on the GUI.
         self.poll_preflight_worker()
 
     @Slot()
@@ -1383,30 +1441,23 @@ class CollectorWindow(QMainWindow):
                     self._apply_preflight_result(payload)
                 else:
                     self._apply_preflight_result(None, error=str(payload))
-
         if self._preflight_worker_is_alive(worker):
             self._preflight_empty_exit_polls = 0
             return
         if not self._preflight_result_handled:
-            # A multiprocessing.Queue feeder can trail process exit briefly.
             self._preflight_empty_exit_polls += 1
             if self._preflight_empty_exit_polls < 10:
                 return
             self._preflight_result_handled = True
             self._apply_preflight_result(
                 None,
-                error=(
-                    "设备预检进程已退出但未返回结果"
-                    f"（exitcode={self._preflight_worker_exitcode(worker)}）。"
-                ),
+                error=f"设备预检进程已退出但未返回结果（exitcode={self._preflight_worker_exitcode(worker)}）。",
             )
         try:
             worker.join(timeout=0)
             worker.close()
         except Exception as exc:
-            self._append_alert(
-                f"释放预检进程资源时出错：{type(exc).__name__}: {exc}"
-            )
+            self._append_alert(f"释放预检进程资源时出错：{type(exc).__name__}: {exc}")
         self._preflight_worker = None
         self._preflight_root = None
         self._preflight_timer.stop()
@@ -1422,32 +1473,18 @@ class CollectorWindow(QMainWindow):
         value = worker.exitcode
         return value() if callable(value) else value
 
-    def _apply_preflight_result(
-        self,
-        raw_result: object | None,
-        *,
-        error: str | None = None,
-    ) -> None:
+    def _apply_preflight_result(self, raw_result: object | None, *, error: str | None = None) -> None:
         report: CollectorPreflightReport | None = None
         try:
             if isinstance(raw_result, CollectorPreflightReport):
                 report = raw_result
-                if (
-                    self._preflight_root is not None
-                    and report.data_root.resolve() != self._preflight_root.resolve()
-                ):
+                if self._preflight_root is not None and report.data_root.resolve() != self._preflight_root.resolve():
                     raise ValueError("设备预检结果来自不同的数据根目录")
                 if report.profile_key != self._selected_device_profile_key():
                     raise ValueError("设备预检结果来自不同的设备配置")
-                reported = {
-                    modality: item.status
-                    for modality, item in report.devices.items()
-                }
+                reported = {modality: item.status for modality, item in report.devices.items()}
             elif isinstance(raw_result, Mapping):
-                reported = {
-                    str(modality): str(status).strip().upper()
-                    for modality, status in raw_result.items()
-                }
+                reported = {str(modality): str(status).strip().upper() for modality, status in raw_result.items()}
             else:
                 reported = {}
                 if error is None:
@@ -1455,14 +1492,9 @@ class CollectorWindow(QMainWindow):
         except Exception as exc:
             reported = {}
             error = f"{type(exc).__name__}: {exc}"
-
         if error:
-            final_line = next(
-                (line for line in reversed(error.splitlines()) if line.strip()),
-                error,
-            )
+            final_line = next((line for line in reversed(error.splitlines()) if line.strip()), error)
             self._append_alert(f"设备预检失败：{final_line}")
-
         missing_or_failed: list[str] = []
         for modality in MODALITIES:
             status = reported.get(modality, "MISSING")
@@ -1471,37 +1503,23 @@ class CollectorWindow(QMainWindow):
             if report is not None and modality in report.devices:
                 result = report.devices[modality]
                 self.health_table.item(row, 1).setToolTip(
-                    f"{result.device_id} · {result.message} · "
-                    f"channels={result.channel_count} · raw={result.observed_raw_data}"
+                    f"{result.device_id} · {result.message} · channels={result.channel_count} · raw={result.observed_raw_data}"
                 )
-                self.health_table.item(row, 3).setText(
-                    "-"
-                    if result.actual_rate_hz is None
-                    else f"{result.actual_rate_hz:.1f}"
-                )
-                self.health_table.item(row, 5).setText(
-                    f"0/{result.queue_capacity}"
-                )
+                self.health_table.item(row, 3).setText("-" if result.actual_rate_hz is None else f"{result.actual_rate_hz:.1f}")
+                self.health_table.item(row, 5).setText(f"0/{result.queue_capacity}")
             if modality in CRITICAL_MODALITIES and status != "READY":
                 missing_or_failed.append(f"{modality}={status}")
-
-        self._preflight_ready = not missing_or_failed and (
-            report.ready if report is not None else True
-        )
+        self._preflight_ready = not missing_or_failed and (report.ready if report is not None else True)
         if self._preflight_ready:
             self._set_trial_state("PREFLIGHT_READY")
             storage = ""
             if report is not None:
                 storage = (
                     f" 可用空间 {report.disk_free_bytes / 1024**3:.2f} GiB；"
-                    f"落盘探测 {report.measured_write_mib_s:.1f} MiB/s"
-                    "（阈值待真实超声最大速率确定）；"
+                    f"落盘探测 {report.measured_write_mib_s:.1f} MiB/s（阈值待真实超声最大速率确定）；"
                     f"耗时 {report.elapsed_s:.2f} s。"
                 )
-            self.statusBar().showMessage(
-                f"四个必需模态已实际连接/准备/采样，同步上升沿已观测。{storage}",
-                8000,
-            )
+            self.statusBar().showMessage(f"四个必需模态已实际连接/准备/采样，同步上升沿已观测。{storage}", 8000)
         else:
             self._set_trial_state("FAILED")
             detail = "、".join(missing_or_failed) or "预检服务未返回设备状态"
@@ -1509,9 +1527,298 @@ class CollectorWindow(QMainWindow):
             self.statusBar().showMessage("设备预检失败；开始采集保持禁用。")
         self._update_start_button()
 
-    def _refresh_identity_context(
-        self, data_root: Path, project_code: str, subject_code: str
-    ) -> None:
+    # ── Per-modality Preview Connect / Disconnect ───────────────────────
+
+    def _build_single_adapter_factory(self, modality: str) -> AdapterFactory:
+        """Build a Windows-spawn-safe factory for exactly one modality."""
+        if self._injected_preview_factory is not None:
+            return self._injected_preview_factory
+
+        profile_key = self._selected_device_profile_key()
+        overrides = (
+            self._settings.hardware_device_overrides
+            if profile_key == "hardware"
+            else {}
+        )
+        return ProfileModalityAdapterFactory(
+            profile_key=profile_key,
+            modality=modality,
+            overrides=overrides,
+        )
+
+    def _get_modality_info(self, modality: str) -> tuple[str, bool]:
+        """Return (device_id, simulated) for the given modality."""
+        profile_key = self._selected_device_profile_key()
+        profile = load_device_profile(profile_key)
+        try:
+            device = profile.by_modality()[modality]
+        except KeyError as exc:
+            raise RuntimeError(
+                f"profile {profile_key!r} has no {modality!r} device"
+            ) from exc
+        simulated = profile_key == "simulated" or bool(
+            getattr(device, "simulated", False)
+        )
+        return device.device_id, simulated
+
+    def _set_preview_status(self, modality: str, status: str, device_id: str,
+                            simulated: bool, error: str | None = None) -> None:
+        """Update the per-modality UI status labels."""
+        if modality in self._connect_status_labels:
+            label = self._connect_status_labels[modality]
+            source = "模拟" if simulated else "真实"
+            text = f"{status}"
+            if device_id:
+                text += f" · {device_id}"
+            label.setText(text)
+            if "错误" in status or status == "失败":
+                label.setStyleSheet("color:#842029;font-weight:600;")
+            elif status in ("已连接", "READY"):
+                label.setStyleSheet("color:#0f5132;font-weight:600;")
+            elif status == "连接中":
+                label.setStyleSheet("color:#664d03;font-weight:600;")
+            else:
+                label.setStyleSheet("")
+
+    @Slot()
+    def _connect_modality(self, modality: str) -> None:
+        """Spawn a single-modality preview worker for one modality."""
+        if modality in self._preview_workers:
+            self._append_alert(f"{modality} 已有预览连接，请先断开。")
+            return
+        if self._worker is not None:
+            self._append_alert("Trial 进行中，无法连接预览。")
+            return
+
+        device_id, simulated = self._get_modality_info(modality)
+        adapter_factory = self._build_single_adapter_factory(modality)
+
+        self._set_preview_status(modality, "连接中", device_id, simulated)
+        self._preview_connection_status[modality] = "连接中"
+        LOG.info("正在连接 %s 预览 (%s, simulated=%s)", modality, device_id, simulated)
+
+        handle = ModalityPreviewProcessHandle(
+            adapter_factory=adapter_factory,
+            device_id=device_id,
+            modality=modality,
+            simulated=simulated,
+        )
+        self._preview_workers[modality] = handle
+        try:
+            handle.start()
+        except Exception as exc:
+            self._preview_workers.pop(modality, None)
+            self._set_preview_status(modality, f"失败: {exc}", device_id, simulated, error=str(exc))
+            self._preview_connection_status[modality] = "错误"
+            self._append_alert(f"{modality} 预览启动失败：{type(exc).__name__}: {exc}")
+            LOG.error("%s 预览启动失败: %s", modality, exc)
+            return
+
+        self._preview_timer.start()
+        self._update_connect_button_state()
+        self._append_alert(f"正在启动 {modality} 预览（{device_id}，{'模拟' if simulated else '真实'}）…")
+        LOG.info("已启动 %s 预览 worker alive=%s", modality, handle.is_alive)
+
+    @Slot()
+    def _disconnect_modality(self, modality: str) -> None:
+        """Request a non-blocking controlled stop for one preview worker."""
+        handle = self._preview_workers.get(modality)
+        if handle is None:
+            return
+        self._preview_connected_modalities.discard(modality)
+        self._preview_connection_status[modality] = "断开中"
+        self._preview_disconnect_deadlines[modality] = time.monotonic() + 3.0
+        LOG.info("正在断开 %s 预览", modality)
+        try:
+            handle.request_stop()
+        except Exception as exc:
+            LOG.warning("断开 %s 预览时出错: %s", modality, exc)
+        self._set_preview_status(modality, "断开中", handle.device_id, handle.simulated)
+        self._preview_timer.start()
+        self._update_connect_button_state()
+        self._append_alert(f"正在断开 {modality} 预览…")
+
+    @Slot()
+    def _connect_all_modalities(self) -> None:
+        for modality in MODALITIES:
+            self._connect_modality(modality)
+
+    @Slot()
+    def _disconnect_all_modalities(self) -> None:
+        for modality in list(self._preview_workers.keys()):
+            self._disconnect_modality(modality)
+
+    def _update_connect_button_state(self) -> None:
+        """Enable/disable connect/disconnect buttons and trial button based on state."""
+        has_any_connection = bool(self._preview_workers)
+        can_change = not self._configuration_locked and self._worker is None
+        self.connect_all_button.setEnabled(
+            can_change and len(self._preview_workers) < len(MODALITIES)
+        )
+        self.disconnect_all_button.setEnabled(can_change and has_any_connection)
+
+        for modality in MODALITIES:
+            connect_button = self._connect_buttons.get(modality)
+            disconnect_button = self._disconnect_buttons.get(modality)
+            if connect_button is None or disconnect_button is None:
+                continue
+            active = modality in self._preview_workers
+            stopping = modality in self._preview_disconnect_deadlines
+            connect_button.setText("连接")
+            connect_button.setEnabled(can_change and not active)
+            disconnect_button.setText("断开中…" if stopping else "断开")
+            disconnect_button.setEnabled(
+                can_change and active and not stopping
+            )
+
+        self._update_start_button()
+
+    @Slot()
+    def _poll_preview_workers(self) -> None:
+        """Poll events from all active preview workers and dispatch to UI handlers."""
+        if not self._preview_workers:
+            self._preview_timer.stop()
+            self._maybe_launch_pending_trial()
+            return
+        now = time.monotonic()
+        for modality, handle in list(self._preview_workers.items()):
+            try:
+                events = handle.poll_events(limit=100)
+            except Exception as exc:
+                self._append_alert(
+                    f"读取 {modality} 预览事件失败：{type(exc).__name__}: {exc}"
+                )
+                events = []
+            for event in events:
+                try:
+                    self._handle_preview_worker_event(event, handle, modality)
+                except Exception as exc:
+                    self._append_alert(
+                        f"处理 {modality} 预览事件失败："
+                        f"{type(exc).__name__}: {exc}"
+                    )
+
+            if not handle.is_alive and handle.exitcode is not None:
+                self._handle_preview_worker_death(modality, handle)
+                continue
+            deadline = self._preview_disconnect_deadlines.get(modality)
+            if deadline is not None and now >= deadline:
+                self._append_alert(f"{modality} 预览断开超时，正在强制回收。")
+                try:
+                    handle.terminate(timeout=0.25)
+                except Exception as exc:
+                    LOG.error("强制回收 %s 预览失败: %s", modality, exc)
+                self._handle_preview_worker_death(modality, handle)
+        self._maybe_launch_pending_trial()
+
+    def _handle_preview_worker_event(self, event: WorkerEvent,
+                                      handle: ModalityPreviewHandle,
+                                      modality: str) -> None:
+        if event.event_type is WorkerEventType.STATE:
+            state = str(event.payload.get("state") or "UNKNOWN")
+            if state == "READY":
+                self._preview_connected_modalities.add(modality)
+                self._preview_connection_status[modality] = "已连接"
+                self._set_preview_status(modality, "READY", handle.device_id, handle.simulated)
+                self._update_connect_button_state()
+                self._update_start_button()
+                self._append_alert(
+                    f"{modality} ({handle.device_id}) "
+                    f"{'模拟' if handle.simulated else '真实'}预览已就绪。"
+                )
+                LOG.info("%s (%s) preview READY simulated=%s", modality, handle.device_id, handle.simulated)
+            elif state in ("CONNECTING", "PREVIEW_STARTING"):
+                pass
+            elif state == "DISCONNECTED":
+                self._preview_connected_modalities.discard(modality)
+                self._preview_connection_status[modality] = "未连接"
+                self._update_connect_button_state()
+                self._update_start_button()
+        elif event.event_type is WorkerEventType.FAILED:
+            error_msg = event.message or "未知错误"
+            self._preview_connected_modalities.discard(modality)
+            self._preview_connection_status[modality] = "错误"
+            self._set_preview_status(modality, "错误", handle.device_id, handle.simulated, error=error_msg)
+            self._append_alert(f"{modality} 预览失败：{error_msg}")
+            LOG.error("%s preview failed: %s", modality, error_msg)
+            try:
+                handle.request_stop()
+            except Exception:
+                pass
+            self._preview_disconnect_deadlines[modality] = time.monotonic() + 1.0
+            self._update_connect_button_state()
+            self._update_start_button()
+        elif event.event_type is WorkerEventType.HEALTH:
+            self._handle_preview_health(event, modality)
+        elif event.event_type is WorkerEventType.PREVIEW:
+            self._handle_preview(event)
+
+    def _handle_preview_health(self, event: WorkerEvent, modality: str) -> None:
+        payload = event.payload
+        row = self._health_rows.get(modality)
+        if row is None:
+            return
+        status = str(payload.get("status") or "UNKNOWN").upper()
+        self.health_table.item(row, 1).setText(status)
+        sample_count = payload.get("sample_count")
+        if sample_count is not None:
+            self.health_table.item(row, 2).setText(str(int(sample_count)))
+        rate = payload.get("actual_sample_rate_hz")
+        self.health_table.item(row, 3).setText("-" if rate is None else f"{float(rate):.1f} Hz")
+        dropped = payload.get("dropped_packets")
+        self.health_table.item(row, 4).setText("-" if dropped is None else str(int(dropped)))
+        depth = payload.get("queue_depth")
+        capacity = payload.get("queue_capacity")
+        self.health_table.item(row, 5).setText(f"{int(depth)}/{int(capacity)}" if capacity else "-")
+        sampled_at = str(payload.get("sampled_at_utc") or "").strip()
+        self.health_table.item(row, 6).setText(sampled_at or "-")
+        previous = self._last_health_status.get(modality)
+        self._last_health_status[modality] = status
+        if status in {"DEGRADED", "UNHEALTHY", "FAULT"} and status != previous:
+            detail = event.message or str(payload.get("message") or "")
+            suffix = f"：{detail}" if detail else ""
+            self._append_alert(f"{modality} 健康状态 {status}{suffix}")
+
+    def _handle_preview_worker_death(self, modality: str, handle: ModalityPreviewHandle) -> None:
+        requested = modality in self._preview_disconnect_deadlines
+        self._preview_connected_modalities.discard(modality)
+        previous_status = self._preview_connection_status.get(modality)
+        if not requested and previous_status in {"连接中", "已连接"}:
+            self._preview_connection_status[modality] = "错误"
+            self._set_preview_status(
+                modality, f"启动失败 (exitcode={handle.exitcode})", handle.device_id, handle.simulated,
+                error="子进程异常退出"
+            )
+            self._append_alert(
+                f"{modality} 预览进程异常退出 (exitcode={handle.exitcode})。"
+                f"可能是 SDK 依赖缺失或配置错误。"
+            )
+            LOG.error("%s preview exitcode=%s", modality, handle.exitcode)
+        self._preview_workers.pop(modality, None)
+        self._preview_disconnect_deadlines.pop(modality, None)
+        try:
+            handle.join(timeout=0)
+            handle.close()
+        except Exception as exc:
+            LOG.warning("释放 %s 预览句柄失败: %s", modality, exc)
+        if requested and previous_status != "错误":
+            self._preview_connection_status[modality] = "未连接"
+            self._set_preview_status(
+                modality, "未连接", handle.device_id, handle.simulated
+            )
+            row = self._health_rows.get(modality)
+            if row is not None:
+                self.health_table.item(row, 1).setText("DISCONNECTED")
+                self._last_health_status.pop(modality, None)
+            self._append_alert(f"{modality} 预览已断开。")
+        self._update_connect_button_state()
+        self._update_start_button()
+        if not self._preview_workers:
+            self._preview_timer.stop()
+
+    # ── Trial Workflow ────────────────────────────────────────────────
+
+    def _refresh_identity_context(self, data_root: Path, project_code: str, subject_code: str) -> None:
         session_key = (str(data_root), project_code, subject_code)
         if session_key != self._session_key:
             self._session_key = session_key
@@ -1536,15 +1843,13 @@ class CollectorWindow(QMainWindow):
         condition = self.condition_combo.currentData()
         if not isinstance(condition, dict):
             raise ValueError("请选择有效工况")
-
         self._refresh_identity_context(data_root, project_code, subject_code)
         payload: dict[str, Any] = {
             "data_root": data_root,
             "device_profile_key": self._selected_device_profile_key(),
             "device_overrides": (
                 self._settings.hardware_device_overrides
-                if self._selected_device_profile_key() == "hardware"
-                else {}
+                if self._selected_device_profile_key() == "hardware" else {}
             ),
             "duration_s": None,
             "session_uuid": self._session_uuid,
@@ -1559,24 +1864,67 @@ class CollectorWindow(QMainWindow):
             "repeat_index": self.repeat_spin.value(),
             "protocol_version": _PROTOCOL.protocol_version,
             "config_version": "1.0.0",
-            "experiment_metadata": self._experiment_metadata.model_dump(
-                mode="python"
-            ),
+            "experiment_metadata": self._experiment_metadata.model_dump(mode="python"),
         }
         return TrialRunRequest.model_validate(payload)
 
     @Slot()
     def start_trial(self) -> None:
-        if self._worker is not None or self._preflight_worker is not None:
+        if (
+            self._worker is not None
+            or self._preflight_worker is not None
+            or self._pending_trial_request is not None
+        ):
             return
-        if not self._preflight_ready:
-            self._append_alert("开始已阻止：请先完成设备预检，确保所有关键设备 READY。")
-            self.statusBar().showMessage("请先执行设备预检 / 连接。")
-            self._update_start_button()
-            return
-        worker: WorkerHandle | None = None
+
+        # Build request first (validates input)
         try:
             request = self.build_request()
+        except Exception as exc:
+            self._append_alert(f"无法构建 Trial 请求：{type(exc).__name__}: {exc}")
+            self.statusBar().showMessage("Trial 请求构建失败。")
+            return
+
+        # Log modality details before starting
+        for modality in MODALITIES:
+            device_id, simulated = self._get_modality_info(modality)
+            LOG.info(
+                "Trial 请求模态: %s adapter=%s device_id=%s simulated=%s",
+                modality, "<profile>", device_id, simulated,
+            )
+
+        # Check that required modalities are READY (connected via preview)
+        required_connected = True
+        for modality in CRITICAL_MODALITIES:
+            if modality not in self._preview_connected_modalities:
+                required_connected = False
+                self._append_alert(
+                    f"{modality} 尚未连接/就绪。请先点击对应模态的'连接'按钮。"
+                )
+
+        if not required_connected:
+            self.statusBar().showMessage("请先连接所有必需模态的设备预览。")
+            self._update_start_button()
+            return
+
+        # Stop all preview workers asynchronously to release exclusive device
+        # handles. The GUI timer launches the recording worker only after every
+        # preview process has exited.
+        self._preview_restore_modalities = set(self._preview_connected_modalities)
+        self._pending_trial_request = request
+        self._set_configuration_locked(True)
+        self._set_trial_state("SWITCHING_TO_RECORD")
+        self._stop_all_preview_workers_for_trial()
+        self.statusBar().showMessage("正在从预览切换到记录…")
+        self._append_alert("正在停止所有预览 Worker；设备释放后将启动 Trial 记录。")
+        LOG.info("正在停止预览 workers 并启动 Trial")
+        self._preview_timer.start()
+        self._maybe_launch_pending_trial()
+
+    def _launch_trial_worker(self, request: TrialRunRequest) -> None:
+        """Start the recording worker after preview devices are fully released."""
+        worker: WorkerHandle | None = None
+        try:
             worker = self._worker_factory(request)
             worker.start()
         except Exception as exc:
@@ -1590,6 +1938,9 @@ class CollectorWindow(QMainWindow):
             self._set_trial_state("FAILED")
             self._append_alert(f"无法启动 Trial：{type(exc).__name__}: {exc}")
             self.statusBar().showMessage("Trial 启动失败。")
+            LOG.error("Trial 启动失败: %s", exc)
+            self._set_configuration_locked(False)
+            self._restore_preview_workers()
             return
 
         self._worker = worker
@@ -1602,17 +1953,55 @@ class CollectorWindow(QMainWindow):
         self._close_when_finished = False
         self._trial_succeeded = False
         self._reset_trial_display()
-        self._set_configuration_locked(True)
         self.stop_button.setEnabled(True)
         self._set_trial_state("PREPARING")
         self._poll_timer.start()
         self.trial_started.emit(request)
-        self.statusBar().showMessage(
-            f"Trial {request.trial_uuid} 已交给独立 Collector Worker。"
-        )
+        self.statusBar().showMessage(f"Trial {request.trial_uuid} 已交给独立 Collector Worker。")
+        LOG.info("Trial 已启动: %s", request.trial_uuid)
+
+    def _stop_all_preview_workers_for_trial(self) -> None:
+        """Request all preview workers to stop without blocking the GUI thread."""
+        for modality, handle in list(self._preview_workers.items()):
+            self._preview_connected_modalities.discard(modality)
+            self._preview_disconnect_deadlines[modality] = time.monotonic() + 5.0
+            self._preview_connection_status[modality] = "断开中"
+            self._set_preview_status(
+                modality, "切换至记录中", handle.device_id, handle.simulated
+            )
+            try:
+                handle.request_stop()
+            except Exception as exc:
+                LOG.warning("停止 %s 预览时出错: %s", modality, exc)
+        self._update_connect_button_state()
+
+    def _maybe_launch_pending_trial(self) -> None:
+        request = self._pending_trial_request
+        if request is None:
+            return
+        if self._preview_workers:
+            return
+        self._pending_trial_request = None
+        self._append_alert("所有预览设备已释放；现在开始 Trial 原始写盘。")
+        self._launch_trial_worker(request)
+
+    def _restore_preview_workers(self) -> None:
+        """Attempt to reconnect preview workers for previously connected modalities."""
+        prev_connected = [m for m in MODALITIES if m in self._preview_restore_modalities]
+        self._preview_restore_modalities.clear()
+        if not prev_connected:
+            return
+        self._append_alert("正在恢复预览连接…")
+        LOG.info("正在恢复 %d 个模态的预览连接", len(prev_connected))
+        for modality in prev_connected:
+            try:
+                self._connect_modality(modality)
+            except Exception as exc:
+                self._append_alert(f"恢复 {modality} 预览失败：{type(exc).__name__}: {exc}")
+                LOG.error("恢复 %s 预览失败: %s", modality, exc)
 
     def _reset_trial_display(self) -> None:
-        self.alerts_edit.clear()
+        # Do NOT clear alerts — keep the log history
         self.manifest_label.setText("Manifest：正在采集，尚未最终化")
         self._last_health_status.clear()
         self._missing_trigger_alerted = False
@@ -1628,11 +2017,7 @@ class CollectorWindow(QMainWindow):
             self.health_table.item(row, 4).setText("-")
             self.health_table.item(row, 5).setText("-")
             self.health_table.item(row, 6).setText("-")
-        empty_ultrasound = np.full(
-            ULTRASOUND_PREVIEW_SAMPLES,
-            np.nan,
-            dtype=np.float64,
-        )
+        empty_ultrasound = np.full(ULTRASOUND_PREVIEW_SAMPLES, np.nan, dtype=np.float64)
         for curve in self._us_curves:
             curve.setData(self._us_x, empty_ultrasound)
         self._ultrasound_format_alerted.clear()
@@ -1660,6 +2045,7 @@ class CollectorWindow(QMainWindow):
         self.stop_button.setEnabled(False)
         self._set_trial_state("STOPPING")
         self._append_alert("已发送受控停止请求；正在等待 Writer flush 与 Trial 最终化。")
+        LOG.info("Trial 受控停止请求已发送")
 
     @Slot()
     def poll_worker_events(self) -> None:
@@ -1677,19 +2063,14 @@ class CollectorWindow(QMainWindow):
                 self._handle_worker_event(event)
             except Exception as exc:
                 self._append_alert(
-                    f"已忽略无效 {event.event_type.value} 事件："
-                    f"{type(exc).__name__}: {exc}"
+                    f"已忽略无效 {event.event_type.value} 事件：{type(exc).__name__}: {exc}"
                 )
-
         if self._worker_is_alive(worker):
             self._enforce_controlled_stop_deadline(worker)
         if self._worker_is_alive(worker):
             self._dead_poll_count = 0
             return
-
         self._dead_poll_count += 1
-        # A multiprocessing.Queue feeder can lag process exit very briefly.
-        # Give it two GUI ticks, then drain once more before judging the exit.
         if not self._terminal_event_received and self._dead_poll_count < 3:
             return
         if not self._terminal_event_received:
@@ -1702,8 +2083,7 @@ class CollectorWindow(QMainWindow):
         exitcode = self._worker_exitcode(worker)
         if not self._terminal_event_received:
             self._mark_failed(
-                "Collector Worker 在未发布 COMPLETED/FAILED 事件时退出"
-                f"（exit code {exitcode}）。"
+                f"Collector Worker 在未发布 COMPLETED/FAILED 事件时退出（exit code {exitcode}）。"
             )
         self._release_worker(worker)
 
@@ -1720,23 +2100,18 @@ class CollectorWindow(QMainWindow):
                 "受控停止等待超时；正在终止 Collector Worker。未发布的数据包将保持 "
                 ".recording，由恢复工作流检查，绝不会伪装为 FINALIZED。"
             )
-            self.statusBar().showMessage(
-                "Writer/设备停止超时；正在保留 .recording 并执行强制回收。"
-            )
+            self.statusBar().showMessage("Writer/设备停止超时；正在保留 .recording 并执行强制回收。")
         try:
             worker.terminate_for_recovery(timeout=1.0)
         except Exception as exc:
-            self._append_alert(
-                f"强制回收 Collector Worker 失败：{type(exc).__name__}: {exc}"
-            )
+            self._append_alert(f"强制回收 Collector Worker 失败：{type(exc).__name__}: {exc}")
             return
         if self._worker_is_alive(worker):
             return
         self._terminal_event_received = True
         if not self._trial_succeeded:
             self._mark_failed(
-                "受控停止超时，Worker 已终止；原始数据保持 .recording，需在 "
-                "Data Studio 的恢复工作流中审计。"
+                "受控停止超时，Worker 已终止；原始数据保持 .recording，需在 Data Studio 的恢复工作流中审计。"
             )
 
     @staticmethod
@@ -1758,9 +2133,8 @@ class CollectorWindow(QMainWindow):
             and str(claimed_trial_uuid) != expected_trial_uuid
         ):
             self._append_alert(
-                "已拒绝不属于当前 Trial 的 Worker 事件："
-                f"expected={expected_trial_uuid}，received={claimed_trial_uuid}，"
-                f"type={event.event_type.value}。"
+                f"已拒绝不属于当前 Trial 的 Worker 事件：expected={expected_trial_uuid}，"
+                f"received={claimed_trial_uuid}，type={event.event_type.value}。"
             )
             return
         if event.event_type is WorkerEventType.STATE:
@@ -1798,25 +2172,15 @@ class CollectorWindow(QMainWindow):
         if "sample_count" in payload:
             self.health_table.item(row, 2).setText(str(int(payload["sample_count"])))
         rate = payload.get("actual_sample_rate_hz")
-        self.health_table.item(row, 3).setText(
-            "-" if rate is None else f"{float(rate):.1f} Hz"
-        )
+        self.health_table.item(row, 3).setText("-" if rate is None else f"{float(rate):.1f} Hz")
         dropped = payload.get("dropped_packets")
-        self.health_table.item(row, 4).setText(
-            "-" if dropped is None else str(int(dropped))
-        )
+        self.health_table.item(row, 4).setText("-" if dropped is None else str(int(dropped)))
         depth = payload.get("queue_depth")
         capacity = payload.get("queue_capacity")
-        if depth is None:
-            queue_text = "-"
-        elif capacity is None:
-            queue_text = str(int(depth))
-        else:
-            queue_text = f"{int(depth)}/{int(capacity)}"
-        self.health_table.item(row, 5).setText(queue_text)
+        self.health_table.item(row, 5).setText(str(int(depth)) if depth is not None and capacity is None else
+                                               f"{int(depth)}/{int(capacity)}" if capacity is not None else "-")
         sampled_at = str(payload.get("sampled_at_utc") or "").strip()
         self.health_table.item(row, 6).setText(sampled_at or "-")
-
         previous = self._last_health_status.get(modality)
         self._last_health_status[modality] = status
         if status in {"DEGRADED", "UNHEALTHY", "FAULT"} and status != previous:
@@ -1838,19 +2202,9 @@ class CollectorWindow(QMainWindow):
                     self.health_table.item(row, 2).setText(str(int(count)))
         if "pulse_event_count" in payload:
             row = self._health_rows["sync_pulse"]
-            self.health_table.item(row, 2).setToolTip(
-                f"已检测边沿：{int(payload['pulse_event_count'])}"
-            )
-        if any(
-            key in payload
-            for key in (
-                "status",
-                "quality",
-                "trigger_count",
-                "first_trigger_host_monotonic_ns",
-                "trigger_time_utc",
-            )
-        ):
+            self.health_table.item(row, 2).setToolTip(f"已检测边沿：{int(payload['pulse_event_count'])}")
+        if any(key in payload for key in ("status", "quality", "trigger_count",
+                                            "first_trigger_host_monotonic_ns", "trigger_time_utc")):
             self._handle_sync(payload, record_event=False)
 
     def _handle_sync(self, payload: Mapping[str, Any], *, record_event: bool) -> None:
@@ -1862,7 +2216,6 @@ class CollectorWindow(QMainWindow):
             trigger_count = 0
         first_trigger = payload.get("first_trigger_host_monotonic_ns")
         trigger_utc = str(payload.get("trigger_time_utc") or "").strip()
-
         labels = {
             "WAITING_SYNC": "等待同步触发",
             "TRIGGERED": "已同步",
@@ -1880,7 +2233,6 @@ class CollectorWindow(QMainWindow):
             first_text = "—"
         self.first_trigger_label.setText(first_text)
         self.sync_quality_label.setText(quality)
-
         if status == "MISSING_TRIGGER" or quality == "FAIL":
             self.sync_status_label.setStyleSheet(
                 "QLabel { color:#842029; background:#f8d7da; padding:4px; font-weight:700; }"
@@ -1904,7 +2256,6 @@ class CollectorWindow(QMainWindow):
 
     def _handle_preview(self, event: WorkerEvent) -> None:
         modality = self._normalize_modality(event.modality or "")
-
         if modality == "ultrasound":
             raw_channels = event.payload.get("channels")
             if not isinstance(raw_channels, (list, tuple)):
@@ -1918,10 +2269,7 @@ class CollectorWindow(QMainWindow):
                     alert_key = (channel_index, "ALL_ZERO")
                     if alert_key in self._ultrasound_format_alerted:
                         continue
-                    message = (
-                        f"ultrasound 通道 {channel_index + 1} 当前帧全零；"
-                        "请检查探头、通道和设备连接。"
-                    )
+                    message = f"ultrasound 通道 {channel_index + 1} 当前帧全零；请检查探头、通道和设备连接。"
                     self._append_alert(message)
                     self._add_timeline_event(2, message)
                     self._ultrasound_format_alerted.add(alert_key)
@@ -1932,129 +2280,75 @@ class CollectorWindow(QMainWindow):
                 values = self._numeric_values(raw_channel)
                 if values:
                     prepared_channels.append((i, values))
-            self._lock_preview_y_axis(
-                "ultrasound",
-                [values for _index, values in prepared_channels],
-                self._us_plots,
-            )
+            self._lock_preview_y_axis("ultrasound", [values for _, values in prepared_channels], self._us_plots)
             for index, values in prepared_channels:
-                self._us_curves[index].setData(
-                    self._us_x,
-                    self._fixed_ultrasound_frame(values),
-                )
+                self._us_curves[index].setData(self._us_x, self._fixed_ultrasound_frame(values))
             return
-
         if modality == "imu":
             prepared_series: list[tuple[str, list[float]]] = []
-            for label, values in self._preview_series(
-                event.payload,
-                IMU_PREVIEW_LABELS,
-            ):
+            for label, values in self._preview_series(event.payload, IMU_PREVIEW_LABELS):
                 numeric = self._numeric_values(values)
                 if label in self._imu_traces and numeric:
                     prepared_series.append((label, numeric))
-            self._lock_preview_y_axis(
-                "imu",
-                [values for _label, values in prepared_series],
-                [trace.plot for trace in self._imu_traces.values()],
-            )
+            self._lock_preview_y_axis("imu", [values for _, values in prepared_series],
+                                       [trace.plot for trace in self._imu_traces.values()])
             for label, values in prepared_series:
                 self._imu_traces[label].append(values)
             return
-
         if modality == "encoder":
             prepared_series = []
-            for label, values in self._preview_series(
-                event.payload,
-                ENCODER_PREVIEW_LABELS,
-            ):
+            for label, values in self._preview_series(event.payload, ENCODER_PREVIEW_LABELS):
                 numeric = self._numeric_values(values)
                 if label in self._enc_traces and numeric:
                     prepared_series.append((label, numeric))
-            self._lock_preview_y_axis(
-                "encoder",
-                [values for _label, values in prepared_series],
-                [trace.plot for trace in self._enc_traces.values()],
-            )
+            self._lock_preview_y_axis("encoder", [values for _, values in prepared_series],
+                                       [trace.plot for trace in self._enc_traces.values()])
             for label, values in prepared_series:
                 self._enc_traces[label].append(values)
             return
 
-    def _lock_preview_y_axis(
-        self,
-        modality: str,
-        series: list[list[float]],
-        plots: list["pg.PlotWidget"],
-    ) -> None:
+    def _lock_preview_y_axis(self, modality: str, series: list[list[float]],
+                              plots: list["pg.PlotWidget"]) -> None:
         if modality in self._preview_y_ranges or not series:
             return
-        values = np.concatenate(
-            [np.asarray(channel, dtype=np.float64) for channel in series]
-        )
+        values = np.concatenate([np.asarray(channel, dtype=np.float64) for channel in series])
         finite = values[np.isfinite(values)]
         if not finite.size:
             return
         minimum = float(np.min(finite))
         maximum = float(np.max(finite))
         if modality == "ultrasound" and minimum >= 0:
-            lower = 0.0
-            upper = max(1.0, maximum * 1.1)
+            lower, upper = 0.0, max(1.0, maximum * 1.1)
         else:
             extent = max(abs(minimum), abs(maximum), 1e-6) * 1.1
-            lower = -extent
-            upper = extent
+            lower, upper = -extent, extent
         span = upper - lower
         self._preview_y_ranges[modality] = (lower, upper)
         for plot in plots:
             plot.setYRange(lower, upper, padding=0)
-            plot.setLimits(
-                yMin=lower,
-                yMax=upper,
-                minYRange=span,
-                maxYRange=span,
-            )
+            plot.setLimits(yMin=lower, yMax=upper, minYRange=span, maxYRange=span)
             plot.setMouseEnabled(x=False, y=False)
 
     def _fixed_ultrasound_frame(self, values: list[float]) -> np.ndarray:
         source = np.asarray(values, dtype=np.float64)
         if source.size > ULTRASOUND_PREVIEW_SAMPLES:
-            indices = np.linspace(
-                0,
-                source.size - 1,
-                ULTRASOUND_PREVIEW_SAMPLES,
-                dtype=np.int64,
-            )
+            indices = np.linspace(0, source.size - 1, ULTRASOUND_PREVIEW_SAMPLES, dtype=np.int64)
             source = source[indices]
-        display = np.full(
-            ULTRASOUND_PREVIEW_SAMPLES,
-            np.nan,
-            dtype=np.float64,
-        )
+        display = np.full(ULTRASOUND_PREVIEW_SAMPLES, np.nan, dtype=np.float64)
         display[: source.size] = source
         return display
 
     @staticmethod
-    def _preview_series(
-        payload: Mapping[str, Any],
-        expected_labels: tuple[str, ...],
-    ) -> list[tuple[str, object]]:
+    def _preview_series(payload: Mapping[str, Any], expected_labels: tuple[str, ...]) -> list[tuple[str, object]]:
         channels = payload.get("channels")
         if isinstance(channels, Mapping):
-            return [
-                (label, channels[label])
-                for label in expected_labels
-                if label in channels
-            ]
+            return [(label, channels[label]) for label in expected_labels if label in channels]
         if isinstance(channels, (list, tuple)):
             labels = payload.get("labels")
             provided_labels = labels if isinstance(labels, (list, tuple)) else ()
             result: list[tuple[str, object]] = []
             for index, values in enumerate(channels[: len(expected_labels)]):
-                candidate = (
-                    str(provided_labels[index])
-                    if index < len(provided_labels)
-                    else expected_labels[index]
-                )
+                candidate = str(provided_labels[index]) if index < len(provided_labels) else expected_labels[index]
                 label = candidate if candidate in expected_labels else expected_labels[index]
                 result.append((label, values))
             return result
@@ -2115,6 +2409,7 @@ class CollectorWindow(QMainWindow):
         manifest_path = event.payload.get("manifest_path")
         if manifest_path:
             self.manifest_label.setText(f"Manifest：{manifest_path}")
+            LOG.info("Manifest 已生成: %s", manifest_path)
         else:
             self.manifest_label.setText("Manifest：Worker 已完成，但未返回路径")
         self.stop_button.setEnabled(False)
@@ -2127,6 +2422,7 @@ class CollectorWindow(QMainWindow):
         self._append_alert(f"FAILED：{message}")
         self._add_timeline_event(2, f"FAILED · {message}")
         self.statusBar().showMessage("Trial 失败；请检查告警信息。")
+        LOG.error("Trial FAILED: %s", message)
 
     def _release_worker(self, worker: WorkerHandle) -> None:
         try:
@@ -2143,16 +2439,25 @@ class CollectorWindow(QMainWindow):
         for _modality, row in self._health_rows.items():
             self.health_table.item(row, 1).setText("UNKNOWN")
             self.health_table.item(row, 1).setToolTip("")
+        # Clear preview connected state — must explicitly reconnect
+        self._preview_connected_modalities.clear()
         self._set_configuration_locked(False)
         self.stop_button.setEnabled(False)
         self._clear_one_trial_metadata()
+        self._update_connect_button_state()
+        self._update_start_button()
         if self._trial_succeeded:
             self._set_trial_state("IDLE")
             self.statusBar().showMessage(
                 "Trial 已最终化；设备 Worker 已关闭，一次性元数据已清空；"
-                "下一个 Trial 前请重新预检并确认记录。",
+                "下一个 Trial 前请重新确认记录。",
                 8000,
             )
+            LOG.info("Trial 成功完成: 尝试恢复预览连接")
+        else:
+            LOG.warning("Trial 失败: 在记录 Worker 释放后恢复预览")
+        if not self._close_when_finished:
+            self._restore_preview_workers()
         self.trial_finished.emit(self._trial_succeeded)
         if self._close_when_finished:
             self._close_when_finished = False
@@ -2171,6 +2476,7 @@ class CollectorWindow(QMainWindow):
         for widget in self._configuration_widgets:
             widget.setEnabled(enabled)
         self._render_device_profile()
+        self._update_connect_button_state()
         self._update_start_button()
 
     @Slot()
@@ -2178,16 +2484,22 @@ class CollectorWindow(QMainWindow):
         if not hasattr(self, "start_button"):
             return
         subject_valid = bool(
-            QRegularExpression(r"^\d{3}$").match(
-                self.subject_code_edit.text().strip()
-            ).hasMatch()
+            QRegularExpression(r"^\d{3}$").match(self.subject_code_edit.text().strip()).hasMatch()
+        )
+        # All required modalities must be connected via preview
+        all_ready = all(
+            m in self._preview_connected_modalities for m in CRITICAL_MODALITIES
         )
         self.start_button.setEnabled(
-            self._preflight_ready
+            all_ready
             and subject_valid
             and not self._configuration_locked
             and not self._preflight_busy
             and self._worker is None
+            and self._pending_trial_request is None
+        )
+        self.start_button.setToolTip(
+            "" if all_ready else "请先连接所有必需模态的设备预览（超声、IMU、编码器、同步脉冲）"
         )
 
     def _set_trial_state(self, state: str) -> None:
@@ -2198,6 +2510,7 @@ class CollectorWindow(QMainWindow):
             "DISCONNECTED": "未连接",
             "PREFLIGHT_READY": "可采集",
             "PREFLIGHT": "设备预检",
+            "SWITCHING_TO_RECORD": "切换至记录",
             "PREPARING": "等待同步",
             "READY": "等待同步",
             "WAITING_SYNC": "等待同步",
@@ -2216,7 +2529,7 @@ class CollectorWindow(QMainWindow):
             colors = "background:#f8d7da;color:#842029;border:1px solid #f5c2c7;"
         elif display in {"可采集", "采集中"}:
             colors = "background:#d1e7dd;color:#0f5132;border:1px solid #badbcc;"
-        elif display in {"设备预检", "等待同步", "保存中"}:
+        elif display in {"设备预检", "切换至记录", "等待同步", "保存中"}:
             colors = "background:#fff3cd;color:#664d03;border:1px solid #ffecb5;"
         else:
             colors = "background:#e2e3e5;color:#41464b;border:1px solid #d3d6d8;"
@@ -2225,18 +2538,45 @@ class CollectorWindow(QMainWindow):
         )
 
     def _append_alert(self, message: str) -> None:
-        self.alerts_edit.appendPlainText(message)
+        timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        error_markers = ("失败", "错误", "异常", "超时", "FAILED", "ERROR")
+        level = "ERROR" if any(marker in message for marker in error_markers) else "INFO"
+        self.alerts_edit.appendPlainText(f"[{timestamp}] [{level}] {message}")
+        if level == "ERROR":
+            LOG.error("UI: %s", message)
+        else:
+            LOG.info("UI: %s", message)
+
+    @Slot()
+    def _open_log_directory(self) -> None:
+        log_dir = str(collector_log_path().parent)
+        try:
+            if sys.platform == "win32":
+                os.startfile(log_dir)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", log_dir])
+            else:
+                subprocess.Popen(["xdg-open", log_dir])
+        except Exception as exc:
+            QMessageBox.warning(
+                self, "无法打开日志目录",
+                f"打开日志目录失败：{exc}\n\n路径：{log_dir}\n"
+                f"请手动打开该目录查看日志文件。"
+            )
+            self._append_alert(f"打开日志目录失败：{type(exc).__name__}: {exc}")
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API
+        # Closing cancels a pending preview-to-record transition.  A timer tick
+        # during teardown must never launch a new Trial worker.
+        self._pending_trial_request = None
+        self._preview_restore_modalities.clear()
         preflight_worker = self._preflight_worker
         if preflight_worker is not None:
             self._preflight_timer.stop()
             try:
                 preflight_worker.terminate(timeout=0.5)
             except Exception as exc:
-                self._append_alert(
-                    f"停止设备预检进程失败：{type(exc).__name__}: {exc}"
-                )
+                self._append_alert(f"停止设备预检进程失败：{type(exc).__name__}: {exc}")
             if self._preflight_worker_is_alive(preflight_worker):
                 if self._close_started_at is None:
                     self._close_started_at = time.monotonic()
@@ -2249,23 +2589,38 @@ class CollectorWindow(QMainWindow):
                 preflight_worker.join(timeout=0)
                 preflight_worker.close()
             except Exception as exc:
-                self._append_alert(
-                    f"释放设备预检资源失败：{type(exc).__name__}: {exc}"
-                )
+                self._append_alert(f"释放设备预检资源失败：{type(exc).__name__}: {exc}")
             self._preflight_worker = None
             self._preflight_root = None
             self._set_preflight_busy(False)
+
+        # Stop all preview workers
+        self._preview_timer.stop()
+        for modality, handle in list(self._preview_workers.items()):
+            try:
+                handle.request_stop()
+                handle.join(timeout=1.0)
+                handle.close()
+            except Exception:
+                try:
+                    handle.terminate(timeout=1.0)
+                    handle.close()
+                except Exception:
+                    pass
+        self._preview_workers.clear()
+        self._preview_connected_modalities.clear()
+        LOG.info("关闭窗口：所有预览 worker 已回收")
+
         worker = self._worker
         if worker is not None and self._worker_is_alive(worker):
             self._close_when_finished = True
             self.request_controlled_stop()
-            self.statusBar().showMessage(
-                "正在受控停止并最终化 Trial；完成后将自动关闭。"
-            )
+            self.statusBar().showMessage("正在受控停止并最终化 Trial；完成后将自动关闭。")
             event.ignore()
             return
         if worker is not None:
             self._release_worker(worker)
         self._poll_timer.stop()
         self._close_started_at = None
+        LOG.info("CollectorWindow 已关闭")
         event.accept()

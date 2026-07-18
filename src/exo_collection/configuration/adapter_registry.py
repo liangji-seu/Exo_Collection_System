@@ -37,6 +37,40 @@ ADAPTER_REGISTRY: dict[str, type[Any]] = {
 }
 
 
+def build_adapter(
+    profile: DeviceProfileDocument,
+    modality: str,
+    overrides: Mapping[str, Mapping[str, Any]] | None = None,
+) -> ModalityAdapter:
+    """Instantiate one validated, registry-approved modality adapter."""
+
+    requested = dict(overrides or {})
+    devices = profile.by_modality()
+    unknown_modalities = set(requested) - set(devices)
+    if unknown_modalities:
+        display = ", ".join(sorted(unknown_modalities))
+        raise ValueError(f"unknown device override modality: {display}")
+    try:
+        device = devices[modality]
+    except KeyError as exc:
+        raise ValueError(f"device profile has no modality: {modality}") from exc
+    adapter_type = ADAPTER_REGISTRY.get(device.adapter)
+    if adapter_type is None:
+        raise ValueError(f"adapter identifier is not registered: {device.adapter}")
+    override = requested.get(modality, {})
+    if not isinstance(override, Mapping):
+        raise TypeError(f"override for {modality} must be a mapping")
+    base_parameters = device.parameters.model_dump(exclude_none=True)
+    parameter_type = type(device.parameters)
+    validated = parameter_type.model_validate({**base_parameters, **dict(override)})
+    configuration = {
+        "device_id": device.device_id,
+        "clock_domain": device.clock_domain,
+        **validated.model_dump(exclude_none=True),
+    }
+    return adapter_type(configuration)
+
+
 def build_adapters(
     profile: DeviceProfileDocument,
     overrides: Mapping[str, Mapping[str, Any]] | None = None,
@@ -50,24 +84,10 @@ def build_adapters(
         display = ", ".join(sorted(unknown_modalities))
         raise ValueError(f"unknown device override modality: {display}")
 
-    adapters: dict[str, ModalityAdapter] = {}
-    for modality, device in devices.items():
-        adapter_type = ADAPTER_REGISTRY.get(device.adapter)
-        if adapter_type is None:
-            raise ValueError(f"adapter identifier is not registered: {device.adapter}")
-        override = requested.get(modality, {})
-        if not isinstance(override, Mapping):
-            raise TypeError(f"override for {modality} must be a mapping")
-        base_parameters = device.parameters.model_dump(exclude_none=True)
-        parameter_type = type(device.parameters)
-        validated = parameter_type.model_validate({**base_parameters, **dict(override)})
-        configuration = {
-            "device_id": device.device_id,
-            "clock_domain": device.clock_domain,
-            **validated.model_dump(exclude_none=True),
-        }
-        adapters[modality] = adapter_type(configuration)
-    return adapters
+    return {
+        modality: build_adapter(profile, modality, requested)
+        for modality in devices
+    }
 
 
-__all__ = ["ADAPTER_REGISTRY", "build_adapters"]
+__all__ = ["ADAPTER_REGISTRY", "build_adapter", "build_adapters"]

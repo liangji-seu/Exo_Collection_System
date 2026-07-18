@@ -97,7 +97,7 @@ def test_hardware_profile_and_non_secret_device_settings_are_persistent(
 ) -> None:
     settings_path = tmp_path / "shared.ini"
     first = _file_settings(settings_path)
-    assert first.device_profile_key == "simulated"
+    assert first.device_profile_key == "hardware"
     first.set_device_profile_key("hardware")
     first.set_hardware_device_overrides(
         {

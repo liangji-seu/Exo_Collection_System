@@ -78,7 +78,9 @@ class SharedAppSettings:
 
     @property
     def device_profile_key(self) -> Literal["simulated", "hardware"]:
-        stored = str(self._backend.value(DEVICE_PROFILE_KEY, "simulated")).strip()
+        # A fresh laboratory installation should visibly start in hardware
+        # mode, but an operator's explicit later choice remains persistent.
+        stored = str(self._backend.value(DEVICE_PROFILE_KEY, "hardware")).strip()
         return "hardware" if stored == "hardware" else "simulated"
 
     def set_device_profile_key(
