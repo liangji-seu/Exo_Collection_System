@@ -1015,6 +1015,8 @@ class CollectorWindow(QMainWindow):
         root_row.addWidget(self.browse_button)
         form.addRow("数据根目录：", root_row)
 
+        # Row 1: 项目 + 受试者编码
+        row1 = QHBoxLayout()
         self.project_combo = QComboBox()
         self.project_combo.setObjectName("project")
         for project in PROJECTS:
@@ -1023,7 +1025,8 @@ class CollectorWindow(QMainWindow):
                 dict(project),
             )
         self.project_combo.setCurrentIndex(1)
-        form.addRow("项目：", self.project_combo)
+        row1.addWidget(QLabel("项目："))
+        row1.addWidget(self.project_combo, 3)
 
         self.subject_code_edit = QLineEdit("001")
         self.subject_code_edit.setObjectName("subject_code")
@@ -1033,8 +1036,12 @@ class CollectorWindow(QMainWindow):
         )
         self.subject_code_edit.editingFinished.connect(self.normalize_subject_code)
         self.subject_code_edit.textChanged.connect(self._update_start_button)
-        form.addRow("受试者编码：", self.subject_code_edit)
+        row1.addWidget(QLabel("受试者编码："))
+        row1.addWidget(self.subject_code_edit, 1)
+        form.addRow(row1)
 
+        # Row 2: 工况 + 重复轮次
+        row2 = QHBoxLayout()
         self.condition_combo = QComboBox()
         self.condition_combo.setObjectName("condition")
         for condition in CONDITIONS:
@@ -1043,13 +1050,16 @@ class CollectorWindow(QMainWindow):
                 dict(condition),
             )
         self.condition_combo.setCurrentIndex(1)
-        form.addRow("工况：", self.condition_combo)
+        row2.addWidget(QLabel("工况："))
+        row2.addWidget(self.condition_combo, 3)
 
         self.repeat_spin = QSpinBox()
         self.repeat_spin.setObjectName("repeat_index")
         self.repeat_spin.setRange(1, 9999)
         self.repeat_spin.setValue(1)
-        form.addRow("重复轮次：", self.repeat_spin)
+        row2.addWidget(QLabel("重复轮次："))
+        row2.addWidget(self.repeat_spin, 1)
+        form.addRow(row2)
         controls_layout.addWidget(metadata_box)
 
         experiment_box = QGroupBox("详细信息")
@@ -1068,13 +1078,14 @@ class CollectorWindow(QMainWindow):
         buttons = QHBoxLayout()
         self.connect_all_button = QPushButton("全部连接")
         self.connect_all_button.setObjectName("connect_all")
-        self.connect_all_button.setProperty("buttonRole", "connect")
         self.connect_all_button.clicked.connect(self._toggle_connect_all)
         self.connect_all_button.setMinimumWidth(105)
         buttons.addWidget(self.connect_all_button)
         self.start_button = QPushButton("开始写盘")
         self.start_button.setObjectName("start_trial")
-        self.start_button.setProperty("buttonRole", "primary")
+        self.start_button.setStyleSheet(
+            "QPushButton { font-weight: 600; padding: 8px; color: #ffffff; background: #0d6efd; border: 1px solid #0d6efd; border-radius: 4px; }"
+        )
         self.start_button.clicked.connect(self._toggle_write)
         self.start_button.setMinimumWidth(105)
         buttons.addWidget(self.start_button)
@@ -1833,10 +1844,12 @@ class CollectorWindow(QMainWindow):
         can_change = not self._configuration_locked and self._worker is None
         if has_any_connection:
             self.connect_all_button.setText("全部断开")
-            self.connect_all_button.setProperty("buttonRole", "disconnect")
+            self.connect_all_button.setStyleSheet(
+                "QPushButton { font-weight: 600; padding: 8px; color: #842029; background: #f8d7da; border: 1px solid #f5c2c7; border-radius: 4px; }"
+            )
         else:
             self.connect_all_button.setText("全部连接")
-            self.connect_all_button.setProperty("buttonRole", "connect")
+            self.connect_all_button.setStyleSheet("")
         self.connect_all_button.setEnabled(can_change)
 
         for modality in MODALITIES:
@@ -2712,11 +2725,15 @@ class CollectorWindow(QMainWindow):
         )
         if trial_active:
             self.start_button.setText("停止写盘")
-            self.start_button.setProperty("buttonRole", "danger")
+            self.start_button.setStyleSheet(
+                "QPushButton { font-weight: 600; padding: 8px; color: #ffffff; background: #dc3545; border: 1px solid #dc3545; border-radius: 4px; }"
+            )
             self.start_button.setEnabled(True)
         else:
             self.start_button.setText("开始写盘")
-            self.start_button.setProperty("buttonRole", "primary")
+            self.start_button.setStyleSheet(
+                "QPushButton { font-weight: 600; padding: 8px; color: #ffffff; background: #0d6efd; border: 1px solid #0d6efd; border-radius: 4px; }"
+            )
             subject_valid = bool(
                 QRegularExpression(r"^\d{3}$").match(self.subject_code_edit.text().strip()).hasMatch()
             )
