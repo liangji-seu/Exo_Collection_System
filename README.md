@@ -9,16 +9,16 @@
 
 ## 日常运行（推荐，无需命令行参数）
 
-完成开发环境初始化后，项目根目录提供两个不需要任何命令行参数的 Python 启动脚本：
+完成系统 Python 初始化后，项目根目录提供两个不需要任何命令行参数的 Python 启动脚本：
 
 - `run_collector.py`：启动采集端；
 - `run_data_studio.py`：启动数据管理端。
 
-在 PowerShell 中使用项目虚拟环境运行：
+在 PowerShell 中直接使用系统 CPython 3.11 运行：
 
 ```powershell
-.\.venv\Scripts\python.exe run_collector.py
-.\.venv\Scripts\python.exe run_data_studio.py
+python run_collector.py
+python run_data_studio.py
 ```
 
 完成打包后也可直接双击 `dist\ExoCollector.exe` 或 `dist\ExoDataStudio.exe`。设备、路径和上传参数都在 UI 中配置并按当前 Windows 用户持久化，无需为正常使用添加命令行参数。
@@ -36,7 +36,7 @@
 
 每个成功 Trial 都会生成 `manifest.json`、`quality_report.json`、`device_status.csv`、`sync_check.csv`、完整边沿/脉宽/间隔/时钟映射审计 `sync_manifest.json`、两张质控预览图和 `warnings.txt`，并纳入 Manifest Artifact 和 SHA-256 校验。实际使用的 `config/quality_rules/default.json` 与 `config/storage.json` 会冻结到 `derived/quality_rules_snapshot.json`；其算法版本和文件 SHA-256 同时写入统计、质量报告、配置快照及 Manifest Artifact。
 
-Collector 主应用在 `%LOCALAPPDATA%\ExoCollectionSystem\log\` 中为每次启动创建一份独立 UTF-8 系统日志，文件名包含启动时间和进程 PID，例如 `ExoCollector_20260718_130501_123456_pid1234.log`。UI 中的“打开日志目录”可直接定位。单次日志达到 10 MiB 时会滚动；每个 Trial 另有自己的 `logs/trial.jsonl`。常见密码、token、secret 和 key 字段在写入主日志前会被脱敏。
+Collector 和 Data Studio 在项目/安装目录的 `log\` 中为每次启动创建一份独立 UTF-8 系统日志，文件名包含启动时间和进程 PID，例如 `ExoCollector_20260718_130501_123456_pid1234.log`。UI 中的“打开日志目录”可直接定位。单次日志达到 10 MiB 时会滚动；每个 Trial 另有自己的 `logs/trial.jsonl`。常见密码、token、secret 和 key 字段在写入主日志前会被脱敏。
 
 质量等级不会再因为“没有生成异常”就自动成为 A。A 要求所有必需结构规则确实执行并通过，包括正式时间窗内各必需模态存在、sequence/丢批检查、同步触发和时钟映射证据。尚无真实硬件校准依据的超声饱和、IMU/编码器量程与跳变、时钟残差等阈值默认明确记录为 `UNASSESSED`，不会伪造硬件阈值或误报硬失败；取得校准依据后可在质量规则配置中填写阈值及 `calibration_reference`。
 
@@ -50,27 +50,27 @@ Data Studio 使用 Manifest 与 SQLite Catalog 建立 `Project → Subject → S
 
 ## Windows 开发环境
 
-新电脑首次使用时，先安装 **64 位 Python 3.11**（包含 Windows `py` launcher）和 Git，然后在项目根目录执行：
+新电脑首次使用时，先安装 **64 位 CPython 3.11** 和 Git。若需要真实硬件版本，先解压并执行同级 `SDK_Transfer` 中最新的
+`Exo_Hardware_Runtime_Windows_Python311_x64_v3.zip` 安装脚本，再安装 Npcap
+（勾选 WinPcap API-compatible Mode）。然后在项目根目录只需执行：
 
 ```powershell
-py -3.11 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install -e ".[dev,packaging]"
+python first_time_setup_and_build.py
 ```
 
-运行测试：
+该零参数脚本不创建虚拟环境，会把应用、测试、打包和开源硬件依赖安装到当前 Windows 用户的系统 Python，检查 Xsens/Scapy/pyserial/Npcap，运行全量测试，然后生成两个 EXE。日常手动运行测试可使用：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest
+python -m pytest
 ```
 
 ## 从源码运行（开发调试）
 
-无需激活虚拟环境，也无需给应用传参数：
+不使用虚拟环境，也无需给应用传参数：
 
 ```powershell
-.\.venv\Scripts\python.exe run_collector.py
-.\.venv\Scripts\python.exe run_data_studio.py
+python run_collector.py
+python run_data_studio.py
 ```
 
 ## 编译打包 Windows 可执行文件
@@ -78,7 +78,7 @@ py -3.11 -m venv .venv
 项目根目录的 `build_exe.py` 会依次构建两个应用：
 
 ```powershell
-.\.venv\Scripts\python.exe build_exe.py
+python build_exe.py
 ```
 
 构建前建议先运行上述完整测试。EXE 位于：

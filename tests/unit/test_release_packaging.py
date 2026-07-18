@@ -163,7 +163,12 @@ def test_zero_argument_python_launchers_call_application_main(
 
 @pytest.mark.parametrize(
     "relative_path",
-    ["build_exe.py", "run_collector.py", "run_data_studio.py"],
+    [
+        "build_exe.py",
+        "first_time_setup_and_build.py",
+        "run_collector.py",
+        "run_data_studio.py",
+    ],
 )
 def test_python_entry_scripts_parse_without_errors(relative_path: str) -> None:
     source = _text(relative_path)
@@ -325,7 +330,12 @@ def test_legacy_cmd_and_powershell_launchers_are_removed() -> None:
 
     for relative_path in legacy_files:
         assert not (PROJECT_ROOT / relative_path).exists()
-    for replacement in ("build_exe.py", "run_collector.py", "run_data_studio.py"):
+    for replacement in (
+        "build_exe.py",
+        "first_time_setup_and_build.py",
+        "run_collector.py",
+        "run_data_studio.py",
+    ):
         assert (PROJECT_ROOT / replacement).is_file()
 
 
