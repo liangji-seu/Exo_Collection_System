@@ -156,7 +156,7 @@ def main(
     settings: SharedAppSettings | None = None,
 ) -> int:
     multiprocessing.freeze_support()
-    setup_collector_logging()
+    setup_collector_logging(level=logging.DEBUG, console=True)
     logger = logging.getLogger("exo_collection.collector.main")
     logger.info(
         "Exo Collector application starting; log_file=%s",

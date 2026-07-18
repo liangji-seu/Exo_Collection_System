@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from typing import Any
 
@@ -14,6 +15,8 @@ from exo_collection.adapters.sync_pulse.simulated import SimulatedSyncPulseAdapt
 from exo_collection.adapters.ultrasound.elonxi import ElonxiUltrasoundAdapter
 from exo_collection.adapters.ultrasound.raw_ethernet import RawEthernetUltrasoundAdapter
 from exo_collection.adapters.ultrasound.simulated import SimulatedUltrasoundAdapter
+
+_log = logging.getLogger(__name__)
 
 from .device_profiles import (
     DeviceProfileDocument,
@@ -71,6 +74,12 @@ def build_adapter(
         "clock_domain": device.clock_domain,
         **validated.model_dump(exclude_none=True),
     }
+    _log.debug(
+        "building %s adapter type=%s config_keys=%s",
+        modality,
+        adapter_type.__name__,
+        sorted(configuration),
+    )
     return adapter_type(configuration)
 
 

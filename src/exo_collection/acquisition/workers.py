@@ -62,6 +62,8 @@ def _trial_worker_entry(
     # the Trial has already finalized.  Only the small control queue is allowed
     # to participate in the child process's exit flush.
     telemetry_queue.cancel_join_thread()
+    from exo_collection.logging_setup import configure_subprocess_logging
+    configure_subprocess_logging()
     request = TrialRunRequest.model_validate(request_payload)
     preview_buffers = {
         modality: SharedPreviewBuffer.attach(descriptor)

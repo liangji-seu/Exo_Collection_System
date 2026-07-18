@@ -1876,11 +1876,15 @@ class CollectorWindow(QMainWindow):
                 self._update_start_button()
         elif event.event_type is WorkerEventType.FAILED:
             error_msg = event.message or "未知错误"
+            full_tb = str(event.payload.get("traceback") or "")
             self._preview_connected_modalities.discard(modality)
             self._preview_connection_status[modality] = "错误"
             self._set_preview_status(modality, "错误", handle.device_id, handle.simulated, error=error_msg)
             self._append_alert(f"{modality} 预览失败：{error_msg}")
-            LOG.error("%s preview failed: %s", modality, error_msg)
+            if full_tb:
+                LOG.error("%s preview failed:\n%s", modality, full_tb)
+            else:
+                LOG.error("%s preview failed: %s", modality, error_msg)
             try:
                 handle.request_stop()
             except Exception:

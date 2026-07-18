@@ -117,7 +117,7 @@ def main(
     settings: SharedAppSettings | None = None,
 ) -> int:
     multiprocessing.freeze_support()
-    setup_data_studio_logging()
+    setup_data_studio_logging(level=logging.DEBUG, console=True)
     logger = logging.getLogger("exo_collection.data_studio.main")
     logger.info(
         "Exo Data Studio application starting; log_file=%s",

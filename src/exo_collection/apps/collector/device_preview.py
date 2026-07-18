@@ -152,6 +152,9 @@ def _preview_runner_target(
     # Suppress __del__-based ResourceWarning inside the subprocess.
     adapter: ModalityAdapter | None = None
     try:
+        from exo_collection.logging_setup import configure_subprocess_logging
+        configure_subprocess_logging()
+
         adapter = adapter_factory()
         # ---- connect ----
         _send_event(
@@ -310,7 +313,13 @@ def _preview_runner_target(
             WorkerEventType.FAILED,
             modality=modality,
             device_id=device_id,
-            payload={"state": "FAILED", "modality": modality, "device_id": device_id, "simulated": simulated},
+            payload={
+                "state": "FAILED",
+                "modality": modality,
+                "device_id": device_id,
+                "simulated": simulated,
+                "traceback": tb,
+            },
             message=f"Preview worker failed: {tb.splitlines()[-1] if tb else 'unknown'}",
         )
         _log.error("Preview worker %s (%s) crashed: %s", modality, device_id, tb)

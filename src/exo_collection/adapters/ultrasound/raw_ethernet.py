@@ -13,6 +13,7 @@ conversion, or the adapter's published raw queue.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict, dataclass
 from queue import Empty, Full, Queue
 from threading import Event, Thread
@@ -39,6 +40,8 @@ CH_FROM_DST_MAC_BYTE1: dict[int, int] = {0x01: 0, 0x02: 1, 0x03: 2, 0x04: 3}
 # is either exactly this size or one byte longer when the trailing 0xFF marker
 # is present.
 US_DEPTH = 1000
+
+_log = logging.getLogger(__name__)
 
 
 def _load_scapy() -> Any:
@@ -206,6 +209,7 @@ class ScapyRawEthernetBackend:
         iface = self._config.interface_name
         if not iface:
             raise AdapterError("未指定网络接口；请在硬件设置中选择网卡。")
+        _log.info("starting Scapy sniffer on %s", iface)
 
         def handle(packet: Any) -> None:
             try:
@@ -268,7 +272,9 @@ def enumerate_network_interfaces() -> list[dict[str, Any]]:
     try:
         scapy = _load_scapy()
         if platform.system() == "Windows":
-            raw = scapy.get_windows_if_list()
+            import scapy.arch.windows as _scapy_win
+
+            raw = _scapy_win.get_windows_if_list()
         else:
             raw = []
             for name in scapy.get_if_list():

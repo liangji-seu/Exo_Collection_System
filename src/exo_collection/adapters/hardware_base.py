@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from queue import Empty, Full, Queue
 from threading import Lock
@@ -26,6 +27,8 @@ from .base import (
     StopReport,
     TrialContext,
 )
+
+_log = logging.getLogger(__name__)
 
 
 class QueuedHardwareAdapter(ABC):
@@ -98,10 +101,13 @@ class QueuedHardwareAdapter(ABC):
         with self._state_lock:
             if self._state is not AdapterState.DISCONNECTED:
                 raise AdapterLifecycleError(f"connect not allowed from {self._state.value}")
+        desc = self.descriptor()
+        _log.info("connecting %s (%s)", desc.device_id, type(self).__name__)
         self._emit_status(DeviceStatus.CONNECTING, "connecting hardware")
         try:
             self._connect_hardware()
         except BaseException as exc:
+            _log.error("connect %s failed: %s", desc.device_id, exc)
             try:
                 self._close_hardware()
             except BaseException:
@@ -110,6 +116,7 @@ class QueuedHardwareAdapter(ABC):
             raise
         with self._state_lock:
             self._state = AdapterState.CONNECTED
+        _log.info("%s connected", desc.device_id)
         self._emit_status(DeviceStatus.CONNECTED, "hardware connected")
 
     def prepare(self, trial: TrialContext) -> PreparedInfo:
@@ -159,15 +166,19 @@ class QueuedHardwareAdapter(ABC):
             self._start_token = start_token
             self._rate_started_at = perf_counter()
             self._state = AdapterState.RUNNING
+        desc = self.descriptor()
+        _log.info("starting %s hardware acquisition", desc.device_id)
         try:
             self._start_hardware()
         except BaseException as exc:
+            _log.error("start %s failed: %s", desc.device_id, exc)
             self._set_fault(exc)
             try:
                 self._stop_hardware()
             except BaseException:
                 pass
             raise
+        _log.info("%s acquisition started", desc.device_id)
         self._emit_status(DeviceStatus.RECORDING, "hardware acquisition started")
 
     def stop(self) -> StopReport:

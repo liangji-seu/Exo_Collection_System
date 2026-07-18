@@ -25,6 +25,107 @@ _PROCESS_LAUNCH_TOKEN = datetime.now().astimezone().strftime(
     "%Y%m%d_%H%M%S_%f"
 )
 
+# When a subprocess (preview / trial worker) needs the parent process's log
+# path, the parent writes it here.  The subprocess reads it so all processes
+# append to the same file.
+_SUBPROCESS_LOG_PATH: Path | None = None
+
+
+def current_collector_log_path() -> Path | None:
+    """Return the file-handler path most recently registered by the parent.
+
+    Preview / trial subprocesses call this to share the parent's log file.
+    Returns ``None`` when no file handler has been registered.
+    """
+    resolved = _SUBPROCESS_LOG_PATH
+    if resolved is not None:
+        return resolved.expanduser().resolve()
+    return None
+
+
+def configure_subprocess_logging(
+    *,
+    level: int = logging.DEBUG,
+    max_bytes: int = DEFAULT_MAX_BYTES,
+    backup_count: int = DEFAULT_BACKUP_COUNT,
+) -> None:
+    """Attach a file handler *and* a stderr stream to the root logger inside a
+    spawned process.  stderr is also redirected through the logging system so
+    that every ``print``, ``traceback.print_exc``, or C-extension warning that
+    writes directly to fd 2 still ends up in the shared log file.
+
+    Must be called after the parent has called ``setup_collector_logging``
+    (which stores the shared path).
+    """
+    resolved_path = current_collector_log_path()
+    if resolved_path is None:
+        return
+    root = logging.getLogger()
+    # Remove the default last-resort handler so only our handlers fire.
+    if root.hasHandlers() and len(root.handlers) == 1 and isinstance(
+        root.handlers[0], logging.StreamHandler
+    ):
+        root.removeHandler(root.handlers[0])
+    for handler in list(root.handlers):
+        if getattr(handler, _HANDLER_MARKER, False):
+            return
+    resolved_path.parent.mkdir(parents=True, exist_ok=True)
+    root.setLevel(level)
+    fmt = logging.Formatter(
+        fmt="%(asctime)s [%(levelname)-7s] %(name)s | %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
+    )
+
+    file_handler = RotatingFileHandler(
+        filename=str(resolved_path),
+        mode="a",
+        encoding="utf-8",
+        maxBytes=max_bytes,
+        backupCount=backup_count,
+    )
+    file_handler.setLevel(level)
+    setattr(file_handler, _HANDLER_MARKER, True)
+    file_handler.addFilter(SensitiveDataFilter())
+    file_handler.setFormatter(fmt)
+    root.addHandler(file_handler)
+
+    # Also stream every log entry to stderr so terminal users see the same
+    # messages.  The parent process' own StreamHandler already covers the main
+    # thread; this one is for the spawned child.
+    console_handler = logging.StreamHandler(sys.stderr)
+    console_handler.setLevel(level)
+    console_handler.addFilter(SensitiveDataFilter())
+    console_handler.setFormatter(fmt)
+    root.addHandler(console_handler)
+
+    # Redirect bare stderr writes (SDK warnings, traceback.print_exc, etc.)
+    # through a logging handler so they land in *both* the file and the
+    # terminal.
+    _stderr_capture = _StderrToLogHandler()
+    sys.stderr = _stderr_capture  # type: ignore[assignment]
+
+
+class _StderrToLogHandler:
+    """Wraps the real stderr and forwards every write to a logger."""
+
+    def __init__(self) -> None:
+        self._real_stderr = sys.stderr
+        self._logger = logging.getLogger("exo_collection.stderr")
+
+    def write(self, message: str) -> None:
+        if message and not message.isspace():
+            self._logger.debug(message.rstrip("\n"))
+        self._real_stderr.write(message)
+
+    def flush(self) -> None:
+        self._real_stderr.flush()
+
+    def fileno(self) -> int:
+        return self._real_stderr.fileno()
+
+    def isatty(self) -> bool:
+        return self._real_stderr.isatty()
+
 
 def _default_log_dir() -> Path:
     """Return the visible project/install-local ``log`` directory."""
@@ -69,6 +170,8 @@ def setup_collector_logging(
     root = logging.getLogger()
     resolved_path = log_path or collector_log_path()
     resolved_path = resolved_path.expanduser().resolve()
+    global _SUBPROCESS_LOG_PATH
+    _SUBPROCESS_LOG_PATH = resolved_path
     for handler in list(root.handlers):
         if not bool(getattr(handler, _HANDLER_MARKER, False)):
             continue
