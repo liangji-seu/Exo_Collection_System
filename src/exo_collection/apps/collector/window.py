@@ -1101,11 +1101,14 @@ class CollectorWindow(QMainWindow):
         connection_box = QGroupBox("设备连接")
         connection_layout = QGridLayout(connection_box)
         connection_layout.addWidget(QLabel("模态（点击设置）"), 0, 0)
-        connection_layout.addWidget(QLabel("状态"), 0, 1)
+        status_header = QLabel("状态")
+        status_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        connection_layout.addWidget(status_header, 0, 1)
         connection_layout.addWidget(QLabel("操作"), 0, 2)
         connection_layout.setColumnStretch(0, 1)
-        connection_layout.setColumnStretch(1, 1)
+        connection_layout.setColumnStretch(1, 0)
         connection_layout.setColumnStretch(2, 0)
+        connection_layout.setColumnMinimumWidth(1, 52)
         connection_layout.setColumnMinimumWidth(2, 158)
 
         self._device_profile_label = QLabel()
@@ -1129,9 +1132,17 @@ class CollectorWindow(QMainWindow):
             connection_layout.addWidget(configure_btn, row_idx, 0)
             self._configure_buttons[modality] = configure_btn
 
-            status_label = QLabel("未连接")
+            status_label = QLabel("")
             status_label.setObjectName(f"connect_status_{modality}")
-            connection_layout.addWidget(status_label, row_idx, 1)
+            status_label.setFixedSize(20, 20)
+            self._style_connection_indicator(status_label, "未连接")
+            status_label.setToolTip("状态：未连接")
+            connection_layout.addWidget(
+                status_label,
+                row_idx,
+                1,
+                alignment=Qt.AlignmentFlag.AlignCenter,
+            )
             self._connect_status_labels[modality] = status_label
 
             btn_container = QHBoxLayout()
@@ -1734,22 +1745,36 @@ class CollectorWindow(QMainWindow):
         )
         return device.device_id, simulated
 
+    @staticmethod
+    def _style_connection_indicator(label: QLabel, status: str) -> None:
+        normalized = status.strip().upper()
+        if normalized in {"READY", "已连接"}:
+            indicator_state, fill, border = "green", "#22C55E", "#15803D"
+        elif any(token in status for token in ("连接中", "断开中", "启动中")):
+            indicator_state, fill, border = "yellow", "#FBBF24", "#D97706"
+        else:
+            indicator_state, fill, border = "red", "#EF4444", "#B91C1C"
+        label.setText("")
+        label.setProperty("indicatorState", indicator_state)
+        label.setStyleSheet(
+            f"QLabel {{ background-color:{fill}; border:2px solid {border}; "
+            "border-radius:10px; }}"
+        )
+
     def _set_preview_status(self, modality: str, status: str, device_id: str,
                             simulated: bool, error: str | None = None) -> None:
         """Update the per-modality UI status labels."""
         if modality in self._connect_status_labels:
             label = self._connect_status_labels[modality]
             source = "模拟" if simulated else "真实"
-            label.setText(status)
-            label.setToolTip(f"{source} · {device_id}" if device_id else source)
-            if "错误" in status or status == "失败":
-                label.setStyleSheet("color:#842029;font-weight:600;")
-            elif status in ("已连接", "READY"):
-                label.setStyleSheet("color:#0f5132;font-weight:600;")
-            elif status == "连接中":
-                label.setStyleSheet("color:#664d03;font-weight:600;")
-            else:
-                label.setStyleSheet("")
+            self._style_connection_indicator(label, status)
+            tooltip_lines = [f"状态：{status}", f"来源：{source}"]
+            if device_id:
+                tooltip_lines.append(f"设备 ID：{device_id}")
+            if error:
+                tooltip_lines.append(f"详情：{error}")
+            label.setToolTip("\n".join(tooltip_lines))
+            label.setAccessibleName(f"{modality} 状态：{status}")
 
     @Slot()
     def _connect_modality(self, modality: str) -> None:

@@ -1570,8 +1570,16 @@ def test_device_connection_rows_omit_source_device_id_column(tmp_path: Path) -> 
         False,
     )
     status = window._connect_status_labels["ultrasound"]
-    assert status.text() == "READY"
+    assert status.text() == ""
+    assert status.property("indicatorState") == "green"
+    assert "状态：READY" in status.toolTip()
     assert "very_long_device_identifier" in status.toolTip()
+
+    window._set_preview_status("ultrasound", "连接中", "device", False)
+    assert status.property("indicatorState") == "yellow"
+    window._set_preview_status("ultrasound", "错误", "device", False, error="boom")
+    assert status.property("indicatorState") == "red"
+    assert "详情：boom" in status.toolTip()
     window.close()
 
 
