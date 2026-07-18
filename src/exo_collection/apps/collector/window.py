@@ -68,6 +68,7 @@ from exo_collection.apps.collector.preflight import (
 from exo_collection.configuration import (
     SharedAppSettings,
     build_adapters,
+    fixed_elonxi_sdk_directory,
     load_device_profile,
 )
 from exo_collection.logging_setup import collector_log_path, setup_collector_logging
@@ -194,14 +195,13 @@ class HardwareDeviceSettingsDialog(QDialog):
         outer = QVBoxLayout(self)
         form = QFormLayout()
 
-        sdk_row = QHBoxLayout()
-        self.sdk_path_edit = QLineEdit(str(ultrasound.get("sdk_path") or ""))
+        self.sdk_path_edit = QLineEdit(str(fixed_elonxi_sdk_directory()))
         self.sdk_path_edit.setObjectName("hardware_elonxi_sdk_path")
-        sdk_row.addWidget(self.sdk_path_edit, 1)
-        browse = QPushButton("选择…")
-        browse.clicked.connect(self._choose_sdk_directory)
-        sdk_row.addWidget(browse)
-        form.addRow("Elonxi SDK 目录：", sdk_row)
+        self.sdk_path_edit.setReadOnly(True)
+        self.sdk_path_edit.setToolTip(
+            "SDK 目录由软件按固定部署结构自动定位，不需要人工选择。"
+        )
+        form.addRow("Elonxi SDK 目录（固定）：", self.sdk_path_edit)
 
         self.ultrasound_ip_edit = QLineEdit(
             str(ultrasound.get("device_ip") or "")
@@ -267,17 +267,6 @@ class HardwareDeviceSettingsDialog(QDialog):
         return self._validated_overrides
 
     @Slot()
-    def _choose_sdk_directory(self) -> None:
-        selected = QFileDialog.getExistingDirectory(
-            self,
-            "选择包含 Elonxi_SDK.dll 的目录",
-            self.sdk_path_edit.text(),
-            QFileDialog.Option.ShowDirsOnly,
-        )
-        if selected:
-            self.sdk_path_edit.setText(selected)
-
-    @Slot()
     def accept(self) -> None:
         try:
             sensor_ids = tuple(
@@ -285,7 +274,7 @@ class HardwareDeviceSettingsDialog(QDialog):
                 for item in self.awinda_ids_edit.text().split(",")
                 if item.strip()
             )
-            sdk_path = self.sdk_path_edit.text().strip()
+            sdk_path = str(fixed_elonxi_sdk_directory())
             device_ip = self.ultrasound_ip_edit.text().strip()
             encoder_port = self.encoder_port_edit.text().strip()
             overrides: dict[str, dict[str, Any]] = {
@@ -789,6 +778,7 @@ class CollectorWindow(QMainWindow):
 
         body = QSplitter(Qt.Orientation.Horizontal)
         controls = QWidget()
+        controls.setMinimumWidth(520)
         controls_layout = QVBoxLayout(controls)
 
         # ── Trial Settings ──
@@ -898,6 +888,13 @@ class CollectorWindow(QMainWindow):
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self.request_controlled_stop)
         buttons.addWidget(self.stop_button)
+        for button in (
+            self.connect_all_button,
+            self.disconnect_all_button,
+            self.start_button,
+            self.stop_button,
+        ):
+            button.setMinimumWidth(105)
         controls_layout.addLayout(buttons)
 
         # ── Device Connection Area ──
@@ -1078,6 +1075,7 @@ class CollectorWindow(QMainWindow):
         preview_layout.addWidget(enc_grid, 2)
 
         body.addWidget(preview_box)
+        body.setCollapsible(0, False)
         body.setSizes([470, 790])
         outer.addWidget(body, 1)
 

@@ -107,7 +107,7 @@ def _run_ui(
         app = QApplication(["exo-collector", *arguments])
 
     window = CollectorWindow(data_root, settings=settings)
-    window.show()
+    window.showMaximized()
     if smoke_test:
         # The existing internal UI smoke also exercises the spawn-based device
         # preflight. This is essential for PyInstaller: a window-only check

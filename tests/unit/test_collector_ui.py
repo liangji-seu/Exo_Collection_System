@@ -17,11 +17,15 @@ from exo_collection.acquisition.messages import WorkerEvent, WorkerEventType
 from exo_collection.apps.collector import CollectorWindow
 from exo_collection.apps.collector.window import (
     ExperimentMetadataDialog,
+    HardwareDeviceSettingsDialog,
     MODALITIES,
     RingTrace,
     SIGNAL_RING_CAPACITY,
 )
-from exo_collection.configuration import SharedAppSettings
+from exo_collection.configuration import (
+    SharedAppSettings,
+    fixed_elonxi_sdk_directory,
+)
 from exo_collection.orchestration.models import (
     MeasuredConditionMetadata,
     TrialExperimentMetadata,
@@ -77,6 +81,19 @@ class FakeCollectorWorker:
     def finish(self, exitcode: int = 0) -> None:
         self._exitcode = exitcode
         self.alive = False
+
+
+def test_hardware_dialog_displays_fixed_read_only_elonxi_sdk_path() -> None:
+    app = QApplication.instance() or QApplication(["test-fixed-sdk-path"])
+    dialog = HardwareDeviceSettingsDialog(
+        {"ultrasound": {"sdk_path": "C:/stale/path/from/another/pc"}}
+    )
+
+    assert dialog.sdk_path_edit.isReadOnly()
+    assert dialog.sdk_path_edit.text() == str(fixed_elonxi_sdk_directory())
+
+    dialog.close()
+    app.processEvents()
 
 
 class FakePreviewHandle:

@@ -26,6 +26,7 @@ from exo_collection.configuration.app_settings import (
     SETTINGS_ORGANIZATION_NAME,
     SharedAppSettings,
     create_shared_settings_backend,
+    fixed_elonxi_sdk_directory,
 )
 
 
@@ -35,6 +36,18 @@ studio_main_module = import_module("exo_collection.apps.data_studio.main")
 
 def _file_settings(path: Path) -> SharedAppSettings:
     return SharedAppSettings(QSettings(str(path), QSettings.Format.IniFormat))
+
+
+def test_fixed_elonxi_sdk_directory_uses_sibling_runtime_layout() -> None:
+    repository_root = Path(__file__).resolve().parents[2]
+    expected = (
+        repository_root.parent
+        / "SDK_Transfer"
+        / "Exo_Hardware_Runtime_Windows_Python311_x64"
+        / "elonxi"
+    ).resolve()
+
+    assert fixed_elonxi_sdk_directory() == expected
 
 
 class _TrackingSettings:
@@ -113,6 +126,9 @@ def test_hardware_profile_and_non_secret_device_settings_are_persistent(
 
     restored = _file_settings(settings_path)
     assert restored.device_profile_key == "hardware"
+    assert restored.hardware_device_overrides["ultrasound"]["sdk_path"] == str(
+        fixed_elonxi_sdk_directory()
+    )
     assert restored.hardware_device_overrides["ultrasound"]["device_ip"] == "192.168.1.20"
     assert restored.hardware_device_overrides["imu"]["sensor_ids"] == ["A", "B", "C"]
     assert restored.hardware_device_overrides["encoder"]["port"] == "COM7"

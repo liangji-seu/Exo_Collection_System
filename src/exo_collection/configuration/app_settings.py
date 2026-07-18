@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any, Literal, Mapping
 
@@ -17,6 +18,33 @@ SETTINGS_APPLICATION_NAME = "Shared Settings"
 DATA_ROOT_KEY = "storage/data_root"
 DEVICE_PROFILE_KEY = "collector/device_profile"
 HARDWARE_OVERRIDES_KEY = "collector/hardware_device_overrides_json"
+ELONXI_RUNTIME_RELATIVE_PATH = (
+    Path("SDK_Transfer")
+    / "Exo_Hardware_Runtime_Windows_Python311_x64"
+    / "elonxi"
+)
+
+
+def fixed_elonxi_sdk_directory() -> Path:
+    """Return the fixed Elonxi SDK directory for the deployed folder layout.
+
+    Source checkouts use the laboratory layout where ``Exo_Collection_System``
+    and ``SDK_Transfer`` are siblings. Frozen builds search the executable and
+    its parents for the same layout so the complete ``Exo`` directory can be
+    moved to another drive without invalidating the SDK path.
+    """
+
+    if not getattr(sys, "frozen", False):
+        repository_root = Path(__file__).resolve().parents[3]
+        return (repository_root.parent / ELONXI_RUNTIME_RELATIVE_PATH).resolve()
+
+    executable_directory = Path(sys.executable).resolve().parent
+    search_roots = (executable_directory, *executable_directory.parents[:4])
+    for root in search_roots:
+        candidate = (root / ELONXI_RUNTIME_RELATIVE_PATH).resolve()
+        if (candidate / "Elonxi_SDK.dll").is_file():
+            return candidate
+    return (executable_directory / ELONXI_RUNTIME_RELATIVE_PATH).resolve()
 
 
 def default_data_root() -> Path:
@@ -107,6 +135,11 @@ class SharedAppSettings:
         for modality, values in payload.items():
             if modality in allowed and isinstance(values, dict):
                 result[modality] = dict(values)
+        # A stale absolute path saved on another PC must never override the
+        # controlled SDK deployment location.
+        result.setdefault("ultrasound", {})["sdk_path"] = str(
+            fixed_elonxi_sdk_directory()
+        )
         return result
 
     def set_hardware_device_overrides(
@@ -122,6 +155,9 @@ class SharedAppSettings:
         normalized = {
             modality: dict(values) for modality, values in overrides.items()
         }
+        normalized.setdefault("ultrasound", {})["sdk_path"] = str(
+            fixed_elonxi_sdk_directory()
+        )
         serialized = json.dumps(
             normalized,
             ensure_ascii=False,

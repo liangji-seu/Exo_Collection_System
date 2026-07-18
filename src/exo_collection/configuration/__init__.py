@@ -1,6 +1,10 @@
 """Validated local configuration contracts."""
 
-from .app_settings import SharedAppSettings, default_data_root
+from .app_settings import (
+    SharedAppSettings,
+    default_data_root,
+    fixed_elonxi_sdk_directory,
+)
 from .adapter_registry import ADAPTER_REGISTRY, build_adapter, build_adapters
 from .device_profiles import (
     DeviceProfileDocument,
@@ -24,6 +28,7 @@ __all__ = [
     "build_adapters",
     "default_data_root",
     "default_device_profile_path",
+    "fixed_elonxi_sdk_directory",
     "default_simulated_device_profile_path",
     "load_device_profile",
     "load_simulated_device_profile",
