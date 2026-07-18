@@ -106,7 +106,14 @@ MAX_PREVIEW_POINTS = 4096
 MAX_TIMELINE_EVENTS = 300
 SIGNAL_RING_CAPACITY = 1000
 ULTRASOUND_PREVIEW_SAMPLES = 512
-IMU_PREVIEW_LABELS = ("imu_trunk", "imu_left", "imu_right")
+_IMU_SENSOR_LABELS = ("imu_trunk", "imu_left", "imu_right")
+_IMU_AXIS_NAMES = ("acc_x", "acc_y", "acc_z")
+_IMU_AXIS_COLORS = {"acc_x": "#dc3545", "acc_y": "#0d6efd", "acc_z": "#198754"}
+IMU_PREVIEW_LABELS: tuple[str, ...] = tuple(
+    f"{sensor}_{axis}"
+    for sensor in _IMU_SENSOR_LABELS
+    for axis in _IMU_AXIS_NAMES
+)
 ENCODER_PREVIEW_LABELS = ("left_position", "right_position")
 DEFAULT_OPERATOR = "not_recorded"
 DEFAULT_CONTROLLED_STOP_TIMEOUT_S = 30.0
@@ -1302,15 +1309,24 @@ class CollectorWindow(QMainWindow):
             us_grid_layout.addWidget(plot, i // 2, i % 2)
         preview_layout.addWidget(us_grid, 4)
 
-        imu_grid = QGroupBox("IMU · 3 个传感器 acc_x 循环帧")
+        imu_grid = QGroupBox("IMU · 加速度 3 轴循环帧")
         imu_grid.setObjectName("imu_ring_grid")
         imu_layout = QHBoxLayout(imu_grid)
         imu_layout.setContentsMargins(0, 0, 0, 0)
-        for index, label in enumerate(IMU_PREVIEW_LABELS):
+        _sensor_display = ("躯干", "左腿", "右腿")
+        for sensor_idx, sensor_label in enumerate(_IMU_SENSOR_LABELS):
             plot = pg.PlotWidget()
-            plot.setObjectName(f"imu_ring_{label}")
-            trace = RingTrace(plot, "#1a936f", f"IMU {index + 1} · {label} · acc_x")
-            self._imu_traces[label] = trace
+            plot.setObjectName(f"imu_ring_{sensor_label}")
+            plot.addLegend(offset=(-1, 1))
+            for axis_name in _IMU_AXIS_NAMES:
+                trace_label = f"{sensor_label}_{axis_name}"
+                color = _IMU_AXIS_COLORS.get(axis_name, "#888888")
+                trace = RingTrace(
+                    plot, color,
+                    f"IMU{sensor_idx+1} {_sensor_display[sensor_idx]} {axis_name}",
+                    capacity=250,
+                )
+                self._imu_traces[trace_label] = trace
             imu_layout.addWidget(plot, 1)
         preview_layout.addWidget(imu_grid, 2)
 

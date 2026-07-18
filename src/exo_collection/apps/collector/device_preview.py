@@ -39,7 +39,7 @@ _log = logging.getLogger(__name__)
 
 DEFAULT_PREVIEW_QUEUE_SIZE = 128
 DEFAULT_HEALTH_POLL_INTERVAL_S = 0.5
-DEFAULT_PREVIEW_DOWNSAMPLE_MAX_S = 1.0 / 15.0  # ~15 fps max
+DEFAULT_PREVIEW_DOWNSAMPLE_MAX_S = 1.0 / 30.0  # ~30 fps max
 
 
 def _preview_rate_limit_key(event: WorkerEvent) -> tuple[str, int | None]:

@@ -130,7 +130,7 @@ def build_preview_event(
         if event.modality == "imu":
             if values.ndim != 3:
                 raise ValueError(f"invalid IMU batch shape: {values.shape}")
-            default_labels = ("imu_trunk", "imu_left", "imu_right")
+            default_sensor_labels = ("imu_trunk", "imu_left", "imu_right")
             configured_labels = (
                 extra_payload.get("preview_labels")
                 if extra_payload is not None
@@ -139,21 +139,26 @@ def build_preview_event(
             if (
                 isinstance(configured_labels, (list, tuple))
                 and len(configured_labels) == values.shape[1]
-                and all(str(label) in default_labels for label in configured_labels)
+                and all(str(label) in default_sensor_labels for label in configured_labels)
             ):
-                labels = tuple(str(label) for label in configured_labels)
+                sensor_labels = tuple(str(label) for label in configured_labels)
             else:
-                labels = default_labels[: values.shape[1]]
-            channels = [
-                values[:, device_index, 0].astype(float).tolist()
-                for device_index in range(len(labels))
-            ]
+                sensor_labels = default_sensor_labels[: values.shape[1]]
+            axis_names = ("acc_x", "acc_y", "acc_z")
+            channels = []
+            labels = []
+            for device_index in range(len(sensor_labels)):
+                for axis_idx, axis_name in enumerate(axis_names):
+                    channels.append(
+                        values[:, device_index, axis_idx].astype(float).tolist()
+                    )
+                    labels.append(f"{sensor_labels[device_index]}_{axis_name}")
             payload = {
                 "host_monotonic_ns": event.host_monotonic_ns,
                 "values": channels[0] if channels else [],
                 "channels": channels,
-                "labels": list(labels),
-                "channel": "acc_x",
+                "labels": labels,
+                "channel": "acceleration",
                 "channel_count": len(channels),
             }
         elif event.modality == "encoder":
