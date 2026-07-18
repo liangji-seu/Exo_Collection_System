@@ -1,3 +1,5 @@
+"""Tests for the 36‑byte dual‑header Teensy encoder protocol adapter."""
+
 from __future__ import annotations
 
 from collections import deque
@@ -6,51 +8,50 @@ import time
 from types import SimpleNamespace
 from uuid import uuid4
 
+import h5py
 import numpy as np
 import pytest
 
-from exo_collection.adapters.base import AdapterState, RawQueueOverflowError, TrialContext
+from exo_collection.adapters.base import (
+    AdapterState,
+    RawQueueOverflowError,
+    TrialContext,
+)
 from exo_collection.adapters.encoder.teensy_serial import (
     FRAME_TAIL,
-    HEAD_STATUS,
+    HEAD_STATUS1,
+    HEAD_STATUS2,
     STATUS_FORMAT,
     STATUS_SIZE,
+    _GAP_THRESHOLD_US,
+    _TICK_US,
+    BAUD_DEFAULT,
     MotorStatusStreamParser,
     TeensySerialEncoderAdapter,
     calc_crc8,
     find_teensy_port,
     parse_status_frame,
 )
+from exo_collection.writers.hdf5_signal import Hdf5SignalWriter
+from exo_collection.acquisition.preview import build_preview_event
 
 
-def make_frame(sequence: int, *, hardware_time_ms: int = 1234) -> bytes:
-    frame = bytearray(
-        struct.pack(
-            STATUS_FORMAT,
-            HEAD_STATUS,
-            sequence,
-            2,
-            0,
-            1.0,
-            2.0,
-            3.0,
-            4.0,
-            5.0,
-            6.0,
-            hardware_time_ms,
-            0,
-            FRAME_TAIL,
-        )
-    )
-    frame[-2] = calc_crc8(bytes(frame[1 : STATUS_SIZE - 2]))
-    return bytes(frame)
+# ------------------------------------------------------------------
+# Fixture helpers
+# ------------------------------------------------------------------
 
 
 class FakeSerial:
-    def __init__(self, chunks: list[bytes] | None = None, **_: object) -> None:
+    def __init__(
+        self,
+        chunks: list[bytes] | None = None,
+        **kwargs: object,
+    ) -> None:
         self.chunks = deque(chunks or [])
         self.is_open = True
         self.writes: list[bytes] = []
+        # Remember factory kwargs for test assertions.
+        self._init_kwargs = kwargs
 
     @property
     def in_waiting(self) -> int:
@@ -78,38 +79,304 @@ def context() -> TrialContext:
     return TrialContext(trial_uuid=uuid4(), session_uuid=uuid4())
 
 
-def wait_for(predicate, timeout: float = 1.0) -> None:
+def wait_for(predicate, timeout: float = 2.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
             return
         time.sleep(0.005)
-    raise AssertionError("condition not reached")
+    raise AssertionError("condition not reached within timeout")
 
 
-def test_status_frame_is_exactly_35_bytes_and_round_trips() -> None:
-    raw = make_frame(7, hardware_time_ms=9876)
-    assert STATUS_SIZE == 35
-    assert len(raw) == 35
+def make_frame(
+    sequence: int = 0,
+    *,
+    teensy_time_us: int = 5000,
+    state: int = 2,
+    error: int = 0,
+    left_position: float = 1.0,
+    left_velocity: float = 2.0,
+    left_torque: float = 3.0,
+    right_position: float = 4.0,
+    right_velocity: float = 5.0,
+    right_torque: float = 6.0,
+) -> bytearray:
+    """Build a valid 36‑byte StatusFrame (raw bytearray)."""
+    frame = bytearray(
+        struct.pack(
+            STATUS_FORMAT,
+            HEAD_STATUS1,
+            HEAD_STATUS2,
+            sequence,
+            state,
+            error,
+            left_position,
+            left_velocity,
+            left_torque,
+            right_position,
+            right_velocity,
+            right_torque,
+            teensy_time_us,
+            0,  # placeholder CRC
+            FRAME_TAIL,
+        )
+    )
+    # CRC covers bytes [2:34]
+    frame[34] = calc_crc8(bytes(frame[2:34]))
+    return frame
+
+
+def make_raw_frame(**overrides: int | float) -> bytes:
+    """Convenience – return immutable bytes."""
+    return bytes(make_frame(**overrides))  # type: ignore[arg-type]
+
+
+# ------------------------------------------------------------------
+# 1. Protocol golden fixture
+# ------------------------------------------------------------------
+
+
+def test_status_size_is_36_bytes() -> None:
+    assert STATUS_SIZE == 36
+    assert struct.calcsize(STATUS_FORMAT) == 36
+
+
+def test_golden_fixture_all_offsets() -> None:
+    raw = make_raw_frame(
+        sequence=0x0102,
+        teensy_time_us=0xDEAD_BEEF,
+        state=2,
+        error=0,
+    )
+    assert len(raw) == 36
+
+    # Headers.
+    assert raw[0] == 0xCC
+    assert raw[1] == 0xAA
+    # seq LE.
+    assert raw[2] == 0x02
+    assert raw[3] == 0x01
+    # state, error.
+    assert raw[4] == 2
+    assert raw[5] == 0
+    # Left position (1.0f).
+    pos_bytes = struct.pack("<f", 1.0)
+    assert raw[6:10] == pos_bytes
+    # Right position (4.0f).
+    rpos_bytes = struct.pack("<f", 4.0)
+    assert raw[18:22] == rpos_bytes
+    # teensy_time_us LE.
+    time_bytes = struct.pack("<I", 0xDEAD_BEEF)
+    assert raw[30:34] == time_bytes
+    # CRC at offset 34.
+    expected_crc = calc_crc8(raw[2:34])
+    assert raw[34] == expected_crc
+    # Tail.
+    assert raw[35] == 0x55
+
+
+def test_crc_covers_bytes_2_to_34_exclusive() -> None:
+    raw = make_raw_frame()
+    # CRC byte is at offset 34, tail at 35.
+    calc = calc_crc8(raw[2:34])
+    assert raw[34] == calc
+
+
+def test_parsed_frame_fields() -> None:
+    raw = make_raw_frame(
+        sequence=7,
+        state=2,
+        error=0,
+        left_position=0.5,
+        right_position=-0.25,
+        teensy_time_us=123456,
+    )
     parsed = parse_status_frame(raw)
     assert parsed is not None
     assert parsed.sequence == 7
-    assert parsed.hardware_time_ms == 9876
-    assert parsed.left_position == pytest.approx(1.0)
+    assert parsed.state == 2
+    assert parsed.error == 0
+    assert parsed.left_position == pytest.approx(0.5)
+    assert parsed.right_position == pytest.approx(-0.25)
+    assert parsed.teensy_time_us == 123456
 
 
-def test_stream_parser_handles_noise_fragmentation_bad_crc_and_multiple_frames() -> None:
-    first, second = make_frame(1), make_frame(2)
-    bad = bytearray(make_frame(99))
-    bad[-2] ^= 0xFF
+def test_motor_status_frame_field_names_use_teensy_time_us() -> None:
+    raw = make_raw_frame(teensy_time_us=9999)
+    parsed = parse_status_frame(raw)
+    assert parsed is not None
+    assert hasattr(parsed, "teensy_time_us")
+    assert not hasattr(parsed, "hardware_time_ms")
+
+
+# ------------------------------------------------------------------
+# 2. Rejection tests
+# ------------------------------------------------------------------
+
+
+def test_reject_wrong_second_header() -> None:
+    raw = make_raw_frame()
+    bad = bytearray(raw)
+    bad[1] = 0xBB  # Not 0xAA
+    assert parse_status_frame(bytes(bad)) is None
+
+
+def test_reject_bad_crc() -> None:
+    raw = make_raw_frame()
+    bad = bytearray(raw)
+    bad[34] ^= 0xFF
+    assert parse_status_frame(bytes(bad)) is None
+
+
+def test_reject_bad_tail() -> None:
+    raw = make_raw_frame()
+    bad = bytearray(raw)
+    bad[35] = 0x00
+    assert parse_status_frame(bytes(bad)) is None
+
+
+def test_reject_wrong_length() -> None:
+    raw = make_raw_frame()
+    assert parse_status_frame(raw[:35]) is None
+    assert parse_status_frame(raw + b"\x00") is None
+    assert parse_status_frame(b"") is None
+
+
+def test_reject_missing_head1() -> None:
+    raw = make_raw_frame()
+    bad = bytearray(raw)
+    bad[0] = 0x00
+    assert parse_status_frame(bytes(bad)) is None
+
+
+# ------------------------------------------------------------------
+# 3. Stream parser: noise, fragmentation, multi-frame, re-sync
+# ------------------------------------------------------------------
+
+
+def test_stream_parser_handles_noise_before_valid_frame() -> None:
+    noise = b"random\xCCpre\xAAamble"
+    valid = make_raw_frame()
     parser = MotorStatusStreamParser()
-    output = []
-    stream = b"noise" + first + bytes(bad) + second
-    for cut in (stream[:9], stream[9:31], stream[31:72], stream[72:]):
+    output = parser.feed(noise + valid)
+    assert len(output) == 1
+    assert parser.discarded_bytes == len(noise)
+    assert parser.crc_or_format_errors >= 0
+
+
+def test_stream_parser_arbitrary_fragmentation() -> None:
+    first, second = make_raw_frame(), make_raw_frame(teensy_time_us=10000)
+    stream = first + second
+    parser = MotorStatusStreamParser()
+    output: list = []
+    for cut in (stream[:7], stream[7:25], stream[25:45], stream[45:72]):
         output.extend(parser.feed(cut))
-    assert [frame.sequence for frame in output] == [1, 2]
+    assert len(output) == 2
+    assert output[0].sequence == 0
+    assert output[1].teensy_time_us == 10000
+
+
+def test_stream_parser_consecutive_frames() -> None:
+    frames = (
+        make_raw_frame(teensy_time_us=0),
+        make_raw_frame(teensy_time_us=5000),
+        make_raw_frame(teensy_time_us=10000),
+        make_raw_frame(teensy_time_us=15000),
+    )
+    parser = MotorStatusStreamParser()
+    output = parser.feed(b"".join(frames))
+    assert len(output) == 4
+    for i, f in enumerate(output):
+        assert f.teensy_time_us == i * 5000
+
+
+def test_stream_parser_bad_frame_then_re_sync() -> None:
+    good1 = make_raw_frame(teensy_time_us=5000)
+    bad = bytearray(make_raw_frame(teensy_time_us=99999))
+    bad[34] ^= 0xFF  # corrupt CRC
+    good2 = make_raw_frame(teensy_time_us=15000)
+    parser = MotorStatusStreamParser()
+    stream = b"".join([bytes(f) for f in (good1, bad, good2)])
+    output = parser.feed(stream)
+    assert len(output) == 2
+    assert output[0].teensy_time_us == 5000
+    assert output[1].teensy_time_us == 15000
     assert parser.crc_or_format_errors >= 1
-    assert parser.discarded_bytes >= len(b"noise")
+
+
+def test_stream_parser_cc_aa_in_payload_no_false_sync() -> None:
+    """Payload bytes that happen to be 0xCC/0xAA must not trigger false sync."""
+    frame = make_raw_frame(
+        left_position=struct.unpack("<f", b"\xCC\xAA\x00\x00")[0],
+        teensy_time_us=5000,
+    )
+    # Append a second valid frame that starts with real CC AA.
+    second = make_raw_frame(teensy_time_us=10000)
+    parser = MotorStatusStreamParser()
+    output = parser.feed(bytes(frame) + bytes(second))
+    assert len(output) == 2
+    assert output[0].teensy_time_us == 5000
+    assert output[1].teensy_time_us == 10000
+
+
+def test_stream_parser_cc_without_aa_is_discarded() -> None:
+    """A lone 0xCC not followed by 0xAA should be skipped."""
+    parser = MotorStatusStreamParser()
+    output = parser.feed(b"\xCC\xFF")
+    assert len(output) == 0
+    assert parser.crc_or_format_errors == 1
+    # Both 0xCC (skipped false start) and 0xFF (trailing junk) are discarded.
+    assert parser.discarded_bytes == 2
+
+
+def test_stream_parser_partial_frame_awaits_more_data() -> None:
+    raw = make_raw_frame()
+    parser = MotorStatusStreamParser()
+    output = parser.feed(raw[:20])
+    assert len(output) == 0
+    assert parser.buffered_bytes == 20
+    output = parser.feed(raw[20:])
+    assert len(output) == 1
+
+
+def test_stream_parser_reset_clears_state() -> None:
+    raw = make_raw_frame()
+    parser = MotorStatusStreamParser()
+    parser.feed(raw[:20])
+    parser.reset()
+    assert parser.buffered_bytes == 0
+    assert parser.crc_or_format_errors == 0
+    assert parser.discarded_bytes == 0
+
+
+# ------------------------------------------------------------------
+# 4. Serial factory params
+# ------------------------------------------------------------------
+
+
+def test_serial_factory_default_params() -> None:
+    serial_port = FakeSerial(
+        [make_raw_frame(), make_raw_frame(teensy_time_us=5050)],
+    )
+    assert BAUD_DEFAULT == 1_000_000
+
+    def factory(**kwargs: object) -> FakeSerial:
+        assert kwargs.get("baudrate") == 1_000_000
+        assert kwargs.get("timeout") == 0.05
+        return serial_port
+
+    adapter = TeensySerialEncoderAdapter(
+        {"port": "COM99", "batch_size": 2},
+        serial_factory=factory,
+    )
+    adapter.connect()
+    assert adapter.configuration_snapshot()["resolved_port"] == "COM99"
+    adapter.close()
+
+
+# ------------------------------------------------------------------
+# 5. VID / PID auto-discovery
+# ------------------------------------------------------------------
 
 
 def test_find_port_matches_vid_pid() -> None:
@@ -120,10 +387,187 @@ def test_find_port_matches_vid_pid() -> None:
     assert find_teensy_port(ports) == "COM7"
 
 
-def test_adapter_is_read_only_and_emits_correct_batch() -> None:
-    serial_port = FakeSerial([make_frame(10, hardware_time_ms=50) + make_frame(11, hardware_time_ms=60)])
+def test_find_port_no_match() -> None:
+    ports = [
+        SimpleNamespace(device="COM1", vid=0x1111, pid=0x2222),
+        SimpleNamespace(device="COM2", vid=0x3333, pid=0x4444),
+    ]
+    assert find_teensy_port(ports) is None
+
+
+def test_find_port_explicit_vid_pid() -> None:
+    ports = [
+        SimpleNamespace(device="COM7", vid=0xABCD, pid=0x1234),
+    ]
+    assert find_teensy_port(ports, vid=0xABCD, pid=0x1234) == "COM7"
+    assert find_teensy_port(ports) is None
+
+
+def test_connect_with_explicit_com_port() -> None:
+    serial_port = FakeSerial([make_raw_frame()])
     adapter = TeensySerialEncoderAdapter(
-        {"port": "COM7", "batch_size": 2, "nominal_rate_hz": 100},
+        {"port": "COM42", "batch_size": 1},
+        serial_factory=lambda **kwargs: serial_port,
+    )
+    adapter.connect()
+    snap = adapter.configuration_snapshot()
+    assert snap["resolved_port"] == "COM42"
+    adapter.close()
+
+
+def test_connect_fails_when_no_port_available() -> None:
+    adapter = TeensySerialEncoderAdapter(
+        {"port": None, "vid": 0xDEAD, "pid": 0xBEEF},
+        port_lister=lambda: [
+            SimpleNamespace(device="COM1", vid=0x1111, pid=0x2222),
+        ],
+    )
+    with pytest.raises(Exception):
+        adapter.connect()
+
+
+# ------------------------------------------------------------------
+# 6. Time-based gap detection (no firmware seq gaps)
+# ------------------------------------------------------------------
+
+
+def test_two_frames_seq_zero_no_false_gap() -> None:
+    """Both frames have seq=0 (command echo); time diff is normal → no gap."""
+    serial_port = FakeSerial(
+        [
+            make_raw_frame(sequence=0, teensy_time_us=5000),
+            make_raw_frame(sequence=0, teensy_time_us=10000),
+        ]
+    )
+    adapter = TeensySerialEncoderAdapter(
+        {"port": "COM7", "batch_size": 2},
+        serial_factory=lambda **kwargs: serial_port,
+    )
+    adapter.connect()
+    adapter.prepare(context())
+    adapter.start()
+    wait_for(lambda: adapter.raw_queue.qsize() >= 1)
+    health = adapter.health()
+    # No timestamp gaps — normal 5000 us diff.
+    assert health.sequence_gaps == 0
+    assert health.dropped_packets == 0
+    adapter.stop()
+    adapter.close()
+
+
+def test_normal_5000us_tick_no_gap() -> None:
+    serial_port = FakeSerial(
+        [
+            make_raw_frame(teensy_time_us=5000),
+            make_raw_frame(teensy_time_us=10000),
+            make_raw_frame(teensy_time_us=15000),
+            make_raw_frame(teensy_time_us=20000),
+        ]
+    )
+    adapter = TeensySerialEncoderAdapter(
+        {"port": "COM7", "batch_size": 2},
+        serial_factory=lambda **kwargs: serial_port,
+    )
+    adapter.connect()
+    adapter.prepare(context())
+    adapter.start()
+    wait_for(lambda: adapter.raw_queue.qsize() >= 2)
+    health = adapter.health()
+    assert health.sequence_gaps == 0
+    adapter.stop()
+    adapter.close()
+
+
+def test_time_discontinuity_detected_and_batch_split() -> None:
+    """A jump beyond _GAP_THRESHOLD_US must trigger gap event and batch split."""
+    serial_port = FakeSerial(
+        [
+            # Three normal frames, then a jump.
+            make_raw_frame(teensy_time_us=5000),
+            make_raw_frame(teensy_time_us=10000),
+            make_raw_frame(teensy_time_us=30000),  # gap: 20000 us > 10000
+            make_raw_frame(teensy_time_us=35000),
+        ]
+    )
+    adapter = TeensySerialEncoderAdapter(
+        {"port": "COM7", "batch_size": 2},
+        serial_factory=lambda **kwargs: serial_port,
+    )
+    adapter.connect()
+    adapter.prepare(context())
+    adapter.start()
+    # Expect a batch flushes when the gap is detected; first 2 frames form
+    # one batch, then gap-flush, then the remaining 2 form another batch.
+    wait_for(lambda: adapter.raw_queue.qsize() >= 2)
+    health = adapter.health()
+    assert health.sequence_gaps == 1
+    # Verify the gap event is in health metrics.
+    metrics = health.metrics
+    assert metrics.get("timestamp_gap_events") is not None
+    assert metrics.get("gap_threshold_us") == 10_000
+    adapter.stop()
+    adapter.close()
+
+
+def test_uint32_wrap_is_not_reported_as_gap() -> None:
+    """uint32 wraparound (e.g. 0xFFFF_FFF0 → 0x0000_000A) must be handled."""
+    serial_port = FakeSerial(
+        [
+            make_raw_frame(teensy_time_us=0xFFFF_FFF0),
+            make_raw_frame(teensy_time_us=0x0000_000A),
+        ]
+    )
+    adapter = TeensySerialEncoderAdapter(
+        {"port": "COM7", "batch_size": 2},
+        serial_factory=lambda **kwargs: serial_port,
+    )
+    adapter.connect()
+    adapter.prepare(context())
+    adapter.start()
+    wait_for(lambda: adapter.raw_queue.qsize() >= 1)
+    health = adapter.health()
+    # uint32 wrap should NOT be flagged as a gap.
+    assert health.sequence_gaps == 0
+    adapter.stop()
+    adapter.close()
+
+
+def test_gap_threshold_is_2x_nominal_tick() -> None:
+    assert _GAP_THRESHOLD_US == 2 * _TICK_US
+    assert _TICK_US == 5_000
+    assert _GAP_THRESHOLD_US == 10_000
+
+
+# ------------------------------------------------------------------
+# 7. Data column layout and preview mapping
+# ------------------------------------------------------------------
+
+
+def test_data_six_columns_left_right_mapping() -> None:
+    serial_port = FakeSerial(
+        [
+            make_raw_frame(
+                left_position=0.1,
+                left_velocity=0.2,
+                left_torque=0.3,
+                right_position=0.4,
+                right_velocity=0.5,
+                right_torque=0.6,
+                teensy_time_us=5000,
+            ),
+            make_raw_frame(
+                left_position=1.1,
+                left_velocity=1.2,
+                left_torque=1.3,
+                right_position=1.4,
+                right_velocity=1.5,
+                right_torque=1.6,
+                teensy_time_us=10000,
+            ),
+        ]
+    )
+    adapter = TeensySerialEncoderAdapter(
+        {"port": "COM7", "batch_size": 2},
         serial_factory=lambda **kwargs: serial_port,
     )
     adapter.connect()
@@ -133,8 +577,125 @@ def test_adapter_is_read_only_and_emits_correct_batch() -> None:
     event = adapter.get_event(timeout=0.1)
     assert event.data.shape == (2, 6)
     assert event.data.dtype == np.float32
-    assert event.device_timestamp == 50
+    # Row 0: (lp, lv, lt, rp, rv, rt)
+    np.testing.assert_allclose(
+        event.data[0], [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+    )
+    np.testing.assert_allclose(
+        event.data[1], [1.1, 1.2, 1.3, 1.4, 1.5, 1.6],
+    )
+    adapter.stop()
+    adapter.close()
+
+
+def test_preview_left_col0_right_col3() -> None:
+    serial_port = FakeSerial(
+        [
+            make_raw_frame(
+                left_position=0.1,
+                left_velocity=0.2,
+                left_torque=0.3,
+                right_position=0.4,
+                right_velocity=0.5,
+                right_torque=0.6,
+                teensy_time_us=5000,
+            ),
+        ]
+    )
+    adapter = TeensySerialEncoderAdapter(
+        {"port": "COM7", "batch_size": 1},
+        serial_factory=lambda **kwargs: serial_port,
+    )
+    adapter.connect()
+    adapter.prepare(context())
+    adapter.start()
+    wait_for(lambda: adapter.raw_queue.qsize() == 1)
+    event = adapter.get_event(timeout=0.1)
+    preview = build_preview_event(event, trial_uuid=uuid4())
+    payload = preview.payload
+    # Left position = col 0 of data.
+    assert payload["channels"][0] == pytest.approx([0.1])
+    # Right position = col 3 of data.
+    assert payload["channels"][1] == pytest.approx([0.4])
+    assert payload["labels"] == ["left_position", "right_position"]
+    assert payload["channel"] == "position"
+    assert payload["channel_count"] == 2
+    adapter.stop()
+    adapter.close()
+
+
+def test_config_default_200hz_and_units() -> None:
+    adapter = TeensySerialEncoderAdapter()
+    assert adapter._config.nominal_rate_hz == 200.0
+    desc = adapter.descriptor()
+    assert desc.nominal_rate_hz == 200.0
+    assert desc.units == ("rad", "rad/s", "N*m", "rad", "rad/s", "N*m")
+    assert desc.metadata["hardware_tick_hz"] == 1_000_000
+    assert desc.metadata["device_timestamp_unit"] == "us"
+
+
+# ------------------------------------------------------------------
+# 8. State / error / seq in health and configuration snapshot
+# ------------------------------------------------------------------
+
+
+def test_state_error_seq_in_health_snapshot() -> None:
+    serial_port = FakeSerial(
+        [
+            make_raw_frame(sequence=42, state=7, error=1, teensy_time_us=5000),
+            make_raw_frame(sequence=43, state=7, error=0, teensy_time_us=10000),
+        ]
+    )
+    adapter = TeensySerialEncoderAdapter(
+        {"port": "COM7", "batch_size": 2},
+        serial_factory=lambda **kwargs: serial_port,
+    )
+    adapter.connect()
+    adapter.prepare(context())
+    adapter.start()
+    wait_for(lambda: adapter.raw_queue.qsize() == 1)
+    health = adapter.health()
+    metrics = health.metrics
+    assert metrics["last_fw_state"] == 7
+    assert metrics["last_fw_error_code"] == 0
+    assert metrics["last_fw_sequence"] == 43
+    assert metrics["non_zero_error_count"] == 1
+
+    snap = adapter.configuration_snapshot()
+    assert snap["last_fw_state"] == 7
+    assert snap["last_fw_error_code"] == 0
+    assert snap["last_fw_sequence"] == 43
+    assert snap["non_zero_error_count"] == 1
+    adapter.stop()
+    adapter.close()
+
+
+# ------------------------------------------------------------------
+# 9. Lifecycle: stop, close, partial flush, queue overflow, zero write
+# ------------------------------------------------------------------
+
+
+def test_adapter_is_read_only_and_emits_correct_batch() -> None:
+    serial_port = FakeSerial(
+        [
+            make_raw_frame(teensy_time_us=5000) + make_raw_frame(teensy_time_us=10000),
+        ]
+    )
+    adapter = TeensySerialEncoderAdapter(
+        {"port": "COM7", "batch_size": 2, "nominal_rate_hz": 200},
+        serial_factory=lambda **kwargs: serial_port,
+    )
+    adapter.connect()
+    adapter.prepare(context())
+    adapter.start()
+    wait_for(lambda: adapter.raw_queue.qsize() == 1)
+    event = adapter.get_event(timeout=0.1)
+    assert event.data.shape == (2, 6)
+    assert event.data.dtype == np.float32
+    # device_timestamp is teensy_time_us of the first frame.
+    assert event.device_timestamp == 5000
     assert event.first_sample_index == 0
+    assert event.sample_rate_hz == 200
     assert serial_port.writes == []
     report = adapter.stop()
     adapter.close()
@@ -144,7 +705,9 @@ def test_adapter_is_read_only_and_emits_correct_batch() -> None:
 
 
 def test_stop_flushes_remaining_valid_frames() -> None:
-    serial_port = FakeSerial([make_frame(1), make_frame(2)])
+    serial_port = FakeSerial(
+        [make_raw_frame(teensy_time_us=5000), make_raw_frame(teensy_time_us=10000)],
+    )
     adapter = TeensySerialEncoderAdapter(
         {"port": "COM7", "batch_size": 20},
         serial_factory=lambda **kwargs: serial_port,
@@ -152,12 +715,14 @@ def test_stop_flushes_remaining_valid_frames() -> None:
     adapter.connect()
     adapter.prepare(context())
     adapter.start()
-    wait_for(lambda: adapter._samples_emitted == 0 and len(adapter._pending) == 2)
+    wait_for(
+        lambda: adapter._samples_emitted == 0 and len(adapter._pending) == 2
+    )
     report = adapter.stop()
-    event = adapter.get_event(timeout=0.1)
-    adapter.close()
     assert report.samples_emitted == 2
+    event = adapter.get_event(timeout=0.1)
     assert event.sample_count == 2
+    adapter.close()
 
 
 def test_raw_queue_overflow_is_fatal() -> None:
@@ -169,24 +734,216 @@ def test_raw_queue_overflow_is_fatal() -> None:
     adapter.connect()
     adapter.prepare(context())
     adapter.start()
-    adapter._accept_frame(parse_status_frame(make_frame(1)), 10)  # type: ignore[arg-type]
+    frame = parse_status_frame(make_raw_frame(teensy_time_us=5000))
+    assert frame is not None
+    adapter._accept_frame(frame, 10)
     with pytest.raises(RawQueueOverflowError):
-        adapter._accept_frame(parse_status_frame(make_frame(2)), 20)  # type: ignore[arg-type]
+        adapter._accept_frame(frame, 20)
     assert adapter.state is AdapterState.FAULTED
     assert adapter.health().status.value == "UNHEALTHY"
     adapter.close()
 
 
-def test_sequence_gap_is_reported() -> None:
-    serial_port = FakeSerial([make_frame(1) + make_frame(4)])
+def test_zero_serial_writes_across_lifecycle() -> None:
+    serial_port = FakeSerial(
+        [
+            make_raw_frame(teensy_time_us=5000),
+            make_raw_frame(teensy_time_us=10000),
+        ]
+    )
     adapter = TeensySerialEncoderAdapter(
-        {"port": "COM7", "batch_size": 2},
+        {"port": "COM7", "batch_size": 1},
         serial_factory=lambda **kwargs: serial_port,
+    )
+    adapter.connect()
+    assert serial_port.writes == []
+    adapter.prepare(context())
+    assert serial_port.writes == []
+    adapter.start()
+    wait_for(lambda: adapter.raw_queue.qsize() >= 1)
+    assert serial_port.writes == []
+    adapter.stop()
+    assert serial_port.writes == []
+    adapter.close()
+    assert serial_port.writes == []
+
+
+def test_stop_and_close_with_empty_pending() -> None:
+    adapter = TeensySerialEncoderAdapter(
+        {"port": "COM7", "batch_size": 20},
+        serial_factory=lambda **kwargs: FakeSerial([]),
     )
     adapter.connect()
     adapter.prepare(context())
     adapter.start()
-    wait_for(lambda: adapter.raw_queue.qsize() == 1)
-    assert adapter.health().sequence_gaps == 2
-    adapter.stop()
+    time.sleep(0.05)
+    report = adapter.stop()
+    assert report.samples_emitted == 0
     adapter.close()
+
+
+# ------------------------------------------------------------------
+# 10. HDF5 integration: 200 Hz, device_time via us ticks, gap handling
+# ------------------------------------------------------------------
+
+
+def test_hdf5_appends_device_time_using_hardware_tick_hz(tmp_path) -> None:
+    """With hardware_tick_hz=1_000_000 and 200 Hz sample rate, the device_time
+    step must be 5_000 ticks per sample."""
+    adapter = TeensySerialEncoderAdapter()
+    desc = adapter.descriptor()
+
+    writer = Hdf5SignalWriter(
+        path=tmp_path / "teensy_integration.h5",
+        channels=desc.channels,
+        units=desc.units,
+        device_metadata=dict(desc.metadata),
+        nominal_rate_hz=desc.nominal_rate_hz,
+        chunk_rows=16,
+        overwrite=True,
+    )
+    # Simulate one batch of 3 frames at 5000 us spacing.
+    batch_data = np.array(
+        [[0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+         [1.1, 1.2, 1.3, 1.4, 1.5, 1.6],
+         [2.1, 2.2, 2.3, 2.4, 2.5, 2.6]],
+        dtype=np.float32,
+    )
+    writer.append(
+        batch_data,
+        sample_index=0,
+        device_time=5000,  # teensy_time_us of first frame
+        host_monotonic_ns=100_000_000,
+        sample_rate_hz=200.0,
+    )
+    # _normalise_device_times uses hardware_tick_hz / sample_rate_hz = 5000
+    # So device_time should be [5000, 10000, 15000]
+    with h5py.File(writer.path, "r") as f:
+        dt = f["samples/device_time"][:]
+        np.testing.assert_allclose(dt, [5000.0, 10000.0, 15000.0])
+        assert f.attrs["nominal_rate_hz"] == 200.0
+    writer.close()
+
+
+def test_hdf5_batch_append_preserves_device_timestamp(tmp_path) -> None:
+    """append_batch reconstructs device_time vector from device_timestamp."""
+    adapter = TeensySerialEncoderAdapter()
+    desc = adapter.descriptor()
+
+    writer = Hdf5SignalWriter(
+        path=tmp_path / "batch_append.h5",
+        channels=desc.channels,
+        units=desc.units,
+        device_metadata=dict(desc.metadata),
+        nominal_rate_hz=desc.nominal_rate_hz,
+        chunk_rows=16,
+        overwrite=True,
+    )
+    from exo_collection.domain.events import SampleBatch
+
+    data = np.array(
+        [[0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+         [1.1, 1.2, 1.3, 1.4, 1.5, 1.6]],
+        dtype=np.float32,
+    )
+    batch = SampleBatch(
+        device_id="test",
+        modality="encoder",
+        clock_domain="test_clock",
+        first_sample_index=0,
+        sample_count=2,
+        sequence_number=0,
+        device_timestamp=5000,
+        sample_rate_hz=200.0,
+        data=data,
+    )
+    writer.append_batch(batch)
+    writer.close()
+
+    with h5py.File(writer.path, "r") as f:
+        dt = f["samples/device_time"][:]
+        # step = hardware_tick_hz / sample_rate_hz = 1_000_000 / 200 = 5000
+        np.testing.assert_allclose(dt, [5000.0, 10000.0])
+
+
+def test_hdf5_discontinuity_on_time_gap(tmp_path) -> None:
+    """Verify device_time fidelity across batches separated by a time gap.
+
+    When the adapter detects a tick gap (e.g. 10000 → 35000 us) it flushes
+    the current batch and starts a new one.  The HDF5 writer stores the
+    device_timestamp per batch and expands it to a per-sample device_time
+    vector using hardware_tick_hz / sample_rate_hz.
+
+    The sample_index stays continuous (no frame counter is used), so the
+    writer does NOT create a sample_index_gap discontinuity.  The time gap
+    is visible as a jump in the stored device_time values.
+    """
+
+    adapter = TeensySerialEncoderAdapter()
+    desc = adapter.descriptor()
+
+    writer = Hdf5SignalWriter(
+        path=tmp_path / "discontinuity.h5",
+        channels=desc.channels,
+        units=desc.units,
+        device_metadata=dict(desc.metadata),
+        nominal_rate_hz=desc.nominal_rate_hz,
+        chunk_rows=16,
+        overwrite=True,
+    )
+
+    from exo_collection.domain.events import SampleBatch
+
+    # Batch 0: frames at times 5000, 10000
+    batch0 = SampleBatch(
+        device_id="test", modality="encoder", clock_domain="test_clock",
+        first_sample_index=0, sample_count=2, sequence_number=0,
+        device_timestamp=5000, sample_rate_hz=200.0,
+        data=np.float32([[0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+                         [1.1, 1.2, 1.3, 1.4, 1.5, 1.6]]),
+    )
+    # Batch 1: frames at times 35000, 40000 (adapter flushed at gap 10000→35000).
+    # sample_index continues from where batch 0 left off — no forged gap.
+    batch1 = SampleBatch(
+        device_id="test", modality="encoder", clock_domain="test_clock",
+        first_sample_index=2, sample_count=2, sequence_number=1,
+        device_timestamp=35000, sample_rate_hz=200.0,
+        data=np.float32([[3.1, 3.2, 3.3, 3.4, 3.5, 3.6],
+                         [4.1, 4.2, 4.3, 4.4, 4.5, 4.6]]),
+    )
+    writer.append_batch(batch0)
+    writer.append_batch(batch1)
+    writer.close()
+
+    with h5py.File(writer.path, "r") as f:
+        dt = f["samples/device_time"][:]
+        # device_time faithfully records the per-sample us timestamps.
+        np.testing.assert_allclose(dt, [5000.0, 10000.0, 35000.0, 40000.0])
+        # Batch split is visible as separate device_timestamps.
+        assert len(f["samples/data"]) == 4
+        # sample_index is continuous (2 = 0+2), so no sample_index_gap written.
+        disc = f["events/discontinuities"][:]
+        kinds = [str(d[2]) for d in disc]
+        assert "sample_index_gap" not in kinds
+
+
+# ------------------------------------------------------------------
+# 11. Descriptor metadata sanity
+# ------------------------------------------------------------------
+
+
+def test_descriptor_metadata_fields() -> None:
+    adapter = TeensySerialEncoderAdapter()
+    desc = adapter.descriptor()
+    meta = desc.metadata
+    assert meta["protocol"] == "teensy_status_v2"
+    assert meta["status_size_bytes"] == 36
+    assert meta["device_timestamp_field"] == "teensy_time_us"
+    assert meta["device_timestamp_unit"] == "us"
+    assert meta["hardware_tick_hz"] == 1_000_000
+    assert meta["tick_period_us"] == 5_000
+    assert meta["gap_threshold_us"] == 10_000
+    assert meta["crc8_range"] == "bytes[2:34]"
+    assert meta["read_only"] is True
+    assert meta["simulated"] is False
+    assert meta["fw_seq_description"] == "command-echo (not frame counter)"
