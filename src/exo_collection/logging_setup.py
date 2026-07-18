@@ -1,10 +1,10 @@
 """Centralised logging configuration for Collector and Data Studio applications.
 
-Provides a UTF-8 rotating application log in the main desktop process
-into ``%LOCALAPPDATA%/ExoCollectionSystem/logs/collector/collector.log``
-on Windows, falling back to ``~/.local/share/ExoCollectionSystem/logs/`` on
-other platforms.  The handler is created once at application start and reused
-by all modules.
+Provides one UTF-8 rotating application log per Collector process launch in
+``%LOCALAPPDATA%/ExoCollectionSystem/log/`` on Windows, falling back to
+``~/.local/share/ExoCollectionSystem/log/`` on other platforms.  A launch is
+identified by local wall-clock time and PID, so historical sessions are never
+appended into one ambiguous shared file.
 """
 
 from __future__ import annotations
@@ -14,16 +14,19 @@ import os
 import re
 import sys
 import traceback
+from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 
 LOG_ORGANIZATION = "ExoCollectionSystem"
 LOG_APP_NAME = "collector"
-LOG_FILENAME = "collector.log"
 DEFAULT_MAX_BYTES = 10 * 1024 * 1024  # 10 MiB
 DEFAULT_BACKUP_COUNT = 10
 _HANDLER_MARKER = "_exo_collector_log_handler"
+_PROCESS_LAUNCH_TOKEN = datetime.now().astimezone().strftime(
+    "%Y%m%d_%H%M%S_%f"
+)
 
 
 def _default_log_dir() -> Path:
@@ -35,19 +38,21 @@ def _default_log_dir() -> Path:
         else:
             # Rare fallback: %USERPROFILE% or CWD
             base = Path.home() / "AppData" / "Local"
-        return base / LOG_ORGANIZATION / "logs" / LOG_APP_NAME
+        return base / LOG_ORGANIZATION / "log"
     # Non-Windows: XDG_DATA_HOME or ~/.local/share
     xdg = os.environ.get("XDG_DATA_HOME")
     if xdg:
         base = Path(xdg)
     else:
         base = Path.home() / ".local" / "share"
-    return base / LOG_ORGANIZATION / "logs" / LOG_APP_NAME
+    return base / LOG_ORGANIZATION / "log"
 
 
 def collector_log_path() -> Path:
-    """Return the absolute path to the collector log file."""
-    return _default_log_dir() / LOG_FILENAME
+    """Return this Collector process launch's absolute log path."""
+    return _default_log_dir() / (
+        f"ExoCollector_{_PROCESS_LAUNCH_TOKEN}_pid{os.getpid()}.log"
+    )
 
 
 def setup_collector_logging(

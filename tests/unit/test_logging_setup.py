@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -21,8 +23,26 @@ from exo_collection.logging_setup import (
 
 def test_collector_log_path_returns_absolute(tmp_path: Path) -> None:
     path = collector_log_path()
-    assert path.name == "collector.log"
+    assert path.parent.name == "log"
+    assert path.name.startswith("ExoCollector_")
+    assert f"_pid{os.getpid()}.log" in path.name
     assert path.is_absolute()
+
+
+def test_separate_process_launches_use_distinct_log_file_names() -> None:
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "from exo_collection.logging_setup import collector_log_path; "
+            "print(collector_log_path())"
+        ),
+    ]
+    first = subprocess.check_output(command, text=True).strip()
+    second = subprocess.check_output(command, text=True).strip()
+    assert first != second
+    assert Path(first).parent.name == "log"
+    assert Path(second).parent.name == "log"
 
 
 def test_setup_creates_log_directory(tmp_path: Path) -> None:

@@ -36,7 +36,7 @@
 
 每个成功 Trial 都会生成 `manifest.json`、`quality_report.json`、`device_status.csv`、`sync_check.csv`、完整边沿/脉宽/间隔/时钟映射审计 `sync_manifest.json`、两张质控预览图和 `warnings.txt`，并纳入 Manifest Artifact 和 SHA-256 校验。实际使用的 `config/quality_rules/default.json` 与 `config/storage.json` 会冻结到 `derived/quality_rules_snapshot.json`；其算法版本和文件 SHA-256 同时写入统计、质量报告、配置快照及 Manifest Artifact。
 
-Collector 主应用日志使用 UTF-8 滚动文件，默认位于 `%LOCALAPPDATA%\ExoCollectionSystem\logs\collector\collector.log`，UI 中的“打开日志目录”可直接定位。每个 Trial 另有自己的 `logs/trial.jsonl`。常见密码、token、secret 和 key 字段在写入主日志前会被脱敏。
+Collector 主应用在 `%LOCALAPPDATA%\ExoCollectionSystem\log\` 中为每次启动创建一份独立 UTF-8 系统日志，文件名包含启动时间和进程 PID，例如 `ExoCollector_20260718_130501_123456_pid1234.log`。UI 中的“打开日志目录”可直接定位。单次日志达到 10 MiB 时会滚动；每个 Trial 另有自己的 `logs/trial.jsonl`。常见密码、token、secret 和 key 字段在写入主日志前会被脱敏。
 
 质量等级不会再因为“没有生成异常”就自动成为 A。A 要求所有必需结构规则确实执行并通过，包括正式时间窗内各必需模态存在、sequence/丢批检查、同步触发和时钟映射证据。尚无真实硬件校准依据的超声饱和、IMU/编码器量程与跳变、时钟残差等阈值默认明确记录为 `UNASSESSED`，不会伪造硬件阈值或误报硬失败；取得校准依据后可在质量规则配置中填写阈值及 `calibration_reference`。
 
