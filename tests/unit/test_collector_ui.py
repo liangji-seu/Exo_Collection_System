@@ -350,6 +350,26 @@ def test_1080p_layout_scrolls_controls_instead_of_crushing_them(
     window.close()
 
 
+def test_collector_theme_uses_semantic_button_roles(tmp_path: Path) -> None:
+    _app, window, _created = _window_with_fake(tmp_path)
+
+    assert window.connect_all_button.property("buttonRole") == "connect"
+    assert window.disconnect_all_button.property("buttonRole") == "disconnect"
+    assert window.start_button.property("buttonRole") == "primary"
+    assert window.stop_button.property("buttonRole") == "danger"
+    for button in window._connect_buttons.values():
+        assert button.property("buttonRole") == "connect"
+    for button in window._disconnect_buttons.values():
+        assert button.property("buttonRole") == "disconnect"
+
+    stylesheet = window.styleSheet()
+    assert '#1d4ed8' in stylesheet
+    assert '#15803d' in stylesheet
+    assert '#b91c1c' in stylesheet
+    assert 'QPlainTextEdit#alerts' in stylesheet
+    window.close()
+
+
 # ── IMU ring trace tests ──
 
 def test_imu_three_ring_traces(tmp_path: Path) -> None:

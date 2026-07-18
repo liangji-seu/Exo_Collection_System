@@ -70,6 +70,7 @@ from exo_collection.apps.collector.preflight import (
     CollectorPreflightWorker,
     run_simulated_preflight,
 )
+from exo_collection.apps.collector.theme import COLLECTOR_STYLESHEET
 from exo_collection.configuration import (
     SharedAppSettings,
     build_adapters,
@@ -854,6 +855,7 @@ class CollectorWindow(QMainWindow):
         self._connect_device_labels: dict[str, QLabel] = {}
 
         self.setWindowTitle("Exo Collector")
+        self.setStyleSheet(COLLECTOR_STYLESHEET)
         self.resize(1280, 820)
         self._create_ui(Path(data_root).expanduser().resolve())
         self.project_combo.currentIndexChanged.connect(self._activate_selected_metadata_identity)
@@ -928,7 +930,7 @@ class CollectorWindow(QMainWindow):
         # ── Header ──
         header = QHBoxLayout()
         title = QLabel("Exo Collector · 多模态数据采集")
-        title.setStyleSheet("font-size: 19px; font-weight: 600;")
+        title.setObjectName("page_title")
         header.addWidget(title)
         header.addStretch(1)
         self.state_label = QLabel()
@@ -1062,20 +1064,23 @@ class CollectorWindow(QMainWindow):
         buttons = QHBoxLayout()
         self.connect_all_button = QPushButton("全部连接")
         self.connect_all_button.setObjectName("connect_all")
+        self.connect_all_button.setProperty("buttonRole", "connect")
         self.connect_all_button.clicked.connect(self._connect_all_modalities)
         buttons.addWidget(self.connect_all_button)
         self.disconnect_all_button = QPushButton("全部断开")
         self.disconnect_all_button.setObjectName("disconnect_all")
+        self.disconnect_all_button.setProperty("buttonRole", "disconnect")
         self.disconnect_all_button.clicked.connect(self._disconnect_all_modalities)
         self.disconnect_all_button.setEnabled(False)
         buttons.addWidget(self.disconnect_all_button)
         self.start_button = QPushButton("开始 Trial")
         self.start_button.setObjectName("start_trial")
-        self.start_button.setStyleSheet("QPushButton { font-weight: 600; padding: 8px; }")
+        self.start_button.setProperty("buttonRole", "primary")
         self.start_button.clicked.connect(self.start_trial)
         buttons.addWidget(self.start_button)
         self.stop_button = QPushButton("受控停止")
         self.stop_button.setObjectName("stop_trial")
+        self.stop_button.setProperty("buttonRole", "danger")
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self.request_controlled_stop)
         buttons.addWidget(self.stop_button)
@@ -1121,8 +1126,10 @@ class CollectorWindow(QMainWindow):
             btn_container = QHBoxLayout()
             connect_btn = QPushButton("连接")
             connect_btn.setObjectName(f"connect_{modality}")
+            connect_btn.setProperty("buttonRole", "connect")
             disconnect_btn = QPushButton("断开")
             disconnect_btn.setObjectName(f"disconnect_{modality}")
+            disconnect_btn.setProperty("buttonRole", "disconnect")
 
             def _make_connect_handler(m: str):
                 return lambda: self._connect_modality(m)
@@ -1153,6 +1160,7 @@ class CollectorWindow(QMainWindow):
         )
         self.health_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.health_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        self.health_table.setAlternatingRowColors(True)
         self.health_table.verticalHeader().setVisible(False)
         for row, modality in enumerate(MODALITIES):
             self.health_table.setItem(row, 0, QTableWidgetItem(modality))
