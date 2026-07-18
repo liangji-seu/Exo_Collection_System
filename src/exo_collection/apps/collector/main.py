@@ -100,6 +100,23 @@ def _run_ui(
     *,
     smoke_test: bool,
 ) -> int:
+    # ---- 必须在第一个 QApplication 调用前设置 Windows DPI 感知 ----
+    # Windows 上 Python 进程默认不声明 DPI 感知，高 DPI 显示器下系统会做
+    # 位图拉伸（bitmap-scaling），导致按钮文字模糊、窗口缩放异常。
+    import ctypes as _ctypes
+
+    if sys.platform == "win32":
+        try:
+            _ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PerMonitorV2
+        except Exception:
+            try:
+                _ctypes.windll.shcore.SetProcessDpiAwareness(1)  # System
+            except Exception:
+                try:
+                    _ctypes.windll.user32.SetProcessDPIAware()
+                except Exception:
+                    pass
+
     QApplication.setOrganizationName("Exo Collection System")
     QApplication.setApplicationName("Exo Collector")
     app = QApplication.instance()

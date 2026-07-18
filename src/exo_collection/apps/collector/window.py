@@ -27,6 +27,7 @@ from PySide6.QtGui import (
     QCloseEvent,
     QDoubleValidator,
     QIntValidator,
+    QKeyEvent,
     QRegularExpressionValidator,
 )
 from PySide6.QtWidgets import (
@@ -874,6 +875,21 @@ class CollectorWindow(QMainWindow):
             data_root, self._settings.device_profile_key,
         )
 
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        """Esc 退出全屏→最大化；F11 切换全屏。"""
+        if event.key() == Qt.Key.Key_Escape:
+            if self.isFullScreen():
+                self.showMaximized()
+                self.statusBar().showMessage("已退出全屏（按 F11 重新进入）。", 5000)
+                return
+        elif event.key() == Qt.Key.Key_F11:
+            if self.isFullScreen():
+                self.showMaximized()
+            else:
+                self.showFullScreen()
+            return
+        super().keyPressEvent(event)
+
     # ── Properties ─────────────────────────────────────────────────────
 
     @property
@@ -1060,6 +1076,7 @@ class CollectorWindow(QMainWindow):
             connection_layout.addWidget(QLabel(_modality_labels[modality]), row_idx, 0)
             device_label = QLabel("—")
             device_label.setObjectName(f"device_label_{modality}")
+            device_label.setWordWrap(True)
             connection_layout.addWidget(device_label, row_idx, 1)
             self._connect_device_labels[modality] = device_label
 
@@ -1082,6 +1099,8 @@ class CollectorWindow(QMainWindow):
             connect_btn.clicked.connect(_make_connect_handler(modality))
             disconnect_btn.clicked.connect(_make_disconnect_handler(modality))
             disconnect_btn.setEnabled(False)
+            connect_btn.setMinimumWidth(72)
+            disconnect_btn.setMinimumWidth(72)
 
             btn_container.addWidget(connect_btn)
             btn_container.addWidget(disconnect_btn)
@@ -1144,6 +1163,7 @@ class CollectorWindow(QMainWindow):
         self.alerts_edit.setReadOnly(True)
         self.alerts_edit.setMaximumBlockCount(500)
         self.alerts_edit.setPlaceholderText("系统日志与告警会显示在这里。")
+        self.alerts_edit.setMinimumHeight(80)
         alert_layout.addWidget(self.alerts_edit)
         # Open log directory button
         log_btn_row = QHBoxLayout()
