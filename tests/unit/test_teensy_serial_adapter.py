@@ -947,3 +947,125 @@ def test_descriptor_metadata_fields() -> None:
     assert meta["read_only"] is True
     assert meta["simulated"] is False
     assert meta["fw_seq_description"] == "command-echo (not frame counter)"
+
+
+# ------------------------------------------------------------------
+# 12. Gap threshold boundary — one missing frame (10_000 us) IS a gap
+# ------------------------------------------------------------------
+
+
+def test_one_missing_frame_10_000us_is_detected_as_gap() -> None:
+    """With >= 2*period threshold, exactly one missed frame (10_000 us
+    diff) must be recognised as a time gap."""
+    serial_port = FakeSerial(
+        [
+            make_raw_frame(teensy_time_us=5000),
+            make_raw_frame(teensy_time_us=10000),
+            make_raw_frame(teensy_time_us=20000),  # gap: 10_000 us == threshold
+            make_raw_frame(teensy_time_us=25000),
+        ]
+    )
+    adapter = TeensySerialEncoderAdapter(
+        {"port": "COM7", "batch_size": 2},
+        serial_factory=lambda **kwargs: serial_port,
+    )
+    adapter.connect()
+    adapter.prepare(context())
+    adapter.start()
+    wait_for(lambda: adapter.raw_queue.qsize() >= 2)
+    health = adapter.health()
+    assert health.sequence_gaps == 1
+    adapter.stop()
+    adapter.close()
+
+
+# ------------------------------------------------------------------
+# 13. Unwrapped device_timestamp survives uint32 wrap across batches
+# ------------------------------------------------------------------
+
+
+def test_device_timestamp_unwrapped_across_uint32_wrap() -> None:
+    """When teensy_time_us wraps around 2^32 between batches, the
+    emitted device_timestamp must continue to increase monotonically
+    instead of dropping back to a small value."""
+    # Frame just before wrap, and frame just after wrap — for two batches.
+    before_wrap = make_raw_frame(teensy_time_us=0xFFFF_FFF0)  # 4294967280
+    after_wrap = make_raw_frame(teensy_time_us=0x0000_000A)    # 10
+
+    serial_port = FakeSerial([before_wrap, after_wrap])
+    adapter = TeensySerialEncoderAdapter(
+        {"port": "COM7", "batch_size": 1},
+        serial_factory=lambda **kwargs: serial_port,
+    )
+    adapter.connect()
+    adapter.prepare(context())
+    adapter.start()
+    wait_for(lambda: adapter.raw_queue.qsize() >= 2)
+
+    # First batch: unwrapped = 0xFFFF_FFF0 = 4294967280
+    event_1 = adapter.get_event(timeout=0.1)
+    assert event_1.device_timestamp == 0xFFFF_FFF0
+
+    # Second batch: unwrapped = 1 * 2^32 + 10 = 4294967306
+    event_2 = adapter.get_event(timeout=0.1)
+    assert event_2.device_timestamp == (1 << 32) + 10
+    # Must be strictly larger than the first batch timestamp.
+    assert event_2.device_timestamp > event_1.device_timestamp
+
+    adapter.stop()
+    adapter.close()
+
+
+def test_hdf5_device_time_no_regression_at_uint32_wrap(tmp_path) -> None:
+    """HDF5 device_time vector must not regress from ~4.29e9 to a small
+    value when two batches straddle a uint32 wrap boundary."""
+    adapter = TeensySerialEncoderAdapter()
+    desc = adapter.descriptor()
+
+    writer = Hdf5SignalWriter(
+        path=tmp_path / "wrap_integration.h5",
+        channels=desc.channels,
+        units=desc.units,
+        device_metadata=dict(desc.metadata),
+        nominal_rate_hz=desc.nominal_rate_hz,
+        chunk_rows=16,
+        overwrite=True,
+    )
+    from exo_collection.domain.events import SampleBatch
+
+    data_row = np.float32([[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]])
+
+    # Batch before wrap: teensy_time_us = 0xFFFF_FFF0 (unwrapped same)
+    batch_before = SampleBatch(
+        device_id="test", modality="encoder", clock_domain="test_clock",
+        first_sample_index=0, sample_count=1, sequence_number=0,
+        device_timestamp=0xFFFF_FFF0, sample_rate_hz=200.0,
+        data=data_row,
+    )
+    # Batch after wrap: unwrapped = 2^32 + 10 = 4294967306
+    batch_after = SampleBatch(
+        device_id="test", modality="encoder", clock_domain="test_clock",
+        first_sample_index=1, sample_count=1, sequence_number=1,
+        device_timestamp=(1 << 32) + 10, sample_rate_hz=200.0,
+        data=data_row,
+    )
+    writer.append_batch(batch_before)
+    writer.append_batch(batch_after)
+    writer.close()
+
+    with h5py.File(writer.path, "r") as f:
+        dt = f["samples/device_time"][:]
+        # device_time must be monotonic: [4294967280, 4294967306]
+        np.testing.assert_allclose(dt, [4294967280.0, 4294967306.0])
+        assert dt[1] > dt[0]
+
+
+# ------------------------------------------------------------------
+# 14. Dead state verification
+# ------------------------------------------------------------------
+
+
+def test_write_call_count_is_removed() -> None:
+    """_write_call_count must not exist on the adapter instance."""
+    adapter = TeensySerialEncoderAdapter()
+    assert not hasattr(adapter, "_write_call_count")

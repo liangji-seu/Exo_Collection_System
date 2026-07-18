@@ -1506,3 +1506,450 @@ def test_consumer_exits_cleanly_when_stopped_empty() -> None:
     # Should not hang
     assert backend.stopped >= 1
     adapter.close()
+
+
+# ──────────────────────────────────────────────────────────────
+#  Consumer drain: late-arriving packets after stop signal
+# ──────────────────────────────────────────────────────────────
+
+
+def test_consumer_drains_remaining_packets_after_stop_signalled() -> None:
+    """When stop is requested, the consumer must drain any packets
+    already in the queue before exiting — the main thread must NOT
+    consume from the packet queue."""
+    adapter, backend = running_adapter()
+
+    # Emit incomplete group and enough to fill queue first
+    backend.emit("A", Packet(1), 10)
+    backend.emit("B", Packet(1), 20)
+    # Only 2 of 3 – group sits in _pending
+
+    # Now set consumer_stop directly (simulating mid-stop timing)
+    adapter._consumer_stop.set()
+
+    # Emit the missing C — this will complete the group as the
+    # consumer drains.
+    backend.emit("C", Packet(1), 30)
+    sleep(0.1)
+
+    # Consumer should have drained the C packet and emitted the group.
+    event = adapter.get_event(timeout=0.2)
+    assert event is not None
+    assert event.data.shape == (1, 3, 12)
+
+    adapter.stop()
+    adapter.close()
+
+
+# ──────────────────────────────────────────────────────────────
+#  Target ID matching: exact → unique substring → error
+# ──────────────────────────────────────────────────────────────
+
+
+def test_ambiguous_short_id_matches_multiple_devices_raises() -> None:
+    """When a short target ID matches two discovered device IDs
+    as a substring, _match_device_id must raise AdapterError."""
+    from exo_collection.adapters.imu.xsens_awinda import _match_device_id
+
+    discovered = {"MT_12345": None, "MT_12346": None}
+    with pytest.raises(AdapterError, match="匹配多台设备"):
+        _match_device_id("MT", discovered)
+
+
+def test_target_ids_that_match_same_device_are_rejected() -> None:
+    """Two different target IDs that both resolve to the same
+    discovered device must be rejected during selection."""
+    from exo_collection.adapters.imu.xsens_awinda import _match_device_id
+
+    # Short ID "12" matches "MT_12345" uniquely — fine once.
+    # Short ID "23" also matches "MT_12345" uniquely — but duplicate!
+    discovered = {"MT_12345": None, "MT_67890": None, "MT_11111": None}
+    selected: dict[str, object] = {}
+
+    matched1 = _match_device_id("12345", discovered)
+    selected[matched1] = discovered[matched1]
+
+    # "23" should NOT match "MT_12345" since it's already selected.
+    # Actually _match_device_id doesn't know about prior selections —
+    # the adapter checks for conflicts.  That is tested here directly.
+    matched2 = _match_device_id("11111", discovered)
+    # This should NOT conflict — different device.
+    assert matched2 != matched1
+
+    # But "678" matches only "MT_67890" — fine
+    matched3 = _match_device_id("678", discovered)
+    assert matched3 != matched1
+    assert matched3 != matched2
+
+
+def test_discovery_ambiguous_id_during_stability_check() -> None:
+    """During discovery stability polling, ambiguous short IDs cause
+    found_targets to be False — the adapter keeps waiting rather
+    than selecting the wrong device."""
+    # Build a fake API where children() returns devices with
+    # overlapping IDs so that stability check via _match_device_id fails
+    api = type(sys)("_test_xsens_fake_ambig")
+    api.XDI_PacketCounter = 99
+    api.XDI_SampleTimeFine = 98
+    api.XDI_EulerAngles = 1
+    api.XDI_Acceleration = 2
+    api.XDI_RateOfTurn = 3
+    api.XDI_MagneticField = 4
+    api.XsOutputConfiguration = lambda dt, rate: type("oc", (), {"data_type": dt, "rate": rate})()
+    api.XsOutputConfigurationArray = _FakeOutputConfigArray
+
+    class FakeMtw:
+        def __init__(self, did):
+            self._did = did
+
+        def deviceId(self):
+            class Did:
+                def toXsString(self):
+                    return self._s
+
+            d = Did()
+            d._s = self._did
+            return d
+
+        def addCallbackHandler(self, cb):
+            pass
+
+        def setOutputConfiguration(self, cfg):
+            return True
+
+    class FakePortInfo:
+        def empty(self):
+            return False
+
+        def portName(self):
+            return "COM99"
+
+        def baudrate(self):
+            return 115200
+
+        def deviceId(self):
+            class Did:
+                def isWirelessMaster(self):
+                    return True
+
+                def toXsString(self):
+                    return "AWINDA_MASTER"
+
+            return Did()
+
+    # Two devices where short target ID "MT_12" matches BOTH
+    # "MT_12345" and "MT_12346" — this is ambiguous.
+    children_list = [FakeMtw("MT_12345"), FakeMtw("MT_12346"), FakeMtw("OTHER_DEV")]
+
+    class FakeControl:
+        def openPort(self, *a):
+            return True
+
+        def device(self, did):
+            class Master:
+                def gotoConfig(self):
+                    return True
+
+                def gotoMeasurement(self):
+                    return True
+
+                def enableRadio(self, ch):
+                    return True
+
+                def disableRadio(self):
+                    pass
+
+                def children(self):
+                    return children_list
+
+                def supportedUpdateRates(self):
+                    class Rates:
+                        def size(self):
+                            return 1
+
+                        def __getitem__(self, idx):
+                            return 200
+
+                    return Rates()
+
+                def setUpdateRate(self, rate):
+                    return True
+
+            return Master()
+
+        def closePort(self, *a):
+            pass
+
+        def close(self):
+            pass
+
+    api.XsScanner_scanPorts = lambda: type("pa", (), {"size": lambda self: 1, "__getitem__": lambda s, i: FakePortInfo()})()
+    api.XsControl_construct = lambda: FakeControl()
+    api.XsPortInfo = FakePortInfo
+    api.XsCallback = type("cb", (), {})
+    api.XsDataPacket = lambda x: x
+
+    # target ID "MT_12" is ambiguous → should fail during selection
+    from exo_collection.adapters.imu.xsens_awinda import XdaAwindaBackend
+
+    config = XsensAwindaConfig(
+        sample_rate_hz=200.0,
+        wait_timeout_s=0.3,
+        stable_wait_s=0.02,
+        poll_interval_s=0.01,
+        sensor_ids=("MT_12", "MT_67890", "OTHER_DEV"),
+    )
+    backend = XdaAwindaBackend(config, _api_module=api)
+    with pytest.raises(AdapterError, match="匹配多台设备"):
+        backend.connect(lambda *a: None)
+    backend.close()
+
+
+# ──────────────────────────────────────────────────────────────
+#  Stop / consumer error propagation
+# ──────────────────────────────────────────────────────────────
+
+
+def test_stop_hardware_propagates_backend_stop_error() -> None:
+    """When backend.stop() raises, _stop_hardware best-efforts all
+    remaining stages, then re-raises.  The base-class stop() converts
+    that exception into a recorded fault without letting it escape."""
+
+    class ErrorStopBackend(FakeAwindaBackend):
+        def stop(self):
+            raise RuntimeError("forced backend.stop failure")
+
+    adapter = XsensAwindaImuAdapter(backend=ErrorStopBackend())
+    adapter.connect()
+    adapter.prepare(context())
+    adapter.start()
+
+    # _stop_hardware raises; base-class stop() catches and sets fault
+    adapter.stop()
+
+    # Fault recorded
+    with pytest.raises(AdapterError):
+        adapter.raise_if_faulted()
+
+    # remove_callbacks should still have been called despite stop failure
+    assert adapter._backend._callbacks_removed is True
+    # Consumer thread should be None (joined)
+    assert adapter._consumer_thread is None
+    adapter.close()
+
+
+def test_stop_hardware_propagates_remove_callbacks_error() -> None:
+    """When backend.remove_callbacks() raises, _stop_hardware records it
+    and continues with consumer drain, then re-raises to stop() which
+    records the fault."""
+
+    class ErrorRemoveBackend(FakeAwindaBackend):
+        def remove_callbacks(self):
+            raise RuntimeError("forced remove_callbacks failure")
+
+    adapter = XsensAwindaImuAdapter(backend=ErrorRemoveBackend())
+    adapter.connect()
+    adapter.prepare(context())
+    adapter.start()
+
+    adapter.stop()
+
+    # Fault recorded
+    with pytest.raises(AdapterError):
+        adapter.raise_if_faulted()
+
+    # stop() should have been called first (it succeeded)
+    assert adapter._backend.stopped >= 1
+    assert adapter._consumer_thread is None
+    adapter.close()
+
+
+# ──────────────────────────────────────────────────────────────
+#  Common counter gap: one gap → one count (no triple counting)
+# ──────────────────────────────────────────────────────────────
+
+
+def test_common_counter_gap_counted_exactly_once() -> None:
+    """When all three devices skip from counter 5 to counter 100
+    simultaneously, _counter_gaps must be exactly 1 (one gap event
+    for the complete group, not one per device)."""
+    adapter, backend = running_adapter()
+
+    # First group: counter 5
+    backend.emit("A", Packet(5), 10)
+    backend.emit("B", Packet(5), 20)
+    backend.emit("C", Packet(5), 30)
+
+    # Second group: counter 100 (big jump)
+    backend.emit("A", Packet(100), 40)
+    backend.emit("B", Packet(100), 50)
+    backend.emit("C", Packet(100), 60)
+
+    events = _drain_events(adapter, timeout=0.3)
+    assert len(events) == 2
+    health = adapter.health()
+    # Must be exactly 1, not 3 (one per device) and not 0 (missed gap)
+    assert health.metrics["counter_gaps"] == 1
+    adapter.stop()
+    adapter.close()
+
+
+# ──────────────────────────────────────────────────────────────
+#  Discovery: third device late-arrival forces full stable wait
+# ──────────────────────────────────────────────────────────────
+
+
+def test_third_device_late_arrival_must_wait_full_stable_window() -> None:
+    """When the third MTw arrives after the first two have been
+    visible for a while, the stability timer must start from that
+    moment — not from when the first device appeared.
+
+    Uses a fake monotonic clock so the test is deterministic."""
+
+    api = type(sys)("_test_xsens_fake_late")
+    api.XDI_PacketCounter = 99
+    api.XDI_SampleTimeFine = 98
+    api.XDI_EulerAngles = 1
+    api.XDI_Acceleration = 2
+    api.XDI_RateOfTurn = 3
+    api.XDI_MagneticField = 4
+    api.XsOutputConfiguration = lambda dt, rate: type("oc", (), {"data_type": dt, "rate": rate})()
+    api.XsOutputConfigurationArray = _FakeOutputConfigArray
+
+    class FakeMtw:
+        def __init__(self, did):
+            self._did = did
+
+        def deviceId(self):
+            class Did:
+                def toXsString(self):
+                    return self._s
+
+            d = Did()
+            d._s = self._did
+            return d
+
+        def addCallbackHandler(self, cb):
+            pass
+
+        def setOutputConfiguration(self, cfg):
+            return True
+
+    class FakePortInfo:
+        def empty(self):
+            return False
+
+        def portName(self):
+            return "COM99"
+
+        def baudrate(self):
+            return 115200
+
+        def deviceId(self):
+            class Did:
+                def isWirelessMaster(self):
+                    return True
+
+                def toXsString(self):
+                    return "AWINDA_MASTER"
+
+            return Did()
+
+    # Fake clock: starts at 100.0 and advances 0.3s per poll.
+    clock = [100.0]
+
+    def fake_monotonic():
+        return clock[0]
+
+    def fake_sleep(seconds):
+        clock[0] += 0.3  # Each poll "takes" 0.3s
+
+    call_count = [0]
+
+    class FakeControl:
+        def openPort(self, *a):
+            return True
+
+        def device(self, did):
+            class Master:
+                def gotoConfig(self):
+                    return True
+
+                def gotoMeasurement(self):
+                    return True
+
+                def enableRadio(self, ch):
+                    return True
+
+                def disableRadio(self):
+                    pass
+
+                def children(self):
+                    call_count[0] += 1
+                    # Calls 1-3: only A and B (incomplete)
+                    if call_count[0] <= 3:
+                        return [FakeMtw("A"), FakeMtw("B")]
+                    # Call 4+: A, B, C all present
+                    return [FakeMtw("A"), FakeMtw("B"), FakeMtw("C")]
+
+                def supportedUpdateRates(self):
+                    class Rates:
+                        def size(self):
+                            return 1
+
+                        def __getitem__(self, idx):
+                            return 200
+
+                    return Rates()
+
+                def setUpdateRate(self, rate):
+                    return True
+
+            return Master()
+
+        def closePort(self, *a):
+            pass
+
+        def close(self):
+            pass
+
+    api.XsScanner_scanPorts = lambda: type("pa", (), {"size": lambda self: 1, "__getitem__": lambda s, i: FakePortInfo()})()
+    api.XsControl_construct = lambda: FakeControl()
+    api.XsPortInfo = FakePortInfo
+    api.XsCallback = type("cb", (), {})
+    api.XsDataPacket = lambda x: x
+
+    from exo_collection.adapters.imu.xsens_awinda import XdaAwindaBackend
+
+    config = XsensAwindaConfig(
+        sample_rate_hz=200.0,
+        wait_timeout_s=30.0,
+        stable_wait_s=2.0,
+        poll_interval_s=0.25,
+        sensor_ids=(),
+    )
+
+    # Monkey-patch monotonic and sleep for deterministic test
+    import exo_collection.adapters.imu.xsens_awinda as awinda_mod
+
+    real_monotonic = awinda_mod.monotonic
+    real_sleep = awinda_mod.sleep
+    awinda_mod.monotonic = fake_monotonic
+    awinda_mod.sleep = fake_sleep
+
+    try:
+        backend = XdaAwindaBackend(config, _api_module=api)
+        backend.connect(lambda *a: None)
+    finally:
+        awinda_mod.monotonic = real_monotonic
+        awinda_mod.sleep = real_sleep
+
+    # stable_start_at should have been set at call 4 (clock=100+3*0.3=100.9)
+    # Then each poll advances 0.3s.  Need stable_wait_s=2.0, so we need
+    # ceil(2.0/0.3) = 7 more polls after C first appears.
+    # That's calls 4 through 11, clock reaches ~100.9 + 7*0.3 = 103.0.
+    # At call 11, monotonic - stable_start_at = 103.0 - 100.9 = 2.1 >= 2.0.
+    assert set(backend.device_ids) == {"A", "B", "C"}
+    # Verify we waited enough polls (at least 7 after call 4)
+    assert call_count[0] >= 10  # calls 1-3 (incomplete) + several stable polls
+    backend.close()

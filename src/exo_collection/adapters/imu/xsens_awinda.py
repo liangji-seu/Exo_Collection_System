@@ -175,31 +175,43 @@ class XdaAwindaBackend:
         # 5. discover MTw children
         target_ids = self.config.sensor_ids  # tuple of 3 str, or empty
         deadline = monotonic() + self.config.wait_timeout_s
-        first_seen_at: float | None = None
+        stable_start_at: float | None = None
         all_devices: list[Any] = []
         discovered_map: dict[str, Any] = {}
 
         while monotonic() < deadline:
             all_devices = list(master.children())
-            if all_devices and first_seen_at is None:
-                first_seen_at = monotonic()
             discovered_map = {
                 str(d.deviceId().toXsString()): d for d in all_devices
             }
 
             if target_ids:
-                # Wait until all target IDs appear, then hold stable
-                found_targets = all(
-                    any(tid in did for did in discovered_map)
-                    for tid in target_ids
-                )
-                if found_targets and first_seen_at is not None:
-                    if monotonic() - first_seen_at >= self.config.stable_wait_s:
+                # Wait until all target IDs appear AND the matched set is stable.
+                try:
+                    for tid in target_ids:
+                        _match_device_id(tid, discovered_map)
+                    found_targets = True
+                except AdapterError:
+                    found_targets = False
+                if found_targets:
+                    if stable_start_at is None:
+                        stable_start_at = monotonic()
+                else:
+                    stable_start_at = None
+
+                if stable_start_at is not None:
+                    if monotonic() - stable_start_at >= self.config.stable_wait_s:
                         break
             else:
                 # Strict: exactly 3, stable
-                if len(all_devices) == 3 and first_seen_at is not None:
-                    if monotonic() - first_seen_at >= self.config.stable_wait_s:
+                if len(all_devices) == 3:
+                    if stable_start_at is None:
+                        stable_start_at = monotonic()
+                else:
+                    stable_start_at = None
+
+                if stable_start_at is not None:
+                    if monotonic() - stable_start_at >= self.config.stable_wait_s:
                         break
 
             sleep(self.config.poll_interval_s)
@@ -211,12 +223,11 @@ class XdaAwindaBackend:
             selected_map: dict[str, Any] = {}
             matched_ordered: list[str] = []
             for tid in target_ids:
-                matched = next(
-                    (did for did in discovered_map if tid in did), None
-                )
-                if matched is None:
+                matched = _match_device_id(tid, discovered_map)
+                if matched in selected_map:
                     raise AdapterError(
-                        f"未发现目标 MTw 设备: {tid}; 已发现: {sorted(discovered_map.keys())}"
+                        f"目标 ID '{tid}' 与已匹配设备 '{matched}' 冲突；"
+                        f"请使用不重叠的完整 ID"
                     )
                 selected_map[matched] = discovered_map[matched]
                 matched_ordered.append(matched)
@@ -397,6 +408,45 @@ class XdaAwindaBackend:
 #  Helpers
 # ──────────────────────────────────────────────────────────────
 
+def _match_device_id(
+    target_id: str,
+    discovered_map: dict[str, Any],
+    *,
+    allow_substring: bool = True,
+) -> str:
+    """Return the single discovered device ID matching *target_id*.
+
+    Exact match is preferred.  When *allow_substring* is True and no
+    exact match exists, a substring match is accepted **only** if it
+    matches a single discovered device unambiguously.
+
+    Raises ``AdapterError`` on no match or ambiguous match.
+    """
+    # 1. exact match (always accepted)
+    if target_id in discovered_map:
+        return target_id
+
+    if not allow_substring:
+        raise AdapterError(
+            f"未发现目标 MTw 设备: {target_id}; "
+            f"已发现: {sorted(discovered_map.keys())}"
+        )
+
+    # 2. substring fallback — exact match already ruled out
+    candidates = [did for did in discovered_map if target_id in did]
+    if len(candidates) == 0:
+        raise AdapterError(
+            f"未发现目标 MTw 设备: {target_id}; "
+            f"已发现: {sorted(discovered_map.keys())}"
+        )
+    if len(candidates) > 1:
+        raise AdapterError(
+            f"目标 ID '{target_id}' 匹配多台设备: {candidates}；"
+            f"请使用完整 ID 消除歧义"
+        )
+    return candidates[0]
+
+
 @dataclass(slots=True)
 class _PendingGroup:
     rows: dict[str, np.ndarray]
@@ -506,7 +556,6 @@ class XsensAwindaImuAdapter(QueuedHardwareAdapter):
         self._accepting_packets = False
         self._alignment_mode = "packet_counter_or_per_device_arrival_index"
         self._last_common_counter: dict[str, int] = {}
-        self._last_device_counter: dict[str, int] = {}
 
     # ── descriptor / snapshot ──────────────────────────────
 
@@ -580,7 +629,6 @@ class XsensAwindaImuAdapter(QueuedHardwareAdapter):
         self._counter_has_data = False
         self._time_has_data = False
         self._last_common_counter = {}
-        self._last_device_counter = {}
         while not self._packet_queue.empty():
             try:
                 self._packet_queue.get_nowait()
@@ -590,8 +638,6 @@ class XsensAwindaImuAdapter(QueuedHardwareAdapter):
     def _start_hardware(self) -> None:
         self._accepting_packets = True
         self._consumer_stop.clear()
-        for did in self._use_device_ids:
-            self._last_device_counter[did] = -1
         self._consumer_thread = Thread(
             target=self._consumer_loop,
             name="xsens-awinda-consumer",
@@ -601,40 +647,37 @@ class XsensAwindaImuAdapter(QueuedHardwareAdapter):
         self._backend.start()
 
     def _stop_hardware(self) -> None:
+        first_error: BaseException | None = None
+
         # 1. stop accepting new packets from callback
         self._accepting_packets = False
 
-        # 2. transition hardware to config mode
+        # 2. transition hardware to config mode (best-effort)
         try:
             self._backend.stop()
-        except BaseException:
-            pass
+        except BaseException as exc:
+            if first_error is None:
+                first_error = exc
 
-        # 3. remove callback handlers to prevent late callback races
+        # 3. remove callback handlers to prevent late callback races (best-effort)
         try:
             self._backend.remove_callbacks()
-        except BaseException:
-            pass
+        except BaseException as exc:
+            if first_error is None:
+                first_error = exc
 
-        # 4. signal consumer thread to stop and drain remaining
+        # 4. signal consumer thread — it drains remaining queue items, then exits
         self._consumer_stop.set()
-        try:
-            # Drain remaining packets from packet_queue
-            while True:
-                try:
-                    item = self._packet_queue.get_nowait()
-                    self._process_one_packet(*item)
-                except Empty:
-                    break
-        except BaseException:
-            pass
 
         if self._consumer_thread is not None and self._consumer_thread.is_alive():
             self._consumer_thread.join(timeout=3.0)
             if self._consumer_thread.is_alive():
-                self._set_fault(
-                    AdapterError("Awinda 消费线程未能在 3 秒内停止")
+                timeout_error = AdapterError(
+                    "Awinda 消费线程未能在 3 秒内停止"
                 )
+                self._set_fault(timeout_error)
+                if first_error is None:
+                    first_error = timeout_error
         self._consumer_thread = None
 
         # 5. flush any incomplete pending groups
@@ -642,6 +685,9 @@ class XsensAwindaImuAdapter(QueuedHardwareAdapter):
             for group in self._pending.values():
                 self._incomplete_samples += max(0, 3 - len(group.rows))
             self._pending.clear()
+
+        if first_error is not None:
+            raise first_error
 
     def _close_hardware(self) -> None:
         self._backend.close()
@@ -670,11 +716,17 @@ class XsensAwindaImuAdapter(QueuedHardwareAdapter):
     # ── consumer loop ──────────────────────────────────────
 
     def _consumer_loop(self) -> None:
-        """Thread: read packet_queue, parse, align, publish."""
-        while not self._consumer_stop.is_set():
+        """Thread: read packet_queue, parse, align, publish.
+
+        Drains remaining queue items after *stop* is requested so that
+        no packets are silently discarded.
+        """
+        while True:
             try:
                 item = self._packet_queue.get(timeout=0.05)
             except Empty:
+                if self._consumer_stop.is_set():
+                    break
                 continue
             try:
                 self._process_one_packet(*item)
@@ -704,7 +756,6 @@ class XsensAwindaImuAdapter(QueuedHardwareAdapter):
             if counter is not None:
                 # Use PacketCounter for alignment
                 key = counter
-                self._last_device_counter[device_id] = counter
             else:
                 # Fallback: per-device arrival index
                 fallback = self._fallback_counters[device_id]
@@ -746,37 +797,30 @@ class XsensAwindaImuAdapter(QueuedHardwareAdapter):
             self._emit_group(group)
 
     def _record_counter_gap(self, key: int, group: _PendingGroup) -> None:
-        """Record gap if common counter jumped more than 1."""
+        """Record a gap when the common counter skips ahead by more than 1.
+
+        Each complete group already carries the same PacketCounter from
+        all three devices (the group key *is* that counter), so a
+        single comparison against the previous common counter suffices.
+        """
         if not self._counter_has_data:
             return
 
-        # Check all three devices have counters
         all_counters = [group.device_counters[did] for did in self._use_device_ids]
         if any(c is None for c in all_counters):
             return
 
-        # All three should share the same counter key (key itself)
-        for did in self._use_device_ids:
-            prev = self._last_device_counter.get(did)
-            cur = group.device_counters[did]
-            if prev is not None and prev >= 0 and cur is not None:
-                expected = (prev + 1) % _COUNTER_WRAP_MOD
-                if cur != expected and cur != prev:
-                    self._counter_gaps += 1
-                    break
-                self._last_device_counter[did] = cur
-
-        # Check consistent counter across all three devices
         counters = [c for c in all_counters if c is not None]
-        if len(counters) == 3:
-            last = self._last_common_counter.get("value")
-            if last is not None and len(set(counters)) == 1:
-                cur_val = counters[0]
-                expected = (last + 1) % _COUNTER_WRAP_MOD
-                if cur_val != expected and cur_val != last:
-                    self._counter_gaps += 1
-            if len(set(counters)) == 1:
-                self._last_common_counter["value"] = counters[0]
+        if len(counters) != 3 or len(set(counters)) != 1:
+            return
+
+        cur_val = counters[0]
+        last = self._last_common_counter.get("value")
+        if last is not None:
+            expected = (last + 1) % _COUNTER_WRAP_MOD
+            if cur_val != expected and cur_val != last:
+                self._counter_gaps += 1
+        self._last_common_counter["value"] = cur_val
 
     def _emit_group(self, group: _PendingGroup) -> None:
         """Emit a complete (N,3,12) SampleBatch for one aligned trio."""

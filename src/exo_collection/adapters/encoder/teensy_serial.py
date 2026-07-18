@@ -345,8 +345,9 @@ class _FrameHealth:
         # clamp to the expected one-tick delta.
         if diff > 2**31:
             return None
-        threshold = _GAP_THRESHOLD_US
-        if diff > threshold:
+        # Detect gap at >= 2 * nominal period so that one confirmed
+        # missing frame (10_000 us) is flagged without being jitter-sensitive.
+        if diff >= _GAP_THRESHOLD_US:
             return int(diff)
         return None
 
@@ -375,13 +376,12 @@ class TeensySerialEncoderAdapter(QueuedHardwareAdapter):
         self._stop_event = Event()
         self._thread: Thread | None = None
         self._parser = MotorStatusStreamParser()
-        self._pending: list[tuple[MotorStatusFrame, int]] = []
+        self._pending: list[tuple[MotorStatusFrame, int, int]] = []
         self._pending_lock = Lock()
         self._sample_index = 0
         self._batch_sequence = 0
         self._frame_health = _FrameHealth()
         self._first_data_received = Event()
-        self._write_call_count = 0
 
     # ------------------------------------------------------------------
     # Modality descriptor
@@ -554,35 +554,34 @@ class TeensySerialEncoderAdapter(QueuedHardwareAdapter):
         if frame.error != 0:
             health.non_zero_error_count += 1
 
+        # Compute unwrapped device time BEFORE last_teensy_time_us is updated
+        # (unwrap_time uses the previous frame's raw value as reference).
+        unwrapped_us = health.unwrap_time(frame.teensy_time_us)
+
         # --- Time-based gap detection ---
         gap_us = health.detect_gap(frame.teensy_time_us)
 
         if gap_us is not None and health.last_teensy_time_us is not None:
-            # Time discontinuity — flush current batch and start a new one.
-            unwrapped_current = health.unwrap_time(frame.teensy_time_us)
-            unwrapped_prev = health.unwrap_time(health.last_teensy_time_us)
             health.timestamp_gap_events.append({
                 "previous_teensy_time_us": health.last_teensy_time_us,
                 "current_teensy_time_us": frame.teensy_time_us,
-                "delta_us": gap_us,
+                "unwrapped_delta_us": gap_us,
                 "gap_threshold_us": _GAP_THRESHOLD_US,
                 "sample_index": self._sample_index,
                 "host_monotonic_ns": received_ns,
             })
             # Emit whatever we have so the gap isn't smeared across batches.
             self._emit_pending(force=True)
-            # The emitted batch already consumed the pending frames; the current
-            # frame is still outside pending, so it will be appended normally.
 
         health.last_teensy_time_us = frame.teensy_time_us
 
         with self._pending_lock:
-            self._pending.append((frame, received_ns))
+            self._pending.append((frame, received_ns, unwrapped_us))
             should_emit = len(self._pending) >= self._config.batch_size
         if should_emit:
             self._emit_pending(force=False)
 
-        # Signal that we've received the first valid frame (READY).
+        # Signal that we've received the first valid frame.
         self._first_data_received.set()
 
     # ------------------------------------------------------------------
@@ -600,6 +599,7 @@ class TeensySerialEncoderAdapter(QueuedHardwareAdapter):
             del self._pending[:count]
         frames = [item[0] for item in selected]
         first_host_ns = selected[0][1]
+        first_unwrapped_us = selected[0][2]
 
         data = np.ascontiguousarray(
             np.asarray(
@@ -637,7 +637,7 @@ class TeensySerialEncoderAdapter(QueuedHardwareAdapter):
             first_sample_index=self._sample_index,
             sample_count=len(frames),
             sequence_number=self._batch_sequence,
-            device_timestamp=frames[0].teensy_time_us,
+            device_timestamp=first_unwrapped_us,
             sample_rate_hz=self._config.nominal_rate_hz,
             data=data,
         )
