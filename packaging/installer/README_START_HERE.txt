@@ -15,13 +15,18 @@ No application command-line parameters are required. On first launch, choose a
 data root in the UI. Both applications should use the same data root; the choice
 is remembered for the current Windows user.
 
-Important current limitation
-----------------------------
+Real-hardware requirements
+--------------------------
 
-This milestone is validated with built-in simulated ultrasound, IMU, encoder,
-and synchronization-pulse devices. Real vendor SDKs, hardware protocols, and
-server deployment values have not been supplied and are not claimed to work.
-The Adapter interfaces are the replacement boundary for future hardware work.
+The hardware profile supports Raw Ethernet ultrasound through Scapy/Npcap,
+three Xsens MTw sensors through the official MT SDK Python binding, and the
+documented Teensy serial protocol. Install Npcap with WinPcap API-compatible
+Mode before using ultrasound. A frozen build includes Python hardware modules
+only when they were installed in the Python environment used to build it.
+Physical devices still require a laboratory connection and long-run acceptance
+test; a successful software smoke test is not a claim of hardware acceptance.
+The synchronization-pulse device in the current hardware profile remains a
+bench simulator until the force-plate/motion-capture input hardware is supplied.
 
 Safe operating notes
 --------------------

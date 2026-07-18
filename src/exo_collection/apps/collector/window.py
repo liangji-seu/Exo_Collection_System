@@ -22,7 +22,7 @@ from uuid import uuid4
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QLocale, QRegularExpression, QTimer, Qt, Signal, Slot
+from PySide6.QtCore import QLocale, QRegularExpression, QThread, QTimer, Qt, Signal, Slot
 from PySide6.QtGui import (
     QCloseEvent,
     QDoubleValidator,
@@ -68,8 +68,11 @@ from exo_collection.apps.collector.preflight import (
 from exo_collection.configuration import (
     SharedAppSettings,
     build_adapters,
-    fixed_elonxi_sdk_directory,
     load_device_profile,
+)
+from exo_collection.adapters.ultrasound.raw_ethernet import (
+    enumerate_network_interfaces,
+    scan_ultrasound_interface,
 )
 from exo_collection.logging_setup import collector_log_path, setup_collector_logging
 from exo_collection.orchestration.models import (
@@ -175,6 +178,37 @@ def simulated_profile_preflight(
 # ── Hardware Device Settings Dialog ────────────────────────────────────────
 
 
+class UltrasoundInterfaceScanWorker(QThread):
+    """Scan candidate NICs without blocking the Collector GUI thread."""
+
+    result_ready = Signal(str, int)
+    scan_failed = Signal(str, str)
+
+    def __init__(
+        self,
+        interface_names: list[str],
+        *,
+        timeout_s: float = 1.5,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._interface_names = list(interface_names)
+        self._timeout_s = float(timeout_s)
+
+    def run(self) -> None:
+        for interface_name in self._interface_names:
+            if self.isInterruptionRequested():
+                break
+            try:
+                count = scan_ultrasound_interface(
+                    interface_name, timeout_s=self._timeout_s
+                )
+            except Exception as exc:
+                self.scan_failed.emit(interface_name, str(exc))
+                continue
+            self.result_ready.emit(interface_name, count)
+
+
 class HardwareDeviceSettingsDialog(QDialog):
     """Persistent, non-secret settings for the three supported real devices."""
 
@@ -187,6 +221,7 @@ class HardwareDeviceSettingsDialog(QDialog):
         self.setWindowTitle("真实设备设置")
         self.setMinimumWidth(680)
         self._validated_overrides: dict[str, dict[str, Any]] | None = None
+        self._ultrasound_scan_worker: UltrasoundInterfaceScanWorker | None = None
         current = {name: dict(values) for name, values in overrides.items()}
         ultrasound = current.get("ultrasound", {})
         imu = current.get("imu", {})
@@ -195,31 +230,32 @@ class HardwareDeviceSettingsDialog(QDialog):
         outer = QVBoxLayout(self)
         form = QFormLayout()
 
-        self.sdk_path_edit = QLineEdit(str(fixed_elonxi_sdk_directory()))
-        self.sdk_path_edit.setObjectName("hardware_elonxi_sdk_path")
-        self.sdk_path_edit.setReadOnly(True)
-        self.sdk_path_edit.setToolTip(
-            "SDK 目录由软件按固定部署结构自动定位，不需要人工选择。"
+        interface_widget = QWidget(self)
+        interface_layout = QHBoxLayout(interface_widget)
+        interface_layout.setContentsMargins(0, 0, 0, 0)
+        self.ultrasound_interface_combo = QComboBox(interface_widget)
+        self.ultrasound_interface_combo.setObjectName("hardware_ultrasound_interface")
+        interface_layout.addWidget(self.ultrasound_interface_combo, 1)
+        self.ultrasound_refresh_button = QPushButton("刷新网卡", interface_widget)
+        self.ultrasound_refresh_button.clicked.connect(self._populate_ultrasound_interfaces)
+        interface_layout.addWidget(self.ultrasound_refresh_button)
+        self.ultrasound_scan_button = QPushButton("扫描超声帧", interface_widget)
+        self.ultrasound_scan_button.clicked.connect(self._scan_ultrasound_interfaces)
+        interface_layout.addWidget(self.ultrasound_scan_button)
+        form.addRow("超声采集网卡：", interface_widget)
+        self.ultrasound_scan_status = QLabel("请选择连接超声设备的有线网卡。")
+        self.ultrasound_scan_status.setWordWrap(True)
+        form.addRow("超声扫描状态：", self.ultrasound_scan_status)
+        self._populate_ultrasound_interfaces(
+            preferred=str(ultrasound.get("interface_name") or "")
         )
-        form.addRow("Elonxi SDK 目录（固定）：", self.sdk_path_edit)
-
-        self.ultrasound_ip_edit = QLineEdit(
-            str(ultrasound.get("device_ip") or "")
-        )
-        self.ultrasound_ip_edit.setPlaceholderText("留空时使用局域网发现")
-        form.addRow("Elonxi 设备 IP：", self.ultrasound_ip_edit)
-        self.ultrasound_port_edit = QLineEdit(
-            str(ultrasound.get("port", 1430))
-        )
-        self.ultrasound_port_edit.setValidator(QIntValidator(1, 65535, self))
-        form.addRow("Elonxi UDP 端口：", self.ultrasound_port_edit)
 
         self.awinda_channel_edit = QLineEdit(
             str(imu.get("radio_channel", 25))
         )
         self.awinda_channel_edit.setValidator(QIntValidator(11, 25, self))
         form.addRow("Awinda 无线信道：", self.awinda_channel_edit)
-        self.awinda_rate_edit = QLineEdit(str(imu.get("sample_rate_hz", 200.0)))
+        self.awinda_rate_edit = QLineEdit(str(imu.get("sample_rate_hz", 120.0)))
         self.awinda_rate_edit.setValidator(QDoubleValidator(1.0, 2000.0, 3, self))
         form.addRow("Awinda 采样率 (Hz)：", self.awinda_rate_edit)
         self.awinda_ids_edit = QLineEdit(
@@ -233,7 +269,7 @@ class HardwareDeviceSettingsDialog(QDialog):
         self.encoder_port_edit = QLineEdit(str(encoder.get("port") or ""))
         self.encoder_port_edit.setPlaceholderText("留空时按 VID/PID 自动发现")
         form.addRow("Teensy 串口：", self.encoder_port_edit)
-        self.encoder_baud_edit = QLineEdit(str(encoder.get("baudrate", 9600)))
+        self.encoder_baud_edit = QLineEdit(str(encoder.get("baudrate", 1_000_000)))
         self.encoder_baud_edit.setValidator(QIntValidator(1, 10_000_000, self))
         form.addRow("Teensy 波特率：", self.encoder_baud_edit)
         self.encoder_vid_edit = QLineEdit(
@@ -267,6 +303,111 @@ class HardwareDeviceSettingsDialog(QDialog):
         return self._validated_overrides
 
     @Slot()
+    def _populate_ultrasound_interfaces(self, preferred: str = "") -> None:
+        current = preferred or str(
+            self.ultrasound_interface_combo.currentData() or ""
+        )
+        self.ultrasound_interface_combo.clear()
+        self.ultrasound_interface_combo.addItem("请选择有线网卡", None)
+        entries = enumerate_network_interfaces()
+        for entry in entries:
+            name = str(entry.get("name") or "")
+            if not name:
+                continue
+            description = str(entry.get("description") or name)
+            self.ultrasound_interface_combo.addItem(
+                f"{description} [{name}]", name
+            )
+        if current:
+            index = self.ultrasound_interface_combo.findData(current)
+            if index < 0:
+                self.ultrasound_interface_combo.addItem(
+                    f"已保存的网卡 [{current}]", current
+                )
+                index = self.ultrasound_interface_combo.count() - 1
+            self.ultrasound_interface_combo.setCurrentIndex(index)
+        if not entries:
+            self.ultrasound_scan_status.setText(
+                "未枚举到可用有线网卡；请检查 Scapy/Npcap 安装。"
+            )
+
+    @Slot()
+    def _scan_ultrasound_interfaces(self) -> None:
+        if self._ultrasound_scan_worker is not None:
+            return
+        names = [
+            str(self.ultrasound_interface_combo.itemData(index) or "")
+            for index in range(self.ultrasound_interface_combo.count())
+        ]
+        names = [name for name in names if name]
+        if not names:
+            self.ultrasound_scan_status.setText("没有可扫描的有线网卡。")
+            return
+        self.ultrasound_scan_button.setEnabled(False)
+        self.ultrasound_refresh_button.setEnabled(False)
+        self.ultrasound_scan_status.setText("正在后台扫描超声目标 MAC 帧…")
+        worker = UltrasoundInterfaceScanWorker(names, parent=self)
+        worker.result_ready.connect(self._on_ultrasound_scan_result)
+        worker.scan_failed.connect(self._on_ultrasound_scan_failed)
+        worker.finished.connect(self._on_ultrasound_scan_finished)
+        self._ultrasound_scan_worker = worker
+        worker.start()
+
+    @Slot(str, int)
+    def _on_ultrasound_scan_result(self, interface_name: str, count: int) -> None:
+        if count <= 0:
+            return
+        index = self.ultrasound_interface_combo.findData(interface_name)
+        if index >= 0:
+            self.ultrasound_interface_combo.setCurrentIndex(index)
+        self.ultrasound_scan_status.setText(
+            f"已在 {interface_name} 检测到 {count} 个超声通道帧。"
+        )
+
+    @Slot(str, str)
+    def _on_ultrasound_scan_failed(self, interface_name: str, message: str) -> None:
+        self.ultrasound_scan_status.setText(
+            f"扫描 {interface_name} 失败：{message}"
+        )
+
+    @Slot()
+    def _on_ultrasound_scan_finished(self) -> None:
+        worker = self._ultrasound_scan_worker
+        self._ultrasound_scan_worker = None
+        self.ultrasound_scan_button.setEnabled(True)
+        self.ultrasound_refresh_button.setEnabled(True)
+        if worker is not None:
+            worker.deleteLater()
+
+    def _stop_ultrasound_scan_worker(self) -> bool:
+        worker = self._ultrasound_scan_worker
+        if worker is None:
+            return True
+        if worker.isRunning():
+            worker.requestInterruption()
+            if not worker.wait(2_500):
+                self.ultrasound_scan_status.setText(
+                    "正在停止网卡扫描，请稍后再关闭或保存。"
+                )
+                return False
+        self._ultrasound_scan_worker = None
+        self.ultrasound_scan_button.setEnabled(True)
+        self.ultrasound_refresh_button.setEnabled(True)
+        worker.deleteLater()
+        return True
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if not self._stop_ultrasound_scan_worker():
+            event.ignore()
+            return
+        super().closeEvent(event)
+
+    @Slot()
+    def reject(self) -> None:
+        if self._stop_ultrasound_scan_worker():
+            super().reject()
+
+    @Slot()
     def accept(self) -> None:
         try:
             sensor_ids = tuple(
@@ -274,14 +415,13 @@ class HardwareDeviceSettingsDialog(QDialog):
                 for item in self.awinda_ids_edit.text().split(",")
                 if item.strip()
             )
-            sdk_path = str(fixed_elonxi_sdk_directory())
-            device_ip = self.ultrasound_ip_edit.text().strip()
             encoder_port = self.encoder_port_edit.text().strip()
+            interface_name = str(
+                self.ultrasound_interface_combo.currentData() or ""
+            ).strip()
             overrides: dict[str, dict[str, Any]] = {
                 "ultrasound": {
-                    "sdk_path": sdk_path or None,
-                    "device_ip": device_ip or None,
-                    "port": int(self.ultrasound_port_edit.text()),
+                    "interface_name": interface_name or None,
                 },
                 "imu": {
                     "radio_channel": int(self.awinda_channel_edit.text()),
@@ -298,6 +438,8 @@ class HardwareDeviceSettingsDialog(QDialog):
             build_adapters(load_device_profile("hardware"), overrides)
         except Exception as exc:
             QMessageBox.warning(self, "真实设备设置无效", str(exc))
+            return
+        if not self._stop_ultrasound_scan_worker():
             return
         self._validated_overrides = overrides
         super().accept()
@@ -1112,7 +1254,7 @@ class CollectorWindow(QMainWindow):
         # Update per-modality device labels
         if hardware:
             self._device_profile_label.setText(
-                "真实设备模式：Elonxi 超声 + Xsens MTw IMU + Teensy 编码器；"
+                "真实设备模式：Raw Ethernet/Npcap 超声 + Xsens MTw IMU + Teensy 编码器；"
                 "同步脉冲为模拟信号（仅台架验证）"
             )
             self._device_profile_label.setStyleSheet("color:#842029;font-weight:600;")
@@ -1125,7 +1267,7 @@ class CollectorWindow(QMainWindow):
             )
 
             device_info = {
-                "ultrasound": f"真实 · Elonxi 超声 · {overrides.get('ultrasound', {}).get('device_ip') or '自动发现'}",
+                "ultrasound": f"真实 · Raw Ethernet 超声 · {overrides.get('ultrasound', {}).get('interface_name') or '未选择网卡'}",
                 "imu": f"真实 · Xsens MTw · 信道 {overrides.get('imu', {}).get('radio_channel', 25)}",
                 "encoder": f"真实 · Teensy 编码器 · {overrides.get('encoder', {}).get('port') or '自动发现'}",
                 "sync_pulse": "模拟同步（仅台架验证）",
@@ -2259,25 +2401,51 @@ class CollectorWindow(QMainWindow):
             if not isinstance(raw_channels, (list, tuple)):
                 legacy_values = event.payload.get("values")
                 raw_channels = [legacy_values] if legacy_values is not None else []
+            raw_channel_index = event.payload.get("channel_index")
+            channel_index: int | None = None
+            if raw_channel_index is not None:
+                try:
+                    candidate = int(raw_channel_index)
+                except (TypeError, ValueError):
+                    candidate = -1
+                if 0 <= candidate < len(self._us_curves):
+                    channel_index = candidate
+                    if "ultrasound" not in self._preview_y_ranges:
+                        lower, upper = -128.0, 128.0
+                        span = upper - lower
+                        self._preview_y_ranges["ultrasound"] = (lower, upper)
+                        for plot in self._us_plots:
+                            plot.setYRange(lower, upper, padding=0.0)
+                            plot.setLimits(
+                                yMin=lower,
+                                yMax=upper,
+                                minYRange=span,
+                                maxYRange=span,
+                            )
+                            plot.setMouseEnabled(x=False, y=False)
             raw_metrics = event.payload.get("format_metrics")
             if isinstance(raw_metrics, (list, tuple)):
-                for channel_index, metric in enumerate(raw_metrics[:4]):
+                for metric_offset, metric in enumerate(raw_metrics[:4]):
                     if not isinstance(metric, Mapping) or not bool(metric.get("all_zero")):
                         continue
-                    alert_key = (channel_index, "ALL_ZERO")
+                    metric_channel = (
+                        channel_index if channel_index is not None else metric_offset
+                    )
+                    alert_key = (metric_channel, "ALL_ZERO")
                     if alert_key in self._ultrasound_format_alerted:
                         continue
-                    message = f"ultrasound 通道 {channel_index + 1} 当前帧全零；请检查探头、通道和设备连接。"
+                    message = f"ultrasound 通道 {metric_channel + 1} 当前帧全零；请检查探头、通道和设备连接。"
                     self._append_alert(message)
                     self._add_timeline_event(2, message)
                     self._ultrasound_format_alerted.add(alert_key)
             prepared_channels: list[tuple[int, list[float]]] = []
             for i, raw_channel in enumerate(raw_channels):
-                if i >= len(self._us_curves):
+                target_index = channel_index if channel_index is not None else i
+                if target_index >= len(self._us_curves):
                     break
                 values = self._numeric_values(raw_channel)
                 if values:
-                    prepared_channels.append((i, values))
+                    prepared_channels.append((target_index, values))
             self._lock_preview_y_axis("ultrasound", [values for _, values in prepared_channels], self._us_plots)
             for index, values in prepared_channels:
                 self._us_curves[index].setData(self._us_x, self._fixed_ultrasound_frame(values))

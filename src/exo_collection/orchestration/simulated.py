@@ -37,6 +37,7 @@ from exo_collection.configuration.device_profiles import (
     load_device_profile,
 )
 from exo_collection.configuration.adapter_registry import build_adapters
+from exo_collection.adapters.ultrasound.raw_ethernet import encode_raw_ethernet_flags
 from exo_collection.domain.events import (
     EdgeType,
     FrameBatch,
@@ -745,13 +746,19 @@ def run_trial(
                 nonlocal recording_deadline_ns
 
                 if isinstance(event, FrameBatch):
+                    block_flags = encode_raw_ethernet_flags(
+                        event.channel, event.tail_flags
+                    )
                     writers["ultrasound"].append(
                         event.data,
-                        device_timestamp=int(event.device_timestamp or 0),
+                        # Preserve the binary format's explicit UNKNOWN
+                        # sentinel when this transport has no device clock.
+                        device_timestamp=event.device_timestamp,
                         host_monotonic_ns=event.host_monotonic_ns,
                         host_utc_ns=event.host_utc_ns,
                         first_sample_index=event.first_frame_index,
                         sequence=event.sequence_number,
+                        flags=block_flags,
                     )
                     record_sample_bounds(
                         modality, event.first_frame_index, event.frame_count

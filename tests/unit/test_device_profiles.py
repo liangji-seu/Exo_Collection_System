@@ -18,7 +18,7 @@ from exo_collection.configuration.adapter_registry import build_adapters
 from exo_collection.adapters.encoder.teensy_serial import TeensySerialEncoderAdapter
 from exo_collection.adapters.imu.xsens_awinda import XsensAwindaImuAdapter
 from exo_collection.adapters.sync_pulse.simulated import SimulatedSyncPulseAdapter
-from exo_collection.adapters.ultrasound.elonxi import ElonxiUltrasoundAdapter
+from exo_collection.adapters.ultrasound.raw_ethernet import RawEthernetUltrasoundAdapter
 from exo_collection.orchestration.models import TrialRunRequest
 from exo_collection.orchestration.simulated import _make_adapters
 
@@ -110,18 +110,18 @@ def test_static_adapter_factory_applies_profile_then_request_overrides(tmp_path:
 def test_hardware_profile_is_strict_and_explicitly_has_simulated_sync() -> None:
     profile = load_device_profile("hardware")
     assert isinstance(profile, HardwareDeviceProfileDocument)
-    assert profile.display_name == "真实三设备 + 模拟同步（台架验证）"
+    assert "Raw Ethernet" in profile.display_name
     assert profile.laboratory_sync_ready is False
     devices = profile.by_modality()
     assert [devices[name].simulated for name in devices] == [False, False, False, True]
-    assert devices["ultrasound"].parameters.sdk_path is None
+    assert devices["ultrasound"].parameters.interface_name is None
     assert devices["imu"].parameters.sensor_ids == ()
     assert devices["encoder"].parameters.port is None
 
 
 def test_hardware_registry_constructs_without_loading_vendor_sdks() -> None:
     adapters = build_adapters(load_device_profile("hardware"))
-    assert isinstance(adapters["ultrasound"], ElonxiUltrasoundAdapter)
+    assert isinstance(adapters["ultrasound"], RawEthernetUltrasoundAdapter)
     assert isinstance(adapters["imu"], XsensAwindaImuAdapter)
     assert isinstance(adapters["encoder"], TeensySerialEncoderAdapter)
     assert isinstance(adapters["sync_pulse"], SimulatedSyncPulseAdapter)

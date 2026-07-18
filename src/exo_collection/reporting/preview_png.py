@@ -105,6 +105,10 @@ class BoundedPreviewHistory:
         self._ultrasound: deque[tuple[int, np.ndarray]] = deque(
             maxlen=max_ultrasound_frames
         )
+        self._raw_ultrasound: tuple[deque[tuple[int, np.ndarray]], ...] = tuple(
+            deque(maxlen=max_ultrasound_frames) for _ in range(4)
+        )
+        self._ultrasound_capture_mode: str | None = None
         self._ultrasound_shape: tuple[int, int] | None = None
         self._ultrasound_dtype_min: float | None = None
         self._ultrasound_dtype_max: float | None = None
@@ -130,6 +134,14 @@ class BoundedPreviewHistory:
             limits = np.iinfo(batch.dtype)
             self._ultrasound_dtype_min = float(limits.min)
             self._ultrasound_dtype_max = float(limits.max)
+        if event.channel is not None:
+            self._capture_raw_ultrasound_packet(event, batch)
+            return
+        if self._ultrasound_capture_mode not in (None, "device_synchronized_frames"):
+            # A Trial must not combine packet-ordinal previews with real
+            # device-synchronised frames. Raw data remains authoritative.
+            return
+        self._ultrasound_capture_mode = "device_synchronized_frames"
         for frame in batch:
             is_multichannel_a_line = (
                 frame.ndim == 2 and 1 <= frame.shape[0] <= 16
@@ -151,6 +163,34 @@ class BoundedPreviewHistory:
                 continue
             self._ultrasound.append((event.host_monotonic_ns, reduced.copy()))
             self._ultrasound_frames_seen += 1
+
+    def _capture_raw_ultrasound_packet(
+        self, event: FrameBatch, batch: np.ndarray
+    ) -> None:
+        """Retain one Raw Ethernet A-line without inventing channel synchrony."""
+
+        if self._ultrasound_capture_mode not in (None, "independent_channel_packets"):
+            return
+        channel = int(event.channel) if event.channel is not None else -1
+        if channel not in range(4) or batch.ndim != 2 or batch.shape[0] != 1:
+            return
+        depth_indices = np.linspace(
+            0,
+            batch.shape[1] - 1,
+            min(self.ultrasound_depth_samples, batch.shape[1]),
+            dtype=np.int64,
+        )
+        reduced = np.asarray(batch[0, depth_indices], dtype=np.float32)
+        shape = (4, int(reduced.shape[0]))
+        if self._ultrasound_shape is None:
+            self._ultrasound_shape = shape
+        if shape != self._ultrasound_shape:
+            return
+        self._ultrasound_capture_mode = "independent_channel_packets"
+        self._raw_ultrasound[channel].append(
+            (event.host_monotonic_ns, reduced.copy())
+        )
+        self._ultrasound_frames_seen += 1
 
     @staticmethod
     def _sample_x(event: SampleBatch) -> np.ndarray:
@@ -184,6 +224,41 @@ class BoundedPreviewHistory:
         self._encoder.append(self._sample_x(event), selected)
 
     def ultrasound_snapshot(self) -> tuple[np.ndarray, np.ndarray]:
+        if self._ultrasound_capture_mode == "independent_channel_packets":
+            retained = min(len(channel) for channel in self._raw_ultrasound)
+            shape = self._ultrasound_shape or (
+                4,
+                self.ultrasound_depth_samples,
+            )
+            if retained == 0:
+                # A partial set of channels is not padded with synthetic zero
+                # data. It therefore cannot look like a complete acquisition.
+                return (
+                    np.empty(0, dtype=np.int64),
+                    np.empty((0, *shape), dtype=np.float32),
+                )
+            channel_tails = [
+                list(channel)[-retained:] for channel in self._raw_ultrasound
+            ]
+            # Rows pair the nth retained arrival of each independent channel
+            # only for a bounded QC image. They are not hardware-synchronised
+            # frames; this is stated explicitly in the exported metrics.
+            timestamps = np.asarray(
+                [
+                    max(channel_tails[channel][row][0] for channel in range(4))
+                    for row in range(retained)
+                ],
+                dtype=np.int64,
+            )
+            frames = np.stack(
+                [
+                    np.stack(
+                        [channel_tails[channel][row][1] for channel in range(4)]
+                    )
+                    for row in range(retained)
+                ]
+            )
+            return timestamps, frames
         if not self._ultrasound:
             shape = self._ultrasound_shape or (1, self.ultrasound_depth_samples)
             return (
@@ -212,6 +287,43 @@ class BoundedPreviewHistory:
             "retention_capacity_frames": self.max_ultrasound_frames,
             "includes_pretrigger": includes_pretrigger,
         }
+        if self._ultrasound_capture_mode == "independent_channel_packets":
+            retained_per_channel = [
+                len(channel) for channel in self._raw_ultrasound
+            ]
+            metrics.update(
+                {
+                    "alignment_semantics": (
+                        "independent_channel_arrival_ordinal_for_qc_preview_only"
+                    ),
+                    "device_synchronized_frames": False,
+                    "timestamp_semantics": (
+                        "maximum_host_arrival_timestamp_per_qc_ordinal_row"
+                    ),
+                    "acquisition_unit": "raw_ethernet_channel_packet",
+                    "expected_channel_count": 4,
+                    "packets_retained_per_channel": retained_per_channel,
+                }
+            )
+            all_raw_timestamps = [
+                timestamp
+                for channel in self._raw_ultrasound
+                for timestamp, _ in channel
+            ]
+            metrics["includes_pretrigger"] = bool(
+                all_raw_timestamps
+                and formal_t0_host_monotonic_ns is not None
+                and min(all_raw_timestamps) < formal_t0_host_monotonic_ns
+            )
+        else:
+            metrics.update(
+                {
+                    "alignment_semantics": "device_synchronized_multichannel_frame",
+                    "device_synchronized_frames": True,
+                    "timestamp_semantics": "frame_batch_host_monotonic_timestamp",
+                    "acquisition_unit": "multichannel_frame",
+                }
+            )
         if frames.size == 0:
             metrics.update(
                 {

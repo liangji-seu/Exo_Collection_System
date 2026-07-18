@@ -83,6 +83,7 @@ hiddenimports = sorted(
         + optional_submodules("zeroconf")
         + optional_submodules("pythonnet")
         + optional_submodules("clr")
+        + optional_submodules("scapy")
         + optional_submodules("xsensdeviceapi")
     )
 )

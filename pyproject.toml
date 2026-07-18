@@ -33,6 +33,7 @@ packaging = ["pyinstaller>=6.8,<7"]
 hardware = [
   "pyserial>=3.5,<4",
   "pythonnet>=3.0,<4",
+  "scapy>=2.5",
   "zeroconf>=0.132,<1",
 ]
 

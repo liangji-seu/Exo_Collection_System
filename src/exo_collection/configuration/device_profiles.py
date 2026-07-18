@@ -38,6 +38,9 @@ XSENS_AWINDA_ADAPTER = "exo_collection.adapters.imu.XsensAwindaImuAdapter"
 TEENSY_ENCODER_ADAPTER = (
     "exo_collection.adapters.encoder.TeensySerialEncoderAdapter"
 )
+RAW_ETHERNET_ULTRASOUND_ADAPTER = (
+    "exo_collection.adapters.ultrasound.RawEthernetUltrasoundAdapter"
+)
 
 
 class ProfileModel(BaseModel):
@@ -208,6 +211,23 @@ class SimulatedDeviceProfileDocument(ProfileModel):
         return {device.modality: device for device in self.devices}
 
 
+class RawEthernetUltrasoundParameters(ProfileModel):
+    interface_name: NonEmptyStr | None = None
+    channels: tuple[int, int, int, int] = (1, 2, 3, 4)
+    samples_per_channel: int = Field(default=1000, gt=0)
+    nominal_rate_hz: float = Field(default=20.0, gt=0)
+    queue_capacity: int = Field(default=64, gt=0)
+    inbound_queue_capacity: int = Field(default=256, gt=0)
+    scan_timeout_s: float = Field(default=1.5, gt=0)
+
+    @field_validator("channels")
+    @classmethod
+    def validate_channels(cls, value: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+        if tuple(value) != (1, 2, 3, 4):
+            raise ValueError("ultrasound channels must be exactly [1, 2, 3, 4]")
+        return value
+
+
 class HardwareUltrasoundParameters(ProfileModel):
     sdk_path: NonEmptyStr | None = None
     device_ip: NonEmptyStr | None = None
@@ -222,13 +242,13 @@ class HardwareUltrasoundParameters(ProfileModel):
     @classmethod
     def validate_channels(cls, value: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
         if tuple(value) != (1, 2, 3, 4):
-            raise ValueError("Elonxi channels must be exactly [1, 2, 3, 4]")
+            raise ValueError("ultrasound channels must be exactly [1, 2, 3, 4]")
         return value
 
 
 class HardwareImuParameters(ProfileModel):
     radio_channel: int = Field(default=25, ge=11, le=25)
-    sample_rate_hz: float = Field(default=200.0, gt=0)
+    sample_rate_hz: float = Field(default=120.0, gt=0)
     expected_device_count: Literal[3] = 3
     sensor_ids: tuple[NonEmptyStr, ...] = ()
     wait_timeout_s: float = Field(default=15.0, gt=0)
@@ -247,10 +267,10 @@ class HardwareImuParameters(ProfileModel):
 
 class HardwareEncoderParameters(ProfileModel):
     port: NonEmptyStr | None = None
-    baudrate: int = Field(default=9600, gt=0)
+    baudrate: int = Field(default=1_000_000, gt=0)
     vid: int = Field(default=0x16C0, ge=0, le=0xFFFF)
     pid: int = Field(default=0x0483, ge=0, le=0xFFFF)
-    nominal_rate_hz: float = Field(default=100.0, gt=0)
+    nominal_rate_hz: float = Field(default=200.0, gt=0)
     batch_size: int = Field(default=20, gt=0)
     queue_capacity: int = Field(default=256, gt=0)
     read_size: int = Field(default=128, gt=0)
@@ -274,10 +294,23 @@ class HardwareDeviceProfileBase(ProfileModel):
 
 class HardwareUltrasoundDeviceProfile(HardwareDeviceProfileBase):
     modality: Literal["ultrasound"]
-    adapter: Literal[ELONXI_ULTRASOUND_ADAPTER]
+    adapter: Literal[ELONXI_ULTRASOUND_ADAPTER, RAW_ETHERNET_ULTRASOUND_ADAPTER]
     writer: Literal["block_binary"]
     simulated: Literal[False]
-    parameters: HardwareUltrasoundParameters
+    parameters: RawEthernetUltrasoundParameters | HardwareUltrasoundParameters
+
+    @model_validator(mode="before")
+    @classmethod
+    def dispatch_parameters(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            adapter = data.get("adapter", "")
+            params = data.get("parameters")
+            if isinstance(params, dict):
+                if adapter == RAW_ETHERNET_ULTRASOUND_ADAPTER:
+                    data["parameters"] = RawEthernetUltrasoundParameters(**dict(params))
+                elif adapter == ELONXI_ULTRASOUND_ADAPTER:
+                    data["parameters"] = HardwareUltrasoundParameters(**dict(params))
+        return data
 
 
 class HardwareImuDeviceProfile(HardwareDeviceProfileBase):

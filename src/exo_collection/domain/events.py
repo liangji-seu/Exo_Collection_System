@@ -76,6 +76,8 @@ class FrameBatch(BaseEvent):
     device_timestamp: int | float | None = None
     frame_rate_hz: float | None = Field(default=None, gt=0)
     data: Any = Field(repr=False)
+    channel: int | None = Field(default=None, ge=0, le=255)
+    tail_flags: int = Field(default=0, ge=0, le=255)
 
 
 class SyncPulseEvent(BaseEvent):

@@ -24,7 +24,6 @@ from exo_collection.apps.collector.window import (
 )
 from exo_collection.configuration import (
     SharedAppSettings,
-    fixed_elonxi_sdk_directory,
 )
 from exo_collection.orchestration.models import (
     MeasuredConditionMetadata,
@@ -83,15 +82,54 @@ class FakeCollectorWorker:
         self.alive = False
 
 
-def test_hardware_dialog_displays_fixed_read_only_elonxi_sdk_path() -> None:
-    app = QApplication.instance() or QApplication(["test-fixed-sdk-path"])
+def test_hardware_dialog_restores_raw_ethernet_interface() -> None:
+    app = QApplication.instance() or QApplication(["test-raw-interface"])
     dialog = HardwareDeviceSettingsDialog(
-        {"ultrasound": {"sdk_path": "C:/stale/path/from/another/pc"}}
+        {"ultrasound": {"interface_name": "\\Device\\NPF_TEST"}}
     )
 
-    assert dialog.sdk_path_edit.isReadOnly()
-    assert dialog.sdk_path_edit.text() == str(fixed_elonxi_sdk_directory())
+    assert (
+        dialog.ultrasound_interface_combo.currentData()
+        == "\\Device\\NPF_TEST"
+    )
 
+    dialog.close()
+    app.processEvents()
+
+
+def test_hardware_dialog_stops_active_interface_scan_before_exit() -> None:
+    app = QApplication.instance() or QApplication(["test-stop-interface-scan"])
+    dialog = HardwareDeviceSettingsDialog(
+        {"ultrasound": {"interface_name": "\\Device\\NPF_TEST"}}
+    )
+
+    class FakeScanWorker:
+        def __init__(self) -> None:
+            self.interrupted = False
+            self.wait_timeout: int | None = None
+            self.deleted = False
+
+        def isRunning(self) -> bool:  # noqa: N802 - mirrors QThread
+            return True
+
+        def requestInterruption(self) -> None:  # noqa: N802 - Qt API
+            self.interrupted = True
+
+        def wait(self, timeout: int) -> bool:
+            self.wait_timeout = timeout
+            return True
+
+        def deleteLater(self) -> None:  # noqa: N802 - Qt API
+            self.deleted = True
+
+    worker = FakeScanWorker()
+    dialog._ultrasound_scan_worker = worker  # type: ignore[assignment]
+
+    assert dialog._stop_ultrasound_scan_worker()
+    assert worker.interrupted
+    assert worker.wait_timeout == 2_500
+    assert worker.deleted
+    assert dialog._ultrasound_scan_worker is None
     dialog.close()
     app.processEvents()
 
@@ -423,6 +461,42 @@ def test_preview_ultrasound_4_channels(tmp_path: Path) -> None:
     window.close()
 
 
+def test_raw_ultrasound_packet_updates_only_its_tagged_channel(
+    tmp_path: Path,
+) -> None:
+    _app, window, _created = _window_with_fake(tmp_path)
+    before = [
+        np.asarray(curve.getData()[1], dtype=np.float64).copy()
+        for curve in window._us_curves
+    ]
+
+    window._handle_worker_event(
+        WorkerEvent(
+            event_type=WorkerEventType.PREVIEW,
+            modality="ultrasound",
+            payload={
+                "host_monotonic_ns": 1_000,
+                "channel_index": 2,
+                "channels": [[-127.0, -10.0, 0.0, 128.0]],
+            },
+        )
+    )
+
+    after = [
+        np.asarray(curve.getData()[1], dtype=np.float64)
+        for curve in window._us_curves
+    ]
+    for index in (0, 1, 3):
+        np.testing.assert_allclose(after[index], before[index], equal_nan=True)
+    np.testing.assert_allclose(after[2][:4], [-127.0, -10.0, 0.0, 128.0])
+    assert np.all(np.isnan(after[2][4:]))
+    assert window._preview_y_ranges["ultrasound"] == (-128.0, 128.0)
+    for plot in window._us_plots:
+        assert np.allclose(plot.getViewBox().viewRange()[1], (-128.0, 128.0))
+        assert plot.getViewBox().state["mouseEnabled"] == [False, False]
+    window.close()
+
+
 def test_preview_imu_streams_payload(tmp_path: Path) -> None:
     """Send IMU streams payload and verify ring traces receive data."""
     _app, window, _created = _window_with_fake(tmp_path)
@@ -671,9 +745,9 @@ def test_real_device_profile_is_selected_in_ui_and_copied_to_worker_request(
     window.device_profile_combo.setCurrentIndex(hardware_index)
     window._settings.set_hardware_device_overrides(
         {
-            "ultrasound": {"sdk_path": "D:/Elonxi", "port": 1430},
+            "ultrasound": {"interface_name": "\\Device\\NPF_TEST"},
             "imu": {"radio_channel": 25},
-            "encoder": {"port": "COM7", "baudrate": 9600},
+            "encoder": {"port": "COM7", "baudrate": 1_000_000},
         }
     )
 
@@ -1423,7 +1497,7 @@ def test_save_real_device_settings_auto_selects_hardware_profile(tmp_path: Path)
 
     # Simulate the behavior that happens after hardware settings dialog accepts
     window._settings.set_hardware_device_overrides(
-        {"ultrasound": {"sdk_path": "D:/Elonxi", "port": 1430}}
+        {"ultrasound": {"interface_name": "\\Device\\NPF_TEST"}}
     )
     window._settings.set_device_profile_key("hardware")
 
@@ -1440,7 +1514,7 @@ def test_worker_request_uses_selected_profile(tmp_path: Path) -> None:
     """TrialRunRequest must use the actual selected profile, not fallback to simulated."""
     _app, window, _created = _window_with_fake(tmp_path)
     window._settings.set_hardware_device_overrides(
-        {"ultrasound": {"sdk_path": "D:/Elonxi", "port": 1430}}
+        {"ultrasound": {"interface_name": "\\Device\\NPF_TEST"}}
     )
     # Switch to hardware
     window._settings.set_device_profile_key("hardware")
@@ -1451,5 +1525,8 @@ def test_worker_request_uses_selected_profile(tmp_path: Path) -> None:
 
     request = window.build_request()
     assert request.device_profile_key == "hardware"
-    assert request.device_overrides["ultrasound"]["port"] == 1430
+    assert (
+        request.device_overrides["ultrasound"]["interface_name"]
+        == "\\Device\\NPF_TEST"
+    )
     window.close()

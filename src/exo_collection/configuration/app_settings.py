@@ -135,11 +135,12 @@ class SharedAppSettings:
         for modality, values in payload.items():
             if modality in allowed and isinstance(values, dict):
                 result[modality] = dict(values)
-        # A stale absolute path saved on another PC must never override the
-        # controlled SDK deployment location.
-        result.setdefault("ultrasound", {})["sdk_path"] = str(
-            fixed_elonxi_sdk_directory()
-        )
+        # The default real ultrasound transport is raw Ethernet.  Remove
+        # stale settings from the earlier Elonxi/IP draft instead of feeding
+        # them into the strict raw-Ethernet parameter model.
+        if "ultrasound" in result:
+            for stale_key in ("sdk_path", "device_ip", "port"):
+                result["ultrasound"].pop(stale_key, None)
         return result
 
     def set_hardware_device_overrides(
@@ -155,9 +156,9 @@ class SharedAppSettings:
         normalized = {
             modality: dict(values) for modality, values in overrides.items()
         }
-        normalized.setdefault("ultrasound", {})["sdk_path"] = str(
-            fixed_elonxi_sdk_directory()
-        )
+        if "ultrasound" in normalized:
+            for stale_key in ("sdk_path", "device_ip", "port"):
+                normalized["ultrasound"].pop(stale_key, None)
         serialized = json.dumps(
             normalized,
             ensure_ascii=False,

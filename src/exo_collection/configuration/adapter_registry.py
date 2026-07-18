@@ -12,6 +12,7 @@ from exo_collection.adapters.imu.simulated import SimulatedImuAdapter
 from exo_collection.adapters.imu.xsens_awinda import XsensAwindaImuAdapter
 from exo_collection.adapters.sync_pulse.simulated import SimulatedSyncPulseAdapter
 from exo_collection.adapters.ultrasound.elonxi import ElonxiUltrasoundAdapter
+from exo_collection.adapters.ultrasound.raw_ethernet import RawEthernetUltrasoundAdapter
 from exo_collection.adapters.ultrasound.simulated import SimulatedUltrasoundAdapter
 
 from .device_profiles import (
@@ -19,6 +20,7 @@ from .device_profiles import (
     ELONXI_ULTRASOUND_ADAPTER,
     ENCODER_ADAPTER,
     IMU_ADAPTER,
+    RAW_ETHERNET_ULTRASOUND_ADAPTER,
     SYNC_PULSE_ADAPTER,
     TEENSY_ENCODER_ADAPTER,
     ULTRASOUND_ADAPTER,
@@ -32,6 +34,7 @@ ADAPTER_REGISTRY: dict[str, type[Any]] = {
     ENCODER_ADAPTER: SimulatedEncoderAdapter,
     SYNC_PULSE_ADAPTER: SimulatedSyncPulseAdapter,
     ELONXI_ULTRASOUND_ADAPTER: ElonxiUltrasoundAdapter,
+    RAW_ETHERNET_ULTRASOUND_ADAPTER: RawEthernetUltrasoundAdapter,
     XSENS_AWINDA_ADAPTER: XsensAwindaImuAdapter,
     TEENSY_ENCODER_ADAPTER: TeensySerialEncoderAdapter,
 }

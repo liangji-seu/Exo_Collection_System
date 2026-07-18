@@ -1,26 +1,25 @@
 {
   "profile_kind": "hardware",
-  "display_name": "真实三设备 + 模拟同步（台架验证）",
+  "display_name": "Raw Ethernet/Npcap 超声 + Xsens MTw + Teensy",
   "schema_version": "1.0.0",
   "laboratory_sync_ready": false,
   "devices": [
     {
-      "id": "ultrasound_elonxi",
+      "id": "ultrasound_raw_ethernet",
       "modality": "ultrasound",
-      "adapter": "exo_collection.adapters.ultrasound.ElonxiUltrasoundAdapter",
+      "adapter": "exo_collection.adapters.ultrasound.RawEthernetUltrasoundAdapter",
       "writer": "block_binary",
       "required": true,
-      "clock_domain": "ultrasound_elonxi_clock",
+      "clock_domain": "ultrasound_raw_ethernet_clock",
       "simulated": false,
       "parameters": {
-        "sdk_path": null,
-        "device_ip": null,
-        "port": 1430,
+        "interface_name": null,
         "channels": [1, 2, 3, 4],
         "samples_per_channel": 1000,
         "nominal_rate_hz": 20.0,
         "queue_capacity": 64,
-        "discovery_timeout_s": 10.0
+        "inbound_queue_capacity": 256,
+        "scan_timeout_s": 1.5
       }
     },
     {
@@ -33,7 +32,7 @@
       "simulated": false,
       "parameters": {
         "radio_channel": 25,
-        "sample_rate_hz": 200.0,
+        "sample_rate_hz": 120.0,
         "expected_device_count": 3,
         "sensor_ids": [],
         "wait_timeout_s": 15.0,
@@ -53,10 +52,10 @@
       "simulated": false,
       "parameters": {
         "port": null,
-        "baudrate": 9600,
+        "baudrate": 1000000,
         "vid": 5824,
         "pid": 1155,
-        "nominal_rate_hz": 100.0,
+        "nominal_rate_hz": 200.0,
         "batch_size": 20,
         "queue_capacity": 256,
         "read_size": 128,

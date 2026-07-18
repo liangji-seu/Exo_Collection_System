@@ -26,10 +26,29 @@ def build_preview_event(
 
     values = np.asarray(event.data)
     if isinstance(event, FrameBatch):
-        if values.ndim < 2 or values.shape[0] < 1:
+        if values.ndim < 1 or values.shape[0] < 1:
             raise ValueError(f"invalid ultrasound frame batch shape: {values.shape}")
-        source_frame = values[-1]
-        frame = source_frame.astype(np.float32, copy=False)
+
+        raw_ethernet = getattr(event, "channel", None) is not None
+        channel_index: int | None = None
+        if raw_ethernet:
+            if values.ndim != 2 or values.shape[0] != 1:
+                raise ValueError(
+                    f"invalid raw Ethernet ultrasound shape: {values.shape}"
+                )
+            source_frame = values[-1]
+            # Preview conversion only; raw uint8 remains unchanged on disk.
+            frame = (
+                source_frame.astype(np.int16, copy=False) - 127
+            ).astype(np.float32, copy=False)
+            channel_index = int(getattr(event, "channel", 0))
+            is_multichannel_a_line = False
+        else:
+            if values.ndim < 2:
+                raise ValueError(f"invalid ultrasound frame batch shape: {values.shape}")
+            source_frame = values[-1]
+            frame = source_frame.astype(np.float32, copy=False)
+            is_multichannel_a_line = frame.ndim == 2 and 1 <= frame.shape[0] <= 16
 
         def downsample(signal: np.ndarray) -> np.ndarray:
             flattened = signal.reshape(-1)
@@ -38,17 +57,18 @@ def build_preview_event(
             indices = np.linspace(0, flattened.size - 1, 512, dtype=np.int64)
             return flattened[indices]
 
-        is_multichannel_a_line = frame.ndim == 2 and 1 <= frame.shape[0] <= 16
-        channels = (
-            [downsample(frame[index]) for index in range(frame.shape[0])]
-            if is_multichannel_a_line
-            else [downsample(frame)]
-        )
-        source_channels = (
-            [source_frame[index].reshape(-1) for index in range(source_frame.shape[0])]
-            if is_multichannel_a_line
-            else [source_frame.reshape(-1)]
-        )
+        if raw_ethernet:
+            downsampled = downsample(frame)
+            channels = [downsampled]
+            source_channels = [frame.reshape(-1)]
+        elif is_multichannel_a_line:
+            channels = [downsample(frame[idx]) for idx in range(frame.shape[0])]
+            source_channels = [
+                source_frame[idx].reshape(-1) for idx in range(source_frame.shape[0])
+            ]
+        else:
+            channels = [downsample(frame)]
+            source_channels = [source_frame.reshape(-1)]
 
         def format_metrics(signal: np.ndarray) -> dict[str, Any]:
             count = max(1, int(signal.size))
@@ -87,9 +107,11 @@ def build_preview_event(
             "channel_count": len(channels),
             "shape": [int(value) for value in frame.shape],
             "preview_sample_count": int(channels[0].size),
-            "geometry": "a_line" if is_multichannel_a_line else "frame",
+            "geometry": "a_line" if (is_multichannel_a_line or raw_ethernet) else "frame",
             "format_metrics": [format_metrics(channel) for channel in source_channels],
         }
+        if channel_index is not None:
+            payload["channel_index"] = channel_index
     else:
         if values.ndim < 2 or values.shape[0] < 1:
             raise ValueError(f"invalid sample batch shape: {values.shape}")

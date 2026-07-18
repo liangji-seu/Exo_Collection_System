@@ -96,31 +96,35 @@ dist\ExoDataStudio.exe
 
 ## 真实设备环境与 UI 配置
 
-真实设备不使用命令行参数。在 Collector 的“设备配置”中选择“真实超声 + 3×IMU +
-电机编码器”，再点击“真实设备设置…”填写 Elonxi SDK 目录、可选设备 IP、
-Awinda 信道/采样率/3 个 MTw ID，以及 Teensy 串口参数。选择会写入当前
-Windows 用户的 QSettings，以后启动默认沿用。密码和凭据不在该设置中。
+真实设备不使用命令行参数。在 Collector 的“设备配置”中选择“Raw Ethernet/Npcap
+超声 + Xsens MTw + Teensy”，再点击“真实设备设置…”。超声通过界面
+枚举有线网卡，并可在后台扫描目标帧；IMU 设置 Awinda 信道、120 Hz
+采样率和按躯干/左腿/右腿顺序的 3 个 MTw ID；编码器设置 Teensy 串口。
+选择会写入当前 Windows 用户的 QSettings，以后启动默认沿用。
+密码和凭据不在该设置中。
 
 源码环境需先安装通用硬件依赖：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install -e ".[hardware]"
+python -m pip install -e ".[hardware]"
 ```
 
 Xsens Python 绑定由 MT SDK 提供，不从 PyPI 猜测安装。当前旧系统中已有与
 Python 3.11 x64 匹配的官方 wheel，可在两个项目共存时执行：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install `
+python -m pip install `
   "..\Exo_data_capture_system\MT SDK\Python\x64\xsensdeviceapi-2025.2.0-cp311-none-win_amd64.whl"
 ```
 
 该 Xsens 2025.2 wheel 使用 NumPy 1.x ABI，所以本项目明确约束 `numpy>=1.26,<2`。
 不要单独升级到 NumPy 2.x，否则 `xsensdeviceapi` 会在导入阶段因 ABI 不匹配失败。
 
-Elonxi 设置选择的目录必须包含 `Elonxi_SDK.dll`。正式打包真实设备版本时，
-必须在构建用的 `.venv` 中先安装上述硬件依赖和 Xsens wheel，PyInstaller
-才会收集相应模块。
+Raw Ethernet 超声依赖 Scapy；Windows 还必须安装 Npcap，并在 Npcap
+安装器中勾选 `WinPcap API-compatible Mode`。正式打包真实设备版本时，
+构建用 Python 必须已安装 hardware 依赖和 Xsens wheel，PyInstaller 才会
+收集 `scapy`、`xsensdeviceapi` 和 `serial` 等可选硬件模块。Npcap 是系统
+驱动，不会被 PyInstaller 打进 EXE。
 
 > 当前 `hardware` Profile 的超声、三台 IMU 和电机编码器为真实适配；
 > `sync_pulse` 仍是台架模拟信号。这一模式用于验证三类设备接入，不得宣称为
