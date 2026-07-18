@@ -11,13 +11,19 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import numpy as np
 from PySide6.QtCore import QSettings
 from PySide6.QtGui import QValidator
-from PySide6.QtWidgets import QApplication, QScrollArea, QSplitter, QWidget
+from PySide6.QtWidgets import QApplication, QDialog, QScrollArea, QSplitter, QWidget
 
 from exo_collection.acquisition.messages import WorkerEvent, WorkerEventType
 from exo_collection.apps.collector import CollectorWindow
+from exo_collection.apps.collector.device_settings import (
+    DEVICE_SETTINGS_DIALOGS,
+    EncoderDeviceSettingsDialog,
+    ImuDeviceSettingsDialog,
+    SyncPulseDeviceSettingsDialog,
+    UltrasoundDeviceSettingsDialog,
+)
 from exo_collection.apps.collector.window import (
     ExperimentMetadataDialog,
-    HardwareDeviceSettingsDialog,
     MODALITIES,
     RingTrace,
     SIGNAL_RING_CAPACITY,
@@ -82,14 +88,14 @@ class FakeCollectorWorker:
         self.alive = False
 
 
-def test_hardware_dialog_restores_raw_ethernet_interface() -> None:
+def test_ultrasound_dialog_restores_raw_ethernet_interface() -> None:
     app = QApplication.instance() or QApplication(["test-raw-interface"])
-    dialog = HardwareDeviceSettingsDialog(
-        {"ultrasound": {"interface_name": "\\Device\\NPF_TEST"}}
+    dialog = UltrasoundDeviceSettingsDialog(
+        {"interface_name": "\\Device\\NPF_TEST"}
     )
 
     assert (
-        dialog.ultrasound_interface_combo.currentData()
+        dialog.interface_combo.currentData()
         == "\\Device\\NPF_TEST"
     )
 
@@ -97,10 +103,10 @@ def test_hardware_dialog_restores_raw_ethernet_interface() -> None:
     app.processEvents()
 
 
-def test_hardware_dialog_stops_active_interface_scan_before_exit() -> None:
+def test_ultrasound_dialog_stops_active_interface_scan_before_exit() -> None:
     app = QApplication.instance() or QApplication(["test-stop-interface-scan"])
-    dialog = HardwareDeviceSettingsDialog(
-        {"ultrasound": {"interface_name": "\\Device\\NPF_TEST"}}
+    dialog = UltrasoundDeviceSettingsDialog(
+        {"interface_name": "\\Device\\NPF_TEST"}
     )
 
     class FakeScanWorker:
@@ -123,14 +129,36 @@ def test_hardware_dialog_stops_active_interface_scan_before_exit() -> None:
             self.deleted = True
 
     worker = FakeScanWorker()
-    dialog._ultrasound_scan_worker = worker  # type: ignore[assignment]
+    dialog._scan_worker = worker  # type: ignore[assignment]
 
-    assert dialog._stop_ultrasound_scan_worker()
+    assert dialog._stop_scan_worker()
     assert worker.interrupted
     assert worker.wait_timeout == 2_500
     assert worker.deleted
-    assert dialog._ultrasound_scan_worker is None
+    assert dialog._scan_worker is None
     dialog.close()
+    app.processEvents()
+
+
+def test_each_modality_dialog_restores_its_own_settings() -> None:
+    app = QApplication.instance() or QApplication(["test-modality-dialogs"])
+    imu = ImuDeviceSettingsDialog(
+        {"radio_channel": 19, "sample_rate_hz": 100.0, "sensor_ids": ["A", "B", "C"]}
+    )
+    encoder = EncoderDeviceSettingsDialog(
+        {"port": "COM7", "baudrate": 1_000_000, "vid": 0x16C0, "pid": 0x0483}
+    )
+    sync = SyncPulseDeviceSettingsDialog(
+        {"sample_rate_hz": 2_000.0, "pulse_interval_s": 2.0}
+    )
+
+    assert imu.channel_spin.value() == 19
+    assert imu.sensor_ids_edit.text() == "A, B, C"
+    assert encoder._selected_port() == "COM7"
+    assert sync.rate_spin.value() == 2_000.0
+    assert sync.interval_spin.value() == 2.0
+    for dialog in (imu, encoder, sync):
+        dialog.close()
     app.processEvents()
 
 
@@ -801,9 +829,7 @@ def test_real_device_profile_is_selected_in_ui_and_copied_to_worker_request(
     tmp_path: Path,
 ) -> None:
     _app, window, _created = _window_with_fake(tmp_path)
-    hardware_index = window.device_profile_combo.findData("hardware")
-    assert hardware_index >= 0
-    window.device_profile_combo.setCurrentIndex(hardware_index)
+    window._settings.set_device_profile_key("hardware")
     window._settings.set_hardware_device_overrides(
         {
             "ultrasound": {"interface_name": "\\Device\\NPF_TEST"},
@@ -815,7 +841,10 @@ def test_real_device_profile_is_selected_in_ui_and_copied_to_worker_request(
     request = window.build_request()
     assert request.device_profile_key == "hardware"
     assert request.device_overrides["encoder"]["port"] == "COM7"
-    assert window.hardware_settings_button.isEnabled()
+    assert not hasattr(window, "device_profile_combo")
+    assert not hasattr(window, "hardware_settings_button")
+    assert window._configure_buttons["encoder"].isEnabled()
+    window._render_device_profile()
     assert "Teensy" in window._device_profile_label.text()
     window.close()
 
@@ -1421,14 +1450,18 @@ def test_disconnect_all_clears_state(tmp_path: Path) -> None:
     window.close()
 
 
-def test_profile_warning_simulated_shows_banner(tmp_path: Path) -> None:
-    """Simulated profile should display an orange warning banner."""
+def test_trial_form_has_no_global_device_config_and_modalities_are_clickable(
+    tmp_path: Path,
+) -> None:
     _app, window, _created = _window_with_fake(tmp_path)
-    simulated_index = window.device_profile_combo.findData("simulated")
-    window.device_profile_combo.setCurrentIndex(simulated_index)
-    text = window.profile_warning_label.text()
-    assert "模拟设备" in text or "simulated" in text.lower()
-    assert "#f8d7da" in window.profile_warning_label.styleSheet() or "red" in window.profile_warning_label.styleSheet().lower()
+    assert not hasattr(window, "device_profile_combo")
+    assert not hasattr(window, "hardware_settings_button")
+    assert not hasattr(window, "profile_warning_label")
+    assert set(window._configure_buttons) == set(MODALITIES)
+    for modality, button in window._configure_buttons.items():
+        assert button.objectName() == f"configure_{modality}"
+        assert button.property("buttonRole") == "deviceConfig"
+        assert "自动保存" in button.toolTip()
     window.close()
 
 
@@ -1549,25 +1582,39 @@ def test_health_table_has_four_modalities(tmp_path: Path) -> None:
 # ── Hardware profile selection tests ──
 
 
-def test_save_real_device_settings_auto_selects_hardware_profile(tmp_path: Path) -> None:
-    """Saving real device settings should switch to hardware profile."""
+def test_save_one_device_setting_merges_and_selects_hardware_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _app, window, _created = _window_with_fake(tmp_path)
-    simulated_index = window.device_profile_combo.findData("simulated")
-    window.device_profile_combo.setCurrentIndex(simulated_index)
+    window._settings.set_device_profile_key("simulated")
+    window._settings.set_hardware_device_overrides(
+        {"encoder": {"port": "COM8", "baudrate": 1_000_000}}
+    )
     assert window._selected_device_profile_key() == "simulated"
 
-    # Simulate the behavior that happens after hardware settings dialog accepts
-    window._settings.set_hardware_device_overrides(
-        {"ultrasound": {"interface_name": "\\Device\\NPF_TEST"}}
-    )
-    window._settings.set_device_profile_key("hardware")
+    class AcceptedUltrasoundDialog:
+        def __init__(self, current: object, parent: object) -> None:
+            del current, parent
 
-    # Manually trigger the profile switch effect
-    idx = window.device_profile_combo.findData("hardware")
-    window.device_profile_combo.setCurrentIndex(idx)
-    window._render_device_profile()
+        def exec(self) -> QDialog.DialogCode:
+            return QDialog.DialogCode.Accepted
+
+        @property
+        def validated_override(self) -> dict[str, object]:
+            return {"interface_name": "\\Device\\NPF_TEST", "nominal_rate_hz": 20.0}
+
+    monkeypatch.setitem(
+        DEVICE_SETTINGS_DIALOGS,
+        "ultrasound",
+        AcceptedUltrasoundDialog,  # type: ignore[arg-type]
+    )
+    window._configure_buttons["ultrasound"].click()
 
     assert window._selected_device_profile_key() == "hardware"
+    restored = window._settings.hardware_device_overrides
+    assert restored["ultrasound"]["interface_name"] == "\\Device\\NPF_TEST"
+    assert restored["encoder"]["port"] == "COM8"
     window.close()
 
 
@@ -1577,12 +1624,7 @@ def test_worker_request_uses_selected_profile(tmp_path: Path) -> None:
     window._settings.set_hardware_device_overrides(
         {"ultrasound": {"interface_name": "\\Device\\NPF_TEST"}}
     )
-    # Switch to hardware
     window._settings.set_device_profile_key("hardware")
-    idx = window.device_profile_combo.findData("hardware")
-    window.device_profile_combo.blockSignals(True)
-    window.device_profile_combo.setCurrentIndex(idx)
-    window.device_profile_combo.blockSignals(False)
 
     request = window.build_request()
     assert request.device_profile_key == "hardware"

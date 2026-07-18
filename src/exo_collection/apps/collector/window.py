@@ -65,6 +65,7 @@ from exo_collection.apps.collector.device_preview import (
     ModalityPreviewProcessHandle,
     ProfileModalityAdapterFactory,
 )
+from exo_collection.apps.collector.device_settings import DEVICE_SETTINGS_DIALOGS
 from exo_collection.apps.collector.preflight import (
     CollectorPreflightReport,
     CollectorPreflightWorker,
@@ -851,6 +852,7 @@ class CollectorWindow(QMainWindow):
         # Per-modality connect buttons
         self._connect_buttons: dict[str, QPushButton] = {}
         self._disconnect_buttons: dict[str, QPushButton] = {}
+        self._configure_buttons: dict[str, QPushButton] = {}
         self._connect_status_labels: dict[str, QLabel] = {}
         self._connect_device_labels: dict[str, QLabel] = {}
 
@@ -987,30 +989,6 @@ class CollectorWindow(QMainWindow):
         root_row.addWidget(self.browse_button)
         form.addRow("数据根目录：", root_row)
 
-        device_row = QHBoxLayout()
-        self.device_profile_combo = QComboBox()
-        self.device_profile_combo.setObjectName("device_profile")
-        self.device_profile_combo.addItem("内置模拟设备", "simulated")
-        self.device_profile_combo.addItem(
-            "真实超声 + 3×IMU + 电机编码器（模拟同步台架）", "hardware",
-        )
-        stored_profile = self._settings.device_profile_key
-        stored_index = self.device_profile_combo.findData(stored_profile)
-        self.device_profile_combo.setCurrentIndex(max(0, stored_index))
-        self.device_profile_combo.currentIndexChanged.connect(self._handle_device_profile_changed)
-        device_row.addWidget(self.device_profile_combo, 1)
-        self.hardware_settings_button = QPushButton("真实设备设置…")
-        self.hardware_settings_button.setObjectName("hardware_device_settings")
-        self.hardware_settings_button.clicked.connect(self.edit_hardware_device_settings)
-        device_row.addWidget(self.hardware_settings_button)
-        form.addRow("设备配置：", device_row)
-
-        # Profile warning banner
-        self.profile_warning_label = QLabel()
-        self.profile_warning_label.setObjectName("profile_warning")
-        self.profile_warning_label.setWordWrap(True)
-        controls_layout.addWidget(self.profile_warning_label)
-
         self.project_combo = QComboBox()
         self.project_combo.setObjectName("project")
         for project in PROJECTS:
@@ -1096,7 +1074,7 @@ class CollectorWindow(QMainWindow):
         # ── Device Connection Area ──
         connection_box = QGroupBox("设备连接")
         connection_layout = QGridLayout(connection_box)
-        connection_layout.addWidget(QLabel("模态"), 0, 0)
+        connection_layout.addWidget(QLabel("模态（点击设置）"), 0, 0)
         connection_layout.addWidget(QLabel("来源 / 设备 ID"), 0, 1)
         connection_layout.addWidget(QLabel("状态"), 0, 2)
         connection_layout.addWidget(QLabel("操作"), 0, 3)
@@ -1111,7 +1089,16 @@ class CollectorWindow(QMainWindow):
             "ultrasound": "超声", "imu": "IMU", "encoder": "电机编码器", "sync_pulse": "同步脉冲",
         }
         for row_idx, modality in enumerate(MODALITIES, start=1):
-            connection_layout.addWidget(QLabel(_modality_labels[modality]), row_idx, 0)
+            configure_btn = QPushButton(_modality_labels[modality])
+            configure_btn.setObjectName(f"configure_{modality}")
+            configure_btn.setProperty("buttonRole", "deviceConfig")
+            configure_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            configure_btn.setToolTip(f"设置{_modality_labels[modality]}设备参数（自动保存）")
+            configure_btn.clicked.connect(
+                lambda _checked=False, selected=modality: self.edit_modality_device_settings(selected)
+            )
+            connection_layout.addWidget(configure_btn, row_idx, 0)
+            self._configure_buttons[modality] = configure_btn
             device_label = QLabel("—")
             device_label.setObjectName(f"device_label_{modality}")
             device_label.setWordWrap(True)
@@ -1290,60 +1277,57 @@ class CollectorWindow(QMainWindow):
         self._configuration_widgets = (
             self.data_root_edit,
             self.browse_button,
-            self.device_profile_combo,
-            self.hardware_settings_button,
             self.project_combo,
             self.subject_code_edit,
             self.condition_combo,
             self.repeat_spin,
             self.experiment_metadata_button,
             self.connect_all_button,
+            *self._configure_buttons.values(),
         )
         self._render_device_profile()
 
     # ── Profile / Device Metadata ──────────────────────────────────────
 
     def _selected_device_profile_key(self) -> str:
-        value = str(self.device_profile_combo.currentData() or "simulated")
-        return "hardware" if value == "hardware" else "simulated"
+        return self._settings.device_profile_key
 
     def _render_device_profile(self) -> None:
         hardware = self._selected_device_profile_key() == "hardware"
-        self.hardware_settings_button.setEnabled(
-            hardware and not self._configuration_locked and not self._preflight_busy
-        )
         overrides = self._settings.hardware_device_overrides if hardware else {}
 
         # Update per-modality device labels
         if hardware:
             self._device_profile_label.setText(
-                "真实设备模式：Raw Ethernet/Npcap 超声 + Xsens MTw IMU + Teensy 编码器；"
-                "同步脉冲为模拟信号（仅台架验证）"
+                "真实设备模式：Raw Ethernet 超声 + Xsens MTw IMU + Teensy 编码器。"
+                "点击蓝色模态名称可分别设置；参数保存后自动恢复；同步脉冲仍为模拟台架信号。"
             )
             self._device_profile_label.setStyleSheet("color:#842029;font-weight:600;")
-            # Warning banner
-            self.profile_warning_label.setText(
-                "真实设备模式 — 超声、IMU、编码器为真实设备；同步仍为模拟同步（仅台架验证）。"
-            )
-            self.profile_warning_label.setStyleSheet(
-                "QLabel { color:#664d03; background:#fff3cd; padding:6px; border:1px solid #ffecb5; border-radius:3px; }"
-            )
 
             device_info = {
-                "ultrasound": f"真实 · Raw Ethernet 超声 · {overrides.get('ultrasound', {}).get('interface_name') or '未选择网卡'}",
-                "imu": f"真实 · Xsens MTw · 信道 {overrides.get('imu', {}).get('radio_channel', 25)}",
-                "encoder": f"真实 · Teensy 编码器 · {overrides.get('encoder', {}).get('port') or '自动发现'}",
-                "sync_pulse": "模拟同步（仅台架验证）",
+                "ultrasound": (
+                    "真实 · Raw Ethernet · "
+                    f"{overrides.get('ultrasound', {}).get('interface_name') or '未选择网卡'}"
+                ),
+                "imu": (
+                    "真实 · Xsens MTw · "
+                    f"信道 {overrides.get('imu', {}).get('radio_channel', 25)} · "
+                    f"{overrides.get('imu', {}).get('sample_rate_hz', 120.0):g} Hz"
+                ),
+                "encoder": (
+                    "真实 · Teensy · "
+                    f"{overrides.get('encoder', {}).get('port') or '按 VID/PID 自动发现'}"
+                ),
+                "sync_pulse": (
+                    "模拟同步台架 · "
+                    f"{overrides.get('sync_pulse', {}).get('sample_rate_hz', 1000.0):g} Hz"
+                ),
             }
         else:
-            self._device_profile_label.setText("全部使用内置模拟设备")
+            self._device_profile_label.setText(
+                "当前为自动化测试用模拟设备；正常启动并保存任一设备设置后切换为真实设备模式。"
+            )
             self._device_profile_label.setStyleSheet("")
-            self.profile_warning_label.setText(
-                "当前为模拟设备，不会读取真实硬件"
-            )
-            self.profile_warning_label.setStyleSheet(
-                "QLabel { color:#842029; background:#f8d7da; padding:6px; border:1px solid #f5c2c7; border-radius:3px; font-weight:600; }"
-            )
             device_info = {
                 m: f"模拟 · Simulated{m.capitalize()}Adapter" for m in MODALITIES
             }
@@ -1352,54 +1336,45 @@ class CollectorWindow(QMainWindow):
             if modality in self._connect_device_labels:
                 self._connect_device_labels[modality].setText(device_info.get(modality, "—"))
 
-    @Slot()
-    def _handle_device_profile_changed(self) -> None:
-        # Never relabel a live connection as belonging to a different profile.
-        if self._preview_workers:
+    @Slot(str)
+    def edit_modality_device_settings(self, modality: str) -> None:
+        if modality not in MODALITIES:
+            raise ValueError(f"unknown modality: {modality!r}")
+        if modality in self._preview_workers or (
+            self._selected_device_profile_key() != "hardware" and self._preview_workers
+        ):
             QMessageBox.information(
                 self,
                 "请先断开设备",
-                "切换设备配置前，请先断开所有模态的实时预览连接。",
-            )
-            previous = self._settings.device_profile_key
-            idx = self.device_profile_combo.findData(previous)
-            self.device_profile_combo.blockSignals(True)
-            self.device_profile_combo.setCurrentIndex(max(0, idx))
-            self.device_profile_combo.blockSignals(False)
-            self._render_device_profile()
-            return
-
-        new_profile = self._selected_device_profile_key()
-        self._settings.set_device_profile_key(new_profile)
-        self._render_device_profile()
-        self._invalidate_preflight()
-        LOG.info("设备配置已切换为 %s", new_profile)
-
-    @Slot()
-    def edit_hardware_device_settings(self) -> None:
-        if self._preview_workers:
-            QMessageBox.information(
-                self,
-                "请先断开设备",
-                "修改真实设备设置前，请先断开所有模态的实时预览连接。",
+                "修改该设备设置前，请先断开对应预览连接；从模拟模式切换时需全部断开。",
             )
             return
-        dialog = HardwareDeviceSettingsDialog(self._settings.hardware_device_overrides, self)
+        if self._configuration_locked or self._preflight_busy:
+            QMessageBox.information(self, "当前不可修改", "采集或预检期间不能修改设备设置。")
+            return
+
+        current = self._settings.hardware_device_overrides.get(modality, {})
+        dialog_type = DEVICE_SETTINGS_DIALOGS[modality]
+        dialog = dialog_type(current, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        self._settings.set_hardware_device_overrides(dialog.validated_overrides)
+        self._settings.set_hardware_device_override(modality, dialog.validated_override)
+        # Saving any per-device settings is an explicit request to use the
+        # laboratory hardware profile. The choice and values are both synced
+        # immediately by SharedAppSettings and survive process restarts.
+        self._settings.set_device_profile_key("hardware")
         self._invalidate_preflight()
         self._render_device_profile()
-        # Auto-switch to hardware profile
-        if self._selected_device_profile_key() != "hardware":
-            idx = self.device_profile_combo.findData("hardware")
-            self.device_profile_combo.blockSignals(True)
-            self.device_profile_combo.setCurrentIndex(max(0, idx))
-            self.device_profile_combo.blockSignals(False)
-            self._settings.set_device_profile_key("hardware")
-            self._render_device_profile()
-        self.statusBar().showMessage("真实设备设置已保存；已切换至真实设备模式。", 8000)
-        LOG.info("真实设备设置已保存并持久化")
+        display = {
+            "ultrasound": "超声",
+            "imu": "IMU",
+            "encoder": "电机编码器",
+            "sync_pulse": "同步脉冲",
+        }[modality]
+        self.statusBar().showMessage(
+            f"{display}设备设置已保存；下次启动将自动恢复。", 8000
+        )
+        LOG.info("%s 设备设置已保存并持久化", modality)
 
     @Slot()
     def choose_data_root(self) -> None:

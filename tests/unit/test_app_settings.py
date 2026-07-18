@@ -130,6 +130,30 @@ def test_hardware_profile_and_non_secret_device_settings_are_persistent(
     assert restored.hardware_device_overrides["encoder"]["port"] == "COM7"
 
 
+def test_single_modality_settings_merge_without_erasing_other_devices(
+    tmp_path: Path,
+) -> None:
+    settings_path = tmp_path / "shared.ini"
+    first = _file_settings(settings_path)
+    first.set_hardware_device_overrides(
+        {
+            "imu": {"radio_channel": 20},
+            "encoder": {"port": "COM7"},
+        }
+    )
+
+    saved = first.set_hardware_device_override(
+        "ultrasound",
+        {"interface_name": "\\Device\\NPF_TEST", "nominal_rate_hz": 20.0},
+    )
+    assert saved["interface_name"] == "\\Device\\NPF_TEST"
+
+    restored = _file_settings(settings_path).hardware_device_overrides
+    assert restored["ultrasound"]["interface_name"] == "\\Device\\NPF_TEST"
+    assert restored["imu"]["radio_channel"] == 20
+    assert restored["encoder"]["port"] == "COM7"
+
+
 @pytest.mark.parametrize(
     ("status", "message"),
     [

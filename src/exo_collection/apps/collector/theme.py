@@ -37,7 +37,7 @@ QGroupBox::title {
     background: #f8fafc;
 }
 
-QLineEdit, QComboBox, QSpinBox, QPlainTextEdit, QTableWidget {
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QPlainTextEdit, QTableWidget {
     background: #ffffff;
     border: 1px solid #b9c7d8;
     border-radius: 4px;
@@ -45,16 +45,17 @@ QLineEdit, QComboBox, QSpinBox, QPlainTextEdit, QTableWidget {
     selection-color: #ffffff;
 }
 
-QLineEdit, QComboBox, QSpinBox {
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
     min-height: 24px;
     padding: 2px 6px;
 }
 
-QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QPlainTextEdit:focus {
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QPlainTextEdit:focus {
     border: 2px solid #2563eb;
 }
 
-QComboBox::drop-down, QSpinBox::up-button, QSpinBox::down-button {
+QComboBox::drop-down, QSpinBox::up-button, QSpinBox::down-button,
+QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {
     border: none;
     background: #e2e8f0;
 }
@@ -118,6 +119,22 @@ QPushButton[buttonRole="danger"] {
 
 QPushButton[buttonRole="danger"]:hover {
     background: #dc2626;
+}
+
+QPushButton[buttonRole="deviceConfig"] {
+    min-height: 22px;
+    padding: 2px 4px;
+    border: none;
+    background: transparent;
+    color: #1d4ed8;
+    text-align: left;
+    text-decoration: underline;
+    font-weight: 700;
+}
+
+QPushButton[buttonRole="deviceConfig"]:hover {
+    background: #dbeafe;
+    color: #1e40af;
 }
 
 QPushButton:disabled {
@@ -190,4 +207,3 @@ QToolTip {
     padding: 4px;
 }
 """
-

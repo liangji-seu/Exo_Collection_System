@@ -169,6 +169,22 @@ class SharedAppSettings:
         self._sync_checked("hardware device settings")
         return normalized
 
+    def set_hardware_device_override(
+        self,
+        modality: str,
+        values: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Merge and immediately persist settings for exactly one modality."""
+
+        allowed = {"ultrasound", "imu", "encoder", "sync_pulse"}
+        normalized_modality = modality.strip().lower()
+        if normalized_modality not in allowed:
+            raise ValueError(f"unknown hardware override modality: {modality!r}")
+        merged = self.hardware_device_overrides
+        merged[normalized_modality] = dict(values)
+        persisted = self.set_hardware_device_overrides(merged)
+        return dict(persisted[normalized_modality])
+
     def _sync_checked(self, subject: str) -> None:
         self._backend.sync()
         status = self._backend.status()
