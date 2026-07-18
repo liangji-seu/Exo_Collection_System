@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 from exo_collection.adapters.base import (
+    AdapterError,
     AdapterState,
     RawQueueOverflowError,
     TrialContext,
@@ -504,7 +505,7 @@ def test_time_discontinuity_detected_and_batch_split() -> None:
     # Verify the gap event is in health metrics.
     metrics = health.metrics
     assert metrics.get("timestamp_gap_events") is not None
-    assert metrics.get("gap_threshold_us") == 10_000
+    assert metrics.get("gap_threshold_us") == 7_500
     adapter.stop()
     adapter.close()
 
@@ -532,10 +533,10 @@ def test_uint32_wrap_is_not_reported_as_gap() -> None:
     adapter.close()
 
 
-def test_gap_threshold_is_2x_nominal_tick() -> None:
-    assert _GAP_THRESHOLD_US == 2 * _TICK_US
+def test_gap_threshold_has_half_period_jitter_margin() -> None:
+    assert _GAP_THRESHOLD_US == 1.5 * _TICK_US
     assert _TICK_US == 5_000
-    assert _GAP_THRESHOLD_US == 10_000
+    assert _GAP_THRESHOLD_US == 7_500
 
 
 # ------------------------------------------------------------------
@@ -942,7 +943,8 @@ def test_descriptor_metadata_fields() -> None:
     assert meta["device_timestamp_unit"] == "us"
     assert meta["hardware_tick_hz"] == 1_000_000
     assert meta["tick_period_us"] == 5_000
-    assert meta["gap_threshold_us"] == 10_000
+    assert meta["gap_threshold_us"] == 7_500
+    assert meta["gap_threshold_periods"] == 1.5
     assert meta["crc8_range"] == "bytes[2:34]"
     assert meta["read_only"] is True
     assert meta["simulated"] is False
@@ -950,13 +952,12 @@ def test_descriptor_metadata_fields() -> None:
 
 
 # ------------------------------------------------------------------
-# 12. Gap threshold boundary — one missing frame (10_000 us) IS a gap
+# 12. Gap threshold — one missing frame (10_000 us) IS a gap
 # ------------------------------------------------------------------
 
 
 def test_one_missing_frame_10_000us_is_detected_as_gap() -> None:
-    """With >= 2*period threshold, exactly one missed frame (10_000 us
-    diff) must be recognised as a time gap."""
+    """A two-period interval is above the 1.5-period jitter margin."""
     serial_port = FakeSerial(
         [
             make_raw_frame(teensy_time_us=5000),
@@ -1018,7 +1019,11 @@ def test_device_timestamp_unwrapped_across_uint32_wrap() -> None:
 
 def test_hdf5_device_time_no_regression_at_uint32_wrap(tmp_path) -> None:
     """HDF5 device_time vector must not regress from ~4.29e9 to a small
-    value when two batches straddle a uint32 wrap boundary."""
+    value when two batches straddle a uint32 wrap boundary.
+
+    The current schema stores the first expanded device timestamp for each
+    batch; Hdf5SignalWriter derives later rows from the nominal sample rate.
+    """
     adapter = TeensySerialEncoderAdapter()
     desc = adapter.descriptor()
 
@@ -1069,3 +1074,61 @@ def test_write_call_count_is_removed() -> None:
     """_write_call_count must not exist on the adapter instance."""
     adapter = TeensySerialEncoderAdapter()
     assert not hasattr(adapter, "_write_call_count")
+
+
+@pytest.mark.parametrize(
+    ("previous", "reset_value"),
+    [(10_000, 100), (0xF000_0000, 100)],
+)
+def test_non_wrap_clock_reset_faults_without_regressed_event(
+    previous: int, reset_value: int
+) -> None:
+    serial_port = FakeSerial(
+        [
+            make_raw_frame(teensy_time_us=5_000),
+            make_raw_frame(teensy_time_us=previous),
+            make_raw_frame(teensy_time_us=reset_value),
+        ]
+    )
+    adapter = TeensySerialEncoderAdapter(
+        {"port": "COM7", "batch_size": 1},
+        serial_factory=lambda **kwargs: serial_port,
+    )
+    adapter.connect()
+    adapter.prepare(context())
+    adapter.start()
+    wait_for(lambda: adapter.state is AdapterState.FAULTED)
+
+    with pytest.raises(AdapterError, match="clock moved backward"):
+        adapter.raise_if_faulted()
+    events = []
+    while (event := adapter.get_event(timeout=0.01)) is not None:
+        events.append(event)
+    assert [event.device_timestamp for event in events] == [5_000, previous]
+
+    adapter.stop()
+    adapter.close()
+
+
+def test_gap_threshold_scales_with_configured_rate() -> None:
+    serial_port = FakeSerial(
+        [
+            make_raw_frame(teensy_time_us=10_000),
+            make_raw_frame(teensy_time_us=20_000),
+            make_raw_frame(teensy_time_us=30_000),
+        ]
+    )
+    adapter = TeensySerialEncoderAdapter(
+        {"port": "COM7", "batch_size": 1, "nominal_rate_hz": 100.0},
+        serial_factory=lambda **kwargs: serial_port,
+    )
+    assert adapter.descriptor().metadata["tick_period_us"] == 10_000
+    assert adapter.descriptor().metadata["gap_threshold_us"] == 15_000
+
+    adapter.connect()
+    adapter.prepare(context())
+    adapter.start()
+    wait_for(lambda: adapter.raw_queue.qsize() == 3)
+    assert adapter.health().sequence_gaps == 0
+    adapter.stop()
+    adapter.close()

@@ -180,6 +180,118 @@ class FakeAwindaBackend:
         self.callback(device_id, packet, host_ns)
 
 
+def discovery_api(children_ids: Any) -> tuple[Any, Any]:
+    """Small fake XDA surface for deterministic discovery-clock tests."""
+    api = type(sys)("_test_xsens_discovery_clock")
+    api.XDI_PacketCounter = 99
+    api.XDI_SampleTimeFine = 98
+    api.XDI_EulerAngles = 1
+    api.XDI_Acceleration = 2
+    api.XDI_RateOfTurn = 3
+    api.XDI_MagneticField = 4
+    api.XsOutputConfiguration = lambda dt, rate: type(
+        "oc", (), {"data_type": dt, "rate": rate}
+    )()
+    api.XsOutputConfigurationArray = _FakeOutputConfigArray
+
+    class FakeMtw:
+        def __init__(self, device_id: str) -> None:
+            self._device_id = device_id
+
+        def deviceId(self):
+            return type(
+                "did", (), {"toXsString": lambda _self: self._device_id}
+            )()
+
+        def addCallbackHandler(self, callback):
+            pass
+
+        def removeCallbackHandler(self, callback):
+            pass
+
+        def setOutputConfiguration(self, output):
+            return True
+
+    class FakeMaster:
+        def __init__(self) -> None:
+            self.children_calls = 0
+
+        def gotoConfig(self):
+            return True
+
+        def gotoMeasurement(self):
+            return True
+
+        def enableRadio(self, channel):
+            return True
+
+        def disableRadio(self):
+            pass
+
+        def children(self):
+            self.children_calls += 1
+            return [FakeMtw(item) for item in children_ids(self.children_calls)]
+
+        def supportedUpdateRates(self):
+            return type(
+                "rates",
+                (), {
+                    "size": lambda _self: 1,
+                    "__getitem__": lambda _self, index: 200,
+                },
+            )()
+
+        def setUpdateRate(self, rate):
+            return True
+
+    class FakePortInfo:
+        def empty(self):
+            return False
+
+        def portName(self):
+            return "COM99"
+
+        def baudrate(self):
+            return 115200
+
+        def deviceId(self):
+            return type(
+                "did",
+                (), {
+                    "isWirelessMaster": lambda _self: True,
+                    "toXsString": lambda _self: "AWINDA_MASTER",
+                },
+            )()
+
+    master = FakeMaster()
+
+    class FakeControl:
+        def openPort(self, *args):
+            return True
+
+        def device(self, device_id):
+            return master
+
+        def closePort(self, *args):
+            pass
+
+        def close(self):
+            pass
+
+    api.XsScanner_scanPorts = lambda: type(
+        "ports",
+        (), {
+            "size": lambda _self: 1,
+            "__getitem__": lambda _self, index: FakePortInfo(),
+        },
+    )()
+    api.XsControl_construct = FakeControl
+    api.XsPortInfo = FakePortInfo
+    api.XsCallback = type("callback", (), {})
+    api.XsDataPacket = lambda packet: packet
+    return api, master
+
+
 # ──────────────────────────────────────────────────────────────
 #  Helpers
 # ──────────────────────────────────────────────────────────────
@@ -574,8 +686,8 @@ def test_close_best_effort_stages_even_when_stop_fails() -> None:
     assert "close" in backend.stages_called
 
 
-def test_remove_callbacks_called_on_stop_hardware() -> None:
-    """_stop_hardware must call backend.remove_callbacks()."""
+def test_callbacks_remain_registered_until_close() -> None:
+    """Trial stop gates packets but keeps callbacks for adapter reuse."""
     adapter, backend = running_adapter()
     # Give consumer time to drain
     backend.emit("A", Packet(1), 10)
@@ -584,8 +696,31 @@ def test_remove_callbacks_called_on_stop_hardware() -> None:
     _drain_events(adapter, timeout=0.2)
 
     adapter.stop()
-    assert backend._callbacks_removed is True
+    assert backend._callbacks_removed is False
     adapter.close()
+    assert backend._callbacks_removed is True
+
+
+def test_adapter_can_record_two_trials_without_reconnecting_callbacks() -> None:
+    adapter, backend = running_adapter()
+
+    for counter in (1, 2):
+        backend.emit("A", Packet(counter), counter * 10 + 1)
+        backend.emit("B", Packet(counter), counter * 10 + 2)
+        backend.emit("C", Packet(counter), counter * 10 + 3)
+        event = adapter.get_event(timeout=0.5)
+        assert event is not None
+        assert event.first_sample_index == 0
+        adapter.stop()
+        assert backend._callbacks_removed is False
+        if counter == 1:
+            adapter.prepare(context())
+            adapter.start()
+
+    assert backend.started == 2
+    assert backend.stopped == 2
+    adapter.close()
+    assert backend._callbacks_removed is True
 
 
 # ──────────────────────────────────────────────────────────────
@@ -868,6 +1003,9 @@ def test_discovery_with_target_ids_succeeds_even_with_extra_devices() -> None:
         def setOutputConfiguration(self, cfg):
             return True
 
+        def removeCallbackHandler(self, cb):
+            pass
+
     # Build fake API with children() returning 4 devices
     captured = {}
 
@@ -1006,6 +1144,9 @@ def test_discovery_no_ids_strict_three_succeeds() -> None:
 
         def setOutputConfiguration(self, cfg):
             return True
+
+        def removeCallbackHandler(self, cb):
+            pass
 
     # Reuse the _make_api pattern from above
     children_3 = lambda: [FakeMtw(d) for d in ["X", "Y", "Z"]]
@@ -1230,6 +1371,9 @@ def test_discovery_third_slow_connect_still_works() -> None:
 
         def setOutputConfiguration(self, cfg):
             return True
+
+        def removeCallbackHandler(self, cb):
+            pass
 
     # Build api where children() gradually adds devices
     api = type(sys)("_test_xsens_fake")
@@ -1514,30 +1658,23 @@ def test_consumer_exits_cleanly_when_stopped_empty() -> None:
 
 
 def test_consumer_drains_remaining_packets_after_stop_signalled() -> None:
-    """When stop is requested, the consumer must drain any packets
-    already in the queue before exiting — the main thread must NOT
-    consume from the packet queue."""
-    adapter, backend = running_adapter()
+    """Packets queued before stop are deterministically drained by consumer."""
+    backend = FakeAwindaBackend()
+    adapter = XsensAwindaImuAdapter(backend=backend)
+    adapter.connect()
+    adapter.prepare(context())
+    for item in (
+        ("A", Packet(1), 10),
+        ("B", Packet(1), 20),
+        ("C", Packet(1), 30),
+    ):
+        adapter._packet_queue.put_nowait(item)
 
-    # Emit incomplete group and enough to fill queue first
-    backend.emit("A", Packet(1), 10)
-    backend.emit("B", Packet(1), 20)
-    # Only 2 of 3 – group sits in _pending
-
-    # Now set consumer_stop directly (simulating mid-stop timing)
-    adapter._consumer_stop.set()
-
-    # Emit the missing C — this will complete the group as the
-    # consumer drains.
-    backend.emit("C", Packet(1), 30)
-    sleep(0.1)
-
-    # Consumer should have drained the C packet and emitted the group.
+    adapter.start()
+    adapter.stop()
     event = adapter.get_event(timeout=0.2)
     assert event is not None
     assert event.data.shape == (1, 3, 12)
-
-    adapter.stop()
     adapter.close()
 
 
@@ -1557,29 +1694,16 @@ def test_ambiguous_short_id_matches_multiple_devices_raises() -> None:
 
 
 def test_target_ids_that_match_same_device_are_rejected() -> None:
-    """Two different target IDs that both resolve to the same
-    discovered device must be rejected during selection."""
-    from exo_collection.adapters.imu.xsens_awinda import _match_device_id
+    """Two configured aliases cannot select one physical MTw twice."""
+    from exo_collection.adapters.imu.xsens_awinda import (
+        _match_target_device_ids,
+    )
 
-    # Short ID "12" matches "MT_12345" uniquely — fine once.
-    # Short ID "23" also matches "MT_12345" uniquely — but duplicate!
     discovered = {"MT_12345": None, "MT_67890": None, "MT_11111": None}
-    selected: dict[str, object] = {}
-
-    matched1 = _match_device_id("12345", discovered)
-    selected[matched1] = discovered[matched1]
-
-    # "23" should NOT match "MT_12345" since it's already selected.
-    # Actually _match_device_id doesn't know about prior selections —
-    # the adapter checks for conflicts.  That is tested here directly.
-    matched2 = _match_device_id("11111", discovered)
-    # This should NOT conflict — different device.
-    assert matched2 != matched1
-
-    # But "678" matches only "MT_67890" — fine
-    matched3 = _match_device_id("678", discovered)
-    assert matched3 != matched1
-    assert matched3 != matched2
+    with pytest.raises(AdapterError, match="same physical device"):
+        _match_target_device_ids(
+            ("12345", "2345", "67890"), discovered
+        )
 
 
 def test_discovery_ambiguous_id_during_stability_check() -> None:
@@ -1616,6 +1740,9 @@ def test_discovery_ambiguous_id_during_stability_check() -> None:
 
         def setOutputConfiguration(self, cfg):
             return True
+
+        def removeCallbackHandler(self, cb):
+            pass
 
     class FakePortInfo:
         def empty(self):
@@ -1731,17 +1858,16 @@ def test_stop_hardware_propagates_backend_stop_error() -> None:
     with pytest.raises(AdapterError):
         adapter.raise_if_faulted()
 
-    # remove_callbacks should still have been called despite stop failure
-    assert adapter._backend._callbacks_removed is True
+    # Trial stop never permanently detaches callbacks.
+    assert adapter._backend._callbacks_removed is False
     # Consumer thread should be None (joined)
     assert adapter._consumer_thread is None
     adapter.close()
+    assert adapter._backend._callbacks_removed is True
 
 
-def test_stop_hardware_propagates_remove_callbacks_error() -> None:
-    """When backend.remove_callbacks() raises, _stop_hardware records it
-    and continues with consumer drain, then re-raises to stop() which
-    records the fault."""
+def test_close_propagates_remove_callbacks_error_after_stopping_stream() -> None:
+    """Permanent callback cleanup happens at close and its error escapes."""
 
     class ErrorRemoveBackend(FakeAwindaBackend):
         def remove_callbacks(self):
@@ -1753,15 +1879,61 @@ def test_stop_hardware_propagates_remove_callbacks_error() -> None:
     adapter.start()
 
     adapter.stop()
-
-    # Fault recorded
-    with pytest.raises(AdapterError):
-        adapter.raise_if_faulted()
-
-    # stop() should have been called first (it succeeded)
+    adapter.raise_if_faulted()
     assert adapter._backend.stopped >= 1
     assert adapter._consumer_thread is None
-    adapter.close()
+    with pytest.raises(RuntimeError, match="remove_callbacks failure"):
+        adapter.close()
+
+
+def test_xda_remove_callbacks_best_efforts_all_devices_and_raises() -> None:
+    calls: list[str] = []
+
+    class Device:
+        def __init__(self, name: str, fail: bool = False) -> None:
+            self.name = name
+            self.fail = fail
+
+        def removeCallbackHandler(self, callback) -> None:
+            calls.append(self.name)
+            if self.fail:
+                raise RuntimeError(f"remove {self.name}")
+
+    backend = XdaAwindaBackend(XsensAwindaConfig())
+    backend._callback = object()
+    backend._devices = [Device("A", fail=True), Device("B"), Device("C")]
+
+    with pytest.raises(AdapterError, match="remove A"):
+        backend.remove_callbacks()
+    assert calls == ["A", "B", "C"]
+    assert backend._callback is None
+
+
+def test_consumer_join_timeout_keeps_reference_and_blocks_backend_close() -> None:
+    class StuckThread:
+        def __init__(self) -> None:
+            self.join_timeouts: list[float] = []
+
+        def is_alive(self) -> bool:
+            return True
+
+        def join(self, timeout: float) -> None:
+            self.join_timeouts.append(timeout)
+
+    backend = FakeAwindaBackend()
+    adapter = XsensAwindaImuAdapter(backend=backend)
+    adapter.connect()
+    adapter.prepare(context())
+    stuck = StuckThread()
+    adapter._consumer_thread = stuck
+
+    with pytest.raises(AdapterError):
+        adapter._stop_hardware()
+    assert adapter._consumer_thread is stuck
+    assert stuck.join_timeouts == [3.0]
+    with pytest.raises(AdapterError, match="consumer thread is alive"):
+        adapter._close_hardware()
+    assert backend.closed == 0
 
 
 # ──────────────────────────────────────────────────────────────
@@ -1834,6 +2006,9 @@ def test_third_device_late_arrival_must_wait_full_stable_window() -> None:
 
         def setOutputConfiguration(self, cfg):
             return True
+
+        def removeCallbackHandler(self, cb):
+            pass
 
     class FakePortInfo:
         def empty(self):
@@ -1952,4 +2127,66 @@ def test_third_device_late_arrival_must_wait_full_stable_window() -> None:
     assert set(backend.device_ids) == {"A", "B", "C"}
     # Verify we waited enough polls (at least 7 after call 4)
     assert call_count[0] >= 10  # calls 1-3 (incomplete) + several stable polls
+    backend.close()
+
+
+def test_discovery_identity_change_restarts_stability_window(monkeypatch) -> None:
+    clock = [100.0]
+
+    def fake_monotonic() -> float:
+        return clock[0]
+
+    def fake_sleep(seconds: float) -> None:
+        clock[0] += 0.4
+
+    api, master = discovery_api(
+        lambda call: ("A", "B", "C") if call <= 3 else ("A", "B", "D")
+    )
+    import exo_collection.adapters.imu.xsens_awinda as awinda_mod
+
+    monkeypatch.setattr(awinda_mod, "monotonic", fake_monotonic)
+    monkeypatch.setattr(awinda_mod, "sleep", fake_sleep)
+    backend = XdaAwindaBackend(
+        XsensAwindaConfig(
+            wait_timeout_s=10.0,
+            stable_wait_s=1.0,
+            poll_interval_s=0.1,
+        ),
+        _api_module=api,
+    )
+    backend.connect(lambda *args: None)
+
+    assert backend.device_ids == ("A", "B", "D")
+    # Calls 1-3 almost satisfy the first window.  Identity C->D at call 4
+    # must restart it, requiring calls 5-7 before success.
+    assert master.children_calls >= 7
+    backend.close()
+
+
+def test_discovery_deadline_rejects_present_but_not_stable_set(
+    monkeypatch,
+) -> None:
+    clock = [100.0]
+
+    def fake_monotonic() -> float:
+        return clock[0]
+
+    def fake_sleep(seconds: float) -> None:
+        clock[0] += 0.4
+
+    api, _master = discovery_api(lambda call: ("A", "B", "C"))
+    import exo_collection.adapters.imu.xsens_awinda as awinda_mod
+
+    monkeypatch.setattr(awinda_mod, "monotonic", fake_monotonic)
+    monkeypatch.setattr(awinda_mod, "sleep", fake_sleep)
+    backend = XdaAwindaBackend(
+        XsensAwindaConfig(
+            wait_timeout_s=1.0,
+            stable_wait_s=2.0,
+            poll_interval_s=0.1,
+        ),
+        _api_module=api,
+    )
+    with pytest.raises(AdapterError, match="stable identity set"):
+        backend.connect(lambda *args: None)
     backend.close()

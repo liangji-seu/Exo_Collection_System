@@ -24,8 +24,9 @@ Firmware ``StatusFrame`` (C struct, ExoCode.ino)::
 Firmware sends at 200 Hz (5 ms cycle).  The adapter is strictly read‑only:
 it never calls ``serial.write()`` during any lifecycle phase.
 
-Time‑based gap detection uses the unwrapped ``teensy_time_us`` field.
-Threshold: ``2 * (1_000_000 us / 200 Hz) = 10_000 us``.
+Time‑based gap detection uses the unwrapped ``teensy_time_us`` field.  The
+threshold is derived from the configured nominal rate and is 1.5 nominal
+periods, so ordinary one-period jitter is not classified as a lost sample.
 """
 
 from __future__ import annotations
@@ -56,9 +57,20 @@ TEENSY_VID = 0x16C0
 TEENSY_PID = 0x0483
 CRC8_POLY = 0x07
 
-# Nominal firmware cycle in microseconds: 1e6 / 200 = 5_000 us.
+# Default firmware cycle in microseconds: 1e6 / 200 = 5_000 us.
 _TICK_US = 5_000
-_GAP_THRESHOLD_US = 2 * _TICK_US  # 10_000 us (one missed frame tolerates jitter)
+_GAP_THRESHOLD_PERIODS = 1.5
+_GAP_THRESHOLD_US = int(_GAP_THRESHOLD_PERIODS * _TICK_US)
+_UINT32_WRAP_HIGH_WATER = 0xC000_0000
+_UINT32_WRAP_LOW_WATER = 0x3FFF_FFFF
+
+
+def _nominal_tick_us(rate_hz: float) -> float:
+    return 1_000_000.0 / float(rate_hz)
+
+
+def _gap_threshold_us(rate_hz: float) -> int:
+    return max(1, int(round(_GAP_THRESHOLD_PERIODS * _nominal_tick_us(rate_hz))))
 
 # Compatibility names retained for callers of the earlier draft.
 HEAD_STATUS = HEAD_STATUS1
@@ -314,6 +326,7 @@ def _match_teensy_port(
 @dataclass
 class _FrameHealth:
     """Mutable tracker scoped to a trial for state/error/time auditing."""
+    nominal_rate_hz: float = 200.0
     last_state: int | None = None
     last_error_code: int | None = None
     last_fw_sequence: int | None = None
@@ -324,30 +337,57 @@ class _FrameHealth:
     # Accumulates elapsed us across uint32 wrap for the unwrapped "time ruler".
     _wraps: int = 0
 
+    @property
+    def tick_period_us(self) -> float:
+        return _nominal_tick_us(self.nominal_rate_hz)
+
+    @property
+    def gap_threshold_us(self) -> int:
+        return _gap_threshold_us(self.nominal_rate_hz)
+
+    def _is_forward_uint32_wrap(self, previous: int, current: int) -> bool:
+        # A real wrap must cross the upper/lower quarter boundary.  A small
+        # backward jump (most commonly a device reset) must not be mistaken
+        # for a 2**32 rollover and silently regress the stored time axis.
+        wrapped_delta = (current - previous) & 0xFFFF_FFFF
+        max_plausible_delta = max(1_000_000, 10 * self.gap_threshold_us)
+        return (
+            previous >= _UINT32_WRAP_HIGH_WATER
+            and current <= _UINT32_WRAP_LOW_WATER
+            and wrapped_delta <= max_plausible_delta
+        )
+
     def unwrap_time(self, raw: int) -> int:
         """Return unwrapped device time (int) accounting for uint32 wraps."""
         if self.last_teensy_time_us is None:
             return int(raw)
-        delta = int(raw) - self.last_teensy_time_us
-        if delta < -(2**31):
-            # Forward wrap: raw wrapped around after ~71.6 min.
-            self._wraps += 1
-        return self._wraps * 2**32 + int(raw)
+        current = int(raw)
+        previous = self.last_teensy_time_us
+        if current < previous:
+            if self._is_forward_uint32_wrap(previous, current):
+                # Forward wrap: raw wrapped around after ~71.6 min.
+                self._wraps += 1
+            else:
+                raise AdapterError(
+                    "Teensy device clock moved backward without a uint32 "
+                    f"wrap ({previous} -> {current}); device reset suspected"
+                )
+        return self._wraps * 2**32 + current
 
     def detect_gap(self, raw: int) -> int | None:
         """Return elapsed us if a time discontinuity is detected, else None."""
         if self.last_teensy_time_us is None:
             return None
         prev = self.last_teensy_time_us
+        current = int(raw)
+        if current < prev and not self._is_forward_uint32_wrap(prev, current):
+            raise AdapterError(
+                "Teensy device clock moved backward without a uint32 "
+                f"wrap ({prev} -> {current}); device reset suspected"
+            )
         # Handle uint32 arithmetic: forward diff in [0, 2^32).
-        diff = (int(raw) - prev) & 0xFFFF_FFFF
-        # If the difference looks like a backward wrap (large forward jump),
-        # clamp to the expected one-tick delta.
-        if diff > 2**31:
-            return None
-        # Detect gap at >= 2 * nominal period so that one confirmed
-        # missing frame (10_000 us) is flagged without being jitter-sensitive.
-        if diff >= _GAP_THRESHOLD_US:
+        diff = (current - prev) & 0xFFFF_FFFF
+        if diff >= self.gap_threshold_us:
             return int(diff)
         return None
 
@@ -380,7 +420,9 @@ class TeensySerialEncoderAdapter(QueuedHardwareAdapter):
         self._pending_lock = Lock()
         self._sample_index = 0
         self._batch_sequence = 0
-        self._frame_health = _FrameHealth()
+        self._frame_health = _FrameHealth(
+            nominal_rate_hz=self._config.nominal_rate_hz
+        )
         self._first_data_received = Event()
 
     # ------------------------------------------------------------------
@@ -414,8 +456,9 @@ class TeensySerialEncoderAdapter(QueuedHardwareAdapter):
                 "device_timestamp_field": "teensy_time_us",
                 "device_timestamp_unit": "us",
                 "hardware_tick_hz": 1_000_000,
-                "tick_period_us": _TICK_US,
-                "gap_threshold_us": _GAP_THRESHOLD_US,
+                "tick_period_us": _nominal_tick_us(cfg.nominal_rate_hz),
+                "gap_threshold_us": _gap_threshold_us(cfg.nominal_rate_hz),
+                "gap_threshold_periods": _GAP_THRESHOLD_PERIODS,
                 "fw_seq_description": "command-echo (not frame counter)",
             },
         )
@@ -477,7 +520,9 @@ class TeensySerialEncoderAdapter(QueuedHardwareAdapter):
         self._pending.clear()
         self._sample_index = 0
         self._batch_sequence = 0
-        self._frame_health = _FrameHealth()
+        self._frame_health = _FrameHealth(
+            nominal_rate_hz=self._config.nominal_rate_hz
+        )
         self._first_data_received.clear()
 
     def _start_hardware(self) -> None:
@@ -566,7 +611,7 @@ class TeensySerialEncoderAdapter(QueuedHardwareAdapter):
                 "previous_teensy_time_us": health.last_teensy_time_us,
                 "current_teensy_time_us": frame.teensy_time_us,
                 "unwrapped_delta_us": gap_us,
-                "gap_threshold_us": _GAP_THRESHOLD_US,
+                "gap_threshold_us": health.gap_threshold_us,
                 "sample_index": self._sample_index,
                 "host_monotonic_ns": received_ns,
             })
@@ -637,6 +682,9 @@ class TeensySerialEncoderAdapter(QueuedHardwareAdapter):
             first_sample_index=self._sample_index,
             sample_count=len(frames),
             sequence_number=self._batch_sequence,
+            # The current HDF5 schema stores one device timestamp per batch;
+            # subsequent sample times in that batch are intentionally
+            # reconstructed from nominal_rate_hz by Hdf5SignalWriter.
             device_timestamp=first_unwrapped_us,
             sample_rate_hz=self._config.nominal_rate_hz,
             data=data,
@@ -673,6 +721,7 @@ class TeensySerialEncoderAdapter(QueuedHardwareAdapter):
             "timestamp_gap_events": json.dumps(health.timestamp_gap_events)
             if health.timestamp_gap_events
             else None,
-            "gap_threshold_us": _GAP_THRESHOLD_US,
-            "tick_period_us": _TICK_US,
+            "gap_threshold_us": health.gap_threshold_us,
+            "gap_threshold_periods": _GAP_THRESHOLD_PERIODS,
+            "tick_period_us": health.tick_period_us,
         }

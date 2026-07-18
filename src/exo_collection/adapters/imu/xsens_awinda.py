@@ -176,6 +176,9 @@ class XdaAwindaBackend:
         target_ids = self.config.sensor_ids  # tuple of 3 str, or empty
         deadline = monotonic() + self.config.wait_timeout_s
         stable_start_at: float | None = None
+        stable_signature: tuple[str, ...] | None = None
+        discovery_ready = False
+        last_discovery_error: AdapterError | None = None
         all_devices: list[Any] = []
         discovered_map: dict[str, Any] = {}
 
@@ -185,52 +188,64 @@ class XdaAwindaBackend:
                 str(d.deviceId().toXsString()): d for d in all_devices
             }
 
+            current_signature: tuple[str, ...] | None = None
             if target_ids:
-                # Wait until all target IDs appear AND the matched set is stable.
+                # A complete target set is only stable while the exact matched
+                # hardware IDs stay unchanged.  Counting matches alone is not
+                # sufficient: a short configured ID can resolve to a different
+                # MTw as devices join or leave the radio network.
                 try:
-                    for tid in target_ids:
-                        _match_device_id(tid, discovered_map)
-                    found_targets = True
-                except AdapterError:
-                    found_targets = False
-                if found_targets:
-                    if stable_start_at is None:
-                        stable_start_at = monotonic()
-                else:
-                    stable_start_at = None
-
-                if stable_start_at is not None:
-                    if monotonic() - stable_start_at >= self.config.stable_wait_s:
-                        break
+                    matched = _match_target_device_ids(
+                        target_ids, discovered_map
+                    )
+                    current_signature = matched
+                    last_discovery_error = None
+                except AdapterError as exc:
+                    last_discovery_error = exc
             else:
-                # Strict: exactly 3, stable
-                if len(all_devices) == 3:
-                    if stable_start_at is None:
-                        stable_start_at = monotonic()
-                else:
-                    stable_start_at = None
+                # Strictly require three unique IDs, and keep the same three
+                # IDs for the entire stability window.
+                if len(discovered_map) == 3:
+                    current_signature = tuple(sorted(discovered_map))
 
-                if stable_start_at is not None:
-                    if monotonic() - stable_start_at >= self.config.stable_wait_s:
-                        break
+            now = monotonic()
+            if current_signature is None:
+                stable_signature = None
+                stable_start_at = None
+            elif current_signature != stable_signature:
+                stable_signature = current_signature
+                stable_start_at = now
+            if (
+                current_signature is not None
+                and stable_start_at is not None
+                and now - stable_start_at >= self.config.stable_wait_s
+            ):
+                discovery_ready = True
+                break
 
             sleep(self.config.poll_interval_s)
 
         self._all_device_ids = sorted(discovered_map.keys())
 
+        if not discovery_ready or stable_signature is None:
+            detail = (
+                f" Last discovery error: {last_discovery_error}"
+                if last_discovery_error is not None
+                else ""
+            )
+            raise AdapterError(
+                "Awinda discovery timed out before 3 MTw devices held a "
+                f"stable identity set for {self.config.stable_wait_s:.3f} s; "
+                f"last discovered IDs: {self._all_device_ids}.{detail}"
+            )
+
         if target_ids:
             # Select the target 3; warn in health if extras exist
-            selected_map: dict[str, Any] = {}
-            matched_ordered: list[str] = []
-            for tid in target_ids:
-                matched = _match_device_id(tid, discovered_map)
-                if matched in selected_map:
-                    raise AdapterError(
-                        f"目标 ID '{tid}' 与已匹配设备 '{matched}' 冲突；"
-                        f"请使用不重叠的完整 ID"
-                    )
-                selected_map[matched] = discovered_map[matched]
-                matched_ordered.append(matched)
+            matched_ordered = list(stable_signature)
+            selected_map = {
+                matched: discovered_map[matched]
+                for matched in matched_ordered
+            }
             extras = sorted(set(discovered_map.keys()) - set(selected_map.keys()))
             if extras:
                 self._discovery_warning = (
@@ -241,11 +256,7 @@ class XdaAwindaBackend:
             ordered_ids = tuple(matched_ordered)
             self._devices = [selected_map[did] for did in ordered_ids]
         else:
-            if len(all_devices) != 3:
-                raise AdapterError(
-                    f"Awinda 需要 3 台 MTw，实际发现 {len(all_devices)} 台。"
-                )
-            ordered_ids = tuple(sorted(discovered_map.keys()))
+            ordered_ids = stable_signature
             self._devices = [discovered_map[did] for did in ordered_ids]
             self._discovery_warning = None
 
@@ -322,12 +333,23 @@ class XdaAwindaBackend:
             self.metadata["discovery_warning"] = self._discovery_warning
 
     def remove_callbacks(self) -> None:
-        if self._callback is not None:
-            for dev in self._devices:
-                try:
-                    dev.removeCallbackHandler(self._callback)
-                except BaseException:
-                    pass
+        callback = self._callback
+        if callback is None:
+            return
+        first_error: BaseException | None = None
+        for dev in self._devices:
+            try:
+                dev.removeCallbackHandler(callback)
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+        # Never retain the Python callback after the owning XDA session is
+        # being closed.  Any vendor cleanup failure is still propagated.
+        self._callback = None
+        if first_error is not None:
+            raise AdapterError(
+                f"Failed to remove one or more MTw callbacks: {first_error}"
+            ) from first_error
 
     def start(self) -> None:
         if self._master is None or not self._master.gotoMeasurement():
@@ -445,6 +467,22 @@ def _match_device_id(
             f"请使用完整 ID 消除歧义"
         )
     return candidates[0]
+
+
+def _match_target_device_ids(
+    target_ids: Sequence[str], discovered_map: dict[str, Any]
+) -> tuple[str, ...]:
+    """Resolve configured IDs in order and require three distinct devices."""
+    matched = tuple(
+        _match_device_id(target_id, discovered_map)
+        for target_id in target_ids
+    )
+    if len(set(matched)) != len(matched):
+        raise AdapterError(
+            "Multiple configured MTw IDs resolve to the same physical "
+            f"device: {matched}"
+        )
+    return matched
 
 
 @dataclass(slots=True)
@@ -659,12 +697,9 @@ class XsensAwindaImuAdapter(QueuedHardwareAdapter):
             if first_error is None:
                 first_error = exc
 
-        # 3. remove callback handlers to prevent late callback races (best-effort)
-        try:
-            self._backend.remove_callbacks()
-        except BaseException as exc:
-            if first_error is None:
-                first_error = exc
+        # 3. Keep vendor callbacks registered across Trial boundaries.  The
+        # callback entry point is gated by _accepting_packets, while permanent
+        # callback removal belongs to backend.close().
 
         # 4. signal consumer thread — it drains remaining queue items, then exits
         self._consumer_stop.set()
@@ -678,19 +713,38 @@ class XsensAwindaImuAdapter(QueuedHardwareAdapter):
                 self._set_fault(timeout_error)
                 if first_error is None:
                     first_error = timeout_error
-        self._consumer_thread = None
+        if self._consumer_thread is not None and not self._consumer_thread.is_alive():
+            self._consumer_thread = None
 
-        # 5. flush any incomplete pending groups
-        with self._pending_lock:
-            for group in self._pending.values():
-                self._incomplete_samples += max(0, 3 - len(group.rows))
-            self._pending.clear()
+        # 5. Only touch pending groups after the sole consumer has stopped.
+        # If it is still alive, retain both the thread reference and its state;
+        # close() will refuse to tear down the backend underneath it.
+        if self._consumer_thread is None:
+            with self._pending_lock:
+                for group in self._pending.values():
+                    self._incomplete_samples += max(0, 3 - len(group.rows))
+                self._pending.clear()
 
         if first_error is not None:
             raise first_error
 
     def _close_hardware(self) -> None:
-        self._backend.close()
+        if self._consumer_thread is not None and self._consumer_thread.is_alive():
+            raise AdapterError(
+                "Refusing to close Awinda backend while consumer thread is alive"
+            )
+        first_error: BaseException | None = None
+        try:
+            self._backend.remove_callbacks()
+        except BaseException as exc:
+            first_error = exc
+        try:
+            self._backend.close()
+        except BaseException as exc:
+            if first_error is None:
+                first_error = exc
+        if first_error is not None:
+            raise first_error
 
     # ── callback entry point ───────────────────────────────
 
