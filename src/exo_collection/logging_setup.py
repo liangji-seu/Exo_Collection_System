@@ -1,10 +1,9 @@
 """Centralised logging configuration for Collector and Data Studio applications.
 
-Provides one UTF-8 rotating application log per Collector process launch in
-``%LOCALAPPDATA%/ExoCollectionSystem/log/`` on Windows, falling back to
-``~/.local/share/ExoCollectionSystem/log/`` on other platforms.  A launch is
-identified by local wall-clock time and PID, so historical sessions are never
-appended into one ambiguous shared file.
+Provides one UTF-8 rotating application log per desktop process launch in the
+visible ``Exo_Collection_System/log/`` directory. A launch is identified by
+application name, local wall-clock time and PID, so historical sessions are
+never appended into one ambiguous shared file.
 """
 
 from __future__ import annotations
@@ -19,39 +18,35 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 
-LOG_ORGANIZATION = "ExoCollectionSystem"
-LOG_APP_NAME = "collector"
 DEFAULT_MAX_BYTES = 10 * 1024 * 1024  # 10 MiB
 DEFAULT_BACKUP_COUNT = 10
-_HANDLER_MARKER = "_exo_collector_log_handler"
+_HANDLER_MARKER = "_exo_application_log_handler"
 _PROCESS_LAUNCH_TOKEN = datetime.now().astimezone().strftime(
     "%Y%m%d_%H%M%S_%f"
 )
 
 
 def _default_log_dir() -> Path:
-    """Platform-appropriate application log directory."""
-    if sys.platform == "win32":
-        localappdata = os.environ.get("LOCALAPPDATA")
-        if localappdata:
-            base = Path(localappdata)
-        else:
-            # Rare fallback: %USERPROFILE% or CWD
-            base = Path.home() / "AppData" / "Local"
-        return base / LOG_ORGANIZATION / "log"
-    # Non-Windows: XDG_DATA_HOME or ~/.local/share
-    xdg = os.environ.get("XDG_DATA_HOME")
-    if xdg:
-        base = Path(xdg)
+    """Return the visible project/install-local ``log`` directory."""
+
+    if getattr(sys, "frozen", False):
+        application_root = Path(sys.executable).resolve().parent
     else:
-        base = Path.home() / ".local" / "share"
-    return base / LOG_ORGANIZATION / "log"
+        application_root = Path(__file__).resolve().parents[2]
+    return application_root / "log"
 
 
 def collector_log_path() -> Path:
     """Return this Collector process launch's absolute log path."""
     return _default_log_dir() / (
         f"ExoCollector_{_PROCESS_LAUNCH_TOKEN}_pid{os.getpid()}.log"
+    )
+
+
+def data_studio_log_path() -> Path:
+    """Return this Data Studio process launch's absolute log path."""
+    return _default_log_dir() / (
+        f"ExoDataStudio_{_PROCESS_LAUNCH_TOKEN}_pid{os.getpid()}.log"
     )
 
 
@@ -114,6 +109,25 @@ def setup_collector_logging(
             )
         )
         root.addHandler(console_handler)
+
+
+def setup_data_studio_logging(
+    *,
+    level: int = logging.INFO,
+    console: bool = False,
+    log_path: Path | None = None,
+    max_bytes: int = DEFAULT_MAX_BYTES,
+    backup_count: int = DEFAULT_BACKUP_COUNT,
+) -> None:
+    """Configure Data Studio logging using the shared protected handler."""
+
+    setup_collector_logging(
+        level=level,
+        console=console,
+        log_path=log_path or data_studio_log_path(),
+        max_bytes=max_bytes,
+        backup_count=backup_count,
+    )
 
 
 # -- Sensitive key guard ----------------------------------------------------

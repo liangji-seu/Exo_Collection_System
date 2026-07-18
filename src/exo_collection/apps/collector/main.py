@@ -19,7 +19,7 @@ from exo_collection.acquisition.messages import WorkerEventType
 from exo_collection.acquisition.workers import CollectorWorker
 from exo_collection.apps.collector.window import CollectorWindow
 from exo_collection.configuration import SharedAppSettings
-from exo_collection.logging_setup import setup_collector_logging
+from exo_collection.logging_setup import collector_log_path, setup_collector_logging
 from exo_collection.orchestration.models import TrialRunRequest
 
 
@@ -158,31 +158,37 @@ def main(
     multiprocessing.freeze_support()
     setup_collector_logging()
     logger = logging.getLogger("exo_collection.collector.main")
-    logger.info("Exo Collector application starting")
-    arguments = list(argv) if argv is not None else sys.argv[1:]
-    options = _build_parser().parse_args(arguments)
-    if options.collect_smoke_test:
-        with TemporaryDirectory(prefix="exo-collector-collect-smoke-") as directory:
-            return _run_collection_smoke(Path(directory), options.duration)
-    if options.smoke_test:
-        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-        with TemporaryDirectory(prefix="exo-collector-ui-smoke-") as directory:
-            data_root = Path(directory)
-            return _run_ui(
-                arguments,
-                data_root,
-                _temporary_settings(data_root),
-                smoke_test=True,
-            )
-
-    settings_store = settings if settings is not None else SharedAppSettings()
+    logger.info(
+        "Exo Collector application starting; log_file=%s",
+        collector_log_path(),
+    )
     try:
+        arguments = list(argv) if argv is not None else sys.argv[1:]
+        options = _build_parser().parse_args(arguments)
+        if options.collect_smoke_test:
+            with TemporaryDirectory(prefix="exo-collector-collect-smoke-") as directory:
+                return _run_collection_smoke(Path(directory), options.duration)
+        if options.smoke_test:
+            os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+            with TemporaryDirectory(prefix="exo-collector-ui-smoke-") as directory:
+                data_root = Path(directory)
+                return _run_ui(
+                    arguments,
+                    data_root,
+                    _temporary_settings(data_root),
+                    smoke_test=True,
+                )
+
+        settings_store = settings if settings is not None else SharedAppSettings()
         return _run_ui(
             arguments,
             settings_store.data_root,
             settings_store,
             smoke_test=False,
         )
+    except Exception:
+        logger.exception("Exo Collector terminated by an unhandled exception")
+        raise
     finally:
         logger.info("Exo Collector application exiting")
 

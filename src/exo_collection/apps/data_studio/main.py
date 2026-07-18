@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import multiprocessing
 import os
 import sys
@@ -15,6 +16,10 @@ from PySide6.QtWidgets import QApplication
 
 from exo_collection.apps.data_studio.window import DataStudioWindow
 from exo_collection.configuration import SharedAppSettings
+from exo_collection.logging_setup import (
+    data_studio_log_path,
+    setup_data_studio_logging,
+)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -112,26 +117,38 @@ def main(
     settings: SharedAppSettings | None = None,
 ) -> int:
     multiprocessing.freeze_support()
-    arguments = list(argv) if argv is not None else sys.argv[1:]
-    options = _build_parser().parse_args(arguments)
-    if options.smoke_test:
-        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-        with TemporaryDirectory(prefix="exo-data-studio-smoke-") as directory:
-            data_root = Path(directory)
-            return _run_ui(
-                arguments,
-                data_root,
-                _temporary_settings(data_root),
-                smoke_test=True,
-            )
-
-    settings_store = settings if settings is not None else SharedAppSettings()
-    return _run_ui(
-        arguments,
-        settings_store.data_root,
-        settings_store,
-        smoke_test=False,
+    setup_data_studio_logging()
+    logger = logging.getLogger("exo_collection.data_studio.main")
+    logger.info(
+        "Exo Data Studio application starting; log_file=%s",
+        data_studio_log_path(),
     )
+    try:
+        arguments = list(argv) if argv is not None else sys.argv[1:]
+        options = _build_parser().parse_args(arguments)
+        if options.smoke_test:
+            os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+            with TemporaryDirectory(prefix="exo-data-studio-smoke-") as directory:
+                data_root = Path(directory)
+                return _run_ui(
+                    arguments,
+                    data_root,
+                    _temporary_settings(data_root),
+                    smoke_test=True,
+                )
+
+        settings_store = settings if settings is not None else SharedAppSettings()
+        return _run_ui(
+            arguments,
+            settings_store.data_root,
+            settings_store,
+            smoke_test=False,
+        )
+    except Exception:
+        logger.exception("Exo Data Studio terminated by an unhandled exception")
+        raise
+    finally:
+        logger.info("Exo Data Studio application exiting")
 
 
 if __name__ == "__main__":

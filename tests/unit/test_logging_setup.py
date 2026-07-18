@@ -13,8 +13,10 @@ import pytest
 from exo_collection.logging_setup import (
     SafeLoggerAdapter,
     collector_log_path,
+    data_studio_log_path,
     get_logger,
     setup_collector_logging,
+    setup_data_studio_logging,
 )
 
 
@@ -23,10 +25,18 @@ from exo_collection.logging_setup import (
 
 def test_collector_log_path_returns_absolute(tmp_path: Path) -> None:
     path = collector_log_path()
-    assert path.parent.name == "log"
+    repository_root = Path(__file__).resolve().parents[2]
+    assert path.parent == repository_root / "log"
     assert path.name.startswith("ExoCollector_")
     assert f"_pid{os.getpid()}.log" in path.name
     assert path.is_absolute()
+
+
+def test_data_studio_uses_its_own_launch_log_name() -> None:
+    path = data_studio_log_path()
+    assert path.parent == collector_log_path().parent
+    assert path.name.startswith("ExoDataStudio_")
+    assert f"_pid{os.getpid()}.log" in path.name
 
 
 def test_separate_process_launches_use_distinct_log_file_names() -> None:
@@ -54,6 +64,13 @@ def test_setup_creates_log_directory(tmp_path: Path) -> None:
     setup_collector_logging(log_path=log_file, max_bytes=1024, backup_count=2)
     assert log_file.parent.exists()
     assert log_file.exists()
+
+
+def test_data_studio_setup_creates_its_log_file(tmp_path: Path) -> None:
+    log_file = tmp_path / "studio_logs" / "data-studio.log"
+    setup_data_studio_logging(log_path=log_file)
+
+    assert log_file.is_file()
 
 
 def test_setup_idempotent(tmp_path: Path) -> None:
