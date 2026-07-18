@@ -8,9 +8,6 @@ from __future__ import annotations
 
 import logging
 import math
-import os
-import subprocess
-import sys
 import time
 import traceback
 from collections import deque
@@ -39,6 +36,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGridLayout,
     QGroupBox,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLayout,
@@ -81,7 +79,6 @@ from exo_collection.adapters.ultrasound.raw_ethernet import (
     enumerate_network_interfaces,
     scan_ultrasound_interface,
 )
-from exo_collection.logging_setup import collector_log_path, setup_collector_logging
 from exo_collection.orchestration.models import (
     MeasuredConditionMetadata,
     TrialExperimentMetadata,
@@ -93,7 +90,18 @@ from exo_collection.quality import load_storage_policy
 LOG = logging.getLogger("exo_collection.collector.ui")
 
 MODALITIES = ("ultrasound", "imu", "encoder", "sync_pulse")
+MODALITY_DISPLAY_NAMES = {
+    "ultrasound": "超声",
+    "imu": "IMU",
+    "encoder": "电机编码器",
+    "sync_pulse": "同步脉冲",
+}
 CRITICAL_MODALITIES = frozenset(MODALITIES)
+HEALTH_COLUMN_MODALITY = 0
+HEALTH_COLUMN_SAMPLE_COUNT = 1
+HEALTH_COLUMN_RATE = 2
+HEALTH_COLUMN_DROPPED = 3
+HEALTH_COLUMN_SYNC = 4
 MAX_PREVIEW_POINTS = 4096
 MAX_TIMELINE_EVENTS = 300
 SIGNAL_RING_CAPACITY = 1000
@@ -1111,15 +1119,12 @@ class CollectorWindow(QMainWindow):
         connection_layout.addWidget(self._device_profile_label, len(MODALITIES) + 1, 0, 1, 3)
 
         # Per-modality rows
-        _modality_labels = {
-            "ultrasound": "超声", "imu": "IMU", "encoder": "电机编码器", "sync_pulse": "同步脉冲",
-        }
         for row_idx, modality in enumerate(MODALITIES, start=1):
-            configure_btn = QPushButton(_modality_labels[modality])
+            configure_btn = QPushButton(MODALITY_DISPLAY_NAMES[modality])
             configure_btn.setObjectName(f"configure_{modality}")
             configure_btn.setProperty("buttonRole", "deviceConfig")
             configure_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            configure_btn.setToolTip(f"设置{_modality_labels[modality]}设备参数（自动保存）")
+            configure_btn.setToolTip(f"设置{MODALITY_DISPLAY_NAMES[modality]}设备参数（自动保存）")
             configure_btn.clicked.connect(
                 lambda _checked=False, selected=modality: self.edit_modality_device_settings(selected)
             )
@@ -1169,48 +1174,72 @@ class CollectorWindow(QMainWindow):
         # ── Health Table ──
         health_box = QGroupBox("设备健康与样本计数")
         health_layout = QVBoxLayout(health_box)
-        self.health_table = QTableWidget(len(MODALITIES), 7)
+        self.health_table = QTableWidget(len(MODALITIES), 5)
         self.health_table.setObjectName("health_table")
         self.health_table.setHorizontalHeaderLabels(
-            ["模态", "健康", "样本/帧", "实际速率", "丢包", "队列", "最近更新"]
+            ["模态", "样本/帧", "实际速率", "丢包", "同步"]
         )
         self.health_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.health_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
         self.health_table.setAlternatingRowColors(True)
         self.health_table.verticalHeader().setVisible(False)
         for row, modality in enumerate(MODALITIES):
-            self.health_table.setItem(row, 0, QTableWidgetItem(modality))
-            self.health_table.setItem(row, 1, QTableWidgetItem("DISCONNECTED"))
-            self.health_table.setItem(row, 2, QTableWidgetItem("0"))
-            self.health_table.setItem(row, 3, QTableWidgetItem("-"))
-            self.health_table.setItem(row, 4, QTableWidgetItem("-"))
-            self.health_table.setItem(row, 5, QTableWidgetItem("-"))
-            self.health_table.setItem(row, 6, QTableWidgetItem("-"))
-        self.health_table.resizeColumnsToContents()
-        health_layout.addWidget(self.health_table)
-        controls_layout.addWidget(health_box)
+            self.health_table.setItem(
+                row,
+                HEALTH_COLUMN_MODALITY,
+                QTableWidgetItem(MODALITY_DISPLAY_NAMES[modality]),
+            )
+            self.health_table.setItem(row, HEALTH_COLUMN_SAMPLE_COUNT, QTableWidgetItem("0"))
+            self.health_table.setItem(row, HEALTH_COLUMN_RATE, QTableWidgetItem("-"))
+            self.health_table.setItem(row, HEALTH_COLUMN_DROPPED, QTableWidgetItem("-"))
+            if modality != "sync_pulse":
+                sync_placeholder = QTableWidgetItem("—")
+                sync_placeholder.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.health_table.setItem(row, HEALTH_COLUMN_SYNC, sync_placeholder)
 
-        # ── Sync Status ──
-        sync_box = QGroupBox("同步状态")
-        sync_layout = QGridLayout(sync_box)
-        sync_layout.addWidget(QLabel("状态："), 0, 0)
-        self.sync_status_label = QLabel("未开始")
+        sync_row = self._health_rows["sync_pulse"]
+        self.sync_status_label = QLabel("")
         self.sync_status_label.setObjectName("sync_status")
-        sync_layout.addWidget(self.sync_status_label, 0, 1)
-        sync_layout.addWidget(QLabel("合格触发："), 0, 2)
-        self.trigger_count_label = QLabel("0")
-        self.trigger_count_label.setObjectName("trigger_count")
-        sync_layout.addWidget(self.trigger_count_label, 0, 3)
-        sync_layout.addWidget(QLabel("首触发："), 1, 0)
-        self.first_trigger_label = QLabel("—")
-        self.first_trigger_label.setObjectName("first_trigger")
-        self.first_trigger_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        sync_layout.addWidget(self.first_trigger_label, 1, 1, 1, 3)
-        sync_layout.addWidget(QLabel("质量："), 2, 0)
-        self.sync_quality_label = QLabel("—")
-        self.sync_quality_label.setObjectName("sync_quality")
-        sync_layout.addWidget(self.sync_quality_label, 2, 1, 1, 3)
-        controls_layout.addWidget(sync_box)
+        self.sync_status_label.setFixedSize(20, 20)
+        sync_indicator_container = QWidget()
+        sync_indicator_layout = QHBoxLayout(sync_indicator_container)
+        sync_indicator_layout.setContentsMargins(0, 0, 0, 0)
+        sync_indicator_layout.addStretch(1)
+        sync_indicator_layout.addWidget(self.sync_status_label)
+        sync_indicator_layout.addStretch(1)
+        self.health_table.setCellWidget(
+            sync_row,
+            HEALTH_COLUMN_SYNC,
+            sync_indicator_container,
+        )
+        self._set_sync_indicator("WAITING_SYNC", "WAITING", 0, "—")
+        self.health_table.resizeColumnsToContents()
+        for row in range(self.health_table.rowCount()):
+            self.health_table.setRowHeight(row, 30)
+        health_header = self.health_table.horizontalHeader()
+        health_header.setSectionResizeMode(
+            HEALTH_COLUMN_MODALITY,
+            QHeaderView.ResizeMode.Stretch,
+        )
+        for column in (HEALTH_COLUMN_SAMPLE_COUNT, HEALTH_COLUMN_RATE, HEALTH_COLUMN_DROPPED):
+            health_header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        health_header.setSectionResizeMode(HEALTH_COLUMN_SYNC, QHeaderView.ResizeMode.Fixed)
+        self.health_table.setColumnWidth(HEALTH_COLUMN_SYNC, 56)
+        self.health_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        compact_height = (
+            self.health_table.horizontalHeader().height()
+            + sum(self.health_table.rowHeight(row) for row in range(self.health_table.rowCount()))
+            + self.health_table.frameWidth() * 2
+            + 4
+        )
+        self.health_table.setFixedHeight(compact_height)
+        health_layout.addWidget(self.health_table)
+        health_box.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Fixed,
+        )
+        controls_layout.addWidget(health_box)
+        controls_layout.addStretch(1)
 
         # ── Toast overlay for alerts ──
         self._toast_label = QLabel(self)
@@ -1225,17 +1254,6 @@ class CollectorWindow(QMainWindow):
         self._toast_timer = QTimer(self)
         self._toast_timer.setSingleShot(True)
         self._toast_timer.timeout.connect(self._hide_toast)
-        self._manifest_and_log_row = QHBoxLayout()
-        self.manifest_label = QLabel("Manifest：尚未生成")
-        self.manifest_label.setObjectName("manifest_path")
-        self.manifest_label.setWordWrap(True)
-        self.manifest_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self._manifest_and_log_row.addWidget(self.manifest_label, 1)
-        self.open_log_dir_button = QPushButton("打开日志目录")
-        self.open_log_dir_button.setObjectName("open_log_dir")
-        self.open_log_dir_button.clicked.connect(self._open_log_directory)
-        self._manifest_and_log_row.addWidget(self.open_log_dir_button)
-        controls_layout.addLayout(self._manifest_and_log_row)
         controls_scroll.setWidget(controls)
         body.addWidget(controls_scroll)
 
@@ -1364,12 +1382,7 @@ class CollectorWindow(QMainWindow):
         self._settings.set_device_profile_key("hardware")
         self._invalidate_preflight()
         self._render_device_profile()
-        display = {
-            "ultrasound": "超声",
-            "imu": "IMU",
-            "encoder": "电机编码器",
-            "sync_pulse": "同步脉冲",
-        }[modality]
+        display = MODALITY_DISPLAY_NAMES[modality]
         self.statusBar().showMessage(
             f"{display}设备设置已保存；下次启动将自动恢复。", 8000
         )
@@ -1394,9 +1407,9 @@ class CollectorWindow(QMainWindow):
         if self._worker is not None or not self._preflight_ready:
             return
         self._preflight_ready = False
-        for modality, row in self._health_rows.items():
-            self.health_table.item(row, 1).setText("UNKNOWN")
-            self.health_table.item(row, 1).setToolTip("")
+        for row in self._health_rows.values():
+            self.health_table.item(row, HEALTH_COLUMN_MODALITY).setToolTip("")
+        self._last_health_status.clear()
         self._set_trial_state("IDLE")
         self.statusBar().showMessage("配置或存储目标已变化，请重新连接设备。")
         self._update_start_button()
@@ -1676,14 +1689,17 @@ class CollectorWindow(QMainWindow):
         for modality in MODALITIES:
             status = reported.get(modality, "MISSING")
             row = self._health_rows[modality]
-            self.health_table.item(row, 1).setText(status)
+            modality_item = self.health_table.item(row, HEALTH_COLUMN_MODALITY)
+            modality_item.setToolTip(f"设备状态：{status}")
             if report is not None and modality in report.devices:
                 result = report.devices[modality]
-                self.health_table.item(row, 1).setToolTip(
-                    f"{result.device_id} · {result.message} · channels={result.channel_count} · raw={result.observed_raw_data}"
+                modality_item.setToolTip(
+                    f"设备状态：{status}\n设备：{result.device_id}\n"
+                    f"{result.message}\nchannels={result.channel_count} · raw={result.observed_raw_data}"
                 )
-                self.health_table.item(row, 3).setText("-" if result.actual_rate_hz is None else f"{result.actual_rate_hz:.1f}")
-                self.health_table.item(row, 5).setText(f"0/{result.queue_capacity}")
+                self.health_table.item(row, HEALTH_COLUMN_RATE).setText(
+                    "-" if result.actual_rate_hz is None else f"{result.actual_rate_hz:.1f} Hz"
+                )
             if modality in CRITICAL_MODALITIES and status != "READY":
                 missing_or_failed.append(f"{modality}={status}")
         self._preflight_ready = not missing_or_failed and (report.ready if report is not None else True)
@@ -1753,6 +1769,38 @@ class CollectorWindow(QMainWindow):
             f"QLabel {{ background-color:{fill}; border:2px solid {border}; "
             "border-radius:10px; }}"
         )
+
+    def _set_sync_indicator(
+        self,
+        status: str,
+        quality: str,
+        trigger_count: int,
+        first_trigger_text: str,
+    ) -> None:
+        """Render the compact table indicator for qualified synchronization."""
+        received = status == "TRIGGERED" and quality == "PASS" and trigger_count > 0
+        indicator_state = "green" if received else "red"
+        fill = "#22C55E" if received else "#EF4444"
+        border = "#15803D" if received else "#B91C1C"
+        status_text = {
+            "WAITING_SYNC": "等待同步信号",
+            "TRIGGERED": "已收到合格同步信号",
+            "MISSING_TRIGGER": "未收到合格同步信号",
+        }.get(status, status)
+        self.sync_status_label.setText("")
+        self.sync_status_label.setProperty("indicatorState", indicator_state)
+        self.sync_status_label.setProperty("syncReceived", received)
+        self.sync_status_label.setStyleSheet(
+            f"QLabel {{ background-color:{fill}; border:2px solid {border}; "
+            "border-radius:10px; }}"
+        )
+        self.sync_status_label.setToolTip(
+            f"状态：{status_text}\n"
+            f"合格触发：{trigger_count}\n"
+            f"首触发：{first_trigger_text}\n"
+            f"质量：{quality}"
+        )
+        self.sync_status_label.setAccessibleName(f"同步状态：{status_text}")
 
     def _set_preview_status(self, modality: str, status: str, device_id: str,
                             simulated: bool, error: str | None = None) -> None:
@@ -1958,19 +2006,22 @@ class CollectorWindow(QMainWindow):
         if row is None:
             return
         status = str(payload.get("status") or "UNKNOWN").upper()
-        self.health_table.item(row, 1).setText(status)
+        self.health_table.item(row, HEALTH_COLUMN_MODALITY).setToolTip(
+            f"设备状态：{status}"
+        )
         sample_count = payload.get("sample_count")
         if sample_count is not None:
-            self.health_table.item(row, 2).setText(str(int(sample_count)))
+            self.health_table.item(row, HEALTH_COLUMN_SAMPLE_COUNT).setText(
+                str(int(sample_count))
+            )
         rate = payload.get("actual_sample_rate_hz")
-        self.health_table.item(row, 3).setText("-" if rate is None else f"{float(rate):.1f} Hz")
+        self.health_table.item(row, HEALTH_COLUMN_RATE).setText(
+            "-" if rate is None else f"{float(rate):.1f} Hz"
+        )
         dropped = payload.get("dropped_packets")
-        self.health_table.item(row, 4).setText("-" if dropped is None else str(int(dropped)))
-        depth = payload.get("queue_depth")
-        capacity = payload.get("queue_capacity")
-        self.health_table.item(row, 5).setText(f"{int(depth)}/{int(capacity)}" if capacity else "-")
-        sampled_at = str(payload.get("sampled_at_utc") or "").strip()
-        self.health_table.item(row, 6).setText(sampled_at or "-")
+        self.health_table.item(row, HEALTH_COLUMN_DROPPED).setText(
+            "-" if dropped is None else str(int(dropped))
+        )
         previous = self._last_health_status.get(modality)
         self._last_health_status[modality] = status
         if status in {"DEGRADED", "UNHEALTHY", "FAULT"} and status != previous:
@@ -2007,7 +2058,9 @@ class CollectorWindow(QMainWindow):
             )
             row = self._health_rows.get(modality)
             if row is not None:
-                self.health_table.item(row, 1).setText("DISCONNECTED")
+                self.health_table.item(row, HEALTH_COLUMN_MODALITY).setToolTip(
+                    "设备状态：DISCONNECTED"
+                )
                 self._last_health_status.pop(modality, None)
             self._append_alert(f"{modality} 预览已断开。")
         self._update_connect_button_state()
@@ -2152,8 +2205,8 @@ class CollectorWindow(QMainWindow):
         self._close_when_finished = False
         self._trial_succeeded = False
         self._reset_trial_display()
-        self.start_button.setEnabled(True)
         self._set_trial_state("PREPARING")
+        self._update_start_button()
         self._poll_timer.start()
         self.trial_started.emit(request)
         self.statusBar().showMessage(f"Trial {request.trial_uuid} 已交给独立 Collector Worker。")
@@ -2201,21 +2254,14 @@ class CollectorWindow(QMainWindow):
 
     def _reset_trial_display(self) -> None:
         # Do NOT clear alerts — keep the log history
-        self.manifest_label.setText("Manifest：正在采集，尚未最终化")
         self._last_health_status.clear()
         self._missing_trigger_alerted = False
-        self.sync_status_label.setText("等待同步")
-        self.trigger_count_label.setText("0")
-        self.first_trigger_label.setText("—")
-        self.sync_quality_label.setText("WAITING")
-        self.sync_status_label.setStyleSheet("")
-        for modality, row in self._health_rows.items():
-            self.health_table.item(row, 1).setText("UNKNOWN")
-            self.health_table.item(row, 2).setText("0")
-            self.health_table.item(row, 3).setText("-")
-            self.health_table.item(row, 4).setText("-")
-            self.health_table.item(row, 5).setText("-")
-            self.health_table.item(row, 6).setText("-")
+        self._set_sync_indicator("WAITING_SYNC", "WAITING", 0, "—")
+        for row in self._health_rows.values():
+            self.health_table.item(row, HEALTH_COLUMN_MODALITY).setToolTip("")
+            self.health_table.item(row, HEALTH_COLUMN_SAMPLE_COUNT).setText("0")
+            self.health_table.item(row, HEALTH_COLUMN_RATE).setText("-")
+            self.health_table.item(row, HEALTH_COLUMN_DROPPED).setText("-")
         empty_ultrasound = np.full(ULTRASOUND_PREVIEW_SAMPLES, np.nan, dtype=np.float64)
         for curve in self._us_curves:
             curve.setData(self._us_x, empty_ultrasound)
@@ -2367,19 +2413,21 @@ class CollectorWindow(QMainWindow):
             return
         row = self._health_rows[modality]
         status = str(payload.get("status") or "UNKNOWN").upper()
-        self.health_table.item(row, 1).setText(status)
+        self.health_table.item(row, HEALTH_COLUMN_MODALITY).setToolTip(
+            f"设备状态：{status}"
+        )
         if "sample_count" in payload:
-            self.health_table.item(row, 2).setText(str(int(payload["sample_count"])))
+            self.health_table.item(row, HEALTH_COLUMN_SAMPLE_COUNT).setText(
+                str(int(payload["sample_count"]))
+            )
         rate = payload.get("actual_sample_rate_hz")
-        self.health_table.item(row, 3).setText("-" if rate is None else f"{float(rate):.1f} Hz")
+        self.health_table.item(row, HEALTH_COLUMN_RATE).setText(
+            "-" if rate is None else f"{float(rate):.1f} Hz"
+        )
         dropped = payload.get("dropped_packets")
-        self.health_table.item(row, 4).setText("-" if dropped is None else str(int(dropped)))
-        depth = payload.get("queue_depth")
-        capacity = payload.get("queue_capacity")
-        self.health_table.item(row, 5).setText(str(int(depth)) if depth is not None and capacity is None else
-                                               f"{int(depth)}/{int(capacity)}" if capacity is not None else "-")
-        sampled_at = str(payload.get("sampled_at_utc") or "").strip()
-        self.health_table.item(row, 6).setText(sampled_at or "-")
+        self.health_table.item(row, HEALTH_COLUMN_DROPPED).setText(
+            "-" if dropped is None else str(int(dropped))
+        )
         previous = self._last_health_status.get(modality)
         self._last_health_status[modality] = status
         if status in {"DEGRADED", "UNHEALTHY", "FAULT"} and status != previous:
@@ -2398,10 +2446,14 @@ class CollectorWindow(QMainWindow):
                 modality = self._normalize_modality(str(raw_modality))
                 if modality in self._health_rows:
                     row = self._health_rows[modality]
-                    self.health_table.item(row, 2).setText(str(int(count)))
+                    self.health_table.item(row, HEALTH_COLUMN_SAMPLE_COUNT).setText(
+                        str(int(count))
+                    )
         if "pulse_event_count" in payload:
             row = self._health_rows["sync_pulse"]
-            self.health_table.item(row, 2).setToolTip(f"已检测边沿：{int(payload['pulse_event_count'])}")
+            self.health_table.item(row, HEALTH_COLUMN_SAMPLE_COUNT).setToolTip(
+                f"已检测边沿：{int(payload['pulse_event_count'])}"
+            )
         if any(key in payload for key in ("status", "quality", "trigger_count",
                                             "first_trigger_host_monotonic_ns", "trigger_time_utc")):
             self._handle_sync(payload, record_event=False)
@@ -2415,13 +2467,6 @@ class CollectorWindow(QMainWindow):
             trigger_count = 0
         first_trigger = payload.get("first_trigger_host_monotonic_ns")
         trigger_utc = str(payload.get("trigger_time_utc") or "").strip()
-        labels = {
-            "WAITING_SYNC": "等待同步触发",
-            "TRIGGERED": "已同步",
-            "MISSING_TRIGGER": "缺少同步触发",
-        }
-        self.sync_status_label.setText(labels.get(status, status))
-        self.trigger_count_label.setText(str(trigger_count))
         if trigger_utc:
             first_text = trigger_utc
             if first_trigger is not None:
@@ -2430,26 +2475,14 @@ class CollectorWindow(QMainWindow):
             first_text = f"host {int(first_trigger)} ns"
         else:
             first_text = "—"
-        self.first_trigger_label.setText(first_text)
-        self.sync_quality_label.setText(quality)
+        self._set_sync_indicator(status, quality, trigger_count, first_text)
         if status == "MISSING_TRIGGER" or quality == "FAIL":
-            self.sync_status_label.setStyleSheet(
-                "QLabel { color:#842029; background:#f8d7da; padding:4px; font-weight:700; }"
-            )
             if not self._missing_trigger_alerted:
                 message = "严重：未检测到合格同步触发，本 Trial 不得作为已同步采集使用。"
                 self._append_alert(message)
                 self._add_timeline_event(2, message)
                 self._missing_trigger_alerted = True
             self._set_trial_state("FAILED")
-        elif status == "TRIGGERED" and quality == "PASS":
-            self.sync_status_label.setStyleSheet(
-                "QLabel { color:#0f5132; background:#d1e7dd; padding:4px; font-weight:700; }"
-            )
-        else:
-            self.sync_status_label.setStyleSheet(
-                "QLabel { color:#664d03; background:#fff3cd; padding:4px; font-weight:600; }"
-            )
         if record_event:
             self._add_timeline_event(1, f"{status} · {quality} · trigger={trigger_count}")
 
@@ -2636,10 +2669,9 @@ class CollectorWindow(QMainWindow):
         self._add_timeline_event(0, state.upper())
         manifest_path = event.payload.get("manifest_path")
         if manifest_path:
-            self.manifest_label.setText(f"Manifest：{manifest_path}")
             LOG.info("Manifest 已生成: %s", manifest_path)
         else:
-            self.manifest_label.setText("Manifest：Worker 已完成，但未返回路径")
+            LOG.warning("Collector Worker 已完成，但未返回 Manifest 路径")
         self.start_button.setEnabled(False)
         self.statusBar().showMessage(event.message or "Trial 数据包已最终化。")
 
@@ -2664,9 +2696,8 @@ class CollectorWindow(QMainWindow):
         self._forced_stop_alerted = False
         self._poll_timer.stop()
         self._preflight_ready = False
-        for _modality, row in self._health_rows.items():
-            self.health_table.item(row, 1).setText("UNKNOWN")
-            self.health_table.item(row, 1).setToolTip("")
+        for row in self._health_rows.values():
+            self.health_table.item(row, HEALTH_COLUMN_MODALITY).setToolTip("")
         # Clear preview connected state — must explicitly reconnect
         self._preview_connected_modalities.clear()
         self._set_configuration_locked(False)
@@ -2833,24 +2864,6 @@ class CollectorWindow(QMainWindow):
         super().resizeEvent(event)
         if hasattr(self, "_toast_label") and self._toast_label.isVisible():
             self._position_toast()
-
-    @Slot()
-    def _open_log_directory(self) -> None:
-        log_dir = str(collector_log_path().parent)
-        try:
-            if sys.platform == "win32":
-                os.startfile(log_dir)
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", log_dir])
-            else:
-                subprocess.Popen(["xdg-open", log_dir])
-        except Exception as exc:
-            QMessageBox.warning(
-                self, "无法打开日志目录",
-                f"打开日志目录失败：{exc}\n\n路径：{log_dir}\n"
-                f"请手动打开该目录查看日志文件。"
-            )
-            self._append_alert(f"打开日志目录失败：{type(exc).__name__}: {exc}")
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API
         # Closing cancels a pending preview-to-record transition.  A timer tick

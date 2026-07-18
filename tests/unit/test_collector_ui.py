@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import time
 from collections.abc import Callable
@@ -358,15 +359,12 @@ def test_1080p_layout_scrolls_controls_instead_of_crushing_them(
     assert window.minimumSizeHint().height() < 700
     assert 610 <= controls_scroll.width() <= 650
     assert controls_content.height() >= controls_content.minimumSizeHint().height()
-    assert controls_scroll.verticalScrollBar().maximum() > 0
+    assert controls_scroll.verticalScrollBar().maximum() == 0
 
-    # The primary actions stay at their normal height and never overlap even
-    # though the lower control sections are reached with the vertical scrollbar.
+    # The two toggle actions stay at their normal height and never overlap.
     action_buttons = [
         window.connect_all_button,
-        window.disconnect_all_button,
         window.start_button,
-        window.stop_button,
     ]
     for button in action_buttons:
         assert button.height() >= button.minimumSizeHint().height()
@@ -378,13 +376,19 @@ def test_1080p_layout_scrolls_controls_instead_of_crushing_them(
     window.close()
 
 
-def test_collector_theme_uses_semantic_button_roles(tmp_path: Path) -> None:
+def test_collector_theme_uses_direct_toggle_styles(tmp_path: Path) -> None:
     _app, window, _created = _window_with_fake(tmp_path)
 
-    assert window.connect_all_button.property("buttonRole") == "connect"
-    assert window.disconnect_all_button.property("buttonRole") == "disconnect"
-    assert window.start_button.property("buttonRole") == "primary"
-    assert window.stop_button.property("buttonRole") == "danger"
+    assert window.connect_all_button.text() == "全部连接"
+    assert window.start_button.text() == "开始写盘"
+    assert "#0d6efd" in window.start_button.styleSheet()
+
+    window._preview_workers["ultrasound"] = object()
+    window._update_connect_button_state()
+    assert window.connect_all_button.text() == "全部断开"
+    assert "#f8d7da" in window.connect_all_button.styleSheet()
+    window._preview_workers.clear()
+
     for button in window._connect_buttons.values():
         assert button.property("buttonRole") == "connect"
     for button in window._disconnect_buttons.values():
@@ -394,7 +398,6 @@ def test_collector_theme_uses_semantic_button_roles(tmp_path: Path) -> None:
     assert '#1d4ed8' in stylesheet
     assert '#15803d' in stylesheet
     assert '#b91c1c' in stylesheet
-    assert 'QPlainTextEdit#alerts' in stylesheet
     window.close()
 
 
@@ -732,7 +735,9 @@ def test_legacy_single_series_payload_updates_only_first_window(tmp_path: Path) 
 
 def test_all_zero_ultrasound_alert_is_debounced_without_peak_widgets(
     tmp_path: Path,
+    caplog,
 ) -> None:
+    caplog.set_level(logging.INFO, logger="exo_collection.collector.ui")
     _app, window, _created = _window_with_fake(tmp_path)
     event = WorkerEvent(
         event_type=WorkerEventType.PREVIEW,
@@ -747,7 +752,7 @@ def test_all_zero_ultrasound_alert_is_debounced_without_peak_widgets(
     )
     window._handle_worker_event(event)
     window._handle_worker_event(event)
-    assert window.alerts_edit.toPlainText().count("通道 3 当前帧全零") == 1
+    assert caplog.text.count("通道 3 当前帧全零") == 1
     assert not hasattr(window, "ultrasound_peak_label")
     window.close()
 
@@ -849,7 +854,11 @@ def test_real_device_profile_is_selected_in_ui_and_copied_to_worker_request(
     window.close()
 
 
-def test_collector_locks_condition_polls_events_and_finalizes(tmp_path: Path) -> None:
+def test_collector_locks_condition_polls_events_and_finalizes(
+    tmp_path: Path,
+    caplog,
+) -> None:
+    caplog.set_level(logging.INFO, logger="exo_collection.collector.ui")
     app, window, created = _window_with_fake(tmp_path)
     assert [window.project_combo.itemText(index) for index in range(2)] == [
         "F — 正式",
@@ -875,10 +884,6 @@ def test_collector_locks_condition_polls_events_and_finalizes(tmp_path: Path) ->
     _connect_all_previews_for_trial(window)
 
     assert window.start_button.isEnabled()
-    # Set health READY via direct table update (preview workers handle this normally)
-    for row in range(window.health_table.rowCount()):
-        window.health_table.item(row, 1).setText("READY")
-
     window.start_button.click()
     assert len(created) == 1
     worker = created[0]
@@ -897,7 +902,9 @@ def test_collector_locks_condition_polls_events_and_finalizes(tmp_path: Path) ->
     assert not window.condition_combo.isEnabled()
     assert not window.repeat_spin.isEnabled()
     assert not window.connect_all_button.isEnabled()
-    assert window.stop_button.isEnabled()
+    assert window.start_button.isEnabled()
+    assert window.start_button.text() == "停止写盘"
+    assert "#dc3545" in window.start_button.styleSheet()
     assert window._poll_timer.isActive()
 
     worker.events.extend(
@@ -1006,13 +1013,13 @@ def test_collector_locks_condition_polls_events_and_finalizes(tmp_path: Path) ->
     _wait_until(app, lambda: window.overall_status == "采集中")
 
     imu_row = window._health_rows["imu"]
-    assert window.health_table.item(imu_row, 1).text() == "DEGRADED"
-    assert window.health_table.item(imu_row, 2).text() == "123"
-    assert window.health_table.item(imu_row, 3).text() == "198.5 Hz"
-    assert window.health_table.item(imu_row, 4).text() == "3"
-    assert window.health_table.item(imu_row, 5).text() == "2/64"
-    assert window.health_table.item(imu_row, 6).text() == "2026-07-15T10:00:01Z"
-    assert "preview delay" in window.alerts_edit.toPlainText()
+    assert window.health_table.item(imu_row, 0).text() == "IMU"
+    assert window.health_table.item(imu_row, 1).text() == "123"
+    assert window.health_table.item(imu_row, 2).text() == "198.5 Hz"
+    assert window.health_table.item(imu_row, 3).text() == "3"
+    assert window.health_table.item(imu_row, 4).text() == "—"
+    assert "设备状态：DEGRADED" in window.health_table.item(imu_row, 0).toolTip()
+    assert "preview delay" in caplog.text
 
     # Check ultrasound curves
     _, ch0 = window._us_curves[0].getData()
@@ -1032,17 +1039,19 @@ def test_collector_locks_condition_polls_events_and_finalizes(tmp_path: Path) ->
     assert right_y[0] == 20.0
     assert right_y[1] == 21.0
 
-    assert window.sync_status_label.text() == "已同步"
-    assert window.sync_quality_label.text() == "PASS"
-    assert window.trigger_count_label.text() == "1"
-    assert "123456" in window.first_trigger_label.text()
+    assert window.sync_status_label.text() == ""
+    assert window.sync_status_label.property("indicatorState") == "green"
+    assert window.sync_status_label.property("syncReceived") is True
+    assert "合格触发：1" in window.sync_status_label.toolTip()
+    assert "123456" in window.sync_status_label.toolTip()
+    assert "质量：PASS" in window.sync_status_label.toolTip()
     assert len(window._timeline_x) >= 4
     assert len(window._timeline_text) == len(window._timeline_x)
 
-    window.stop_button.click()
+    window.start_button.click()
     assert worker.stop_requests == 1
     assert window.overall_status == "保存中"
-    assert not window.stop_button.isEnabled()
+    assert not window.start_button.isEnabled()
 
     manifest_path = tmp_path / "trial" / "manifest.json"
     worker.events.append(
@@ -1056,7 +1065,9 @@ def test_collector_locks_condition_polls_events_and_finalizes(tmp_path: Path) ->
     _wait_until(app, lambda: window.worker is None)
 
     assert window.overall_status == "未连接"
-    assert str(manifest_path) in window.manifest_label.text()
+    assert str(manifest_path) in caplog.text
+    assert not hasattr(window, "manifest_label")
+    assert not hasattr(window, "open_log_dir_button")
     assert not window.configuration_locked
     assert window.condition_combo.isEnabled()
     assert not window.start_button.isEnabled()
@@ -1065,7 +1076,11 @@ def test_collector_locks_condition_polls_events_and_finalizes(tmp_path: Path) ->
     window.close()
 
 
-def test_collector_shows_failed_worker_error_without_blocking_ui(tmp_path: Path) -> None:
+def test_collector_shows_failed_worker_error_without_blocking_ui(
+    tmp_path: Path,
+    caplog,
+) -> None:
+    caplog.set_level(logging.INFO, logger="exo_collection.collector.ui")
     app, window, created = _window_with_fake(tmp_path)
     _connect_all_previews_for_trial(window)
     window.build_request()
@@ -1082,13 +1097,17 @@ def test_collector_shows_failed_worker_error_without_blocking_ui(tmp_path: Path)
 
     _wait_until(app, lambda: window.worker is None)
     assert window.overall_status == "失败"
-    assert "simulated disk full" in window.alerts_edit.toPlainText()
+    assert "simulated disk full" in caplog.text
     assert not window.start_button.isEnabled()
     assert worker.closed
     window.close()
 
 
-def test_collector_rejects_terminal_event_from_another_trial(tmp_path: Path) -> None:
+def test_collector_rejects_terminal_event_from_another_trial(
+    tmp_path: Path,
+    caplog,
+) -> None:
+    caplog.set_level(logging.INFO, logger="exo_collection.collector.ui")
     app, window, created = _window_with_fake(tmp_path)
     _connect_all_previews_for_trial(window)
     window.build_request()
@@ -1110,14 +1129,16 @@ def test_collector_rejects_terminal_event_from_another_trial(tmp_path: Path) -> 
 
     _wait_until(app, lambda: window.worker is None)
     assert window.overall_status == "失败"
-    assert "已拒绝不属于当前 Trial" in window.alerts_edit.toPlainText()
-    assert "未发布 COMPLETED/FAILED" in window.alerts_edit.toPlainText()
+    assert "已拒绝不属于当前 Trial" in caplog.text
+    assert "未发布 COMPLETED/FAILED" in caplog.text
     window.close()
 
 
 def test_collector_forces_hung_controlled_stop_and_preserves_recovery_semantics(
     tmp_path: Path,
+    caplog,
 ) -> None:
+    caplog.set_level(logging.INFO, logger="exo_collection.collector.ui")
     _app, window, created = _window_with_fake(tmp_path)
     _connect_all_previews_for_trial(window)
     window.build_request()
@@ -1133,14 +1154,18 @@ def test_collector_forces_hung_controlled_stop_and_preserves_recovery_semantics(
     assert worker.exitcode == -15
     assert worker.closed
     assert window.overall_status == "失败"
-    alerts = window.alerts_edit.toPlainText()
+    alerts = caplog.text
     assert "受控停止等待超时" in alerts
     assert ".recording" in alerts
     assert "FINALIZED" in alerts
     window.close()
 
 
-def test_preflight_gates_start_and_reports_missing_critical_device(tmp_path: Path) -> None:
+def test_preflight_gates_start_and_reports_missing_critical_device(
+    tmp_path: Path,
+    caplog,
+) -> None:
+    caplog.set_level(logging.INFO, logger="exo_collection.collector.ui")
     _app, window, created = _window_with_fake(tmp_path)
 
     # Only connect 3 of 4 modalities (sync_pulse missing)
@@ -1151,14 +1176,16 @@ def test_preflight_gates_start_and_reports_missing_critical_device(tmp_path: Pat
 
     window.start_trial()
     assert not created
-    assert "sync_pulse 尚未连接" in window.alerts_edit.toPlainText()
+    assert "sync_pulse 尚未连接" in caplog.text
     assert not window.start_button.isEnabled()
     window.close()
 
 
 def test_missing_sync_trigger_is_prominent_and_never_looks_recording(
     tmp_path: Path,
+    caplog,
 ) -> None:
+    caplog.set_level(logging.INFO, logger="exo_collection.collector.ui")
     app, window, created = _window_with_fake(tmp_path)
     _connect_all_previews_for_trial(window)
     window.build_request()
@@ -1182,8 +1209,10 @@ def test_missing_sync_trigger_is_prominent_and_never_looks_recording(
             ),
         ]
     )
-    _wait_until(app, lambda: window.sync_status_label.text() == "等待同步触发")
+    _wait_until(app, lambda: window.overall_status == "等待同步")
     assert window.overall_status == "等待同步"
+    assert window.sync_status_label.property("indicatorState") == "red"
+    assert "等待同步信号" in window.sync_status_label.toolTip()
 
     worker.events.extend(
         [
@@ -1207,12 +1236,14 @@ def test_missing_sync_trigger_is_prominent_and_never_looks_recording(
 
     _wait_until(app, lambda: window.worker is None)
     assert window.overall_status == "失败"
-    assert window.sync_status_label.text() == "缺少同步触发"
-    assert window.sync_quality_label.text() == "FAIL"
-    assert window.trigger_count_label.text() == "0"
-    alerts = window.alerts_edit.toPlainText()
+    assert window.sync_status_label.text() == ""
+    assert window.sync_status_label.property("indicatorState") == "red"
+    assert window.sync_status_label.property("syncReceived") is False
+    assert "未收到合格同步信号" in window.sync_status_label.toolTip()
+    assert "质量：FAIL" in window.sync_status_label.toolTip()
+    alerts = caplog.text
     assert alerts.count("未检测到合格同步触发") == 1
-    assert "background:#f8d7da" in window.sync_status_label.styleSheet()
+    assert "background-color:#EF4444" in window.sync_status_label.styleSheet()
     assert any(
         "MISSING_TRIGGER" in text or "FAILED" in text
         for text in window._timeline_text
@@ -1584,13 +1615,22 @@ def test_device_connection_rows_omit_source_device_id_column(tmp_path: Path) -> 
 
 
 def test_health_table_has_four_modalities(tmp_path: Path) -> None:
-    """Health table should list all four modalities."""
+    """Compact table uses Chinese labels and embeds the sync indicator."""
     _app, window, _created = _window_with_fake(tmp_path)
     assert window.health_table.rowCount() == 4
+    assert window.health_table.columnCount() == 5
+    assert [
+        window.health_table.horizontalHeaderItem(column).text()
+        for column in range(window.health_table.columnCount())
+    ] == ["模态", "样本/帧", "实际速率", "丢包", "同步"]
     modalities_displayed = set()
     for row in range(window.health_table.rowCount()):
         modalities_displayed.add(window.health_table.item(row, 0).text())
-    assert modalities_displayed == {"ultrasound", "imu", "encoder", "sync_pulse"}
+    assert modalities_displayed == {"超声", "IMU", "电机编码器", "同步脉冲"}
+    assert window.sync_status_label.property("indicatorState") == "red"
+    assert window.health_table.cellWidget(window._health_rows["sync_pulse"], 4) is not None
+    assert not hasattr(window, "manifest_label")
+    assert not hasattr(window, "open_log_dir_button")
     window.close()
 
 
