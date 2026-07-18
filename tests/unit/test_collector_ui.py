@@ -25,6 +25,7 @@ from exo_collection.apps.collector.device_settings import (
 )
 from exo_collection.apps.collector.window import (
     ExperimentMetadataDialog,
+    HardwareDeviceSettingsDialog,
     MODALITIES,
     RingTrace,
     SIGNAL_RING_CAPACITY,
@@ -154,12 +155,70 @@ def test_each_modality_dialog_restores_its_own_settings() -> None:
     )
 
     assert imu.channel_spin.value() == 19
-    assert imu.sensor_ids_edit.text() == "A, B, C"
+    assert imu.id_1_edit.text() == "A"
+    assert imu.id_2_edit.text() == "B"
+    assert imu.id_3_edit.text() == "C"
     assert encoder._selected_port() == "COM7"
     assert sync.rate_spin.value() == 2_000.0
     assert sync.interval_spin.value() == 2.0
     for dialog in (imu, encoder, sync):
         dialog.close()
+    app.processEvents()
+
+
+def test_imu_dialog_preserves_disabled_middle_slot() -> None:
+    app = QApplication.instance() or QApplication(["test-imu-slot-settings"])
+    dialog = ImuDeviceSettingsDialog(
+        {
+            "radio_channel": 25,
+            "sample_rate_hz": 120.0,
+            "sensor_ids": ["10B42610", "", "10B42620"],
+        }
+    )
+    assert dialog.id_1_edit.text() == "10B42610"
+    assert dialog.id_2_edit.text() == ""
+    assert dialog.id_3_edit.text() == "10B42620"
+
+    dialog.accept()
+    assert dialog.validated_override["sensor_ids"] == (
+        "10B42610",
+        "",
+        "10B42620",
+    )
+    dialog.close()
+    app.processEvents()
+
+
+def test_hardware_device_settings_dialog_preserves_empty_middle_slot() -> None:
+    """Old HardwareDeviceSettingsDialog must not compress IMU1=A, IMU2=, IMU3=C
+    into (A,C); the empty second slot is preserved as ""."""
+    app = QApplication.instance() or QApplication(["test-hw-dialog-slots"])
+    from unittest.mock import patch
+
+    with (
+        patch("exo_collection.apps.collector.window.build_adapters"),
+        patch("exo_collection.apps.collector.window.load_device_profile"),
+    ):
+        dialog = HardwareDeviceSettingsDialog(
+            {
+                "imu": {
+                    "sensor_ids": ["10B42610", "", "10B42620"],
+                    "radio_channel": 25,
+                    "sample_rate_hz": 120.0,
+                },
+            }
+        )
+        assert dialog.awinda_id_left.text() == "10B42610"
+        assert dialog.awinda_id_mid.text() == ""
+        assert dialog.awinda_id_right.text() == "10B42620"
+
+        dialog.accept()
+        sensor_ids = dialog.validated_overrides["imu"]["sensor_ids"]
+        assert sensor_ids == ("10B42610", "", "10B42620"), (
+            f"expected 3-slot tuple, got {sensor_ids!r}"
+        )
+
+    dialog.close()
     app.processEvents()
 
 
@@ -360,6 +419,8 @@ def test_1080p_layout_scrolls_controls_instead_of_crushing_them(
     assert 610 <= controls_scroll.width() <= 650
     assert controls_content.height() >= controls_content.minimumSizeHint().height()
     assert controls_scroll.verticalScrollBar().maximum() == 0
+    assert abs(window.project_combo.width() - window.subject_code_edit.width()) <= 2
+    assert abs(window.condition_combo.width() - window.repeat_spin.width()) <= 2
 
     # The two toggle actions stay at their normal height and never overlap.
     action_buttons = [
@@ -1687,4 +1748,56 @@ def test_worker_request_uses_selected_profile(tmp_path: Path) -> None:
         request.device_overrides["ultrasound"]["interface_name"]
         == "\\Device\\NPF_TEST"
     )
+    window.close()
+
+
+# ── IMU preview: slot-based labels (two-device scenario) ──────
+
+
+def test_preview_imu_two_device_labels_skip_empty_slot(tmp_path: Path) -> None:
+    """With slots 1+3 enabled, labels [imu_trunk, imu_right] update the
+    correct ring traces while imu_left stays untouched (NaN)."""
+    _app, window, _created = _window_with_fake(tmp_path)
+    window._handle_worker_event(
+        WorkerEvent(
+            event_type=WorkerEventType.PREVIEW,
+            modality="imu",
+            payload={
+                "host_monotonic_ns": 2_000,
+                "labels": ["imu_trunk", "imu_right"],
+                "channels": [[1.0], [2.0]],
+                "channel": "acc_x",
+            },
+        )
+    )
+    # Only trunk and right traces should update
+    assert window._imu_traces["imu_trunk"]._buffer[0] == 1.0
+    assert window._imu_traces["imu_right"]._buffer[0] == 2.0
+    # Left trace must stay untouched (still NaN)
+    assert np.isnan(window._imu_traces["imu_left"]._buffer[0])
+    window.close()
+
+
+def test_preview_imu_streams_two_device_labels_skip_empty_slot(
+    tmp_path: Path,
+) -> None:
+    """Streams payload with slots 1+3: trunk/right updated, left stays NaN."""
+    _app, window, _created = _window_with_fake(tmp_path)
+    window._handle_worker_event(
+        WorkerEvent(
+            event_type=WorkerEventType.PREVIEW,
+            modality="imu",
+            payload={
+                "host_monotonic_ns": 3_000,
+                "streams": [
+                    {"label": "imu_trunk", "values": [0.5, 0.6], "channel": "acc_x"},
+                    {"label": "imu_right", "values": [0.7, 0.8], "channel": "acc_x"},
+                ],
+            },
+        )
+    )
+    assert window._imu_traces["imu_trunk"]._buffer[0] == 0.5
+    assert window._imu_traces["imu_right"]._buffer[0] == 0.7
+    # Left trace must stay untouched
+    assert np.isnan(window._imu_traces["imu_left"]._buffer[0])
     window.close()

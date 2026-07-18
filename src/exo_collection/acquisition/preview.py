@@ -130,16 +130,29 @@ def build_preview_event(
         if event.modality == "imu":
             if values.ndim != 3:
                 raise ValueError(f"invalid IMU batch shape: {values.shape}")
-            labels = ("imu_trunk", "imu_left", "imu_right")
+            default_labels = ("imu_trunk", "imu_left", "imu_right")
+            configured_labels = (
+                extra_payload.get("preview_labels")
+                if extra_payload is not None
+                else None
+            )
+            if (
+                isinstance(configured_labels, (list, tuple))
+                and len(configured_labels) == values.shape[1]
+                and all(str(label) in default_labels for label in configured_labels)
+            ):
+                labels = tuple(str(label) for label in configured_labels)
+            else:
+                labels = default_labels[: values.shape[1]]
             channels = [
                 values[:, device_index, 0].astype(float).tolist()
-                for device_index in range(min(values.shape[1], len(labels)))
+                for device_index in range(len(labels))
             ]
             payload = {
                 "host_monotonic_ns": event.host_monotonic_ns,
                 "values": channels[0] if channels else [],
                 "channels": channels,
-                "labels": list(labels[: len(channels)]),
+                "labels": list(labels),
                 "channel": "acc_x",
                 "channel_count": len(channels),
             }

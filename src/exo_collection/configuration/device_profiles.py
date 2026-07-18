@@ -249,20 +249,44 @@ class HardwareUltrasoundParameters(ProfileModel):
 class HardwareImuParameters(ProfileModel):
     radio_channel: int = Field(default=25, ge=11, le=25)
     sample_rate_hz: float = Field(default=120.0, gt=0)
-    expected_device_count: Literal[3] = 3
-    sensor_ids: tuple[NonEmptyStr, ...] = ()
+    expected_device_count: int = Field(default=3, ge=1, le=3)
+    # Empty tuple means automatic discovery.  Manual configuration is stored
+    # as three positional slots; empty strings deliberately preserve a gap
+    # such as IMU1 + IMU3 with IMU2 disabled.
+    sensor_ids: tuple[str, ...] = ()
     wait_timeout_s: float = Field(default=15.0, gt=0)
     stable_wait_s: float = Field(default=3.0, ge=0)
     poll_interval_s: float = Field(default=0.25, gt=0)
     pending_group_limit: int = Field(default=128, gt=0)
     queue_capacity: int = Field(default=256, gt=0)
 
-    @field_validator("sensor_ids")
+    @field_validator("sensor_ids", mode="before")
     @classmethod
-    def validate_sensor_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if value and (len(value) > 3 or len(set(value)) != len(value)):
-            raise ValueError("sensor_ids must be empty or contain 1-3 unique IDs")
-        return value
+    def validate_sensor_ids(cls, value: Any) -> tuple[str, ...]:
+        if value is None:
+            return ()
+        items = tuple(str(item).strip() for item in value)
+        if not items:
+            return ()
+        # Backward compatibility for settings saved before positional slots
+        # were introduced: old 1/2-item arrays represented consecutive slots.
+        if len(items) < 3 and all(items):
+            items = (*items, *("" for _ in range(3 - len(items))))
+        if len(items) != 3:
+            raise ValueError(
+                "sensor_ids must be empty or contain exactly three positional slots"
+            )
+        active_ids = tuple(item for item in items if item)
+        if not active_ids or len(set(active_ids)) != len(active_ids):
+            raise ValueError("enabled sensor IDs must be unique")
+        return items
+
+    @model_validator(mode="after")
+    def synchronize_expected_device_count(self) -> HardwareImuParameters:
+        active_count = sum(bool(item) for item in self.sensor_ids)
+        if active_count:
+            object.__setattr__(self, "expected_device_count", active_count)
+        return self
 
 
 class HardwareEncoderParameters(ProfileModel):

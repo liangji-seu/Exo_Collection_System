@@ -133,8 +133,105 @@ def test_hardware_overrides_are_strictly_revalidated() -> None:
     with pytest.raises(ValidationError, match="extra_forbidden"):
         build_adapters(profile, {"imu": {"invented": 1}})
     with pytest.raises(ValidationError, match="expected_device_count"):
-        build_adapters(profile, {"imu": {"expected_device_count": 2}})
+        build_adapters(profile, {"imu": {"expected_device_count": 0}})
     with pytest.raises(ValidationError, match="channels"):
         build_adapters(profile, {"ultrasound": {"channels": [1, 2, 3, 9]}})
     with pytest.raises(ValueError, match="unknown device override modality"):
         build_adapters(profile, {"camera": {}})
+
+
+# ── Hardware IMU parameters: slot-based sensor_ids ─────────────
+
+
+def test_hardware_imu_sensor_ids_three_positional_slots() -> None:
+    """sensor_ids can hold [10B42610, '', 10B42620] preserving all three slots."""
+    from exo_collection.configuration.device_profiles import HardwareImuParameters
+
+    params = HardwareImuParameters(
+        radio_channel=25,
+        sample_rate_hz=120.0,
+        sensor_ids=["10B42610", "", "10B42620"],
+    )
+    assert params.sensor_ids == ("10B42610", "", "10B42620")
+    assert params.expected_device_count == 2
+
+
+def test_hardware_imu_sensor_ids_round_trip_preserves_slots() -> None:
+    """Round-trip through model_dump → model_validate preserves empty middle slot."""
+    from exo_collection.configuration.device_profiles import HardwareImuParameters
+
+    params = HardwareImuParameters(
+        radio_channel=25,
+        sample_rate_hz=200.0,
+        sensor_ids=["10B42610", "", "10B42620"],
+    )
+    dumped = params.model_dump(mode="json")
+    reloaded = HardwareImuParameters.model_validate(dumped)
+    assert reloaded.sensor_ids == params.sensor_ids
+    assert reloaded.sensor_ids == ("10B42610", "", "10B42620")
+    assert reloaded.expected_device_count == 2
+
+
+def test_hardware_imu_rejects_duplicate_ids() -> None:
+    """Duplicate non-empty sensor IDs must fail validation."""
+    from exo_collection.configuration.device_profiles import HardwareImuParameters
+
+    with pytest.raises(ValidationError, match="unique"):
+        HardwareImuParameters(
+            radio_channel=25,
+            sample_rate_hz=200.0,
+            sensor_ids=["A", "B", "A"],
+        )
+
+
+def test_hardware_imu_legacy_two_ids_expanded_and_valid() -> None:
+    """Legacy [A, B] is expanded to [A, B, ''] with expected_device_count=2."""
+    from exo_collection.configuration.device_profiles import HardwareImuParameters
+
+    params = HardwareImuParameters(
+        radio_channel=25,
+        sample_rate_hz=200.0,
+        sensor_ids=["A", "B"],
+    )
+    assert params.sensor_ids == ("A", "B", "")
+    assert params.expected_device_count == 2
+
+
+def test_hardware_imu_legacy_single_id_expanded_and_valid() -> None:
+    """Legacy [A] is expanded to [A, '', ''] with expected_device_count=1."""
+    from exo_collection.configuration.device_profiles import HardwareImuParameters
+
+    params = HardwareImuParameters(
+        radio_channel=25,
+        sample_rate_hz=200.0,
+        sensor_ids=["X"],
+    )
+    assert params.sensor_ids == ("X", "", "")
+    assert params.expected_device_count == 1
+
+
+def test_hardware_imu_empty_sensor_ids_keeps_default_count() -> None:
+    """Empty sensor_ids trigger auto-discovery with expected_device_count=3."""
+    from exo_collection.configuration.device_profiles import HardwareImuParameters
+
+    params = HardwareImuParameters(
+        radio_channel=25,
+        sample_rate_hz=200.0,
+    )
+    assert params.sensor_ids == ()
+    assert params.expected_device_count == 3
+
+
+def test_hardware_imu_override_with_slot_preservation() -> None:
+    """Config override with slot-based IDs is validated correctly."""
+    profile = load_device_profile("hardware")
+    adapters = build_adapters(
+        profile,
+        {"imu": {"sensor_ids": ["10B42610", "", "10B42620"]}},
+    )
+    desc = adapters["imu"].descriptor()
+    assert "preview_labels" in desc.metadata
+    assert desc.metadata["preview_labels"] == ["imu_trunk", "imu_right"]
+    assert desc.metadata["active_sensor_slot_indices"] == [0, 2]
+    for adapter in adapters.values():
+        adapter.close()

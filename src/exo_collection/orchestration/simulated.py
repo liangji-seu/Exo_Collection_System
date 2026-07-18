@@ -26,6 +26,7 @@ from exo_collection.acquisition.preview import build_preview_event
 from exo_collection.adapters.base import (
     AdapterError,
     ModalityAdapter,
+    ModalityDescriptor,
     StartToken,
     TrialContext,
 )
@@ -380,8 +381,20 @@ def _create_hdf5_writer(
     )
 
 
-def _preview_event(event: FrameBatch | SampleBatch, trial_uuid: UUID) -> WorkerEvent:
-    return build_preview_event(event, trial_uuid)
+def _preview_event(
+    event: FrameBatch | SampleBatch,
+    trial_uuid: UUID,
+    descriptor: ModalityDescriptor,
+) -> WorkerEvent:
+    return build_preview_event(
+        event,
+        trial_uuid,
+        extra_payload={
+            "preview_labels": list(
+                descriptor.metadata.get("preview_labels") or []
+            )
+        },
+    )
 
 
 def _preview_stream_key(
@@ -882,7 +895,14 @@ def run_trial(
                     # for UI telemetry.  Expensive PNG rendering is deferred
                     # until every adapter and Writer has stopped.
                     preview_history.capture(event)
-                    _publish(publish, _preview_event(event, request.trial_uuid))
+                    _publish(
+                        publish,
+                        _preview_event(
+                            event,
+                            request.trial_uuid,
+                            descriptors[modality],
+                        ),
+                    )
 
             # Emit an initial health snapshot immediately, then at 2 Hz.
             last_health_ns = start_token.host_monotonic_ns - 500_000_000

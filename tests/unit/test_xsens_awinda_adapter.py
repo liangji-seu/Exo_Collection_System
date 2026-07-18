@@ -1623,9 +1623,11 @@ def test_backend_close_proceeds_even_when_stop_fails() -> None:
 
 def test_config_rejects_invalid_sensor_ids() -> None:
     with pytest.raises(ValueError):
-        XsensAwindaConfig(sensor_ids=("A", "B"))  # only 2
+        XsensAwindaConfig(sensor_ids=("A", "B", "C", "D"))  # > 3 slots
     with pytest.raises(ValueError):
         XsensAwindaConfig(sensor_ids=("A", "B", "B"))  # duplicate
+    with pytest.raises(ValueError):
+        XsensAwindaConfig(sensor_ids=("X", "", "X"))  # duplicate with empty middle slot
 
 
 def test_config_defaults_are_valid() -> None:
@@ -1635,6 +1637,216 @@ def test_config_defaults_are_valid() -> None:
     assert cfg.sensor_ids == ()
     assert cfg.queue_capacity == 256
     assert cfg.pending_group_limit == 128
+
+
+# ── New: slot-based sensor_ids and dynamic device count ──────
+
+
+def test_config_slot_preservation_with_empty_middle() -> None:
+    """Config [A, '', C] preserves three positional slots."""
+    cfg = XsensAwindaConfig(sensor_ids=("A", "", "C"))
+    assert cfg.sensor_ids == ("A", "", "C")
+    assert cfg.active_sensor_ids == ("A", "C")
+    assert cfg.active_sensor_slot_indices == (0, 2)
+    assert cfg.expected_device_count == 2
+
+
+def test_config_single_non_empty_id_expanded_to_three_slots() -> None:
+    """Legacy single ID is padded to three slots with empty slots."""
+    cfg = XsensAwindaConfig(sensor_ids=("X",))
+    assert cfg.sensor_ids == ("X", "", "")
+    assert cfg.active_sensor_ids == ("X",)
+    assert cfg.active_sensor_slot_indices == (0,)
+    assert cfg.expected_device_count == 1
+
+
+def test_config_two_non_empty_ids_expanded_to_three_slots() -> None:
+    """Legacy two consecutive IDs are padded with one trailing empty slot."""
+    cfg = XsensAwindaConfig(sensor_ids=("A", "B"))
+    assert cfg.sensor_ids == ("A", "B", "")
+    assert cfg.active_sensor_ids == ("A", "B")
+    assert cfg.active_sensor_slot_indices == (0, 1)
+    assert cfg.expected_device_count == 2
+
+
+def test_config_empty_all_slots_uses_auto_discovery_default() -> None:
+    """All-empty sensor_ids triggers auto-discovery with default count 3."""
+    cfg = XsensAwindaConfig()
+    assert cfg.sensor_ids == ()
+    assert cfg.active_sensor_ids == ()
+    assert cfg.active_sensor_slot_indices == (0, 1, 2)
+    assert cfg.expected_device_count == 3
+
+
+def test_config_all_three_filled_works() -> None:
+    cfg = XsensAwindaConfig(sensor_ids=("A", "B", "C"))
+    assert cfg.active_sensor_ids == ("A", "B", "C")
+    assert cfg.active_sensor_slot_indices == (0, 1, 2)
+    assert cfg.expected_device_count == 3
+
+
+def test_two_devices_slots_1_3_descriptor_has_correct_shape_and_labels() -> None:
+    """Descriptor for slot-1+3 config shows preview_labels = imu_trunk, imu_right."""
+    backend = FakeAwindaBackend(("A", "C"))
+    adapter = XsensAwindaImuAdapter(
+        backend=backend,
+        config={"sensor_ids": ("A", "", "C")},
+    )
+    desc = adapter.descriptor()
+    assert desc.sample_shape == (2, 12)
+    assert desc.metadata["preview_labels"] == ["imu_trunk", "imu_right"]
+    assert desc.metadata["active_sensor_slot_indices"] == [0, 2]
+    assert desc.metadata["device_ids"] == ["A", "C"]
+    assert desc.metadata["expected_device_count"] == 2
+    assert desc.metadata["sensor_slots"] == ["A", "", "C"]
+    assert "physical_location_mapping" in desc.metadata
+    assert desc.metadata["physical_location_mapping"] == "configured"
+    adapter.close()
+
+
+def test_two_devices_paired_packets_produce_event_with_shape_1_2_12() -> None:
+    """Two enabled IMUs (slots 1+3): A & C for same counter produce (1,2,12) batch."""
+    backend = FakeAwindaBackend(("A", "C"))
+    adapter = XsensAwindaImuAdapter(
+        backend=backend,
+        config={"sensor_ids": ("A", "", "C"), "queue_capacity": 16},
+    )
+    adapter.connect()
+    adapter.prepare(context())
+    adapter.start()
+
+    backend.emit("A", Packet(42, 0), 10)
+    # Only 1 of 2 — not complete
+    assert adapter.get_event(timeout=0.1) is None
+
+    backend.emit("C", Packet(42, 1), 20)
+    event = adapter.get_event(timeout=0.3)
+    assert event is not None
+    assert event.data.shape == (1, 2, 12)
+    assert event.data.dtype == np.float32
+    # Values come from Packet calibratedAcceleration().x = 1 + offset
+    assert event.data[0, 0, 0] == 1.0  # A: offset=0
+    assert event.data[0, 1, 0] == 2.0  # C: offset=1
+    assert event.host_monotonic_ns == 10
+
+    adapter.stop()
+    assert adapter.health().dropped_packets == 0
+    adapter.close()
+
+
+def test_two_devices_one_missing_counter_counts_1_drop() -> None:
+    """With 2 enabled devices, one counter missing 1 device → only 1 drop."""
+    backend = FakeAwindaBackend(("A", "C"))
+    adapter = XsensAwindaImuAdapter(
+        backend=backend,
+        config={"sensor_ids": ("A", "", "C"), "queue_capacity": 16},
+    )
+    adapter.connect()
+    adapter.prepare(context())
+    adapter.start()
+
+    # Send only A for counter 1
+    backend.emit("A", Packet(1), 10)
+    assert adapter.get_event(timeout=0.1) is None
+
+    # Later counter 2 arrives for both, ejecting counter 1 group
+    backend.emit("A", Packet(2), 30)
+    backend.emit("C", Packet(2), 40)
+    event = adapter.get_event(timeout=0.3)
+    assert event is not None
+    assert event.data.shape == (1, 2, 12)
+
+    adapter.stop()
+    assert adapter.health().dropped_packets == 1
+    adapter.close()
+
+
+def test_two_devices_multiple_counters_all_paired_zero_drops() -> None:
+    """Multiple counters, each fully paired → dropped_packets must stay 0."""
+    backend = FakeAwindaBackend(("A", "C"))
+    adapter = XsensAwindaImuAdapter(
+        backend=backend,
+        config={"sensor_ids": ("A", "", "C"), "queue_capacity": 64},
+    )
+    adapter.connect()
+    adapter.prepare(context())
+    adapter.start()
+
+    for counter in range(10):
+        backend.emit("A", Packet(counter, offset=0.0), counter * 20)
+        backend.emit("C", Packet(counter, offset=0.1), counter * 20 + 5)
+        event = adapter.get_event(timeout=0.2)
+        assert event is not None
+        assert event.data.shape == (1, 2, 12)
+
+    adapter.stop()
+    assert adapter.health().dropped_packets == 0
+    adapter.close()
+
+
+def test_strict_discovery_configure_two_find_one_fails() -> None:
+    """With two specific IDs configured, discovering only one must raise AdapterError."""
+    from exo_collection.adapters.imu.xsens_awinda import _match_target_device_ids
+
+    discovered = {"A": None}
+    with pytest.raises(AdapterError, match="未发现目标 MTw 设备"):
+        _match_target_device_ids(("A", "C"), discovered)
+
+
+def test_strict_discovery_configure_two_find_both_succeeds() -> None:
+    """With two specific IDs configured, finding both must succeed."""
+    from exo_collection.adapters.imu.xsens_awinda import _match_target_device_ids
+
+    discovered = {"A": None, "C": None, "EXTRA": None}
+    result = _match_target_device_ids(("A", "C"), discovered)
+    assert result == ("A", "C")
+
+
+def test_strict_discovery_all_three_found_succeeds() -> None:
+    """With three specific IDs configured, finding all three succeeds."""
+    from exo_collection.adapters.imu.xsens_awinda import _match_target_device_ids
+
+    discovered = {"DEV_A": None, "DEV_B": None, "DEV_C": None}
+    result = _match_target_device_ids(("DEV_A", "DEV_B", "DEV_C"), discovered)
+    assert result == ("DEV_A", "DEV_B", "DEV_C")
+
+
+def test_active_count_1_device_descriptor_shape() -> None:
+    """Single-device config yields sample_shape (1, 12)."""
+    backend = FakeAwindaBackend(("X",))
+    adapter = XsensAwindaImuAdapter(
+        backend=backend,
+        config={"sensor_ids": ("X", "", ""), "queue_capacity": 16},
+    )
+    desc = adapter.descriptor()
+    assert desc.sample_shape == (1, 12)
+    assert desc.metadata["preview_labels"] == ["imu_trunk"]
+    assert desc.metadata["active_sensor_slot_indices"] == [0]
+    assert desc.metadata["expected_device_count"] == 1
+    adapter.close()
+
+
+def test_auto_discovery_descriptor_shows_unassigned_labels() -> None:
+    """Auto-discovery (no sensor_ids) descriptor labels are all three defaults."""
+    backend = FakeAwindaBackend(("D1", "D2", "D3"))
+    adapter = XsensAwindaImuAdapter(backend=backend)
+    desc = adapter.descriptor()
+    assert desc.sample_shape == (3, 12)
+    assert desc.metadata["preview_labels"] == ["imu_trunk", "imu_left", "imu_right"]
+    assert desc.metadata["expected_device_count"] == 3
+    assert desc.metadata["device_ids"] == ["unassigned_1", "unassigned_2", "unassigned_3"]
+    assert desc.metadata["physical_location_mapping"] == "unassigned"
+    adapter.close()
+
+
+def test_device_ids_resolved_after_connect() -> None:
+    """After connect, device_ids reflect actual backend devices, not unassigned."""
+    backend = FakeAwindaBackend(("D1", "D2", "D3"))
+    adapter = XsensAwindaImuAdapter(backend=backend)
+    adapter.connect()
+    desc = adapter.descriptor()
+    assert desc.metadata["device_ids"] == ["D1", "D2", "D3"]
+    adapter.close()
 
 
 # ──────────────────────────────────────────────────────────────

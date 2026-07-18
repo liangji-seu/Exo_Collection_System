@@ -1,4 +1,4 @@
-"""Xsens Awinda WirelessMaster and three-MTw hardware adapter."""
+"""Xsens Awinda WirelessMaster adapter for one to three MTw sensors."""
 
 from __future__ import annotations
 
@@ -38,7 +38,6 @@ class XsensAwindaConfig:
 
     def __post_init__(self) -> None:
         ids = tuple(str(item).strip() for item in self.sensor_ids)
-        object.__setattr__(self, "sensor_ids", ids)
         if not self.device_id.strip() or not self.clock_domain.strip():
             raise ValueError("device_id and clock_domain must not be empty")
         if not 11 <= self.radio_channel <= 25:
@@ -46,13 +45,34 @@ class XsensAwindaConfig:
         if self.sample_rate_hz <= 0:
             raise ValueError("Awinda requires a positive sample rate")
         if ids:
-            if len(ids) > 3 or len(set(ids)) != len(ids) or any(not item for item in ids):
-                raise ValueError("sensor_ids must be empty or contain 1-3 unique real device IDs")
-            object.__setattr__(self, "expected_device_count", len(ids))
+            # Migrate legacy consecutive 1/2-ID settings into positional slots.
+            if len(ids) < 3 and all(ids):
+                ids = (*ids, *("" for _ in range(3 - len(ids))))
+            if len(ids) != 3:
+                raise ValueError(
+                    "sensor_ids must be empty or contain exactly three positional slots"
+                )
+            active_ids = tuple(item for item in ids if item)
+            if not active_ids or len(set(active_ids)) != len(active_ids):
+                raise ValueError("enabled sensor IDs must be unique")
+            object.__setattr__(self, "expected_device_count", len(active_ids))
+        elif not 1 <= self.expected_device_count <= 3:
+            raise ValueError("expected_device_count must be in [1, 3]")
+        object.__setattr__(self, "sensor_ids", ids)
         if self.wait_timeout_s <= 0 or self.stable_wait_s < 0 or self.poll_interval_s <= 0:
             raise ValueError("invalid Awinda discovery timing")
         if self.pending_group_limit <= 0 or self.queue_capacity <= 0:
             raise ValueError("pending_group_limit and queue_capacity must be positive")
+
+    @property
+    def active_sensor_ids(self) -> tuple[str, ...]:
+        return tuple(item for item in self.sensor_ids if item)
+
+    @property
+    def active_sensor_slot_indices(self) -> tuple[int, ...]:
+        if not self.sensor_ids:
+            return tuple(range(self.expected_device_count))
+        return tuple(index for index, item in enumerate(self.sensor_ids) if item)
 
 
 def _coerce_config(value: XsensAwindaConfig | Mapping[str, Any] | None) -> XsensAwindaConfig:
@@ -175,7 +195,7 @@ class XdaAwindaBackend:
         self._radio_enabled = True
 
         # 5. discover MTw children
-        target_ids = self.config.sensor_ids  # tuple of 3 str, or empty
+        target_ids = self.config.active_sensor_ids
         deadline = monotonic() + self.config.wait_timeout_s
         stable_start_at: float | None = None
         stable_signature: tuple[str, ...] | None = None
@@ -242,7 +262,7 @@ class XdaAwindaBackend:
             )
 
         if target_ids:
-            # Select the target 3; warn in health if extras exist
+            # Select configured targets in slot order; ignore unrelated MTw units.
             matched_ordered = list(stable_signature)
             selected_map = {
                 matched: discovered_map[matched]
@@ -319,6 +339,10 @@ class XdaAwindaBackend:
             "all_discovered_device_ids": self._all_device_ids,
             "discovery_target_ids": list(target_ids) if target_ids else [],
             "expected_device_count": self.config.expected_device_count,
+            "sensor_slots": list(self.config.sensor_ids),
+            "active_sensor_slot_indices": list(
+                self.config.active_sensor_slot_indices
+            ),
             "pending_group_limit": self.config.pending_group_limit,
             "queue_capacity": self.config.queue_capacity,
         }
@@ -474,20 +498,17 @@ def _match_device_id(
 def _match_target_device_ids(
     target_ids: Sequence[str], discovered_map: dict[str, Any]
 ) -> tuple[str, ...]:
-    """Resolve configured IDs in order; allow partial matches (missing devices)."""
-    matched: list[str] = []
-    for target_id in target_ids:
-        try:
-            resolved = _match_device_id(target_id, discovered_map)
-        except AdapterError:
-            continue
-        if resolved not in matched:
-            matched.append(resolved)
-    if not matched:
+    """Resolve every configured ID in slot order and reject missing devices."""
+    matched = tuple(
+        _match_device_id(target_id, discovered_map)
+        for target_id in target_ids
+    )
+    if len(set(matched)) != len(matched):
         raise AdapterError(
-            f"未找到任何已配置的 MTw 设备; 已发现: {sorted(discovered_map.keys())}"
+            "Multiple configured MTw IDs resolve to the same physical "
+            f"device: {matched}"
         )
-    return tuple(matched)
+    return matched
 
 
 @dataclass(slots=True)
@@ -551,6 +572,7 @@ def _read_optional_sample_time_fine(packet: Any) -> int | None:
 # ──────────────────────────────────────────────────────────────
 
 _COUNTER_WRAP_MOD = 65536  # Xsens MTw packet counter is uint16
+_IMU_SLOT_PREVIEW_LABELS = ("imu_trunk", "imu_left", "imu_right")
 
 
 class XsensAwindaImuAdapter(QueuedHardwareAdapter):
@@ -573,8 +595,11 @@ class XsensAwindaImuAdapter(QueuedHardwareAdapter):
         self._config = _coerce_config(config)
         super().__init__(queue_capacity=self._config.queue_capacity)
         self._backend = backend or XdaAwindaBackend(self._config)
-        self._sensor_ids: tuple[str, ...] = self._config.sensor_ids
+        self._sensor_ids: tuple[str, ...] = self._config.active_sensor_ids
         self._use_device_ids: tuple[str, ...] = ()
+        self._active_slot_indices: tuple[int, ...] = (
+            self._config.active_sensor_slot_indices
+        )
 
         self._packet_queue: Queue[tuple[str, Any, int | None]] = Queue(
             maxsize=self._config.queue_capacity
@@ -605,13 +630,18 @@ class XsensAwindaImuAdapter(QueuedHardwareAdapter):
     def descriptor(self) -> ModalityDescriptor:
         cfg = self._config
         ids = self._use_device_ids or self._sensor_ids or tuple(
-            f"unassigned_{index + 1}" for index in range(3)
+            f"unassigned_{index + 1}" for index in range(cfg.expected_device_count)
+        )
+        active_count = len(ids)
+        slot_indices = self._active_slot_indices or tuple(range(active_count))
+        preview_labels = tuple(
+            _IMU_SLOT_PREVIEW_LABELS[index] for index in slot_indices
         )
         backend_meta = dict(getattr(self._backend, "metadata", {}))
         return ModalityDescriptor(
             device_id=cfg.device_id,
             modality="imu",
-            display_name="Xsens Awinda 3-MTw array",
+            display_name=f"Xsens Awinda {active_count}-MTw array",
             clock_domain=cfg.clock_domain,
             event_kind="sample_batch",
             channels=IMU_CHANNELS,
@@ -619,16 +649,19 @@ class XsensAwindaImuAdapter(QueuedHardwareAdapter):
             nominal_rate_hz=float(
                 getattr(self._backend, "actual_rate_hz", cfg.sample_rate_hz)
             ),
-            sample_shape=(3, len(IMU_CHANNELS)),
+            sample_shape=(active_count, len(IMU_CHANNELS)),
             dtype=np.dtype(np.float32).str,
             metadata={
                 "simulated": False,
                 "manufacturer": "Xsens",
                 "system": "Awinda WirelessMaster/MTw",
                 "device_ids": list(ids),
-                "physical_location_mapping": "configured" if cfg.sensor_ids else "unassigned",
+                "sensor_slots": list(cfg.sensor_ids),
+                "active_sensor_slot_indices": list(slot_indices),
+                "preview_labels": list(preview_labels),
+                "physical_location_mapping": "configured" if cfg.active_sensor_ids else "unassigned",
                 "alignment_mode": self._alignment_mode,
-                "expected_device_count": 3,
+                "expected_device_count": active_count,
                 **{k: v for k, v in backend_meta.items()
                    if k not in {"device_ids", "expected_device_count",
                                 "pending_group_limit", "queue_capacity"}},
@@ -640,6 +673,7 @@ class XsensAwindaImuAdapter(QueuedHardwareAdapter):
         return {
             **asdict(self._config),
             "resolved_sensor_ids": list(self._use_device_ids or self._sensor_ids),
+            "active_sensor_slot_indices": list(self._active_slot_indices),
             "actual_rate_hz": getattr(self._backend, "actual_rate_hz", None),
             **{k: v for k, v in backend_meta.items()
                if k not in {"pending_group_limit", "queue_capacity"}},
@@ -651,9 +685,25 @@ class XsensAwindaImuAdapter(QueuedHardwareAdapter):
     def _connect_hardware(self) -> None:
         self._backend.connect(self._on_packet)
         ids = tuple(self._backend.device_ids)
-        if not ids or len(ids) > 3 or len(set(ids)) != len(ids):
-            raise AdapterError(f"Awinda 后端必须提供 1-3 个唯一 MTw ID，实际为 {ids}")
+        if len(ids) != self._config.expected_device_count or len(set(ids)) != len(ids):
+            raise AdapterError(
+                f"Awinda 后端必须提供 {self._config.expected_device_count} 个唯一 MTw ID，"
+                f"实际为 {ids}"
+            )
         self._use_device_ids = ids
+        backend_slots = tuple(
+            int(index)
+            for index in getattr(self._backend, "metadata", {}).get(
+                "active_sensor_slot_indices",
+                (),
+            )
+        )
+        if len(backend_slots) == len(ids) and all(0 <= index < 3 for index in backend_slots):
+            self._active_slot_indices = backend_slots
+        elif self._config.active_sensor_ids:
+            self._active_slot_indices = self._config.active_sensor_slot_indices
+        else:
+            self._active_slot_indices = tuple(range(len(ids)))
 
     def _reset_trial_state(self) -> None:
         with self._pending_lock:
@@ -725,9 +775,13 @@ class XsensAwindaImuAdapter(QueuedHardwareAdapter):
         # If it is still alive, retain both the thread reference and its state;
         # close() will refuse to tear down the backend underneath it.
         if self._consumer_thread is None:
+            active_count = len(self._use_device_ids)
             with self._pending_lock:
                 for group in self._pending.values():
-                    self._incomplete_samples += max(0, 3 - len(group.rows))
+                    self._incomplete_samples += max(
+                        0,
+                        active_count - len(group.rows),
+                    )
                 self._pending.clear()
 
         if first_error is not None:
@@ -841,7 +895,8 @@ class XsensAwindaImuAdapter(QueuedHardwareAdapter):
             group.device_times[device_id] = sample_time if sample_time is not None else counter
             group.device_counters[device_id] = counter
 
-            complete = len(group.rows) == 3
+            active_count = len(self._use_device_ids)
+            complete = len(group.rows) == active_count
             if complete:
                 self._pending.pop(key)
                 # Detect common counter gap
@@ -850,7 +905,10 @@ class XsensAwindaImuAdapter(QueuedHardwareAdapter):
             # Evict stale groups beyond limit
             while len(self._pending) > self._config.pending_group_limit:
                 _old_key, old_group = self._pending.popitem(last=False)
-                self._incomplete_samples += max(0, 3 - len(old_group.rows))
+                self._incomplete_samples += max(
+                    0,
+                    active_count - len(old_group.rows),
+                )
 
         if complete:
             self._emit_group(group)
@@ -859,7 +917,7 @@ class XsensAwindaImuAdapter(QueuedHardwareAdapter):
         """Record a gap when the common counter skips ahead by more than 1.
 
         Each complete group already carries the same PacketCounter from
-        all three devices (the group key *is* that counter), so a
+        every enabled device (the group key *is* that counter), so a
         single comparison against the previous common counter suffices.
         """
         if not self._counter_has_data:
@@ -882,7 +940,7 @@ class XsensAwindaImuAdapter(QueuedHardwareAdapter):
         self._last_common_counter["value"] = cur_val
 
     def _emit_group(self, group: _PendingGroup) -> None:
-        """Emit a complete (N,3,12) SampleBatch for one aligned trio."""
+        """Emit one complete aligned sample across all enabled sensors."""
         data = np.ascontiguousarray(
             np.stack(
                 [group.rows[device_id] for device_id in self._use_device_ids],
@@ -905,7 +963,7 @@ class XsensAwindaImuAdapter(QueuedHardwareAdapter):
         non_null_times = [t for t in device_times_list if t is not None]
         device_time: int | float | None = non_null_times[0] if non_null_times else None
 
-        if len(non_null_times) == 3:
+        if len(non_null_times) == len(self._use_device_ids):
             time_spread = abs(max(non_null_times) - min(non_null_times))
             self._max_device_time_spread = max(self._max_device_time_spread, time_spread)
 

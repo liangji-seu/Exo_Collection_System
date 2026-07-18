@@ -414,6 +414,9 @@ def _build_preview_event(
                 "device_id": device_id,
                 "simulated": simulated,
                 "descriptor_device_id": descriptor.device_id,
+                "preview_labels": list(
+                    descriptor.metadata.get("preview_labels") or []
+                ),
             },
         )
     if isinstance(raw, SyncPulseEvent):

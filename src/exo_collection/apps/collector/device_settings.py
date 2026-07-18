@@ -311,7 +311,10 @@ class ImuDeviceSettingsDialog(ModalityDeviceSettingsDialog):
         self.setWindowTitle("IMU 设备设置")
         self.setMinimumWidth(560)
         outer = QVBoxLayout(self)
-        intro = QLabel("真实设备：Xsens Awinda；固定连接 3 个 MTw 传感器。")
+        intro = QLabel(
+            "真实设备：Xsens Awinda。填写哪个 IMU 槽位的 ID 就启用哪个；"
+            "留空的槽位不会参与连接、对齐或丢包统计。"
+        )
         intro.setWordWrap(True)
         outer.addWidget(intro)
         form = QFormLayout()
@@ -332,30 +335,38 @@ class ImuDeviceSettingsDialog(ModalityDeviceSettingsDialog):
 
         ids_layout = QHBoxLayout()
         ids_layout.setSpacing(8)
-        sensor_ids_current = current.get("sensor_ids", ())
-        self.id_left_edit = QLineEdit(str(sensor_ids_current[0]) if len(sensor_ids_current) > 0 else "")
-        self.id_left_edit.setPlaceholderText("左(IMU1) ID")
-        ids_layout.addWidget(QLabel("左(IMU1)："))
-        ids_layout.addWidget(self.id_left_edit)
-        self.id_mid_edit = QLineEdit(str(sensor_ids_current[1]) if len(sensor_ids_current) > 1 else "")
-        self.id_mid_edit.setPlaceholderText("中(IMU2) ID")
-        ids_layout.addWidget(QLabel("中(IMU2)："))
-        ids_layout.addWidget(self.id_mid_edit)
-        self.id_right_edit = QLineEdit(str(sensor_ids_current[2]) if len(sensor_ids_current) > 2 else "")
-        self.id_right_edit.setPlaceholderText("右(IMU3) ID")
-        ids_layout.addWidget(QLabel("右(IMU3)："))
-        ids_layout.addWidget(self.id_right_edit)
+        current_ids = tuple(str(item).strip() for item in current.get("sensor_ids", ()))
+        sensor_slots = (*current_ids[:3], *("" for _ in range(max(0, 3 - len(current_ids)))))
+        self.id_1_edit = QLineEdit(sensor_slots[0])
+        self.id_1_edit.setObjectName("imu_sensor_id_1")
+        self.id_1_edit.setPlaceholderText("IMU1 ID")
+        ids_layout.addWidget(QLabel("IMU1："))
+        ids_layout.addWidget(self.id_1_edit)
+        self.id_2_edit = QLineEdit(sensor_slots[1])
+        self.id_2_edit.setObjectName("imu_sensor_id_2")
+        self.id_2_edit.setPlaceholderText("IMU2 ID")
+        ids_layout.addWidget(QLabel("IMU2："))
+        ids_layout.addWidget(self.id_2_edit)
+        self.id_3_edit = QLineEdit(sensor_slots[2])
+        self.id_3_edit.setObjectName("imu_sensor_id_3")
+        self.id_3_edit.setPlaceholderText("IMU3 ID")
+        ids_layout.addWidget(QLabel("IMU3："))
+        ids_layout.addWidget(self.id_3_edit)
+        # Compatibility aliases for code that used the first positional UI.
+        self.id_left_edit = self.id_1_edit
+        self.id_mid_edit = self.id_2_edit
+        self.id_right_edit = self.id_3_edit
         form.addRow("MTw 传感器 ID：", ids_layout)
         outer.addLayout(form)
         outer.addWidget(self._button_box())
 
     @Slot()
     def accept(self) -> None:
-        sensor_ids = tuple(
+        sensor_slots = tuple(
             edit.text().strip()
-            for edit in (self.id_left_edit, self.id_mid_edit, self.id_right_edit)
-            if edit.text().strip()
+            for edit in (self.id_1_edit, self.id_2_edit, self.id_3_edit)
         )
+        sensor_ids = sensor_slots if any(sensor_slots) else ()
         self._finish_accept(
             {
                 "radio_channel": self.channel_spin.value(),

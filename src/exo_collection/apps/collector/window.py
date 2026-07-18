@@ -279,15 +279,19 @@ class HardwareDeviceSettingsDialog(QDialog):
         form.addRow("Awinda 采样率 (Hz)：", self.awinda_rate_edit)
         imu_ids_layout = QHBoxLayout()
         imu_ids_layout.setSpacing(8)
-        self.awinda_id_left = QLineEdit(str(imu.get("sensor_ids", ("", "", ""))[0] if len(imu.get("sensor_ids", ())) > 0 else ""))
+        current_ids = tuple(
+            str(item).strip() for item in imu.get("sensor_ids", ())
+        )
+        sensor_slots = (*current_ids[:3], *("" for _ in range(max(0, 3 - len(current_ids)))))
+        self.awinda_id_left = QLineEdit(sensor_slots[0])
         self.awinda_id_left.setPlaceholderText("左(IMU1) ID")
         imu_ids_layout.addWidget(QLabel("左(IMU1)："))
         imu_ids_layout.addWidget(self.awinda_id_left)
-        self.awinda_id_mid = QLineEdit(str(imu.get("sensor_ids", ("", "", ""))[1] if len(imu.get("sensor_ids", ())) > 1 else ""))
+        self.awinda_id_mid = QLineEdit(sensor_slots[1])
         self.awinda_id_mid.setPlaceholderText("中(IMU2) ID")
         imu_ids_layout.addWidget(QLabel("中(IMU2)："))
         imu_ids_layout.addWidget(self.awinda_id_mid)
-        self.awinda_id_right = QLineEdit(str(imu.get("sensor_ids", ("", "", ""))[2] if len(imu.get("sensor_ids", ())) > 2 else ""))
+        self.awinda_id_right = QLineEdit(sensor_slots[2])
         self.awinda_id_right.setPlaceholderText("右(IMU3) ID")
         imu_ids_layout.addWidget(QLabel("右(IMU3)："))
         imu_ids_layout.addWidget(self.awinda_id_right)
@@ -460,11 +464,11 @@ class HardwareDeviceSettingsDialog(QDialog):
     @Slot()
     def accept(self) -> None:
         try:
-            sensor_ids = tuple(
+            sensor_slots = tuple(
                 edit.text().strip()
                 for edit in (self.awinda_id_left, self.awinda_id_mid, self.awinda_id_right)
-                if edit.text().strip()
             )
+            sensor_ids = sensor_slots if any(sensor_slots) else ()
             encoder_port = self.encoder_port_edit.text().strip()
             interface_name = str(
                 self.ultrasound_interface_combo.currentData() or ""
@@ -1032,7 +1036,7 @@ class CollectorWindow(QMainWindow):
         form.addRow("数据根目录：", root_row)
 
         # Row 1: 项目 + 受试者编码
-        row1 = QHBoxLayout()
+        row1 = QGridLayout()
         self.project_combo = QComboBox()
         self.project_combo.setObjectName("project")
         for project in PROJECTS:
@@ -1041,8 +1045,8 @@ class CollectorWindow(QMainWindow):
                 dict(project),
             )
         self.project_combo.setCurrentIndex(1)
-        row1.addWidget(QLabel("项目："))
-        row1.addWidget(self.project_combo, 3)
+        row1.addWidget(QLabel("项目："), 0, 0)
+        row1.addWidget(self.project_combo, 0, 1)
 
         self.subject_code_edit = QLineEdit("001")
         self.subject_code_edit.setObjectName("subject_code")
@@ -1052,12 +1056,14 @@ class CollectorWindow(QMainWindow):
         )
         self.subject_code_edit.editingFinished.connect(self.normalize_subject_code)
         self.subject_code_edit.textChanged.connect(self._update_start_button)
-        row1.addWidget(QLabel("受试者编码："))
-        row1.addWidget(self.subject_code_edit, 1)
+        row1.addWidget(QLabel("受试者编码："), 0, 2)
+        row1.addWidget(self.subject_code_edit, 0, 3)
+        row1.setColumnStretch(1, 1)
+        row1.setColumnStretch(3, 1)
         form.addRow(row1)
 
         # Row 2: 工况 + 重复轮次
-        row2 = QHBoxLayout()
+        row2 = QGridLayout()
         self.condition_combo = QComboBox()
         self.condition_combo.setObjectName("condition")
         for condition in CONDITIONS:
@@ -1066,15 +1072,17 @@ class CollectorWindow(QMainWindow):
                 dict(condition),
             )
         self.condition_combo.setCurrentIndex(1)
-        row2.addWidget(QLabel("工况："))
-        row2.addWidget(self.condition_combo, 3)
+        row2.addWidget(QLabel("工况："), 0, 0)
+        row2.addWidget(self.condition_combo, 0, 1)
 
         self.repeat_spin = QSpinBox()
         self.repeat_spin.setObjectName("repeat_index")
         self.repeat_spin.setRange(1, 9999)
         self.repeat_spin.setValue(1)
-        row2.addWidget(QLabel("重复轮次："))
-        row2.addWidget(self.repeat_spin, 1)
+        row2.addWidget(QLabel("重复轮次："), 0, 2)
+        row2.addWidget(self.repeat_spin, 0, 3)
+        row2.setColumnStretch(1, 1)
+        row2.setColumnStretch(3, 1)
         form.addRow(row2)
         controls_layout.addWidget(metadata_box)
 

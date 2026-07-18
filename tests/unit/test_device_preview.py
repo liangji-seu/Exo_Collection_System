@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 
 from exo_collection.acquisition.messages import WorkerEvent, WorkerEventType
+from exo_collection.acquisition.preview import build_preview_event
 from exo_collection.adapters.base import (
     AdapterState,
     ModalityAdapter,
@@ -419,6 +420,28 @@ def test_build_preview_event_sample_batch_imu() -> None:
     assert len(channels) == 3
 
 
+def test_build_preview_event_imu_slot_1_3_labels_not_mapped_to_left() -> None:
+    """Slot 1+3 config produces labels (imu_trunk, imu_right), never imu_left."""
+    desc = ModalityDescriptor(
+        device_id="test_imu", modality="imu", display_name="Test IMU",
+        clock_domain="host", event_kind="sample",
+        nominal_rate_hz=200.0, channels=("acc_x",), units=("m/s^2",),
+        sample_shape=(2,), dtype="float64",
+        metadata={"preview_labels": ["imu_trunk", "imu_right"]},
+    )
+    batch = SampleBatch(
+        device_id="test_imu", modality="imu", clock_domain="host",
+        data=np.arange(48, dtype=np.float64).reshape(2, 2, 12),
+        sample_rate_hz=200.0, host_monotonic_ns=1000, sequence_number=1,
+        first_sample_index=0, sample_count=2,
+    )
+    event = _build_preview_event(batch, "imu", "test_imu", desc, True)
+    assert event is not None
+    assert event.event_type == WorkerEventType.PREVIEW
+    labels = event.payload.get("labels", [])
+    assert labels == ["imu_trunk", "imu_right"]
+
+
 def test_build_preview_event_ultrasound() -> None:
     desc = ModalityDescriptor(
         device_id="test_us", modality="ultrasound", display_name="Test US",
@@ -495,6 +518,31 @@ def test_build_preview_event_encoder() -> None:
     assert event is not None
     assert event.payload["labels"] == ["left_position", "right_position"]
     assert event.payload["channels"] == [[10.5], [20.3]]
+
+
+def test_build_preview_public_api_respects_preview_labels_from_extra_payload() -> None:
+    """build_preview_event (public) with extra_payload preview_labels
+    for shape (1,2,12) IMU batch → labels are exactly (imu_trunk, imu_right),
+    channels=2, and imu_left never appears."""
+    batch = SampleBatch(
+        device_id="test_imu", modality="imu", clock_domain="host",
+        data=np.arange(24, dtype=np.float64).reshape(1, 2, 12),
+        sample_rate_hz=200.0, host_monotonic_ns=1000, sequence_number=1,
+        first_sample_index=0, sample_count=1,
+    )
+    event = build_preview_event(
+        batch,
+        extra_payload={"preview_labels": ["imu_trunk", "imu_right"]},
+    )
+    assert event is not None
+    assert event.event_type == WorkerEventType.PREVIEW
+    assert event.modality == "imu"
+    labels = event.payload.get("labels", [])
+    assert labels == ["imu_trunk", "imu_right"]
+    assert "imu_left" not in labels
+    channels = event.payload.get("channels", [])
+    assert len(channels) == 2
+    assert event.payload.get("channel_count") == 2
 
 
 def test_build_preview_event_none_for_unknown_type() -> None:
