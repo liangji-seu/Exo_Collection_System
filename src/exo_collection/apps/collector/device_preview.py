@@ -42,6 +42,45 @@ DEFAULT_HEALTH_POLL_INTERVAL_S = 0.5
 DEFAULT_PREVIEW_DOWNSAMPLE_MAX_S = 1.0 / 15.0  # ~15 fps max
 
 
+def _preview_rate_limit_key(event: WorkerEvent) -> tuple[str, int | None]:
+    """Return the independent UI stream represented by a preview event.
+
+    Packet-per-channel ultrasound produces four independent events.  Sharing
+    one limiter across them discards three interleaved channels, so its channel
+    index is part of the key.  Batched ultrasound, IMU and encoder previews
+    continue to use one key per modality.
+    """
+
+    modality = str(event.modality or event.payload.get("modality") or "")
+    if modality == "ultrasound":
+        raw_channel = event.payload.get("channel_index")
+        if raw_channel is not None:
+            try:
+                channel_index = int(raw_channel)
+            except (TypeError, ValueError):
+                channel_index = None
+            if channel_index is not None and 0 <= channel_index <= 3:
+                return modality, channel_index
+    return modality, None
+
+
+def _preview_is_due(
+    event: WorkerEvent,
+    *,
+    now: float,
+    last_sent_by_stream: dict[tuple[str, int | None], float],
+    interval_s: float = DEFAULT_PREVIEW_DOWNSAMPLE_MAX_S,
+) -> bool:
+    """Apply the best-effort preview cap independently to each UI stream."""
+
+    key = _preview_rate_limit_key(event)
+    last_sent = last_sent_by_stream.get(key)
+    if last_sent is not None and now - last_sent < interval_s:
+        return False
+    last_sent_by_stream[key] = now
+    return True
+
+
 # ── Public types ───────────────────────────────────────────────────────────
 
 
@@ -194,7 +233,7 @@ def _preview_runner_target(
 
         # ---- preview loop ----
         last_health = perf_counter()
-        last_preview_send = 0.0
+        last_preview_send_by_stream: dict[tuple[str, int | None], float] = {}
         ready_sent = False
         while not stop_pipe.poll():
             # Bound every drain so high-throughput input cannot starve stop and
@@ -246,11 +285,12 @@ def _preview_runner_target(
                         continue
                     if preview.event_type is not WorkerEventType.PREVIEW:
                         _send_event_raw(event_queue, preview)
-                    elif last_preview_send == 0.0 or (
-                        now - last_preview_send >= DEFAULT_PREVIEW_DOWNSAMPLE_MAX_S
+                    elif _preview_is_due(
+                        preview,
+                        now=now,
+                        last_sent_by_stream=last_preview_send_by_stream,
                     ):
                         _send_event_raw(event_queue, preview)
-                        last_preview_send = now
 
             # Health telemetry
             now = perf_counter()

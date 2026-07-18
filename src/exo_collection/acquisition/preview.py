@@ -37,11 +37,23 @@ def build_preview_event(
                     f"invalid raw Ethernet ultrasound shape: {values.shape}"
                 )
             source_frame = values[-1]
+            channel_index = int(getattr(event, "channel", 0))
+            # Raw-Ethernet ultrasound artifacts preserve the complete captured
+            # 1000-byte record.  Remove only the device protocol bytes for the
+            # operator preview: 00 + channel marker + ADC bytes + FF.  This is
+            # deliberately based on the in-frame signature, never a MAC field.
+            if (
+                source_frame.ndim == 1
+                and source_frame.size >= 3
+                and int(source_frame[0]) == 0x00
+                and int(source_frame[1]) == channel_index + 1
+                and int(source_frame[-1]) == 0xFF
+            ):
+                source_frame = source_frame[2:-1]
             # Preview conversion only; raw uint8 remains unchanged on disk.
             frame = (
                 source_frame.astype(np.int16, copy=False) - 127
             ).astype(np.float32, copy=False)
-            channel_index = int(getattr(event, "channel", 0))
             is_multichannel_a_line = False
         else:
             if values.ndim < 2:

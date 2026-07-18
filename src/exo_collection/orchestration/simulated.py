@@ -384,6 +384,35 @@ def _preview_event(event: FrameBatch | SampleBatch, trial_uuid: UUID) -> WorkerE
     return build_preview_event(event, trial_uuid)
 
 
+def _preview_stream_key(
+    modality: str,
+    event: FrameBatch | SampleBatch | SyncPulseEvent,
+) -> tuple[str, int | None]:
+    """Identify an independently rate-limited acquisition preview stream."""
+
+    if isinstance(event, FrameBatch) and event.channel is not None:
+        return modality, int(event.channel)
+    return modality, None
+
+
+def _acquisition_preview_is_due(
+    modality: str,
+    event: FrameBatch | SampleBatch | SyncPulseEvent,
+    *,
+    now_ns: int,
+    last_sent_by_stream: dict[tuple[str, int | None], int],
+    interval_ns: int = 66_000_000,
+) -> bool:
+    """Rate-limit recording previews without coupling ultrasound channels."""
+
+    key = _preview_stream_key(modality, event)
+    last_sent_ns = last_sent_by_stream.get(key)
+    if last_sent_ns is not None and now_ns - last_sent_ns < interval_ns:
+        return False
+    last_sent_by_stream[key] = now_ns
+    return True
+
+
 def _clock_mappings(
     descriptors: dict[str, Any],
     anchors: dict[str, list[tuple[float, int]]],
@@ -559,7 +588,7 @@ def run_trial(
     first_trigger_utc_ns: int | None = None
     accepted_trigger: SyncPulseEvent | None = None
     anchors: dict[str, list[tuple[float, int]]] = {name: [] for name in adapters}
-    last_preview_ns = {name: 0 for name in adapters}
+    last_preview_ns: dict[tuple[str, int | None], int] = {}
     preview_history = BoundedPreviewHistory()
     sample_bounds: dict[str, list[int | None]] = {
         name: [None, None] for name in adapters
@@ -843,13 +872,17 @@ def run_trial(
                 else:
                     raise TypeError(f"Unsupported raw event: {type(event).__name__}")
 
-                if now_ns - last_preview_ns[modality] >= 66_000_000:
+                if _acquisition_preview_is_due(
+                    modality,
+                    event,
+                    now_ns=now_ns,
+                    last_sent_by_stream=last_preview_ns,
+                ):
                     # Retain the same low-rate, spatially downsampled view used
                     # for UI telemetry.  Expensive PNG rendering is deferred
                     # until every adapter and Writer has stopped.
                     preview_history.capture(event)
                     _publish(publish, _preview_event(event, request.trial_uuid))
-                    last_preview_ns[modality] = now_ns
 
             # Emit an initial health snapshot immediately, then at 2 Hz.
             last_health_ns = start_token.host_monotonic_ns - 500_000_000

@@ -8,6 +8,7 @@ from threading import Event, Timer
 import time
 
 import h5py
+import numpy as np
 import pytest
 
 from exo_collection import __version__
@@ -17,6 +18,7 @@ from exo_collection.acquisition.workers import CollectorWorker
 from exo_collection.adapters.base import AdapterError
 from exo_collection.catalog import Catalog
 from exo_collection.catalog.repositories import CatalogRepository
+from exo_collection.domain.events import FrameBatch
 from exo_collection.domain.models import ArtifactKind
 from exo_collection.domain.states import TrialState
 from exo_collection.orchestration.models import TrialRunRequest
@@ -32,6 +34,79 @@ from exo_collection.storage.checksum import sha256_file, verify_checksum_manifes
 from exo_collection.storage.manifest import MANIFEST_SCHEMA_VERSION, load_manifest
 from exo_collection.writers.block_binary_process import BlockBinaryWriterProcess
 from exo_collection.writers.hdf5_signal import HDF5_SIGNAL_VERSION, Hdf5SignalWriter
+
+
+def _raw_ultrasound_frame_batch(channel: int | None) -> FrameBatch:
+    return FrameBatch(
+        device_id="raw_ultrasound",
+        modality="ultrasound",
+        clock_domain="host",
+        first_frame_index=0,
+        frame_count=1,
+        sequence_number=0,
+        data=np.zeros((1, 1000), dtype=np.uint8),
+        channel=channel,
+        tail_flags=1 if channel is not None else 0,
+    )
+
+
+def test_recording_preview_rate_limit_is_independent_per_raw_ultrasound_channel() -> None:
+    last_sent: dict[tuple[str, int | None], int] = {}
+    channel_events = [_raw_ultrasound_frame_batch(channel) for channel in range(4)]
+
+    assert all(
+        simulated_module._acquisition_preview_is_due(
+            "ultrasound",
+            event,
+            now_ns=1_000_000_000,
+            last_sent_by_stream=last_sent,
+            interval_ns=66_000_000,
+        )
+        for event in channel_events
+    )
+    assert set(last_sent) == {
+        ("ultrasound", 0),
+        ("ultrasound", 1),
+        ("ultrasound", 2),
+        ("ultrasound", 3),
+    }
+
+    assert not simulated_module._acquisition_preview_is_due(
+        "ultrasound",
+        channel_events[0],
+        now_ns=1_010_000_000,
+        last_sent_by_stream=last_sent,
+        interval_ns=66_000_000,
+    )
+    assert simulated_module._acquisition_preview_is_due(
+        "ultrasound",
+        channel_events[0],
+        now_ns=1_066_000_000,
+        last_sent_by_stream=last_sent,
+        interval_ns=66_000_000,
+    )
+
+
+def test_recording_preview_rate_limit_keeps_batched_ultrasound_on_one_stream() -> None:
+    last_sent: dict[tuple[str, int | None], int] = {}
+    first = _raw_ultrasound_frame_batch(None)
+    second = _raw_ultrasound_frame_batch(None)
+
+    assert simulated_module._acquisition_preview_is_due(
+        "ultrasound",
+        first,
+        now_ns=2_000_000_000,
+        last_sent_by_stream=last_sent,
+        interval_ns=66_000_000,
+    )
+    assert not simulated_module._acquisition_preview_is_due(
+        "ultrasound",
+        second,
+        now_ns=2_010_000_000,
+        last_sent_by_stream=last_sent,
+        interval_ns=66_000_000,
+    )
+    assert last_sent == {("ultrasound", None): 2_000_000_000}
 
 
 def test_simulated_trial_produces_complete_immutable_package(tmp_path) -> None:

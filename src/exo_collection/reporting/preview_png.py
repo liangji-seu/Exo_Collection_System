@@ -174,13 +174,21 @@ class BoundedPreviewHistory:
         channel = int(event.channel) if event.channel is not None else -1
         if channel not in range(4) or batch.ndim != 2 or batch.shape[0] != 1:
             return
+        samples = batch[0]
+        if (
+            samples.size >= 3
+            and int(samples[0]) == 0x00
+            and int(samples[1]) == channel + 1
+            and int(samples[-1]) == 0xFF
+        ):
+            samples = samples[2:-1]
         depth_indices = np.linspace(
             0,
-            batch.shape[1] - 1,
-            min(self.ultrasound_depth_samples, batch.shape[1]),
+            samples.shape[0] - 1,
+            min(self.ultrasound_depth_samples, samples.shape[0]),
             dtype=np.int64,
         )
-        reduced = np.asarray(batch[0, depth_indices], dtype=np.float32)
+        reduced = np.asarray(samples[depth_indices], dtype=np.float32)
         shape = (4, int(reduced.shape[0]))
         if self._ultrasound_shape is None:
             self._ultrasound_shape = shape

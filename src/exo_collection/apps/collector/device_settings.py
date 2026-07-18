@@ -206,7 +206,7 @@ class UltrasoundDeviceSettingsDialog(ModalityDeviceSettingsDialog):
         self.scan_button.setEnabled(False)
         self.refresh_button.setEnabled(False)
         self._scan_results.clear()
-        self.scan_status.setText("正在后台扫描超声目标 MAC 帧…")
+        self.scan_status.setText("正在后台扫描超声协议帧…")
         worker = UltrasoundInterfaceScanWorker(names, parent=self)
         worker.result_ready.connect(self._on_scan_result)
         worker.scan_failed.connect(self._on_scan_failed)

@@ -357,7 +357,7 @@ class HardwareDeviceSettingsDialog(QDialog):
         self.ultrasound_scan_button.setEnabled(False)
         self.ultrasound_refresh_button.setEnabled(False)
         self._ultrasound_scan_results.clear()
-        self.ultrasound_scan_status.setText("正在后台扫描超声目标 MAC 帧…")
+        self.ultrasound_scan_status.setText("正在后台扫描超声协议帧…")
         worker = UltrasoundInterfaceScanWorker(names, parent=self)
         worker.result_ready.connect(self._on_ultrasound_scan_result)
         worker.scan_failed.connect(self._on_ultrasound_scan_failed)

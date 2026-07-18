@@ -347,6 +347,30 @@ def _raw_ultrasound_channel_labels(metadata: dict[str, Any]) -> tuple[str, ...]:
     return ("ch_1", "ch_2", "ch_3", "ch_4")
 
 
+def _raw_ultrasound_adc_view(
+    packet: NDArray[np.generic],
+    *,
+    channel: int,
+    metadata: dict[str, Any],
+) -> NDArray[np.generic]:
+    """Return derived ADC samples while leaving stored raw bytes untouched."""
+
+    preservation = str(metadata.get("raw_preservation", "")).strip().casefold()
+    if preservation != "complete captured frame":
+        return packet
+    if (
+        packet.ndim != 1
+        or packet.size < 3
+        or int(packet[0]) != 0x00
+        or int(packet[1]) != channel + 1
+        or int(packet[-1]) != 0xFF
+    ):
+        raise DataStudioToolError(
+            "Raw Ethernet ultrasound frame signature does not match its block flags"
+        )
+    return packet[2:-1]
+
+
 def _read_raw_ethernet_ultrasound(
     reader: BlockBinaryReader,
     *,
@@ -366,7 +390,14 @@ def _read_raw_ethernet_ultrasound(
     channel_counts = [0, 0, 0, 0]
     source_packet_count = 0
     trailer_packet_count = 0
-    depth_count = int(reader.metadata.get("sample_shape", [0])[-1])
+    stored_depth_count = int(reader.metadata.get("sample_shape", [0])[-1])
+    complete_wire_frame = (
+        str(reader.metadata.get("raw_preservation", "")).strip().casefold()
+        == "complete captured frame"
+    )
+    depth_count = stored_depth_count - 3 if complete_wire_frame else stored_depth_count
+    if depth_count <= 0:
+        raise DataStudioToolError("Raw Ethernet ultrasound depth is invalid")
     depth_selector = _even_indices(depth_count, max_depth_points)
 
     # First pass validates every packet/CRC in authoritative storage order and
@@ -385,6 +416,11 @@ def _read_raw_ethernet_ultrasound(
             raise DataStudioToolError(
                 "Raw Ethernet ultrasound packets must be one-dimensional A-lines"
             )
+        _raw_ultrasound_adc_view(
+            packet,
+            channel=decoded.channel,
+            metadata=reader.metadata,
+        )
         channel_counts[decoded.channel] += 1
         source_packet_count += 1
         trailer_packet_count += int(decoded.has_trailer)
@@ -422,9 +458,12 @@ def _read_raw_ethernet_ultrasound(
         channel_ordinals[decoded.channel] += 1
         if channel_ordinal not in retained_ordinals:
             continue
-        channel_packets[decoded.channel].append(
-            np.asarray(record.data[0][depth_selector]).copy()
+        packet = _raw_ultrasound_adc_view(
+            np.asarray(record.data[0]),
+            channel=decoded.channel,
+            metadata=reader.metadata,
         )
+        channel_packets[decoded.channel].append(packet[depth_selector].copy())
         channel_arrival_ns[decoded.channel].append(
             int(record.header.host_monotonic_ns)
         )

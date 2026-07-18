@@ -449,6 +449,53 @@ def test_raw_ethernet_playback_never_zero_fills_a_missing_channel(
     assert playback.device_synchronized is False
 
 
+def test_raw_ethernet_playback_derives_adc_from_complete_wire_frames(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "ultrasound.bin"
+    with BlockBinaryWriter(
+        path,
+        dtype=np.uint8,
+        sample_shape=(8,),
+        metadata={
+            "clock_domain": "raw_ultrasound_clock",
+            "channels": [1, 2, 3, 4],
+            "protocol": "raw_ethernet_uint8",
+            "transport": "raw_ethernet_scapy_npcap",
+            "raw_preservation": "complete captured frame",
+            "wire_header_bytes": 2,
+            "wire_trailer": "FF",
+            "wire_adc_byte_count": 5,
+        },
+    ) as writer:
+        for channel in range(4):
+            frame = np.asarray(
+                [0, channel + 1, *([10 + channel] * 5), 0xFF],
+                dtype=np.uint8,
+            )
+            writer.append(
+                frame[None, :],
+                host_monotonic_ns=1_000_000_000 + channel,
+                flags=encode_raw_ethernet_flags(channel, 1),
+            )
+        meta_path = writer.meta_path
+        index_path = writer.index_path
+
+    playback = _read_ultrasound(
+        path,
+        meta_path=meta_path,
+        index_path=index_path,
+        formal_t0_ns=1_000_000_000,
+        max_frames=1,
+        max_depth_points=8,
+        idle_check=lambda: None,
+    )
+
+    assert playback.waterfall.shape == (4, 1, 5)
+    for channel in range(4):
+        assert np.all(playback.waterfall[channel, 0] == 10 + channel)
+
+
 def test_checksum_quality_and_full_statistics_are_manifest_driven(tmp_path: Path) -> None:
     manifest_path, _manifest = _build_finalized_trial(tmp_path)
 

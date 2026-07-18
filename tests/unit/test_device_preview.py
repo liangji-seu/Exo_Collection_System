@@ -30,6 +30,8 @@ from exo_collection.apps.collector.device_preview import (
     ModalityPreviewProcessHandle,
     ProfileModalityAdapterFactory,
     _build_preview_event,
+    _preview_is_due,
+    _preview_rate_limit_key,
 )
 from exo_collection.domain.events import (
     DeviceStatusEvent,
@@ -437,6 +439,45 @@ def test_build_preview_event_ultrasound() -> None:
     assert len(channels) == 4
 
 
+def test_build_preview_event_raw_ultrasound_uses_only_in_frame_adc_bytes() -> None:
+    """Decode the wire signature without mutating the complete raw frame."""
+
+    desc = ModalityDescriptor(
+        device_id="raw_us", modality="ultrasound", display_name="Raw US",
+        clock_domain="host", event_kind="frame",
+        nominal_rate_hz=25.0, channels=("ch1", "ch2", "ch3", "ch4"),
+        units=("adc", "adc", "adc", "adc"), sample_shape=(1000,),
+        dtype="uint8", metadata={},
+    )
+    adc = ((np.arange(997, dtype=np.uint16) * 7 + 11) % 250).astype(np.uint8)
+    complete_frame = np.concatenate(
+        (
+            np.array([0x00, 0x03], dtype=np.uint8),
+            adc,
+            np.array([0xFF], dtype=np.uint8),
+        )
+    )
+    original = complete_frame.copy()
+    batch = FrameBatch(
+        device_id="raw_us", modality="ultrasound", clock_domain="host",
+        data=complete_frame[None, :], frame_rate_hz=25.0,
+        host_monotonic_ns=1000, sequence_number=1,
+        first_frame_index=0, frame_count=1, channel=2, tail_flags=1,
+    )
+
+    event = _build_preview_event(batch, "ultrasound", "raw_us", desc, False)
+
+    assert event is not None
+    assert event.payload["channel_index"] == 2
+    assert event.payload["shape"] == [997]
+    assert event.payload["preview_sample_count"] == 512
+    centered_adc = (adc.astype(np.int16) - 127).astype(np.float32)
+    indices = np.linspace(0, adc.size - 1, 512, dtype=np.int64)
+    assert event.payload["values"] == pytest.approx(centered_adc[indices].tolist())
+    assert np.array_equal(complete_frame, original)
+    assert np.array_equal(np.asarray(batch.data), original[None, :])
+
+
 def test_build_preview_event_encoder() -> None:
     desc = ModalityDescriptor(
         device_id="test_enc", modality="encoder", display_name="Test Enc",
@@ -466,6 +507,77 @@ def test_build_preview_event_none_for_unknown_type() -> None:
     # Pass something that isn't a SampleBatch or FrameBatch
     event = _build_preview_event("not_a_batch", "imu", "test", desc, True)
     assert event is None
+
+
+# ── Per-channel preview rate limiting ──
+
+
+def _raw_ultrasound_preview_event(channel_index: int) -> WorkerEvent:
+    return WorkerEvent(
+        event_type=WorkerEventType.PREVIEW,
+        modality="ultrasound",
+        payload={"channel_index": channel_index, "values": [1.0]},
+    )
+
+
+def test_preview_rate_limit_allows_four_ultrasound_channels_at_same_time() -> None:
+    """Interleaved ch0..ch3 packets are four independent UI streams."""
+
+    last_sent: dict[tuple[str, int | None], float] = {}
+    events = [_raw_ultrasound_preview_event(channel) for channel in range(4)]
+
+    assert [_preview_rate_limit_key(event) for event in events] == [
+        ("ultrasound", 0),
+        ("ultrasound", 1),
+        ("ultrasound", 2),
+        ("ultrasound", 3),
+    ]
+    assert all(
+        _preview_is_due(
+            event,
+            now=10.0,
+            last_sent_by_stream=last_sent,
+            interval_s=0.1,
+        )
+        for event in events
+    )
+    assert len(last_sent) == 4
+
+
+def test_preview_rate_limit_throttles_same_ultrasound_channel() -> None:
+    last_sent: dict[tuple[str, int | None], float] = {}
+    event = _raw_ultrasound_preview_event(1)
+
+    assert _preview_is_due(
+        event, now=20.0, last_sent_by_stream=last_sent, interval_s=0.1
+    )
+    assert not _preview_is_due(
+        event, now=20.05, last_sent_by_stream=last_sent, interval_s=0.1
+    )
+    assert last_sent == {("ultrasound", 1): 20.0}
+
+
+def test_preview_rate_limit_different_ultrasound_channels_do_not_interfere() -> None:
+    last_sent: dict[tuple[str, int | None], float] = {}
+
+    assert _preview_is_due(
+        _raw_ultrasound_preview_event(0),
+        now=30.0,
+        last_sent_by_stream=last_sent,
+        interval_s=0.1,
+    )
+    assert _preview_is_due(
+        _raw_ultrasound_preview_event(3),
+        now=30.01,
+        last_sent_by_stream=last_sent,
+        interval_s=0.1,
+    )
+    assert not _preview_is_due(
+        _raw_ultrasound_preview_event(0),
+        now=30.01,
+        last_sent_by_stream=last_sent,
+        interval_s=0.1,
+    )
 
 
 # ── Queue pressure / downsample tests ──

@@ -141,6 +141,28 @@ def test_raw_ultrasound_history_never_zero_fills_missing_channel() -> None:
     assert metrics["device_synchronized_frames"] is False
 
 
+def test_raw_ultrasound_history_derives_adc_from_complete_wire_frame() -> None:
+    history = BoundedPreviewHistory(ultrasound_depth_samples=32)
+    for channel in range(4):
+        value = 20 + channel
+        raw_frame = np.concatenate(
+            (
+                np.asarray([0, channel + 1], dtype=np.uint8),
+                np.full(997, value, dtype=np.uint8),
+                np.asarray([0xFF], dtype=np.uint8),
+            )
+        )
+        event = _raw_ultrasound_packet(channel, 0, value)
+        event.data = raw_frame[None, :]
+        event.tail_flags = 1
+        history.capture(event)
+
+    _, frames = history.ultrasound_snapshot()
+    assert frames.shape == (1, 4, 32)
+    for channel in range(4):
+        assert np.all(frames[0, channel] == 20 + channel)
+
+
 def test_traditional_ultrasound_frames_keep_device_alignment_semantics() -> None:
     history = BoundedPreviewHistory(ultrasound_depth_samples=32)
     history.capture(_ultrasound_event(0))

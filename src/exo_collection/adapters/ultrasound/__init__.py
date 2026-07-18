@@ -9,11 +9,12 @@ from .elonxi import (
 from .raw_ethernet import (
     RawEthernetUltrasoundAdapter,
     RawEthernetUltrasoundConfig,
+    decode_ultrasound_wire_frame,
     decode_raw_ethernet_flags,
     encode_raw_ethernet_flags,
     enumerate_network_interfaces,
-    mac_to_channel,
     scan_ultrasound_interface,
+    wire_signature_channel,
 )
 
 __all__ = [
@@ -24,9 +25,10 @@ __all__ = [
     "RawEthernetUltrasoundConfig",
     "SimulatedUltrasoundAdapter",
     "SimulatedUltrasoundConfig",
+    "decode_ultrasound_wire_frame",
     "decode_raw_ethernet_flags",
     "encode_raw_ethernet_flags",
     "enumerate_network_interfaces",
-    "mac_to_channel",
     "scan_ultrasound_interface",
+    "wire_signature_channel",
 ]

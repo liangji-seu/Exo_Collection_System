@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from queue import Empty
 from time import sleep
 from types import SimpleNamespace
 from typing import Any
@@ -19,15 +18,17 @@ import pytest
 
 from exo_collection.adapters.base import AdapterError, AdapterState, TrialContext
 from exo_collection.adapters.ultrasound.raw_ethernet import (
-    CH_FROM_DST_MAC_BYTE1,
+    CHANNEL_FROM_WIRE_MARKER,
     US_DEPTH,
+    WIRE_FRAME_SIZE,
     NormalizedPacket,
     RawEthernetUltrasoundAdapter,
     RawEthernetUltrasoundConfig,
-    classify_raw_payload,
+    ScapyRawEthernetBackend,
+    decode_ultrasound_wire_frame,
     encode_raw_ethernet_flags,
-    mac_to_channel,
     scan_ultrasound_interface,
+    wire_signature_channel,
 )
 from exo_collection.readers.binary_block import BlockBinaryReader, scan_binary_file
 from exo_collection.writers.binary_block import (
@@ -43,16 +44,20 @@ def _context() -> TrialContext:
     return TrialContext(trial_uuid=uuid4(), session_uuid=uuid4())
 
 
-def _uint8_adc(depth: int = US_DEPTH) -> bytes:
-    """Deterministic ramp plus a bump so values not equal 0."""
-    data = (np.arange(depth, dtype=np.uint32) * 3 % 256).astype(np.uint8)
-    return data.tobytes()
+def _wire_frame(
+    marker: int = 1,
+    *,
+    frame_size: int = WIRE_FRAME_SIZE,
+    trailer: int = 0xFF,
+    seed: int = 3,
+) -> bytes:
+    """Build the device's complete captured record (not a MAC + payload)."""
 
-
-def _uint8_adc_with_trailing_ff(depth: int = US_DEPTH) -> bytes:
-    """ADC bytes ending with 0xFF (as a genuine sample, not a trailer)."""
-    data = _uint8_adc(depth - 1)
-    return data + b"\xff"
+    body_count = max(0, frame_size - 3)
+    body = (
+        np.arange(body_count, dtype=np.uint32) * seed % 256
+    ).astype(np.uint8).tobytes()
+    return bytes((0x00, marker)) + body + bytes((trailer,))
 
 
 # ── backend that mimics the Scapy sniffer without requiring Scapy ────────────
@@ -65,14 +70,12 @@ class FakeSnifferBackend:
     """
 
     def __init__(self) -> None:
-        self.on_packet: Callable[[str | bytes, bytes], None] | None = None
+        self.on_packet: Callable[[bytes], None] | None = None
         self.started = False
         self.stopped = False
         self.closed = False
 
-    def start(
-        self, on_packet: Callable[[str | bytes, bytes], None]
-    ) -> None:
+    def start(self, on_packet: Callable[[bytes], None]) -> None:
         self.on_packet = on_packet
         self.started = True
 
@@ -82,137 +85,58 @@ class FakeSnifferBackend:
     def close(self) -> None:
         self.closed = True
 
-    def emit(self, packet: Any) -> None:
+    def emit(self, packet: bytes) -> None:
         assert self.on_packet is not None
-        self.on_packet(packet._ether.dst, packet._raw.load)
-
-
-# ── helpers used by the fake emit path (must look like Scapy layers) ─────────
-
-
-class _FakeEther:
-    """Mimics Scapy's Ether.haslayer / Ether.dst."""
-
-    def __init__(self, dst_mac: str) -> None:
-        self.dst = dst_mac
-
-    @staticmethod
-    def haslayer(layer: Any) -> bool:
-        return True
-
-
-class _FakeRaw:
-    """Mimics Scapy's Raw.haslayer / Raw.load."""
-
-    def __init__(self, payload: bytes) -> None:
-        self.load = payload
-
-    @staticmethod
-    def haslayer(layer: Any) -> bool:
-        return True
-
-
-class FakeScapyPacket:
-    """A synthetic packet that passes haslayer(_Ether)/haslayer(_Raw)."""
-
-    def __init__(self, dst_mac: str, payload: bytes) -> None:
-        self._ether = _FakeEther(dst_mac)
-        self._raw = _FakeRaw(payload)
-
-    def haslayer(self, layer: Any) -> bool:
-        return True
-
-    def __getitem__(self, layer: Any) -> Any:
-        if layer.__name__ == "Ether":
-            return self._ether
-        return self._raw
+        self.on_packet(bytes(packet))
 
 
 # ── pure function tests ──────────────────────────────────────────────────────
 
 
-def test_mac_to_channel_parses_string_and_bytes() -> None:
-    for marker, expected in CH_FROM_DST_MAC_BYTE1.items():
-        mac_str = f"00:{marker:02x}:03:04:05:06"
-        assert mac_to_channel(mac_str) == expected
-        mac_bytes = bytes([0, marker, 3, 4, 5, 6])
-        assert mac_to_channel(mac_bytes) == expected
-    # Unknown marker byte 0xFF is not in the table.
-    assert mac_to_channel("00:ff:03:04:05:06") is None
-    assert mac_to_channel(b"\x00\xff") is None
-    # Broadcast / multicast
-    assert mac_to_channel("ff:ff:ff:ff:ff:ff") is None
-    # Short / malformed
-    assert mac_to_channel("00:02") is None
-    assert mac_to_channel("not-a-mac") is None
-    assert mac_to_channel(b"") is None
+@pytest.mark.parametrize("marker", (1, 2, 3, 4))
+def test_wire_signature_and_decoder_use_in_frame_channel(marker: int) -> None:
+    frame = _wire_frame(marker)
+    assert wire_signature_channel(frame) == marker - 1
+    assert decode_ultrasound_wire_frame(frame) == (marker - 1, frame)
 
 
-def test_mac_to_channel_rejects_non_zero_first_byte() -> None:
-    """Requirement B.1: first byte must be 0x00."""
-    # 10:01:... should be rejected even though byte-1 is a valid channel.
-    assert mac_to_channel("10:01:03:04:05:06") is None
-    assert mac_to_channel(bytes([0x10, 0x01, 3, 4, 5, 6])) is None
-    # 0x00 first byte passes.
-    assert mac_to_channel("00:01:03:04:05:06") == 0
+def test_wire_decoder_does_not_treat_unrelated_bytes_as_a_mac() -> None:
+    assert wire_signature_channel(b"\x10\x01" + b"\0" * 998) is None
+    assert wire_signature_channel(b"\x00\x05" + b"\0" * 998) is None
+    assert decode_ultrasound_wire_frame(b"") is None
 
 
-def test_classify_raw_payload_exact_length() -> None:
-    """Exactly 1000 bytes → all ADC, has_trailer=False."""
-    adc = _uint8_adc()
-    clean, trailer = classify_raw_payload(adc, expected_adc_count=1000)
-    assert clean == adc
-    assert trailer is False
+@pytest.mark.parametrize(
+    "opaque_bytes",
+    (
+        bytes.fromhex("000000000000000000000000"),
+        bytes.fromhex("ffffffffffffffffffffffff"),
+        bytes.fromhex("a53c91e20f77d4186b09ce42"),
+    ),
+)
+def test_decoder_ignores_bytes_scapy_mislabels_as_ethernet_fields(
+    opaque_bytes: bytes,
+) -> None:
+    """Bytes 2..13 are sample data, not MAC/source/EtherType metadata."""
+
+    frame = bytearray(_wire_frame(3))
+    frame[2:14] = opaque_bytes
+    decoded = decode_ultrasound_wire_frame(bytes(frame))
+
+    assert decoded == (2, bytes(frame))
 
 
-def test_classify_raw_payload_ff_end_but_exact_length() -> None:
-    """1000 bytes ending with FF: not a trailer, genuine sample."""
-    adc = _uint8_adc_with_trailing_ff()
-    assert len(adc) == 1000
-    assert adc[-1] == 0xFF
-    clean, trailer = classify_raw_payload(adc, expected_adc_count=1000)
-    assert clean == adc
-    assert trailer is False
+@pytest.mark.parametrize("frame_size", (999, 1001))
+def test_wire_decoder_rejects_matching_signature_with_wrong_size(
+    frame_size: int,
+) -> None:
+    with pytest.raises(ValueError, match="expected 1000"):
+        decode_ultrasound_wire_frame(_wire_frame(frame_size=frame_size))
 
 
-def test_classify_raw_payload_with_trailer() -> None:
-    """1001 bytes, last is 0xFF → has_trailer=True, ADC stripped."""
-    adc = _uint8_adc()
-    with_trailer = adc + b"\xff"
-    assert len(with_trailer) == 1001
-    clean, trailer = classify_raw_payload(with_trailer, expected_adc_count=1000)
-    assert clean == adc
-    assert trailer is True
-
-
-def test_classify_raw_payload_1001_non_ff_last_is_invalid() -> None:
-    """1001 bytes, last byte not 0xFF → invalid packet."""
-    adc = _uint8_adc()
-    invalid = adc + b"\x00"
-    assert len(invalid) == 1001
-    result, trailer = classify_raw_payload(invalid, expected_adc_count=1000)
-    assert result == b""
-    assert trailer is False
-
-
-def test_classify_raw_payload_999_is_invalid() -> None:
-    adc = _uint8_adc(depth=999)
-    result, trailer = classify_raw_payload(adc, expected_adc_count=1000)
-    assert result == b""
-    assert trailer is False
-
-
-def test_classify_raw_payload_1002_is_invalid() -> None:
-    adc = _uint8_adc(depth=1002)
-    result, trailer = classify_raw_payload(adc, expected_adc_count=1000)
-    assert result == b""
-    assert trailer is False
-
-
-def test_classify_raw_payload_empty() -> None:
-    empty, trailer = classify_raw_payload(b"", expected_adc_count=1000)
-    assert empty == b""
-    assert trailer is False
+def test_wire_decoder_requires_terminal_ff() -> None:
+    with pytest.raises(ValueError, match="terminal 0xFF"):
+        decode_ultrasound_wire_frame(_wire_frame(trailer=0xFE))
 
 
 @pytest.mark.parametrize(
@@ -297,15 +221,16 @@ def test_descriptor_is_well_formed() -> None:
 
 def test_single_packet_becomes_one_frame_batch() -> None:
     adapter, backend = _running_adapter()
-    payload = _uint8_adc()
-    backend.emit(FakeScapyPacket("00:01:03:04:05:06", payload))
+    raw_frame = _wire_frame(1)
+    backend.emit(raw_frame)
 
     event = adapter.get_event(timeout=2.0)
     assert event.data.shape == (1, US_DEPTH)
     assert event.data.dtype == np.uint8
     assert event.data.flags.c_contiguous
     assert event.channel == 0
-    assert event.tail_flags == 0
+    assert event.tail_flags == 1
+    assert event.data[0].tobytes() == raw_frame
     assert event.frame_count == 1
     assert event.first_frame_index == 0
     assert event.sequence_number == 0
@@ -316,10 +241,8 @@ def test_single_packet_becomes_one_frame_batch() -> None:
 
 def test_four_channel_packets_are_individual_batches() -> None:
     adapter, backend = _running_adapter()
-    payload = _uint8_adc()
     for marker in (0x01, 0x02, 0x03, 0x04):
-        mac = f"00:{marker:02x}:03:04:05:06"
-        backend.emit(FakeScapyPacket(mac, payload))
+        backend.emit(_wire_frame(marker))
 
     events = []
     for _ in range(4):
@@ -338,9 +261,7 @@ def test_four_channel_packets_are_individual_batches() -> None:
 
 def test_has_trailer_flag_is_detected() -> None:
     adapter, backend = _running_adapter()
-    payload = _uint8_adc() + b"\xff"
-    assert len(payload) == 1001
-    backend.emit(FakeScapyPacket("00:02:03:04:05:06", payload))
+    backend.emit(_wire_frame(2))
 
     event = adapter.get_event(timeout=2.0)
     assert event.tail_flags == 1
@@ -353,9 +274,8 @@ def test_has_trailer_flag_is_detected() -> None:
 
 def test_sequences_and_indices_are_monotonic() -> None:
     adapter, backend = _running_adapter()
-    payload = _uint8_adc()
-    backend.emit(FakeScapyPacket("00:01:03:04:05:06", payload))
-    backend.emit(FakeScapyPacket("00:02:03:04:05:06", payload))
+    backend.emit(_wire_frame(1))
+    backend.emit(_wire_frame(2))
 
     first = adapter.get_event(timeout=2.0)
     second = adapter.get_event(timeout=2.0)
@@ -367,11 +287,9 @@ def test_sequences_and_indices_are_monotonic() -> None:
     adapter.close()
 
 
-def test_unknown_mac_dst_is_silently_skipped() -> None:
+def test_unknown_in_frame_channel_marker_is_silently_skipped() -> None:
     adapter, backend = _running_adapter()
-    payload = _uint8_adc()
-    # Unrecognised marker byte 0xFF is not in CH_FROM_DST_MAC_BYTE1.
-    backend.emit(FakeScapyPacket("00:ff:03:04:05:06", payload))
+    backend.emit(_wire_frame(0x05))
 
     # Nothing should appear on the raw queue.
     assert adapter.get_event(timeout=0.5) is None
@@ -398,8 +316,7 @@ def test_configuration_snapshot_is_complete() -> None:
 
 def test_reset_trial_state_resets_counters() -> None:
     adapter, backend = _running_adapter()
-    payload = _uint8_adc()
-    backend.emit(FakeScapyPacket("00:01:03:04:05:06", payload))
+    backend.emit(_wire_frame(1))
     assert adapter.get_event(timeout=2.0) is not None
     adapter.stop()
 
@@ -414,7 +331,7 @@ def test_reset_trial_state_resets_counters() -> None:
     adapter.connect()
     adapter.prepare(_context())
     adapter.start()
-    backend.emit(FakeScapyPacket("00:01:03:04:05:06", payload))
+    backend.emit(_wire_frame(1))
     event = adapter.get_event(timeout=2.0)
     assert event.sequence_number == 0
     assert event.first_frame_index == 0
@@ -425,10 +342,9 @@ def test_reset_trial_state_resets_counters() -> None:
 def test_reset_trial_state_drains_inbound_queue() -> None:
     """requirement B.7: _reset_trial_state clears inbound queue."""
     adapter, backend = _running_adapter()
-    payload = _uint8_adc()
     # Inject several packets.
-    backend.emit(FakeScapyPacket("00:01:03:04:05:06", payload))
-    backend.emit(FakeScapyPacket("00:02:03:04:05:06", payload))
+    backend.emit(_wire_frame(1))
+    backend.emit(_wire_frame(2))
     # Drain only one event.
     ev = adapter.get_event(timeout=2.0)
     assert ev is not None
@@ -445,7 +361,7 @@ def test_reset_trial_state_drains_inbound_queue() -> None:
     assert saturate_ok
     adapter.prepare(_context())
     adapter.start()
-    backend.emit(FakeScapyPacket("00:01:03:04:05:06", payload))
+    backend.emit(_wire_frame(1))
     event = adapter.get_event(timeout=2.0)
     assert event.sequence_number == 0
     adapter.stop()
@@ -464,15 +380,70 @@ def test_default_backend_created_when_none_provided() -> None:
     adapter.close()
 
 
+def test_scapy_backend_forwards_original_frame_without_reading_mac(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The capture layer must not consult Scapy's decoded Ethernet fields."""
+
+    from exo_collection.adapters.ultrasound import raw_ethernet as module
+
+    raw_frame = _wire_frame(2, seed=17)
+
+    class FakeEther:
+        pass
+
+    class FakePacket:
+        original = raw_frame
+
+        @staticmethod
+        def haslayer(layer: Any) -> bool:
+            return layer is FakeEther
+
+        def __getitem__(self, _layer: Any) -> Any:
+            raise AssertionError("decoded MAC/Raw fields must not be accessed")
+
+        def __bytes__(self) -> bytes:
+            raise AssertionError("packet.original must be preferred")
+
+    class FakeAsyncSniffer:
+        def __init__(self, **kwargs: Any) -> None:
+            assert kwargs["iface"] == "npcap-test-interface"
+            assert kwargs["store"] == 0
+            assert kwargs["promisc"] is True
+            self._callback = kwargs["prn"]
+
+        def start(self) -> None:
+            self._callback(FakePacket())
+
+        def stop(self) -> None:
+            pass
+
+    fake_scapy = SimpleNamespace(
+        Ether=FakeEther,
+        AsyncSniffer=FakeAsyncSniffer,
+    )
+    monkeypatch.setattr(module, "_load_scapy", lambda: fake_scapy)
+
+    received: list[bytes] = []
+    backend = ScapyRawEthernetBackend(
+        RawEthernetUltrasoundConfig(
+            interface_name="npcap-test-interface"
+        )
+    )
+    backend.start(received.append)
+    backend.close()
+
+    assert received == [raw_frame]
+    assert len(received[0]) == WIRE_FRAME_SIZE
+
+
 # ── invalid length packet handling ───────────────────────────────────────────
 
 
 def test_invalid_length_999_causes_fault() -> None:
-    """999-byte payload → invalid → fault, no event emitted."""
+    """999-byte matching frame is rejected and counted."""
     adapter, backend = _running_adapter()
-    payload = _uint8_adc(depth=999)
-    assert len(payload) == 999
-    backend.emit(FakeScapyPacket("00:01:03:04:05:06", payload))
+    backend.emit(_wire_frame(1, frame_size=999))
 
     # Worker will process FAULT, no event expected.
     sleep(0.3)
@@ -483,12 +454,10 @@ def test_invalid_length_999_causes_fault() -> None:
     adapter.close()
 
 
-def test_invalid_length_1001_non_ff_last_causes_fault() -> None:
+def test_invalid_length_1001_non_ff_last_is_rejected() -> None:
     """1001 bytes last byte not FF → invalid."""
     adapter, backend = _running_adapter()
-    payload = _uint8_adc() + b"\x00"
-    assert len(payload) == 1001
-    backend.emit(FakeScapyPacket("00:01:03:04:05:06", payload))
+    backend.emit(_wire_frame(1, frame_size=1001, trailer=0x00))
 
     sleep(0.3)
     assert adapter.get_event(timeout=0.3) is None
@@ -520,7 +489,7 @@ def test_frame_batch_has_backward_compatible_defaults() -> None:
 
 
 def test_normalized_packet_round_trip() -> None:
-    payload = _uint8_adc()
+    payload = _wire_frame(3)
     pkt = NormalizedPacket(
         host_monotonic_ns=42,
         host_utc_ns=100,
@@ -539,7 +508,7 @@ def test_normalized_packet_round_trip() -> None:
 
 
 def test_channel_mapping_is_correct() -> None:
-    assert CH_FROM_DST_MAC_BYTE1 == {0x01: 0, 0x02: 1, 0x03: 2, 0x04: 3}
+    assert CHANNEL_FROM_WIRE_MARKER == {0x01: 0, 0x02: 1, 0x03: 2, 0x04: 3}
 
 
 # ── preview-compatible batch shape ──────────────────────────────────────────
@@ -551,7 +520,7 @@ def test_raw_frame_payload_passes_preview_constraints() -> None:
     from exo_collection.acquisition.preview import build_preview_event
     from exo_collection.domain.events import FrameBatch
 
-    data = _uint8_adc()
+    data = _wire_frame(3)
     fb = FrameBatch(
         device_id="test",
         modality="ultrasound",
@@ -563,7 +532,7 @@ def test_raw_frame_payload_passes_preview_constraints() -> None:
         host_utc_ns=0,
         data=np.frombuffer(data, dtype=np.uint8)[None, :],
         channel=2,
-        tail_flags=0,
+        tail_flags=1,
     )
 
     result = build_preview_event(fb)
@@ -571,7 +540,7 @@ def test_raw_frame_payload_passes_preview_constraints() -> None:
     assert result.payload["channel_count"] == 1
     assert result.payload["geometry"] == "a_line"
     assert result.payload["channel_index"] == 2
-    raw = np.frombuffer(data, dtype=np.uint8)
+    raw = np.frombuffer(data, dtype=np.uint8)[2:-1]
     expected = (raw.astype(np.int16) - 127).astype(float)
     indices = np.linspace(0, raw.size - 1, 512, dtype=np.int64)
     assert result.payload["values"] == pytest.approx(expected[indices].tolist())
@@ -586,12 +555,8 @@ def test_four_channel_packets_produce_four_distinct_blocks() -> None:
     adapter, backend = _running_adapter()
     payloads = []
     for channel_marker in (0x01, 0x02, 0x03, 0x04):
-        # Use a distinct ADC payload per channel so CRC differs.
-        ramp = (np.arange(US_DEPTH, dtype=np.uint32) * (channel_marker * 3)
-                % 256).astype(np.uint8)
-        payloads.append(ramp.tobytes())
-        mac = f"00:{channel_marker:02x}:03:04:05:06"
-        backend.emit(FakeScapyPacket(mac, payloads[-1]))
+        payloads.append(_wire_frame(channel_marker, seed=channel_marker * 3))
+        backend.emit(payloads[-1])
         # Brief pause so host_monotonic_ns differs across packets.
         sleep(0.001)
 
@@ -632,8 +597,8 @@ def test_four_channel_packets_produce_four_distinct_blocks() -> None:
 def test_raw_uint8_data_is_preserved_verbatim() -> None:
     """B.4: raw write-to-disk keeps uint8; no int16(adc)-127 conversion."""
     adapter, backend = _running_adapter()
-    payload = _uint8_adc()
-    backend.emit(FakeScapyPacket("00:01:03:04:05:06", payload))
+    payload = _wire_frame(1)
+    backend.emit(payload)
 
     event = adapter.get_event(timeout=2.0)
     assert event.data.dtype == np.uint8
@@ -648,12 +613,9 @@ def test_raw_uint8_data_is_preserved_verbatim() -> None:
 
 def test_stop_drains_every_packet_already_accepted_by_callback() -> None:
     adapter, backend = _running_adapter()
-    payload = _uint8_adc()
     for index in range(12):
         marker = index % 4 + 1
-        backend.emit(
-            FakeScapyPacket(f"00:{marker:02x}:03:04:05:06", payload)
-        )
+        backend.emit(_wire_frame(marker))
 
     # Deliberately stop without sleeping: this exercises the callback-to-worker
     # drain boundary instead of relying on scheduling luck.
@@ -672,20 +634,11 @@ def test_four_packets_round_trip_as_independent_crc_checked_binary_blocks(
     tmp_path: Path,
 ) -> None:
     adapter, backend = _running_adapter()
-    original_payloads: list[bytes] = []
+    original_frames: list[bytes] = []
     for channel in range(4):
-        adc = (
-            (np.arange(US_DEPTH, dtype=np.uint32) * (channel + 3) + channel)
-            % 256
-        ).astype(np.uint8).tobytes()
-        raw_payload = adc + (b"\xff" if channel == 3 else b"")
-        original_payloads.append(raw_payload)
-        backend.emit(
-            FakeScapyPacket(
-                f"00:{channel + 1:02x}:03:04:05:06",
-                raw_payload,
-            )
-        )
+        raw_frame = _wire_frame(channel + 1, seed=channel + 3)
+        original_frames.append(raw_frame)
+        backend.emit(raw_frame)
 
     events = [adapter.get_event(timeout=2.0) for _ in range(4)]
     assert all(event is not None for event in events)
@@ -722,27 +675,39 @@ def test_four_packets_round_trip_as_independent_crc_checked_binary_blocks(
     assert [record.header.sequence for record in records] == [0, 1, 2, 3]
     assert [record.header.first_sample_index for record in records] == [0, 1, 2, 3]
     assert [record.header.sample_count for record in records] == [1, 1, 1, 1]
-    assert [record.header.flags for record in records] == [0, 1, 2, 7]
+    assert [record.header.flags for record in records] == [4, 5, 6, 7]
     assert all(
         record.header.device_timestamp == DEVICE_TIMESTAMP_UNKNOWN
         for record in records
     )
-    reconstructed = [
-        record.data[0].tobytes()
-        + (b"\xff" if record.header.flags & 0b100 else b"")
-        for record in records
-    ]
-    assert reconstructed == original_payloads
+    assert [record.data[0].tobytes() for record in records] == original_frames
 
 
-def test_interface_scan_counts_only_valid_ultrasound_payloads() -> None:
+def test_interface_scan_counts_only_valid_complete_frames_not_mac() -> None:
     packets = (
-        SimpleNamespace(dst="00:01:03:04:05:06", payload=_uint8_adc()),
+        # Valid frame despite deliberately unrelated decoded fields.
         SimpleNamespace(
-            dst="00:04:03:04:05:06", payload=_uint8_adc() + b"\xff"
+            frame_bytes=_wire_frame(1),
+            dst="ff:ff:ff:ff:ff:ff",
+            payload=b"not-ultrasound",
         ),
-        SimpleNamespace(dst="00:05:03:04:05:06", payload=_uint8_adc()),
-        SimpleNamespace(dst="00:02:03:04:05:06", payload=b"too-short"),
+        SimpleNamespace(
+            frame_bytes=_wire_frame(4),
+            dst="12:34:56:78:9a:bc",
+            payload=b"also-not-ultrasound",
+        ),
+        # Invalid full frames must not become valid merely because a decoded
+        # MAC/payload happens to look like the old channel convention.
+        SimpleNamespace(
+            frame_bytes=_wire_frame(5),
+            dst="00:02:00:00:00:00",
+            payload=_wire_frame(2),
+        ),
+        SimpleNamespace(
+            frame_bytes=_wire_frame(2, frame_size=999),
+            dst="00:03:00:00:00:00",
+            payload=_wire_frame(3),
+        ),
     )
 
     def fake_sniff(**kwargs: Any) -> None:
@@ -792,13 +757,13 @@ def test_inbound_queue_overflow_sets_fault() -> None:
     adapter.prepare(_context())
     adapter.start()
 
-    payload = _uint8_adc()
+    payload = _wire_frame(1)
     # Fill the single-slot inbound queue.
     adapter._inbound_queue.put_nowait(
-        NormalizedPacket(0, 0, 0, payload, False)
+        NormalizedPacket(0, 0, 0, payload, True)
     )
     # Next callback push must overflow → FAULT.
-    backend.emit(FakeScapyPacket("00:01:03:04:05:06", payload))
+    backend.emit(payload)
 
     sleep(0.3)
     # Adapter should be in FAULTED state.

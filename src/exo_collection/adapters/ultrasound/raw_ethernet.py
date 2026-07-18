@@ -1,10 +1,12 @@
 """Raw Ethernet ultrasound adapter via Scapy + Npcap.
 
-Captures raw Ethernet frames whose destination MAC byte-1 identifies the
-ultrasound channel (0x01/0x02/0x03/0x04 → channel 0/1/2/3).  Each frame
-carries approximately 1000 uint8 ADC samples; a trailing 0xFF byte is
-detected and recorded as a flag so a reader can reconstruct the exact
-original payload.
+The ultrasound transport is *not* a conventional Ethernet protocol.  The
+device places its own 1000-byte record directly in the captured frame:
+``00``, channel marker ``01``/``02``/``03``/``04``, sample bytes, ``FF``.
+Consequently the bytes Scapy labels as destination/source MAC and EtherType
+are protocol data and must never be used as network addresses.  We always
+decode :func:`bytes` of the complete captured packet and preserve those bytes
+verbatim in the raw binary artifact.
 
 The adapter runs a lightweight internal worker thread so that the
 Scapy callback thread never blocks on UUID generation, NumPy
@@ -30,15 +32,19 @@ from exo_collection.adapters.hardware_base import QueuedHardwareAdapter
 from exo_collection.domain.events import FrameBatch
 
 
-# ── channel mapping (from exo_capture.py, validated first system) ────────────
+# ── wire protocol ────────────────────────────────────────────────────
 
-# Destination MAC byte at offset 1 identifies the channel.
-# Examples:  01:xx:xx:xx:xx:xx → channel 0, 02:... → channel 1, etc.
-CH_FROM_DST_MAC_BYTE1: dict[int, int] = {0x01: 0, 0x02: 1, 0x03: 2, 0x04: 3}
+CHANNEL_FROM_WIRE_MARKER: dict[int, int] = {
+    0x01: 0,
+    0x02: 1,
+    0x03: 2,
+    0x04: 3,
+}
+WIRE_FRAME_SIZE = 1000
+WIRE_PREFIX = 0x00
+WIRE_TRAILER = 0xFF
 
-# Number of meaningful ADC samples per channel per frame.  The frame payload
-# is either exactly this size or one byte longer when the trailing 0xFF marker
-# is present.
+# Raw artifacts intentionally retain the complete captured 1000-byte record.
 US_DEPTH = 1000
 
 _log = logging.getLogger(__name__)
@@ -87,6 +93,10 @@ class RawEthernetUltrasoundConfig:
             raise ValueError("scan_timeout_s must be positive")
         if channels != (1, 2, 3, 4):
             raise ValueError("channels must be exactly (1, 2, 3, 4)")
+        if self.samples_per_channel != WIRE_FRAME_SIZE:
+            raise ValueError(
+                f"raw Ethernet wire frame size must be {WIRE_FRAME_SIZE} bytes"
+            )
 
 
 def _coerce_config(
@@ -128,60 +138,39 @@ class RawEthernetBlockFlags(NamedTuple):
     has_trailer: bool
 
 
-def mac_to_channel(dst_mac: str | bytes) -> int | None:
-    """Extract the channel index (0-3) from a destination MAC address.
+def wire_signature_channel(frame_bytes: bytes) -> int | None:
+    """Return the protocol channel without consulting any MAC field."""
 
-    The destination MAC must start with ``00:`` (unicast-to-self) and the
-    second byte must be 0x01-0x04.  Returns ``None`` for broadcast,
-    multicast, non-zero first byte, or unknown channel markers.
-    """
-
-    if isinstance(dst_mac, str):
-        parts = dst_mac.split(":")
-        if len(parts) != 6:
-            return None
-        try:
-            byte0 = int(parts[0], 16)
-            byte1 = int(parts[1], 16)
-        except ValueError:
-            return None
-    else:
-        if len(dst_mac) < 2:
-            return None
-        byte0 = int(dst_mac[0])
-        byte1 = int(dst_mac[1])
-    if byte0 != 0x00:
+    if len(frame_bytes) < 2 or frame_bytes[0] != WIRE_PREFIX:
         return None
-    return CH_FROM_DST_MAC_BYTE1.get(byte1)
+    return CHANNEL_FROM_WIRE_MARKER.get(frame_bytes[1])
 
 
-def classify_raw_payload(
-    raw_bytes: bytes,
-    expected_adc_count: int = US_DEPTH,
-) -> tuple[bytes, bool]:
-    """Split raw payload into ADC bytes + trailer flag.
+def decode_ultrasound_wire_frame(
+    frame_bytes: bytes,
+    *,
+    expected_frame_size: int = WIRE_FRAME_SIZE,
+) -> tuple[int, bytes] | None:
+    """Validate one complete captured record and return channel + raw bytes.
 
-    The ultrasound device sends 986-byte payloads (985 ADC + 1-byte 0xFF
-    trailer) inside a 1000-byte Ethernet frame (14 B header + 986 B payload).
-    This function handles variable-length payloads while correctly detecting
-    and stripping the 0xFF trailer byte regardless of overall length.
+    ``None`` means that the packet does not carry this device's two-byte
+    signature.  A matching signature with an invalid size or missing ``FF``
+    trailer raises :class:`ValueError`, allowing health telemetry to distinguish
+    malformed device frames from unrelated traffic.
     """
 
-    length = len(raw_bytes)
-    if length == expected_adc_count:
-        return raw_bytes, False
-    if length == expected_adc_count + 1 and raw_bytes[-1] == 0xFF:
-        return raw_bytes[:-1], True
-    # Variable-length payload: check for 0xFF trailer regardless of size.
-    if 0 < length <= expected_adc_count and raw_bytes[-1] == 0xFF:
-        return raw_bytes[:-1], True
-    # Short payload without 0xFF trailer — return as-is.
-    if 0 < length < expected_adc_count:
-        return raw_bytes, False
-    # Longer than expected + 1: truncate to expected.
-    if length > expected_adc_count + 1:
-        return raw_bytes[:expected_adc_count], False
-    return b"", False
+    raw_frame = bytes(frame_bytes)
+    channel = wire_signature_channel(raw_frame)
+    if channel is None:
+        return None
+    if len(raw_frame) != int(expected_frame_size):
+        raise ValueError(
+            f"ultrasound frame has {len(raw_frame)} bytes; "
+            f"expected {expected_frame_size}"
+        )
+    if raw_frame[-1] != WIRE_TRAILER:
+        raise ValueError("ultrasound frame is missing the terminal 0xFF byte")
+    return channel, raw_frame
 
 
 # ── backend protocol (for testability) ───────────────────────────────────────
@@ -190,9 +179,7 @@ def classify_raw_payload(
 class RawEthernetBackend(Protocol):
     """Protocol so tests can supply a fake sniffer."""
 
-    def start(
-        self, on_packet: Callable[[str | bytes, bytes], None]
-    ) -> None: ...
+    def start(self, on_packet: Callable[[bytes], None]) -> None: ...
 
     def stop(self) -> None: ...
 
@@ -207,9 +194,7 @@ class ScapyRawEthernetBackend:
         self._sniffer: Any = None
         self._capture_active = False
 
-    def start(
-        self, on_packet: Callable[[str | bytes, bytes], None]
-    ) -> None:
+    def start(self, on_packet: Callable[[bytes], None]) -> None:
         scapy = _load_scapy()
         iface = self._config.interface_name
         if not iface:
@@ -218,15 +203,14 @@ class ScapyRawEthernetBackend:
 
         def handle(packet: Any) -> None:
             try:
-                if not (
-                    packet.haslayer(scapy.Ether)
-                    and packet.haslayer(scapy.Raw)
-                ):
+                if not packet.haslayer(scapy.Ether):
                     return
-                on_packet(
-                    packet[scapy.Ether].dst,
-                    bytes(packet[scapy.Raw].load),
-                )
+                # Do not access Ether.dst/src/type or Raw.load here.  Scapy
+                # interprets the first 14 protocol bytes as an Ethernet header,
+                # even though this device uses them as part of its data record.
+                captured = getattr(packet, "original", None)
+                frame_bytes = bytes(captured) if captured else bytes(packet)
+                on_packet(frame_bytes)
             except BaseException:
                 return
 
@@ -315,7 +299,7 @@ def scan_ultrasound_interface(
     timeout_s: float = 1.5,
     sniff: Callable[..., Any] | None = None,
 ) -> int:
-    """Count channel-tagged ultrasound packets on one interface.
+    """Count valid full-frame ultrasound records on one interface.
 
     ``sniff`` is injectable so unit tests never touch a real network adapter.
     """
@@ -328,7 +312,7 @@ def scan_ultrasound_interface(
         sniff = scapy.sniff
     total = 0
     count = 0
-    sample_macs: list[str] = []
+    sample_channels: list[int] = []
 
     _log.info("开始扫描网卡 %s（超时 %.1fs）…", interface_name, timeout_s)
 
@@ -339,17 +323,18 @@ def scan_ultrasound_interface(
                 if not packet.haslayer(scapy.Ether):
                     return
                 total += 1
-                dst = packet[scapy.Ether].dst
+                captured = getattr(packet, "original", None)
+                frame_bytes = bytes(captured) if captured else bytes(packet)
             else:
-                dst = getattr(packet, "dst", None)
-                if dst is not None:
-                    total += 1
-            channel = mac_to_channel(dst) if dst is not None else None
-            if channel is not None:
+                frame_bytes = bytes(getattr(packet, "frame_bytes", b""))
+                total += 1
+            decoded = decode_ultrasound_wire_frame(frame_bytes)
+            if decoded is not None:
+                channel, _raw_frame = decoded
                 count += 1
-                if len(sample_macs) < 5:
-                    sample_macs.append(str(dst))
-        except BaseException:
+                if len(sample_channels) < 5:
+                    sample_channels.append(channel + 1)
+        except (TypeError, ValueError):
             return
 
     try:
@@ -368,12 +353,15 @@ def scan_ultrasound_interface(
 
     if count > 0:
         _log.info(
-            "扫描 %s 完成：共 %d 个 Ether 包，%d 个匹配超声 MAC，示例: %s",
-            interface_name, total, count, ", ".join(sample_macs),
+            "扫描 %s 完成：共 %d 个捕获帧，%d 个有效超声帧，示例通道: %s",
+            interface_name,
+            total,
+            count,
+            ", ".join(str(value) for value in sample_channels),
         )
     else:
         _log.info(
-            "扫描 %s 完成：共 %d 个 Ether 包，0 个匹配超声 MAC",
+            "扫描 %s 完成：共 %d 个捕获帧，0 个有效超声帧",
             interface_name, total,
         )
     return count
@@ -383,7 +371,7 @@ def scan_ultrasound_interface(
 
 
 class RawEthernetUltrasoundAdapter(QueuedHardwareAdapter):
-    """Capture one-channel raw ultrasound frames from a raw Ethernet tap."""
+    """Capture one-channel records from the ultrasound Ethernet tap."""
 
     def __init__(
         self,
@@ -429,8 +417,13 @@ class RawEthernetUltrasoundAdapter(QueuedHardwareAdapter):
                 "interface_name": cfg.interface_name,
                 "protocol": "raw_ethernet_uint8",
                 "transport": "raw_ethernet_scapy_npcap",
-                "destination_mac_prefixes": ["00:01", "00:02", "00:03", "00:04"],
-                "trailer_policy": "optional 0xFF only at payload byte 1001",
+                "wire_frame_size": WIRE_FRAME_SIZE,
+                "wire_prefix": "00",
+                "wire_channel_markers": ["01", "02", "03", "04"],
+                "wire_header_bytes": 2,
+                "wire_trailer": "FF",
+                "wire_adc_byte_count": WIRE_FRAME_SIZE - 3,
+                "raw_preservation": "complete captured frame",
                 "raw_dtype": "uint8",
                 "device_timestamp": "none (network packet timestamps not used)",
             },
@@ -467,7 +460,7 @@ class RawEthernetUltrasoundAdapter(QueuedHardwareAdapter):
                 break
 
     def _start_hardware(self) -> None:
-        self._backend.start(on_packet=self._on_ethernet_payload)
+        self._backend.start(on_packet=self._on_ethernet_frame)
 
     def _stop_hardware(self) -> None:
         # Stop the producer first, then let the conversion worker publish every
@@ -494,21 +487,20 @@ class RawEthernetUltrasoundAdapter(QueuedHardwareAdapter):
 
     # ── backend callback (runs on Scapy's internal thread) ───────────────
 
-    def _on_ethernet_payload(
-        self, dst_mac: str | bytes, raw_bytes: bytes
-    ) -> None:
-        """Validate and enqueue one packet without doing NumPy work."""
+    def _on_ethernet_frame(self, frame_bytes: bytes) -> None:
+        """Validate and enqueue one complete captured frame."""
 
-        channel = mac_to_channel(dst_mac)
-        if channel is None:
-            return
-        depth = self._config.samples_per_channel
-        adc_bytes, has_trailer = classify_raw_payload(
-            bytes(raw_bytes), expected_adc_count=depth
-        )
-        if not adc_bytes:
+        try:
+            decoded = decode_ultrasound_wire_frame(
+                frame_bytes,
+                expected_frame_size=self._config.samples_per_channel,
+            )
+        except ValueError:
             self._invalid_length_packets += 1
             return
+        if decoded is None:
+            return
+        channel, raw_frame = decoded
 
         host_ns = perf_counter_ns()
         host_utc = time_ns()
@@ -516,8 +508,8 @@ class RawEthernetUltrasoundAdapter(QueuedHardwareAdapter):
             host_monotonic_ns=host_ns,
             host_utc_ns=host_utc,
             channel=channel,
-            payload=adc_bytes,
-            has_trailer=has_trailer,
+            payload=raw_frame,
+            has_trailer=True,
         )
         try:
             self._inbound_queue.put_nowait(pkt)
@@ -542,17 +534,10 @@ class RawEthernetUltrasoundAdapter(QueuedHardwareAdapter):
             try:
                 depth = self._config.samples_per_channel
                 data = np.frombuffer(pkt.payload, dtype=np.uint8).copy()[None, :]
-                # Ensure data is exactly one frame of <depth> samples.
-                # Ultrasound Ethernet frames may vary slightly in size;
-                # pad short frames with 127 (ADC mid-scale → 0 after centering)
-                # and truncate long ones.
-                actual_size = int(data.size)
-                if actual_size < int(depth):
-                    padded = np.full(int(depth), 127, dtype=np.uint8)
-                    padded[:actual_size] = data.ravel()
-                    data = padded[None, :]
-                elif actual_size > int(depth):
-                    data = data.ravel()[: int(depth)][None, :]
+                if int(data.size) != int(depth):
+                    raise AdapterError(
+                        f"validated raw frame changed size: {data.size} != {depth}"
+                    )
                 tail_flags = 1 if pkt.has_trailer else 0
                 event = FrameBatch(
                     session_uuid=(
@@ -649,19 +634,22 @@ def decode_raw_ethernet_flags(flags: int) -> RawEthernetBlockFlags:
 
 
 __all__ = [
-    "CH_FROM_DST_MAC_BYTE1",
+    "CHANNEL_FROM_WIRE_MARKER",
     "US_DEPTH",
+    "WIRE_FRAME_SIZE",
+    "WIRE_PREFIX",
+    "WIRE_TRAILER",
     "NormalizedPacket",
     "RawEthernetBackend",
     "RawEthernetBlockFlags",
     "RawEthernetUltrasoundAdapter",
     "RawEthernetUltrasoundConfig",
     "ScapyRawEthernetBackend",
-    "classify_raw_payload",
+    "decode_ultrasound_wire_frame",
     "decode_raw_ethernet_flags",
     "encode_raw_ethernet_flags",
     "enumerate_network_interfaces",
-    "mac_to_channel",
     "scan_ultrasound_interface",
+    "wire_signature_channel",
     "_load_scapy",
 ]
