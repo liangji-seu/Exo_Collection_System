@@ -492,7 +492,7 @@ class ExperimentMetadataDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self._validated_metadata: TrialExperimentMetadata | None = None
-        self.setWindowTitle("实验记录（可选）")
+        self.setWindowTitle("详细信息")
         self.setMinimumWidth(760)
         outer = QVBoxLayout(self)
         grid = QGridLayout()
@@ -1052,7 +1052,7 @@ class CollectorWindow(QMainWindow):
         form.addRow("重复轮次：", self.repeat_spin)
         controls_layout.addWidget(metadata_box)
 
-        experiment_box = QGroupBox("实验记录（可选）")
+        experiment_box = QGroupBox("详细信息")
         experiment_layout = QHBoxLayout(experiment_box)
         self.experiment_metadata_button = QPushButton("填写 / 修改…")
         self.experiment_metadata_button.setObjectName("edit_experiment_metadata")
@@ -1069,32 +1069,15 @@ class CollectorWindow(QMainWindow):
         self.connect_all_button = QPushButton("全部连接")
         self.connect_all_button.setObjectName("connect_all")
         self.connect_all_button.setProperty("buttonRole", "connect")
-        self.connect_all_button.clicked.connect(self._connect_all_modalities)
+        self.connect_all_button.clicked.connect(self._toggle_connect_all)
+        self.connect_all_button.setMinimumWidth(105)
         buttons.addWidget(self.connect_all_button)
-        self.disconnect_all_button = QPushButton("全部断开")
-        self.disconnect_all_button.setObjectName("disconnect_all")
-        self.disconnect_all_button.setProperty("buttonRole", "disconnect")
-        self.disconnect_all_button.clicked.connect(self._disconnect_all_modalities)
-        self.disconnect_all_button.setEnabled(False)
-        buttons.addWidget(self.disconnect_all_button)
-        self.start_button = QPushButton("开始 Trial")
+        self.start_button = QPushButton("开始写盘")
         self.start_button.setObjectName("start_trial")
         self.start_button.setProperty("buttonRole", "primary")
-        self.start_button.clicked.connect(self.start_trial)
+        self.start_button.clicked.connect(self._toggle_write)
+        self.start_button.setMinimumWidth(105)
         buttons.addWidget(self.start_button)
-        self.stop_button = QPushButton("受控停止")
-        self.stop_button.setObjectName("stop_trial")
-        self.stop_button.setProperty("buttonRole", "danger")
-        self.stop_button.setEnabled(False)
-        self.stop_button.clicked.connect(self.request_controlled_stop)
-        buttons.addWidget(self.stop_button)
-        for button in (
-            self.connect_all_button,
-            self.disconnect_all_button,
-            self.start_button,
-            self.stop_button,
-        ):
-            button.setMinimumWidth(105)
         controls_layout.addLayout(buttons)
 
         # ── Device Connection Area ──
@@ -1834,23 +1817,27 @@ class CollectorWindow(QMainWindow):
         self._append_alert(f"正在断开 {modality} 预览…")
 
     @Slot()
-    def _connect_all_modalities(self) -> None:
-        for modality in MODALITIES:
-            self._connect_modality(modality)
-
     @Slot()
-    def _disconnect_all_modalities(self) -> None:
-        for modality in list(self._preview_workers.keys()):
-            self._disconnect_modality(modality)
+    def _toggle_connect_all(self) -> None:
+        """Toggle between connect-all and disconnect-all."""
+        if self._preview_workers:
+            for modality in list(self._preview_workers.keys()):
+                self._disconnect_modality(modality)
+        else:
+            for modality in MODALITIES:
+                self._connect_modality(modality)
 
     def _update_connect_button_state(self) -> None:
-        """Enable/disable connect/disconnect buttons and trial button based on state."""
+        """Update connect-all toggle and per-modality buttons."""
         has_any_connection = bool(self._preview_workers)
         can_change = not self._configuration_locked and self._worker is None
-        self.connect_all_button.setEnabled(
-            can_change and len(self._preview_workers) < len(MODALITIES)
-        )
-        self.disconnect_all_button.setEnabled(can_change and has_any_connection)
+        if has_any_connection:
+            self.connect_all_button.setText("全部断开")
+            self.connect_all_button.setProperty("buttonRole", "disconnect")
+        else:
+            self.connect_all_button.setText("全部连接")
+            self.connect_all_button.setProperty("buttonRole", "connect")
+        self.connect_all_button.setEnabled(can_change)
 
         for modality in MODALITIES:
             connect_button = self._connect_buttons.get(modality)
@@ -2152,7 +2139,7 @@ class CollectorWindow(QMainWindow):
         self._close_when_finished = False
         self._trial_succeeded = False
         self._reset_trial_display()
-        self.stop_button.setEnabled(True)
+        self.start_button.setEnabled(True)
         self._set_trial_state("PREPARING")
         self._poll_timer.start()
         self.trial_started.emit(request)
@@ -2241,7 +2228,7 @@ class CollectorWindow(QMainWindow):
             return
         self._stop_requested = True
         self._stop_requested_at = time.monotonic()
-        self.stop_button.setEnabled(False)
+        self.start_button.setEnabled(False)
         self._set_trial_state("STOPPING")
         self._append_alert("已发送受控停止请求；正在等待 Writer flush 与 Trial 最终化。")
         LOG.info("Trial 受控停止请求已发送")
@@ -2640,13 +2627,13 @@ class CollectorWindow(QMainWindow):
             LOG.info("Manifest 已生成: %s", manifest_path)
         else:
             self.manifest_label.setText("Manifest：Worker 已完成，但未返回路径")
-        self.stop_button.setEnabled(False)
+        self.start_button.setEnabled(False)
         self.statusBar().showMessage(event.message or "Trial 数据包已最终化。")
 
     def _mark_failed(self, message: str) -> None:
         self._trial_succeeded = False
         self._set_trial_state("FAILED")
-        self.stop_button.setEnabled(False)
+        self.start_button.setEnabled(False)
         self._append_alert(f"FAILED：{message}")
         self._add_timeline_event(2, f"FAILED · {message}")
         self.statusBar().showMessage("Trial 失败；请检查告警信息。")
@@ -2670,7 +2657,7 @@ class CollectorWindow(QMainWindow):
         # Clear preview connected state — must explicitly reconnect
         self._preview_connected_modalities.clear()
         self._set_configuration_locked(False)
-        self.stop_button.setEnabled(False)
+        self.start_button.setEnabled(False)
         self._clear_one_trial_metadata()
         self._update_connect_button_state()
         self._update_start_button()
@@ -2708,27 +2695,45 @@ class CollectorWindow(QMainWindow):
         self._update_start_button()
 
     @Slot()
+    @Slot()
+    def _toggle_write(self) -> None:
+        """Toggle between start-write and stop-write."""
+        if self._worker is not None and self._worker_state in ("RECORDING", "WAITING_SYNC", "PREPARING", "READY"):
+            self.request_controlled_stop()
+        else:
+            self.start_trial()
+
     def _update_start_button(self) -> None:
         if not hasattr(self, "start_button"):
             return
-        subject_valid = bool(
-            QRegularExpression(r"^\d{3}$").match(self.subject_code_edit.text().strip()).hasMatch()
+        trial_active = (
+            self._worker is not None
+            and self._worker_state in ("RECORDING", "WAITING_SYNC", "PREPARING", "READY", "STOPPING")
         )
-        # All required modalities must be connected via preview
-        all_ready = all(
-            m in self._preview_connected_modalities for m in CRITICAL_MODALITIES
-        )
-        self.start_button.setEnabled(
-            all_ready
-            and subject_valid
-            and not self._configuration_locked
-            and not self._preflight_busy
-            and self._worker is None
-            and self._pending_trial_request is None
-        )
-        self.start_button.setToolTip(
-            "" if all_ready else "请先连接所有必需模态的设备预览（超声、IMU、编码器、同步脉冲）"
-        )
+        if trial_active:
+            self.start_button.setText("停止写盘")
+            self.start_button.setProperty("buttonRole", "danger")
+            self.start_button.setEnabled(True)
+        else:
+            self.start_button.setText("开始写盘")
+            self.start_button.setProperty("buttonRole", "primary")
+            subject_valid = bool(
+                QRegularExpression(r"^\d{3}$").match(self.subject_code_edit.text().strip()).hasMatch()
+            )
+            all_ready = all(
+                m in self._preview_connected_modalities for m in CRITICAL_MODALITIES
+            )
+            self.start_button.setEnabled(
+                all_ready
+                and subject_valid
+                and not self._configuration_locked
+                and not self._preflight_busy
+                and self._worker is None
+                and self._pending_trial_request is None
+            )
+            self.start_button.setToolTip(
+                "" if all_ready else "请先连接所有必需模态的设备预览（超声、IMU、编码器、同步脉冲）"
+            )
 
     def _set_trial_state(self, state: str) -> None:
         normalized = state.strip().upper() or "UNKNOWN"
