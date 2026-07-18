@@ -254,9 +254,9 @@ class HardwareImuParameters(ProfileModel):
     # as three positional slots; empty strings deliberately preserve a gap
     # such as IMU1 + IMU3 with IMU2 disabled.
     sensor_ids: tuple[str, ...] = ()
-    wait_timeout_s: float = Field(default=15.0, gt=0)
-    stable_wait_s: float = Field(default=3.0, ge=0)
-    poll_interval_s: float = Field(default=0.25, gt=0)
+    wait_timeout_s: float = Field(default=10.0, gt=0)
+    stable_wait_s: float = Field(default=1.0, ge=0)
+    poll_interval_s: float = Field(default=0.1, gt=0)
     pending_group_limit: int = Field(default=128, gt=0)
     queue_capacity: int = Field(default=256, gt=0)
 

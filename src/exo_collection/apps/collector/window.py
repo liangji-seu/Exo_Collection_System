@@ -105,7 +105,7 @@ HEALTH_COLUMN_SYNC = 4
 MAX_PREVIEW_POINTS = 4096
 MAX_TIMELINE_EVENTS = 300
 SIGNAL_RING_CAPACITY = 1000
-ULTRASOUND_PREVIEW_SAMPLES = 512
+ULTRASOUND_PREVIEW_SAMPLES = 1000
 _IMU_SENSOR_LABELS = ("imu_trunk", "imu_left", "imu_right")
 _IMU_AXIS_NAMES = ("acc_x", "acc_y", "acc_z")
 _IMU_AXIS_COLORS = {"acc_x": "#dc3545", "acc_y": "#0d6efd", "acc_z": "#198754"}
@@ -1327,7 +1327,12 @@ class CollectorWindow(QMainWindow):
                     capacity=250,
                 )
                 self._imu_traces[trace_label] = trace
+            plot.setYRange(-10, 10, padding=0)
+            plot.setLimits(yMin=-10, yMax=10, minYRange=20, maxYRange=20)
+            plot.setMouseEnabled(x=False, y=False)
             imu_layout.addWidget(plot, 1)
+        # Pre-register IMU Y range so auto-scale doesn't override the fixed range.
+        self._preview_y_ranges["imu"] = (-10.0, 10.0)
         preview_layout.addWidget(imu_grid, 2)
 
         enc_grid = QGroupBox("电机编码器 · 左右位置循环帧")

@@ -64,7 +64,7 @@ def build_preview_event(
 
         def downsample(signal: np.ndarray) -> np.ndarray:
             flattened = signal.reshape(-1)
-            if flattened.size <= 512:
+            if flattened.size <= 2000:
                 return flattened
             indices = np.linspace(0, flattened.size - 1, 512, dtype=np.int64)
             return flattened[indices]

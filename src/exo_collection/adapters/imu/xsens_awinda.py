@@ -30,9 +30,9 @@ class XsensAwindaConfig:
     sample_rate_hz: float = 200.0
     expected_device_count: int = 3
     sensor_ids: tuple[str, ...] = ()
-    wait_timeout_s: float = 15.0
-    stable_wait_s: float = 3.0
-    poll_interval_s: float = 0.25
+    wait_timeout_s: float = 10.0
+    stable_wait_s: float = 1.0
+    poll_interval_s: float = 0.1
     pending_group_limit: int = 128
     queue_capacity: int = 256
 
