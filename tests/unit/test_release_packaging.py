@@ -4,7 +4,6 @@ import ast
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 from types import SimpleNamespace
 
@@ -81,27 +80,18 @@ def test_source_runtime_git_provenance_marks_dirty_checkout(
 # ── PS1 release script assertions ────────────────────────────────────────
 
 
-def test_windows_release_script_enforces_provenance_and_full_payload_hashing() -> None:
-    script = _text("packaging/build_windows.ps1")
+def test_python_build_entry_builds_both_desktop_applications() -> None:
+    script = _text("build_exe.py")
+    ast.parse(script)
 
-    assert "[switch]$AllowDirtyWorkingTree" in script
-    assert "Get-GitRepositoryState" in script
-    assert "Assert-GitReleaseStateUnchanged" in script
-    assert "source_matches_git_commit" in script
-    assert "git_worktree_dirty" in script
-    assert "Assert-NoReparsePointInProjectChildPath" in script
-    assert "Test-ZipBundle" in script
-    assert '"$BundleZip.sha256"' in script
-    assert "build-info.json provenance verified" in script
-    for payload_path in (
-        "dist/ExoCollector.exe",
-        "dist/ExoDataStudio.exe",
-        "Run_ExoCollector.cmd",
-        "Run_ExoDataStudio.cmd",
-        "README_START_HERE.txt",
-        "README_PROJECT.md",
-    ):
-        assert payload_path in script
+    assert "packaging" in script
+    assert "collector.spec" in script
+    assert "data_studio.spec" in script
+    assert "ExoCollector" in script
+    assert "ExoDataStudio" in script
+    assert "sys.executable" in script
+    assert '"-m", "PyInstaller"' in script
+    assert '"--noconfirm", "--clean"' in script
 
 
 # ── PyInstaller spec structure checks ─────────────────────────────────────
@@ -149,87 +139,35 @@ def test_installer_carries_the_same_audit_manifest_as_the_zip() -> None:
 # ── CMD launcher Unicode + space path smoke test ──────────────────────────
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows launcher contract")
-def test_zero_argument_launchers_support_unicode_and_space_paths(tmp_path: Path) -> None:
-    application = Path(os.environ["WINDIR"]) / "System32" / "hostname.exe"
-    if not application.is_file():
-        pytest.skip("Windows hostname.exe is unavailable")
+@pytest.mark.parametrize(
+    ("launcher_name", "module_name"),
+    [
+        ("run_collector.py", "exo_collection.apps.collector.main"),
+        ("run_data_studio.py", "exo_collection.apps.data_studio.main"),
+    ],
+)
+def test_zero_argument_python_launchers_call_application_main(
+    launcher_name: str,
+    module_name: str,
+) -> None:
+    script = _text(launcher_name)
+    ast.parse(script)
 
-    bundle = tmp_path / "发布 包 含 空格"
-    distribution = bundle / "dist"
-    distribution.mkdir(parents=True)
-    for app_name in ("ExoCollector.exe", "ExoDataStudio.exe"):
-        shutil.copy2(application, distribution / app_name)
-    for launcher_name in ("Run_ExoCollector.cmd", "Run_ExoDataStudio.cmd"):
-        launcher = bundle / launcher_name
-        shutil.copy2(PROJECT_ROOT / launcher_name, launcher)
-        completed = subprocess.run(
-            ["cmd.exe", "/d", "/c", str(launcher)],
-            cwd=tmp_path,
-            check=False,
-            timeout=15,
-        )
-        assert completed.returncode == 0
+    assert f"from {module_name} import main" in script
+    assert 'if __name__ == "__main__"' in script
+    assert "raise SystemExit(main())" in script
 
 
 # ── PowerShell AST parser check ──────────────────────────────────────────
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Requires Windows PowerShell")
-def test_powershell_scripts_parse_without_errors() -> None:
-    import tempfile
-
-    ps1_files = [
-        "packaging/build_windows.ps1",
-        "scripts/first_time_setup_and_build.ps1",
-        "scripts/run_from_source.ps1",
-    ]
-
-    # Locate powershell.exe via SystemRoot (works from Git Bash / WSL also).
-    system_root = os.environ.get("SystemRoot", r"C:\Windows")
-    powershell = (Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
-    if not powershell.is_file():
-        powershell = (Path(system_root) / "Sysnative" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
-    if not powershell.is_file():
-        powershell = Path(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
-    if not powershell.is_file():
-        pytest.skip("powershell.exe is unavailable")
-
-    for relative_path in ps1_files:
-        script_path = PROJECT_ROOT / relative_path
-        assert script_path.is_file(), f"PS1 script not found: {script_path}"
-
-        safe_path = str(script_path).replace("'", "''")
-        probe = (
-            "$t = $e = $null\n"
-            "$null = [System.Management.Automation.Language.Parser]"
-            f"::ParseFile('{safe_path}', [ref]$t, [ref]$e)\n"
-            "if ($e) { $e | ForEach-Object { Write-Output $_.Message }; exit 1 } "
-            "else { exit 0 }\n"
-        )
-        tmp_path = None
-        try:
-            fd, tmp_path = tempfile.mkstemp(suffix=".ps1", text=True)
-            with os.fdopen(fd, "w", encoding="utf-8-sig") as fh:
-                fh.write(probe)
-            completed = subprocess.run(
-                [str(powershell), "-NoLogo", "-NoProfile", "-NonInteractive",
-                 "-File", tmp_path],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-        finally:
-            if tmp_path is not None:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-
-        assert completed.returncode == 0, (
-            f"PowerShell parse errors in {script_path}:\n"
-            + (completed.stdout[:2000] if completed.stdout else "")
-        )
+@pytest.mark.parametrize(
+    "relative_path",
+    ["build_exe.py", "run_collector.py", "run_data_studio.py"],
+)
+def test_python_entry_scripts_parse_without_errors(relative_path: str) -> None:
+    source = _text(relative_path)
+    compile(source, str(PROJECT_ROOT / relative_path), "exec")
 
 
 # ── compileall – every .py file must be valid Python 3.11 syntax ─────────
@@ -371,9 +309,8 @@ def _extract_strings_from_list(node: ast.expr) -> list[str]:
 # ── CMD launcher Windows reserved-name guard ──────────────────────────────
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows CMD launcher guard")
-def test_cmd_launchers_guard_against_windows_reserved_device_names() -> None:
-    cmd_files = [
+def test_legacy_cmd_and_powershell_launchers_are_removed() -> None:
+    legacy_files = [
         "Run_ExoCollector.cmd",
         "Run_ExoDataStudio.cmd",
         "Run_ExoCollector_From_Source.cmd",
@@ -381,26 +318,15 @@ def test_cmd_launchers_guard_against_windows_reserved_device_names() -> None:
         "Build_Windows.cmd",
         "First_Time_Setup.cmd",
         "First_Time_Setup_And_Build.cmd",
+        "packaging/build_windows.ps1",
+        "scripts/first_time_setup_and_build.ps1",
+        "scripts/run_from_source.ps1",
     ]
 
-    for relative_path in cmd_files:
-        content = _text(relative_path)
-        # The segment-by-segment guard checks each path component case-
-        # insensitively against the reserved names and branches to a
-        # blocked-label on match.
-        for marker in (
-            "__exo_chk_nul",
-            "__exo_nul_blocked",
-            "__exo_nul_ok",
-        ):
-            assert marker in content, (
-                f"{relative_path} does not contain label {marker}; "
-                f"the Windows reserved-device guard is missing or incomplete."
-            )
-        assert 'if /i "%%a"=="NUL"' in content
-        assert 'if /i "%%a"=="CON"' in content
-        assert 'if /i "%%a"=="PRN"' in content
-        assert 'if /i "%%a"=="AUX"' in content
+    for relative_path in legacy_files:
+        assert not (PROJECT_ROOT / relative_path).exists()
+    for replacement in ("build_exe.py", "run_collector.py", "run_data_studio.py"):
+        assert (PROJECT_ROOT / replacement).is_file()
 
 
 # ── build-info.json provenance audit ─────────────────────────────────────
