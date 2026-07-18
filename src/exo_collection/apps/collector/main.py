@@ -101,16 +101,21 @@ def _run_ui(
     smoke_test: bool,
 ) -> int:
     # ---- 必须在第一个 QApplication 调用前设置 Windows DPI 感知 ----
-    # Windows 上 Python 进程默认不声明 DPI 感知，高 DPI 显示器下系统会做
-    # 位图拉伸（bitmap-scaling），导致按钮文字模糊、窗口缩放异常。
+    # Prefer the modern Per-Monitor-v2 context.  The older shcore value 2 is
+    # Per-Monitor-v1 (despite often being labelled v2 in examples) and can
+    # leave a window with stale logical geometry after moving between screens.
     import ctypes as _ctypes
 
     if sys.platform == "win32":
         try:
-            _ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PerMonitorV2
+            per_monitor_v2 = _ctypes.c_void_p(-4)
+            if not _ctypes.windll.user32.SetProcessDpiAwarenessContext(
+                per_monitor_v2
+            ):
+                raise OSError("SetProcessDpiAwarenessContext returned false")
         except Exception:
             try:
-                _ctypes.windll.shcore.SetProcessDpiAwareness(1)  # System
+                _ctypes.windll.shcore.SetProcessDpiAwareness(2)  # Per-monitor v1
             except Exception:
                 try:
                     _ctypes.windll.user32.SetProcessDPIAware()
@@ -125,6 +130,10 @@ def _run_ui(
 
     window = CollectorWindow(data_root, settings=settings)
     window.showMaximized()
+    if not smoke_test:
+        # Re-apply maximized state after the native HWND enters the event loop.
+        # This avoids Windows restoring a previous Snap layout on first show.
+        QTimer.singleShot(0, window.showMaximized)
     if smoke_test:
         # The existing internal UI smoke also exercises the spawn-based device
         # preflight. This is essential for PyInstaller: a window-only check

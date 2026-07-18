@@ -35,16 +35,20 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QFrame,
     QFormLayout,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QLineEdit,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QSplitter,
     QTableWidget,
@@ -935,9 +939,38 @@ class CollectorWindow(QMainWindow):
         outer.addLayout(header)
 
         body = QSplitter(Qt.Orientation.Horizontal)
+        body.setObjectName("collector_body")
+        body.setChildrenCollapsible(False)
+
+        # The control column is deliberately scrollable.  On a 1080p Windows
+        # desktop the taskbar, title bar and per-monitor DPI scaling leave less
+        # than 1000 logical pixels of usable height.  Letting this large form
+        # participate directly in the main window minimum-size calculation
+        # made showMaximized() request an impossible geometry; Qt then crushed
+        # rows and buttons together.  Keeping the form at its real minimum
+        # height and scrolling only this column prevents both clipping and
+        # overlap while the live plots continue to use the full viewport.
+        controls_scroll = QScrollArea()
+        controls_scroll.setObjectName("controls_scroll")
+        controls_scroll.setWidgetResizable(True)
+        controls_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        controls_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        controls_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        controls_scroll.setMinimumWidth(610)
+        controls_scroll.setMaximumWidth(650)
+
         controls = QWidget()
-        controls.setMinimumWidth(520)
+        controls.setObjectName("controls_content")
+        controls.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Minimum,
+        )
         controls_layout = QVBoxLayout(controls)
+        controls_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
 
         # ── Trial Settings ──
         metadata_box = QGroupBox("Trial 设置")
@@ -1180,7 +1213,8 @@ class CollectorWindow(QMainWindow):
         self.manifest_label.setWordWrap(True)
         self.manifest_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         controls_layout.addWidget(self.manifest_label)
-        body.addWidget(controls)
+        controls_scroll.setWidget(controls)
+        body.addWidget(controls_scroll)
 
         # ── Preview Plots ──
         preview_box = QGroupBox("实时预览（固定长度循环显示；不参与原始写盘）")
@@ -1237,8 +1271,9 @@ class CollectorWindow(QMainWindow):
         preview_layout.addWidget(enc_grid, 2)
 
         body.addWidget(preview_box)
-        body.setCollapsible(0, False)
-        body.setSizes([470, 790])
+        body.setStretchFactor(0, 0)
+        body.setStretchFactor(1, 1)
+        body.setSizes([630, 1270])
         outer.addWidget(body, 1)
 
         self.setCentralWidget(central)

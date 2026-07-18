@@ -11,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import numpy as np
 from PySide6.QtCore import QSettings
 from PySide6.QtGui import QValidator
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication, QScrollArea, QSplitter, QWidget
 
 from exo_collection.acquisition.messages import WorkerEvent, WorkerEventType
 from exo_collection.apps.collector import CollectorWindow
@@ -306,6 +306,47 @@ def test_waterfall_peak_trend_combo_removed(tmp_path: Path) -> None:
 def test_preview_sections_are_not_user_resizable_splitters(tmp_path: Path) -> None:
     _app, window, _created = _window_with_fake(tmp_path)
     assert window.findChild(QWidget, "preview_splitter") is None
+    window.close()
+
+
+def test_1080p_layout_scrolls_controls_instead_of_crushing_them(
+    tmp_path: Path,
+) -> None:
+    app, window, _created = _window_with_fake(tmp_path)
+    window.resize(1920, 991)
+    window.show()
+    app.processEvents()
+
+    body = window.findChild(QSplitter, "collector_body")
+    controls_scroll = window.findChild(QScrollArea, "controls_scroll")
+    controls_content = window.findChild(QWidget, "controls_content")
+    assert body is not None
+    assert controls_scroll is not None
+    assert controls_content is not None
+
+    # A maximized 1080p Windows desktop commonly has about 991 physical pixels
+    # after taskbar and frame margins.  The main window minimum must remain well
+    # below that, otherwise Windows rejects showMaximized() geometry.
+    assert window.minimumSizeHint().height() < 700
+    assert 610 <= controls_scroll.width() <= 650
+    assert controls_content.height() >= controls_content.minimumSizeHint().height()
+    assert controls_scroll.verticalScrollBar().maximum() > 0
+
+    # The primary actions stay at their normal height and never overlap even
+    # though the lower control sections are reached with the vertical scrollbar.
+    action_buttons = [
+        window.connect_all_button,
+        window.disconnect_all_button,
+        window.start_button,
+        window.stop_button,
+    ]
+    for button in action_buttons:
+        assert button.height() >= button.minimumSizeHint().height()
+    for index, button in enumerate(action_buttons):
+        for other in action_buttons[index + 1 :]:
+            assert not button.geometry().intersects(other.geometry())
+
+    assert body.sizes()[1] > body.sizes()[0]
     window.close()
 
 
