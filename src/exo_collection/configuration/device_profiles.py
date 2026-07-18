@@ -260,8 +260,8 @@ class HardwareImuParameters(ProfileModel):
     @field_validator("sensor_ids")
     @classmethod
     def validate_sensor_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if value and (len(value) != 3 or len(set(value)) != 3):
-            raise ValueError("sensor_ids must be empty or contain three unique IDs")
+        if value and (len(value) > 3 or len(set(value)) != len(value)):
+            raise ValueError("sensor_ids must be empty or contain 1-3 unique IDs")
         return value
 
 

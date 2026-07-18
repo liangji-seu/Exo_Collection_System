@@ -43,10 +43,12 @@ class XsensAwindaConfig:
             raise ValueError("device_id and clock_domain must not be empty")
         if not 11 <= self.radio_channel <= 25:
             raise ValueError("Awinda radio_channel must be in [11, 25]")
-        if self.sample_rate_hz <= 0 or self.expected_device_count != 3:
-            raise ValueError("Awinda requires a positive rate and exactly three MTw devices")
-        if ids and (len(ids) != 3 or len(set(ids)) != 3 or any(not item for item in ids)):
-            raise ValueError("sensor_ids must be empty or contain three unique real device IDs")
+        if self.sample_rate_hz <= 0:
+            raise ValueError("Awinda requires a positive sample rate")
+        if ids:
+            if len(ids) > 3 or len(set(ids)) != len(ids) or any(not item for item in ids):
+                raise ValueError("sensor_ids must be empty or contain 1-3 unique real device IDs")
+            object.__setattr__(self, "expected_device_count", len(ids))
         if self.wait_timeout_s <= 0 or self.stable_wait_s < 0 or self.poll_interval_s <= 0:
             raise ValueError("invalid Awinda discovery timing")
         if self.pending_group_limit <= 0 or self.queue_capacity <= 0:
@@ -203,9 +205,9 @@ class XdaAwindaBackend:
                 except AdapterError as exc:
                     last_discovery_error = exc
             else:
-                # Strictly require three unique IDs, and keep the same three
-                # IDs for the entire stability window.
-                if len(discovered_map) == 3:
+                # Require expected_device_count unique IDs in the stability window.
+                expected = self.config.expected_device_count
+                if len(discovered_map) == expected:
                     current_signature = tuple(sorted(discovered_map))
 
             now = monotonic()
@@ -234,8 +236,8 @@ class XdaAwindaBackend:
                 else ""
             )
             raise AdapterError(
-                "Awinda discovery timed out before 3 MTw devices held a "
-                f"stable identity set for {self.config.stable_wait_s:.3f} s; "
+                f"Awinda discovery timed out before {self.config.expected_device_count} MTw "
+                f"devices held a stable identity set for {self.config.stable_wait_s:.3f} s; "
                 f"last discovered IDs: {self._all_device_ids}.{detail}"
             )
 
@@ -249,7 +251,7 @@ class XdaAwindaBackend:
             extras = sorted(set(discovered_map.keys()) - set(selected_map.keys()))
             if extras:
                 self._discovery_warning = (
-                    f"目标 3 台之外发现额外 MTw 设备: {extras}，已忽略"
+                    f"目标 {len(target_ids)} 台之外发现额外 MTw 设备: {extras}，已忽略"
                 )
             else:
                 self._discovery_warning = None
@@ -472,17 +474,20 @@ def _match_device_id(
 def _match_target_device_ids(
     target_ids: Sequence[str], discovered_map: dict[str, Any]
 ) -> tuple[str, ...]:
-    """Resolve configured IDs in order and require three distinct devices."""
-    matched = tuple(
-        _match_device_id(target_id, discovered_map)
-        for target_id in target_ids
-    )
-    if len(set(matched)) != len(matched):
+    """Resolve configured IDs in order; allow partial matches (missing devices)."""
+    matched: list[str] = []
+    for target_id in target_ids:
+        try:
+            resolved = _match_device_id(target_id, discovered_map)
+        except AdapterError:
+            continue
+        if resolved not in matched:
+            matched.append(resolved)
+    if not matched:
         raise AdapterError(
-            "Multiple configured MTw IDs resolve to the same physical "
-            f"device: {matched}"
+            f"未找到任何已配置的 MTw 设备; 已发现: {sorted(discovered_map.keys())}"
         )
-    return matched
+    return tuple(matched)
 
 
 @dataclass(slots=True)
@@ -646,8 +651,8 @@ class XsensAwindaImuAdapter(QueuedHardwareAdapter):
     def _connect_hardware(self) -> None:
         self._backend.connect(self._on_packet)
         ids = tuple(self._backend.device_ids)
-        if len(ids) != 3 or len(set(ids)) != 3:
-            raise AdapterError(f"Awinda 后端必须提供 3 个唯一 MTw ID，实际为 {ids}")
+        if not ids or len(ids) > 3 or len(set(ids)) != len(ids):
+            raise AdapterError(f"Awinda 后端必须提供 1-3 个唯一 MTw ID，实际为 {ids}")
         self._use_device_ids = ids
 
     def _reset_trial_state(self) -> None:
@@ -865,7 +870,7 @@ class XsensAwindaImuAdapter(QueuedHardwareAdapter):
             return
 
         counters = [c for c in all_counters if c is not None]
-        if len(counters) != 3 or len(set(counters)) != 1:
+        if len(counters) != len(self._use_device_ids) or len(set(counters)) != 1:
             return
 
         cur_val = counters[0]

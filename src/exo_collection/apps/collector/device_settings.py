@@ -330,23 +330,31 @@ class ImuDeviceSettingsDialog(ModalityDeviceSettingsDialog):
         self.rate_spin.setValue(float(current.get("sample_rate_hz", 120.0)))
         form.addRow("采样率：", self.rate_spin)
 
-        self.sensor_ids_edit = QLineEdit(
-            ", ".join(str(item) for item in current.get("sensor_ids", ()))
-        )
-        self.sensor_ids_edit.setObjectName("imu_sensor_ids")
-        self.sensor_ids_edit.setPlaceholderText(
-            "可留空；或按躯干、左腿、右腿顺序填写 3 个 MTw ID"
-        )
-        form.addRow("3 个 MTw ID：", self.sensor_ids_edit)
+        ids_layout = QHBoxLayout()
+        ids_layout.setSpacing(8)
+        sensor_ids_current = current.get("sensor_ids", ())
+        self.id_left_edit = QLineEdit(str(sensor_ids_current[0]) if len(sensor_ids_current) > 0 else "")
+        self.id_left_edit.setPlaceholderText("左(IMU1) ID")
+        ids_layout.addWidget(QLabel("左(IMU1)："))
+        ids_layout.addWidget(self.id_left_edit)
+        self.id_mid_edit = QLineEdit(str(sensor_ids_current[1]) if len(sensor_ids_current) > 1 else "")
+        self.id_mid_edit.setPlaceholderText("中(IMU2) ID")
+        ids_layout.addWidget(QLabel("中(IMU2)："))
+        ids_layout.addWidget(self.id_mid_edit)
+        self.id_right_edit = QLineEdit(str(sensor_ids_current[2]) if len(sensor_ids_current) > 2 else "")
+        self.id_right_edit.setPlaceholderText("右(IMU3) ID")
+        ids_layout.addWidget(QLabel("右(IMU3)："))
+        ids_layout.addWidget(self.id_right_edit)
+        form.addRow("MTw 传感器 ID：", ids_layout)
         outer.addLayout(form)
         outer.addWidget(self._button_box())
 
     @Slot()
     def accept(self) -> None:
         sensor_ids = tuple(
-            item.strip()
-            for item in self.sensor_ids_edit.text().split(",")
-            if item.strip()
+            edit.text().strip()
+            for edit in (self.id_left_edit, self.id_mid_edit, self.id_right_edit)
+            if edit.text().strip()
         )
         self._finish_accept(
             {

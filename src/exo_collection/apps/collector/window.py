@@ -277,13 +277,21 @@ class HardwareDeviceSettingsDialog(QDialog):
         self.awinda_rate_edit = QLineEdit(str(imu.get("sample_rate_hz", 120.0)))
         self.awinda_rate_edit.setValidator(QDoubleValidator(1.0, 2000.0, 3, self))
         form.addRow("Awinda 采样率 (Hz)：", self.awinda_rate_edit)
-        self.awinda_ids_edit = QLineEdit(
-            ", ".join(str(item) for item in imu.get("sensor_ids", ()))
-        )
-        self.awinda_ids_edit.setPlaceholderText(
-            "可留空；或按躯干、左腿、右腿顺序填写 3 个 MTw ID"
-        )
-        form.addRow("3 个 MTw ID：", self.awinda_ids_edit)
+        imu_ids_layout = QHBoxLayout()
+        imu_ids_layout.setSpacing(8)
+        self.awinda_id_left = QLineEdit(str(imu.get("sensor_ids", ("", "", ""))[0] if len(imu.get("sensor_ids", ())) > 0 else ""))
+        self.awinda_id_left.setPlaceholderText("左(IMU1) ID")
+        imu_ids_layout.addWidget(QLabel("左(IMU1)："))
+        imu_ids_layout.addWidget(self.awinda_id_left)
+        self.awinda_id_mid = QLineEdit(str(imu.get("sensor_ids", ("", "", ""))[1] if len(imu.get("sensor_ids", ())) > 1 else ""))
+        self.awinda_id_mid.setPlaceholderText("中(IMU2) ID")
+        imu_ids_layout.addWidget(QLabel("中(IMU2)："))
+        imu_ids_layout.addWidget(self.awinda_id_mid)
+        self.awinda_id_right = QLineEdit(str(imu.get("sensor_ids", ("", "", ""))[2] if len(imu.get("sensor_ids", ())) > 2 else ""))
+        self.awinda_id_right.setPlaceholderText("右(IMU3) ID")
+        imu_ids_layout.addWidget(QLabel("右(IMU3)："))
+        imu_ids_layout.addWidget(self.awinda_id_right)
+        form.addRow("MTw 传感器 ID：", imu_ids_layout)
 
         self.encoder_port_edit = QLineEdit(str(encoder.get("port") or ""))
         self.encoder_port_edit.setPlaceholderText("留空时按 VID/PID 自动发现")
@@ -453,9 +461,9 @@ class HardwareDeviceSettingsDialog(QDialog):
     def accept(self) -> None:
         try:
             sensor_ids = tuple(
-                item.strip()
-                for item in self.awinda_ids_edit.text().split(",")
-                if item.strip()
+                edit.text().strip()
+                for edit in (self.awinda_id_left, self.awinda_id_mid, self.awinda_id_right)
+                if edit.text().strip()
             )
             encoder_port = self.encoder_port_edit.text().strip()
             interface_name = str(
