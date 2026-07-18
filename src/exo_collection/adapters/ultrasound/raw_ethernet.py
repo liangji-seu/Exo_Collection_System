@@ -526,7 +526,7 @@ class RawEthernetUltrasoundAdapter(QueuedHardwareAdapter):
     def _run_worker(self) -> None:
         while not self._worker_stop.is_set() or not self._inbound_queue.empty():
             try:
-                pkt = self._inbound_queue.get(timeout=0.1)
+                pkt = self._inbound_queue.get(timeout=0.01)
             except Empty:
                 continue
             if self.state.value not in ("running",):

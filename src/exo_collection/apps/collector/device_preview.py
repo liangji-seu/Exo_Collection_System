@@ -236,15 +236,17 @@ def _preview_runner_target(
         last_preview_send_by_stream: dict[tuple[str, int | None], float] = {}
         ready_sent = False
         while not stop_pipe.poll():
-            # Bound every drain so high-throughput input cannot starve stop and
-            # health checks. Adapter failures propagate to the FAILED path.
+            # Drain raw events but only keep the *latest* preview per independent
+            # UI stream (ultrasound channel, IMU modality, …).  This prevents stale
+            # frames from accumulating across the three internal queues and ensures
+            # the display always reflects the freshest data.
+            latest_by_key: dict[tuple[str, int | None], WorkerEvent] = {}
             for _ in range(32):
                 if stop_pipe.poll():
                     break
                 raw = get_event(timeout=0.01 if not ready_sent else 0.0)
                 if raw is None:
                     break
-                now = perf_counter()
                 preview = _build_preview_event(
                     raw, modality, descriptor.device_id, descriptor, simulated
                 )
@@ -271,12 +273,6 @@ def _preview_runner_target(
                                 f"Preview {modality} ({descriptor.device_id}) READY"
                             ),
                         )
-                    # Preview is best-effort and capped at about 15 fps. State
-                    # events remain reliable and are not subject to this cap.
-                    # Hardware adapters emit a DeviceStatus READY transition
-                    # before their first batch.  Do not forward that event as
-                    # UI readiness: the synthetic READY above is the sole
-                    # readiness signal and proves actual raw data was seen.
                     adapter_ready_event = (
                         preview.event_type is WorkerEventType.STATE
                         and preview.payload.get("state") == "READY"
@@ -285,12 +281,19 @@ def _preview_runner_target(
                         continue
                     if preview.event_type is not WorkerEventType.PREVIEW:
                         _send_event_raw(event_queue, preview)
-                    elif _preview_is_due(
-                        preview,
-                        now=now,
-                        last_sent_by_stream=last_preview_send_by_stream,
-                    ):
-                        _send_event_raw(event_queue, preview)
+                    else:
+                        key = _preview_rate_limit_key(preview)
+                        latest_by_key[key] = preview
+
+            # Send only the latest preview per stream, subject to the rate cap.
+            now = perf_counter()
+            for preview in latest_by_key.values():
+                if _preview_is_due(
+                    preview,
+                    now=now,
+                    last_sent_by_stream=last_preview_send_by_stream,
+                ):
+                    _send_event_raw(event_queue, preview)
 
             # Health telemetry
             now = perf_counter()

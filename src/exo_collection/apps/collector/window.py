@@ -810,7 +810,7 @@ class CollectorWindow(QMainWindow):
         worker_factory: WorkerFactory = CollectorWorker,
         preflight_worker_factory: PreflightWorkerFactory = simulated_preflight_worker_factory,
         preview_worker_factory: AdapterFactory | None = None,
-        poll_interval_ms: int = 50,
+        poll_interval_ms: int = 20,
         controlled_stop_timeout_s: float = DEFAULT_CONTROLLED_STOP_TIMEOUT_S,
         parent: QWidget | None = None,
     ) -> None:
@@ -1218,31 +1218,30 @@ class CollectorWindow(QMainWindow):
         sync_layout.addWidget(self.sync_quality_label, 2, 1, 1, 3)
         controls_layout.addWidget(sync_box)
 
-        # ── Alert / Log Box ──
-        alert_box = QGroupBox("运行日志与告警")
-        alert_layout = QVBoxLayout(alert_box)
-        self.alerts_edit = QPlainTextEdit()
-        self.alerts_edit.setObjectName("alerts")
-        self.alerts_edit.setReadOnly(True)
-        self.alerts_edit.setMaximumBlockCount(500)
-        self.alerts_edit.setPlaceholderText("系统日志与告警会显示在这里。")
-        self.alerts_edit.setMinimumHeight(80)
-        alert_layout.addWidget(self.alerts_edit)
-        # Open log directory button
-        log_btn_row = QHBoxLayout()
-        self.open_log_dir_button = QPushButton("打开日志目录")
-        self.open_log_dir_button.setObjectName("open_log_dir")
-        self.open_log_dir_button.clicked.connect(self._open_log_directory)
-        log_btn_row.addWidget(self.open_log_dir_button)
-        log_btn_row.addStretch(1)
-        alert_layout.addLayout(log_btn_row)
-        controls_layout.addWidget(alert_box, 1)
-
+        # ── Toast overlay for alerts ──
+        self._toast_label = QLabel(self)
+        self._toast_label.setObjectName("toast")
+        self._toast_label.setWordWrap(True)
+        self._toast_label.setMaximumWidth(480)
+        self._toast_label.setMinimumHeight(36)
+        self._toast_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._toast_label.setVisible(False)
+        self._toast_label.setContentsMargins(16, 8, 16, 8)
+        self._toast_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._toast_timer = QTimer(self)
+        self._toast_timer.setSingleShot(True)
+        self._toast_timer.timeout.connect(self._hide_toast)
+        self._manifest_and_log_row = QHBoxLayout()
         self.manifest_label = QLabel("Manifest：尚未生成")
         self.manifest_label.setObjectName("manifest_path")
         self.manifest_label.setWordWrap(True)
         self.manifest_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        controls_layout.addWidget(self.manifest_label)
+        self._manifest_and_log_row.addWidget(self.manifest_label, 1)
+        self.open_log_dir_button = QPushButton("打开日志目录")
+        self.open_log_dir_button.setObjectName("open_log_dir")
+        self.open_log_dir_button.clicked.connect(self._open_log_directory)
+        self._manifest_and_log_row.addWidget(self.open_log_dir_button)
+        controls_layout.addLayout(self._manifest_and_log_row)
         controls_scroll.setWidget(controls)
         body.addWidget(controls_scroll)
 
@@ -1467,7 +1466,7 @@ class CollectorWindow(QMainWindow):
                 if previous_key is not None and self._experiment_metadata_value_count(previous_metadata)
                 else None
             )
-            if transition and hasattr(self, "alerts_edit"):
+            if transition:
                 self._append_alert(
                     f"{transition}：{previous_key[0]}/{previous_key[1]} → "
                     f"{selected[0]}/{selected[1]}。切回原受试者时会恢复其会话缓存。"
@@ -1510,7 +1509,7 @@ class CollectorWindow(QMainWindow):
             self._experiment_metadata_by_identity[self._metadata_identity_key] = self._experiment_metadata
         transition = "工况已切换，实测工况与 Trial 备注已清空"
         self._render_experiment_metadata_summary(transition=transition)
-        if had_condition_values and hasattr(self, "alerts_edit"):
+        if had_condition_values:
             self._append_alert(
                 f"{transition}：{previous or '未选择'} → {selected}；人口学与探头固定信息保留。"
             )
@@ -2767,14 +2766,51 @@ class CollectorWindow(QMainWindow):
         )
 
     def _append_alert(self, message: str) -> None:
-        timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
-        error_markers = ("失败", "错误", "异常", "超时", "FAILED", "ERROR")
+        error_markers = ("失败", "错误", "异常", "超时", "FAILED", "ERROR",
+                         "FAULT", "掉线", "断开", "断开连接")
         level = "ERROR" if any(marker in message for marker in error_markers) else "INFO"
-        self.alerts_edit.appendPlainText(f"[{timestamp}] [{level}] {message}")
         if level == "ERROR":
             LOG.error("UI: %s", message)
         else:
             LOG.info("UI: %s", message)
+        self._show_toast(message, level=level)
+
+    # ── toast overlay ────────────────────────────────────────────────────
+
+    def _show_toast(self, message: str, *, level: str = "INFO") -> None:
+        if level == "ERROR":
+            bg = "#dc3545"; fg = "#ffffff"; icon = "⚠ "
+        else:
+            bg = "#0d6efd"; fg = "#ffffff"; icon = "ℹ "
+        self._toast_label.setText(f"{icon}{message}")
+        self._toast_label.setStyleSheet(
+            f"QLabel {{ background:{bg}; color:{fg}; border-radius:6px; "
+            f"font-size:13px; padding:8px 16px; }}"
+        )
+        self._toast_label.adjustSize()
+        self._position_toast()
+        self._toast_label.setVisible(True)
+        self._toast_label.raise_()
+        # Auto-hide: 8 s for errors, 4 s for info
+        self._toast_timer.start(8000 if level == "ERROR" else 4000)
+
+    @Slot()
+    def _hide_toast(self) -> None:
+        self._toast_label.setVisible(False)
+
+    def _position_toast(self) -> None:
+        w = self._toast_label.width()
+        h = self._toast_label.height()
+        parent_w = self.width()
+        margin = 16
+        self._toast_label.setGeometry(
+            parent_w - w - margin, margin, min(w, parent_w - 2 * margin), h
+        )
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "_toast_label") and self._toast_label.isVisible():
+            self._position_toast()
 
     @Slot()
     def _open_log_directory(self) -> None:
