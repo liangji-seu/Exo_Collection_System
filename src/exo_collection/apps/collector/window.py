@@ -881,7 +881,6 @@ class CollectorWindow(QMainWindow):
         self._disconnect_buttons: dict[str, QPushButton] = {}
         self._configure_buttons: dict[str, QPushButton] = {}
         self._connect_status_labels: dict[str, QLabel] = {}
-        self._connect_device_labels: dict[str, QLabel] = {}
 
         self.setWindowTitle("Exo Collector")
         self.setStyleSheet(COLLECTOR_STYLESHEET)
@@ -1102,14 +1101,17 @@ class CollectorWindow(QMainWindow):
         connection_box = QGroupBox("设备连接")
         connection_layout = QGridLayout(connection_box)
         connection_layout.addWidget(QLabel("模态（点击设置）"), 0, 0)
-        connection_layout.addWidget(QLabel("来源 / 设备 ID"), 0, 1)
-        connection_layout.addWidget(QLabel("状态"), 0, 2)
-        connection_layout.addWidget(QLabel("操作"), 0, 3)
+        connection_layout.addWidget(QLabel("状态"), 0, 1)
+        connection_layout.addWidget(QLabel("操作"), 0, 2)
+        connection_layout.setColumnStretch(0, 1)
+        connection_layout.setColumnStretch(1, 1)
+        connection_layout.setColumnStretch(2, 0)
+        connection_layout.setColumnMinimumWidth(2, 158)
 
         self._device_profile_label = QLabel()
         self._device_profile_label.setObjectName("device_profile")
         self._device_profile_label.setWordWrap(True)
-        connection_layout.addWidget(self._device_profile_label, len(MODALITIES) + 1, 0, 1, 4)
+        connection_layout.addWidget(self._device_profile_label, len(MODALITIES) + 1, 0, 1, 3)
 
         # Per-modality rows
         _modality_labels = {
@@ -1126,15 +1128,10 @@ class CollectorWindow(QMainWindow):
             )
             connection_layout.addWidget(configure_btn, row_idx, 0)
             self._configure_buttons[modality] = configure_btn
-            device_label = QLabel("—")
-            device_label.setObjectName(f"device_label_{modality}")
-            device_label.setWordWrap(True)
-            connection_layout.addWidget(device_label, row_idx, 1)
-            self._connect_device_labels[modality] = device_label
 
             status_label = QLabel("未连接")
             status_label.setObjectName(f"connect_status_{modality}")
-            connection_layout.addWidget(status_label, row_idx, 2)
+            connection_layout.addWidget(status_label, row_idx, 1)
             self._connect_status_labels[modality] = status_label
 
             btn_container = QHBoxLayout()
@@ -1158,7 +1155,7 @@ class CollectorWindow(QMainWindow):
 
             btn_container.addWidget(connect_btn)
             btn_container.addWidget(disconnect_btn)
-            connection_layout.addLayout(btn_container, row_idx, 3)
+            connection_layout.addLayout(btn_container, row_idx, 2)
             self._connect_buttons[modality] = connect_btn
             self._disconnect_buttons[modality] = disconnect_btn
 
@@ -1321,47 +1318,18 @@ class CollectorWindow(QMainWindow):
 
     def _render_device_profile(self) -> None:
         hardware = self._selected_device_profile_key() == "hardware"
-        overrides = self._settings.hardware_device_overrides if hardware else {}
 
-        # Update per-modality device labels
         if hardware:
             self._device_profile_label.setText(
                 "真实设备模式：Raw Ethernet 超声 + Xsens MTw IMU + Teensy 编码器。"
                 "点击蓝色模态名称可分别设置；参数保存后自动恢复；同步脉冲仍为模拟台架信号。"
             )
             self._device_profile_label.setStyleSheet("color:#842029;font-weight:600;")
-
-            device_info = {
-                "ultrasound": (
-                    "真实 · Raw Ethernet · "
-                    f"{overrides.get('ultrasound', {}).get('interface_name') or '未选择网卡'}"
-                ),
-                "imu": (
-                    "真实 · Xsens MTw · "
-                    f"信道 {overrides.get('imu', {}).get('radio_channel', 25)} · "
-                    f"{overrides.get('imu', {}).get('sample_rate_hz', 120.0):g} Hz"
-                ),
-                "encoder": (
-                    "真实 · Teensy · "
-                    f"{overrides.get('encoder', {}).get('port') or '按 VID/PID 自动发现'}"
-                ),
-                "sync_pulse": (
-                    "模拟同步台架 · "
-                    f"{overrides.get('sync_pulse', {}).get('sample_rate_hz', 1000.0):g} Hz"
-                ),
-            }
         else:
             self._device_profile_label.setText(
                 "当前为自动化测试用模拟设备；正常启动并保存任一设备设置后切换为真实设备模式。"
             )
             self._device_profile_label.setStyleSheet("")
-            device_info = {
-                m: f"模拟 · Simulated{m.capitalize()}Adapter" for m in MODALITIES
-            }
-
-        for modality in MODALITIES:
-            if modality in self._connect_device_labels:
-                self._connect_device_labels[modality].setText(device_info.get(modality, "—"))
 
     @Slot(str)
     def edit_modality_device_settings(self, modality: str) -> None:
@@ -1772,10 +1740,8 @@ class CollectorWindow(QMainWindow):
         if modality in self._connect_status_labels:
             label = self._connect_status_labels[modality]
             source = "模拟" if simulated else "真实"
-            text = f"{status}"
-            if device_id:
-                text += f" · {device_id}"
-            label.setText(text)
+            label.setText(status)
+            label.setToolTip(f"{source} · {device_id}" if device_id else source)
             if "错误" in status or status == "失败":
                 label.setStyleSheet("color:#842029;font-weight:600;")
             elif status in ("已连接", "READY"):

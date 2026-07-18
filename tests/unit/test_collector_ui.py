@@ -1556,15 +1556,22 @@ def test_trial_creates_no_files_during_preview(tmp_path: Path) -> None:
     window.close()
 
 
-def test_device_profile_label_has_modality_info(tmp_path: Path) -> None:
-    """_device_profile_label should contain per-modality source labels."""
+def test_device_connection_rows_omit_source_device_id_column(tmp_path: Path) -> None:
+    """Long hardware identifiers stay out of the compact connection grid."""
     _app, window, _created = _window_with_fake(tmp_path)
-    # Fresh settings default to the laboratory hardware profile.
     for modality in ("ultrasound", "imu", "encoder"):
-        label = window._connect_device_labels.get(modality)
-        assert label is not None, f"device label for {modality} not found"
-        assert "真实" in label.text()
-    assert "模拟同步" in window._connect_device_labels["sync_pulse"].text()
+        assert window.findChild(QWidget, f"device_label_{modality}") is None
+    assert not hasattr(window, "_connect_device_labels")
+
+    window._set_preview_status(
+        "ultrasound",
+        "READY",
+        r"ultrasound_raw_ethernet_very_long_device_identifier",
+        False,
+    )
+    status = window._connect_status_labels["ultrasound"]
+    assert status.text() == "READY"
+    assert "very_long_device_identifier" in status.toolTip()
     window.close()
 
 
