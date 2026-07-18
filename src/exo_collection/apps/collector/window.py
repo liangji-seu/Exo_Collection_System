@@ -206,13 +206,16 @@ class UltrasoundInterfaceScanWorker(QThread):
         for interface_name in self._interface_names:
             if self.isInterruptionRequested():
                 break
+            LOG.debug("扫描超声接口: %s", interface_name)
             try:
                 count = scan_ultrasound_interface(
                     interface_name, timeout_s=self._timeout_s
                 )
             except Exception as exc:
+                LOG.error("扫描 %s 失败: %s", interface_name, exc)
                 self.scan_failed.emit(interface_name, str(exc))
                 continue
+            LOG.info("扫描 %s 完成: %d 帧", interface_name, count)
             self.result_ready.emit(interface_name, count)
 
 
@@ -229,6 +232,7 @@ class HardwareDeviceSettingsDialog(QDialog):
         self.setMinimumWidth(680)
         self._validated_overrides: dict[str, dict[str, Any]] | None = None
         self._ultrasound_scan_worker: UltrasoundInterfaceScanWorker | None = None
+        self._ultrasound_scan_results: dict[str, int] = {}
         current = {name: dict(values) for name, values in overrides.items()}
         ultrasound = current.get("ultrasound", {})
         imu = current.get("imu", {})
@@ -352,6 +356,7 @@ class HardwareDeviceSettingsDialog(QDialog):
             return
         self.ultrasound_scan_button.setEnabled(False)
         self.ultrasound_refresh_button.setEnabled(False)
+        self._ultrasound_scan_results.clear()
         self.ultrasound_scan_status.setText("正在后台扫描超声目标 MAC 帧…")
         worker = UltrasoundInterfaceScanWorker(names, parent=self)
         worker.result_ready.connect(self._on_ultrasound_scan_result)
@@ -362,6 +367,7 @@ class HardwareDeviceSettingsDialog(QDialog):
 
     @Slot(str, int)
     def _on_ultrasound_scan_result(self, interface_name: str, count: int) -> None:
+        self._ultrasound_scan_results[interface_name] = count
         if count <= 0:
             return
         index = self.ultrasound_interface_combo.findData(interface_name)
@@ -370,12 +376,14 @@ class HardwareDeviceSettingsDialog(QDialog):
         self.ultrasound_scan_status.setText(
             f"已在 {interface_name} 检测到 {count} 个超声通道帧。"
         )
+        LOG.info("超声扫描结果: %s → %d 帧（已自动选中）", interface_name, count)
 
     @Slot(str, str)
     def _on_ultrasound_scan_failed(self, interface_name: str, message: str) -> None:
         self.ultrasound_scan_status.setText(
             f"扫描 {interface_name} 失败：{message}"
         )
+        LOG.error("超声扫描失败: %s → %s", interface_name, message)
 
     @Slot()
     def _on_ultrasound_scan_finished(self) -> None:
@@ -385,6 +393,25 @@ class HardwareDeviceSettingsDialog(QDialog):
         self.ultrasound_refresh_button.setEnabled(True)
         if worker is not None:
             worker.deleteLater()
+        LOG.debug("超声扫描流程结束")
+
+        # 自动选出检测到帧数最多的网口
+        best = max(self._ultrasound_scan_results, key=self._ultrasound_scan_results.get, default=None)
+        best_count = self._ultrasound_scan_results.get(best, 0) if best else 0
+        if best is not None and best_count > 0:
+            index = self.ultrasound_interface_combo.findData(best)
+            if index >= 0:
+                self.ultrasound_interface_combo.setCurrentIndex(index)
+            self.ultrasound_scan_status.setText(
+                f"扫描完成：已自动选中 {best}（{best_count} 帧）。"
+            )
+            LOG.info("超声扫描自动选中: %s（%d 帧）", best, best_count)
+        else:
+            self.ultrasound_scan_status.setText(
+                "扫描完成：未检测到超声帧，请确认超声设备已上电并连接。"
+            )
+            LOG.warning("超声扫描：所有网口均未检测到超声帧，结果: %s",
+                        self._ultrasound_scan_results)
 
     def _stop_ultrasound_scan_worker(self) -> bool:
         worker = self._ultrasound_scan_worker
@@ -2488,6 +2515,9 @@ class CollectorWindow(QMainWindow):
                 values = self._numeric_values(raw_channel)
                 if values:
                     prepared_channels.append((target_index, values))
+            if prepared_channels:
+                targets = [idx for idx, _ in prepared_channels]
+                LOG.debug("超声预览更新通道: %s (channel_index=%s)", targets, channel_index)
             self._lock_preview_y_axis("ultrasound", [values for _, values in prepared_channels], self._us_plots)
             for index, values in prepared_channels:
                 self._us_curves[index].setData(self._us_x, self._fixed_ultrasound_frame(values))

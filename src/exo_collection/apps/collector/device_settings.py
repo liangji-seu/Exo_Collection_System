@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from typing import Any
 
@@ -28,6 +29,8 @@ from exo_collection.adapters.ultrasound.raw_ethernet import (
     scan_ultrasound_interface,
 )
 from exo_collection.configuration import load_device_profile
+
+LOG = logging.getLogger("exo_collection.collector.ui")
 
 
 def _validated_override(modality: str, override: Mapping[str, Any]) -> dict[str, Any]:
@@ -97,13 +100,16 @@ class UltrasoundInterfaceScanWorker(QThread):
         for interface_name in self._interface_names:
             if self.isInterruptionRequested():
                 break
+            LOG.debug("扫描超声接口: %s", interface_name)
             try:
                 count = scan_ultrasound_interface(
                     interface_name, timeout_s=self._timeout_s
                 )
             except Exception as exc:
+                LOG.error("扫描 %s 失败: %s", interface_name, exc)
                 self.scan_failed.emit(interface_name, str(exc))
                 continue
+            LOG.info("扫描 %s 完成: %d 帧", interface_name, count)
             self.result_ready.emit(interface_name, count)
 
 
@@ -119,6 +125,7 @@ class UltrasoundDeviceSettingsDialog(ModalityDeviceSettingsDialog):
         self.setWindowTitle("超声设备设置")
         self.setMinimumWidth(680)
         self._scan_worker: UltrasoundInterfaceScanWorker | None = None
+        self._scan_results: dict[str, int] = {}
 
         outer = QVBoxLayout(self)
         intro = QLabel(
@@ -198,6 +205,7 @@ class UltrasoundDeviceSettingsDialog(ModalityDeviceSettingsDialog):
             return
         self.scan_button.setEnabled(False)
         self.refresh_button.setEnabled(False)
+        self._scan_results.clear()
         self.scan_status.setText("正在后台扫描超声目标 MAC 帧…")
         worker = UltrasoundInterfaceScanWorker(names, parent=self)
         worker.result_ready.connect(self._on_scan_result)
@@ -208,6 +216,7 @@ class UltrasoundDeviceSettingsDialog(ModalityDeviceSettingsDialog):
 
     @Slot(str, int)
     def _on_scan_result(self, interface_name: str, count: int) -> None:
+        self._scan_results[interface_name] = count
         if count <= 0:
             return
         index = self.interface_combo.findData(interface_name)
@@ -216,10 +225,12 @@ class UltrasoundDeviceSettingsDialog(ModalityDeviceSettingsDialog):
         self.scan_status.setText(
             f"已在 {interface_name} 检测到 {count} 个超声通道帧。"
         )
+        LOG.info("超声扫描结果: %s → %d 帧（已自动选中）", interface_name, count)
 
     @Slot(str, str)
     def _on_scan_failed(self, interface_name: str, message: str) -> None:
         self.scan_status.setText(f"扫描 {interface_name} 失败：{message}")
+        LOG.error("超声扫描失败: %s → %s", interface_name, message)
 
     @Slot()
     def _on_scan_finished(self) -> None:
@@ -229,6 +240,25 @@ class UltrasoundDeviceSettingsDialog(ModalityDeviceSettingsDialog):
         self.refresh_button.setEnabled(True)
         if worker is not None:
             worker.deleteLater()
+        LOG.debug("超声扫描流程结束")
+
+        # 自动选出检测到帧数最多的网口
+        best = max(self._scan_results, key=self._scan_results.get, default=None)
+        best_count = self._scan_results.get(best, 0) if best else 0
+        if best is not None and best_count > 0:
+            index = self.interface_combo.findData(best)
+            if index >= 0:
+                self.interface_combo.setCurrentIndex(index)
+            self.scan_status.setText(
+                f"扫描完成：已自动选中 {best}（{best_count} 帧）。"
+            )
+            LOG.info("超声扫描自动选中: %s（%d 帧）", best, best_count)
+        else:
+            self.scan_status.setText(
+                "扫描完成：未检测到超声帧，请确认超声设备已上电并连接。"
+            )
+            LOG.warning("超声扫描：所有网口均未检测到超声帧，结果: %s",
+                        self._scan_results)
 
     def _stop_scan_worker(self) -> bool:
         worker = self._scan_worker

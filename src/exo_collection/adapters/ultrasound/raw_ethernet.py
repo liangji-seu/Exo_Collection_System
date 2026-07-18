@@ -159,15 +159,12 @@ def classify_raw_payload(
     raw_bytes: bytes,
     expected_adc_count: int = US_DEPTH,
 ) -> tuple[bytes, bool]:
-    """Split raw payload into ADC bytes + trailer flag using length rules.
+    """Split raw payload into ADC bytes + trailer flag.
 
-    - ``len(raw_bytes) == expected_adc_count``:  all ADC, ``has_trailer=False``
-      (even if the final ADC value happens to be 0xFF).
-    - ``len(raw_bytes) == expected_adc_count + 1`` and final byte is 0xFF:
-      first *expected_adc_count* bytes are ADC, ``has_trailer=True``.
-    - Any other length **or** 1001 bytes whose final byte is NOT 0xFF:
-      invalid packet → return ``(b"", False)`` so the caller can count the
-      error and raise a fault.
+    The ultrasound device sends 986-byte payloads (985 ADC + 1-byte 0xFF
+    trailer) inside a 1000-byte Ethernet frame (14 B header + 986 B payload).
+    This function handles variable-length payloads while correctly detecting
+    and stripping the 0xFF trailer byte regardless of overall length.
     """
 
     length = len(raw_bytes)
@@ -175,7 +172,15 @@ def classify_raw_payload(
         return raw_bytes, False
     if length == expected_adc_count + 1 and raw_bytes[-1] == 0xFF:
         return raw_bytes[:-1], True
-    # Invalid length: neither exact-nor-trailer.
+    # Variable-length payload: check for 0xFF trailer regardless of size.
+    if 0 < length <= expected_adc_count and raw_bytes[-1] == 0xFF:
+        return raw_bytes[:-1], True
+    # Short payload without 0xFF trailer — return as-is.
+    if 0 < length < expected_adc_count:
+        return raw_bytes, False
+    # Longer than expected + 1: truncate to expected.
+    if length > expected_adc_count + 1:
+        return raw_bytes[:expected_adc_count], False
     return b"", False
 
 
@@ -230,6 +235,7 @@ class ScapyRawEthernetBackend:
                 iface=iface,
                 prn=handle,
                 store=0,
+                promisc=True,
             )
             sniffer.start()
             self._sniffer = sniffer
@@ -263,50 +269,43 @@ def enumerate_network_interfaces() -> list[dict[str, Any]]:
     """Return a list of candidate Ethernet interfaces for the settings UI.
 
     Each entry is a small dict with keys ``name``, ``description``, ``mac``.
-    Loopback and virtual/tunnel interfaces are excluded.
+    The ``name`` is the Npcap / OS-level interface name accepted by
+    :func:`scapy.sniff` (e.g. ``\\Device\\NPF_{…}`` on Windows).
+    Loopback, Wi‑Fi and virtual/tunnel interfaces are excluded.
     """
 
-    import platform
+    _SKIP_KEYWORDS = (
+        "loopback", "wan", "bluetooth", "tailscale", "vethernet",
+        "teredo", "6to4", "microsoft", "hyper-v", "virtual",
+        "wi-fi", "wireless", "wlan",
+    )
 
     results: list[dict[str, Any]] = []
     try:
         scapy = _load_scapy()
-        if platform.system() == "Windows":
-            import scapy.arch.windows as _scapy_win
+        # Force-load the interface registry on Windows so that Npcap adapters
+        # are visible.  On other platforms this is a no-op.
+        try:
+            _ = scapy.conf.ifaces
+        except Exception:
+            pass
 
-            raw = _scapy_win.get_windows_if_list()
-        else:
-            raw = []
-            for name in scapy.get_if_list():
-                iface = scapy.IFACES.get(name)
-                if iface is not None:
-                    raw.append(
-                        {
-                            "name": iface.name,
-                            "description": iface.description,
-                            "mac": iface.mac,
-                        }
-                    )
+        for name in scapy.get_if_list():
+            iface = scapy.conf.ifaces.get(name)
+            if iface is None:
+                continue
+            desc = iface.description or ""
+            lower = (name + " " + desc).lower()
+            if any(keyword in lower for keyword in _SKIP_KEYWORDS):
+                continue
+            results.append(
+                {"name": name, "description": desc, "mac": iface.mac or ""}
+            )
     except BaseException:
         return []
 
-    for entry in raw:
-        name = str(entry.get("name", ""))
-        desc = str(entry.get("description", ""))
-        mac = str(entry.get("mac", ""))
-        if not name:
-            continue
-        lower = (name + " " + desc).lower()
-        if any(
-            keyword in lower
-            for keyword in (
-                "loopback", "wan", "bluetooth", "tailscale", "vethernet",
-                "teredo", "6to4", "microsoft", "hyper-v", "virtual",
-                "wi-fi", "wireless", "wlan",
-            )
-        ):
-            continue
-        results.append({"name": name, "description": desc, "mac": mac})
+    _log.debug("枚举到 %d 个候选有线网卡: %s", len(results),
+               [r["name"] for r in results])
     return results
 
 
@@ -327,29 +326,29 @@ def scan_ultrasound_interface(
     if sniff is None:
         scapy = _load_scapy()
         sniff = scapy.sniff
+    total = 0
     count = 0
+    sample_macs: list[str] = []
+
+    _log.info("开始扫描网卡 %s（超时 %.1fs）…", interface_name, timeout_s)
 
     def inspect(packet: Any) -> None:
-        nonlocal count
+        nonlocal total, count
         try:
             if scapy is not None:
-                if not (
-                    packet.haslayer(scapy.Ether)
-                    and packet.haslayer(scapy.Raw)
-                ):
+                if not packet.haslayer(scapy.Ether):
                     return
+                total += 1
                 dst = packet[scapy.Ether].dst
-                payload = bytes(packet[scapy.Raw].load)
             else:
                 dst = getattr(packet, "dst", None)
-                payload = bytes(getattr(packet, "payload", b""))
-            adc_bytes, _has_trailer = classify_raw_payload(payload)
-            if (
-                dst is not None
-                and mac_to_channel(dst) is not None
-                and bool(adc_bytes)
-            ):
+                if dst is not None:
+                    total += 1
+            channel = mac_to_channel(dst) if dst is not None else None
+            if channel is not None:
                 count += 1
+                if len(sample_macs) < 5:
+                    sample_macs.append(str(dst))
         except BaseException:
             return
 
@@ -359,11 +358,24 @@ def scan_ultrasound_interface(
             prn=inspect,
             store=0,
             timeout=float(timeout_s),
+            promisc=True,
         )
     except BaseException as exc:
+        _log.error("扫描网卡 %s 失败: %s", interface_name, exc)
         raise AdapterError(
             f"扫描网卡 {interface_name} 失败: {exc}。请确认 Npcap 已安装。"
         ) from exc
+
+    if count > 0:
+        _log.info(
+            "扫描 %s 完成：共 %d 个 Ether 包，%d 个匹配超声 MAC，示例: %s",
+            interface_name, total, count, ", ".join(sample_macs),
+        )
+    else:
+        _log.info(
+            "扫描 %s 完成：共 %d 个 Ether 包，0 个匹配超声 MAC",
+            interface_name, total,
+        )
     return count
 
 
@@ -496,12 +508,6 @@ class RawEthernetUltrasoundAdapter(QueuedHardwareAdapter):
         )
         if not adc_bytes:
             self._invalid_length_packets += 1
-            self._set_fault(
-                AdapterError(
-                    f"invalid raw Ethernet payload length {len(raw_bytes)} "
-                    f"(expected {depth} ADC bytes, or {depth + 1} ending in 0xFF)"
-                )
-            )
             return
 
         host_ns = perf_counter_ns()
@@ -537,15 +543,16 @@ class RawEthernetUltrasoundAdapter(QueuedHardwareAdapter):
                 depth = self._config.samples_per_channel
                 data = np.frombuffer(pkt.payload, dtype=np.uint8).copy()[None, :]
                 # Ensure data is exactly one frame of <depth> samples.
+                # Ultrasound Ethernet frames may vary slightly in size;
+                # pad short frames with 127 (ADC mid-scale → 0 after centering)
+                # and truncate long ones.
                 actual_size = int(data.size)
-                if actual_size != int(depth):
-                    self._set_fault(
-                        AdapterError(
-                            f"worker received frame with {actual_size} samples, "
-                            f"expected {depth}"
-                        )
-                    )
-                    continue
+                if actual_size < int(depth):
+                    padded = np.full(int(depth), 127, dtype=np.uint8)
+                    padded[:actual_size] = data.ravel()
+                    data = padded[None, :]
+                elif actual_size > int(depth):
+                    data = data.ravel()[: int(depth)][None, :]
                 tail_flags = 1 if pkt.has_trailer else 0
                 event = FrameBatch(
                     session_uuid=(
