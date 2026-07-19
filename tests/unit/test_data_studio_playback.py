@@ -84,10 +84,13 @@ def test_playback_has_requested_modality_layout_and_fixed_sweep_axes() -> None:
     current_frames = dialog.findChildren(_UltrasoundCurrentFramePlot)
     signals = dialog.findChildren(_SweepSignalPlot)
     assert len(waterfalls) == 8  # combined tab + ultrasound-only tab
-    assert len(current_frames) == 2  # combined tab + ultrasound-only tab
+    assert len(current_frames) == 8  # four channels in each ultrasound view
     assert {
         widget.objectName() for widget in current_frames
-    } == {"playback_all_current_ultrasound", "playback_ultrasound_current_frame"}
+    } == {
+        *(f"playback_all_ultrasound_frame_{index}" for index in range(1, 5)),
+        *(f"playback_ultrasound_frame_{index}" for index in range(1, 5)),
+    }
     assert len(signals) == 22  # combined tab + (3 IMUs x 3 + 2 encoders)
     assert [len(plot._curves) for plot in signals[9:11]] == [3, 3]
     assert [len(plot._curves) for plot in signals[-2:]] == [3, 3]
@@ -97,12 +100,11 @@ def test_playback_has_requested_modality_layout_and_fixed_sweep_axes() -> None:
     assert all(abs(float(plot.cursor.value()) - 0.5) < 1e-6 for plot in signals)
     assert all(plot._last_source_index == 105 for plot in current_frames)
     for frame_plot in current_frames:
-        assert len(frame_plot._curves) == 4
-        x_values, depth_values = frame_plot._curves[0].getData()
-        assert x_values is not None and x_values.size == 1000
-        assert depth_values is not None
+        depth_values, amplitude_values = frame_plot._curve.getData()
+        assert depth_values is not None and depth_values.size == 1000
         assert depth_values[0] == 0.0 and depth_values[-1] == 999.0
-        assert frame_plot.getViewBox().viewRange()[1] == [0.0, 999.0]
+        assert amplitude_values is not None and amplitude_values.size == 1000
+        assert frame_plot.getViewBox().viewRange()[0] == [0.0, 999.0]
     y_range = waterfalls[0].getViewBox().viewRange()[1]
     assert y_range[0] == 0.0
     assert y_range[1] == 999.0

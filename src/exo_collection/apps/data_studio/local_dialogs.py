@@ -499,50 +499,32 @@ class _SweepWaterfallPlot(pg.PlotWidget):
 
 
 class _UltrasoundCurrentFramePlot(pg.PlotWidget):
-    """Narrow depth-oriented A-scan view synchronized to playback time."""
+    """Horizontal single-channel A-scan synchronized to playback time."""
 
     def __init__(
         self,
         time_s: np.ndarray,
-        waterfall: np.ndarray,
-        channels: tuple[str, ...],
+        channel_frames: np.ndarray,
+        channel_label: str,
         *,
         object_name: str,
     ) -> None:
         super().__init__()
         self.setObjectName(object_name)
         self._times = np.asarray(time_s, dtype=np.float64)
-        self._frames = np.asarray(waterfall)
-        self._curves: list[pg.PlotDataItem] = []
+        self._frames = np.asarray(channel_frames)
         self._last_source_index: int | None = None
-        self.setTitle("当前帧 A-scan")
-        self.setLabel("bottom", "信号幅值")
-        self.setLabel("left", "深度点")
-        self.setMinimumWidth(180)
-        self.setMaximumWidth(320)
+        self.setTitle(f"{channel_label} · 当前帧 A-scan")
+        self.setLabel("bottom", "深度点")
+        self.setLabel("left", "信号幅值")
+        self.setMinimumHeight(55)
+        self.setMaximumHeight(140)
         self.setMouseEnabled(x=False, y=False)
         self.setMenuEnabled(False)
         self.getViewBox().setMouseEnabled(x=False, y=False)
-        self.setYRange(0.0, 999.0, padding=0.0)
-        self.invertY(True)
-        legend = self.addLegend(offset=(4, 4))
-        legend.setBrush(pg.mkBrush(0, 0, 0, 150))
-
-        channel_count = (
-            min(4, int(self._frames.shape[0])) if self._frames.ndim == 3 else 0
-        )
-        for channel in range(channel_count):
-            label = channels[channel] if channel < len(channels) else f"ch_{channel + 1}"
-            self._curves.append(
-                self.plot(
-                    [],
-                    [],
-                    name=label,
-                    pen=pg.mkPen(
-                        _PLOT_COLORS[channel % len(_PLOT_COLORS)], width=1.2
-                    ),
-                )
-            )
+        depth_count = int(self._frames.shape[1]) if self._frames.ndim == 2 else 0
+        self.setXRange(0.0, float(max(1, min(1000, depth_count) - 1)), padding=0.0)
+        self._curve = self.plot([], [], pen=pg.mkPen(_PLOT_COLORS[0], width=1.1))
 
         flattened = self._frames.reshape(-1) if self._frames.size else np.empty(0)
         stride = max(1, flattened.size // 200_000) if flattened.size else 1
@@ -551,30 +533,28 @@ class _UltrasoundCurrentFramePlot(pg.PlotWidget):
         if finite.size:
             low, high = np.percentile(finite, (0.5, 99.5))
             span = max(float(high - low), 1.0)
-            self.setXRange(
+            self.setYRange(
                 float(low - 0.05 * span),
                 float(high + 0.05 * span),
                 padding=0.0,
             )
         else:
-            self.setXRange(0.0, 1.0, padding=0.0)
+            self.setYRange(0.0, 1.0, padding=0.0)
 
     def update_time(self, current_s: float, _cycle_start_s: float) -> None:
-        if not self._times.size or not self._curves:
+        if not self._times.size or self._frames.ndim != 2:
             return
         source_index = int(np.searchsorted(self._times, current_s, side="right") - 1)
         if source_index < 0:
-            for curve in self._curves:
-                curve.setData([], [])
+            self._curve.setData([], [])
             self._last_source_index = None
             return
         source_index = min(source_index, int(self._times.size - 1))
         if source_index == self._last_source_index:
             return
-        depth_count = min(1000, int(self._frames.shape[2]))
+        depth_count = min(1000, int(self._frames.shape[1]))
         depth = np.arange(depth_count, dtype=np.float32)
-        for channel, curve in enumerate(self._curves):
-            curve.setData(self._frames[channel, source_index, :depth_count], depth)
+        self._curve.setData(depth, self._frames[source_index, :depth_count])
         self._last_source_index = source_index
 
 
@@ -818,11 +798,7 @@ class PlaybackDialog(QDialog):
 
         ultrasound_box = QGroupBox("超声 · 4 通道瀑布图")
         ultrasound_box.setObjectName("playback_all_ultrasound")
-        ultrasound_layout = QHBoxLayout(ultrasound_box)
-        ultrasound_layout.setContentsMargins(3, 3, 3, 3)
-        ultrasound_layout.setSpacing(3)
-        waterfall_panel = QWidget(ultrasound_box)
-        ultrasound_grid = QGridLayout(waterfall_panel)
+        ultrasound_grid = QGridLayout(ultrasound_box)
         ultrasound_grid.setContentsMargins(3, 3, 3, 3)
         ultrasound_grid.setSpacing(3)
         us = playback.ultrasound
@@ -844,28 +820,29 @@ class PlaybackDialog(QDialog):
                     np.asarray(us.waterfall[channel]).T,
                     self._window_s,
                 )
+                channel_panel = QWidget(ultrasound_box)
+                channel_layout = QVBoxLayout(channel_panel)
+                channel_layout.setContentsMargins(0, 0, 0, 0)
+                channel_layout.setSpacing(2)
                 self._sweep_plots.append(plot)
-                ultrasound_grid.addWidget(plot, channel // 2, channel % 2)
+                channel_layout.addWidget(plot, 3)
+                current_frame = _UltrasoundCurrentFramePlot(
+                    us.time_s,
+                    us.waterfall[channel],
+                    label,
+                    object_name=f"playback_all_ultrasound_frame_{channel + 1}",
+                )
+                self._sweep_plots.append(current_frame)
+                channel_layout.addWidget(current_frame, 1)
+                ultrasound_grid.addWidget(
+                    channel_panel, channel // 2, channel % 2
+                )
             else:
                 ultrasound_grid.addWidget(
                     _empty_tab(f"超声通道 {channel + 1}：数据缺失"),
                     channel // 2,
                     channel % 2,
                 )
-        ultrasound_layout.addWidget(waterfall_panel, 1)
-        if us is not None and channel_count:
-            current_frame = _UltrasoundCurrentFramePlot(
-                us.time_s,
-                us.waterfall,
-                us.channels,
-                object_name="playback_all_current_ultrasound",
-            )
-            self._sweep_plots.append(current_frame)
-            ultrasound_layout.addWidget(current_frame)
-        else:
-            current_missing = _empty_tab("当前帧超声数据缺失")
-            current_missing.setMaximumWidth(240)
-            ultrasound_layout.addWidget(current_missing)
         outer.addWidget(ultrasound_box, 4)
 
         imu_box = QGroupBox("IMU · 3 设备 × 3 传感器")
@@ -933,12 +910,9 @@ class PlaybackDialog(QDialog):
 
     def _build_ultrasound_tab(self, playback: TrialPlayback) -> None:
         tab = QWidget()
-        tab_layout = QHBoxLayout(tab)
-        waterfall_panel = QWidget(tab)
-        grid = QGridLayout(waterfall_panel)
+        grid = QGridLayout(tab)
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setSpacing(3)
-        tab_layout.addWidget(waterfall_panel, 1)
         us = playback.ultrasound
         # Compatibility object for automation written for the old selector;
         # all four channels are now visible at once, so it remains hidden.
@@ -960,8 +934,21 @@ class PlaybackDialog(QDialog):
                         np.asarray(us.waterfall[channel]).T,
                         self._window_s,
                     )
+                    channel_panel = QWidget(tab)
+                    channel_layout = QVBoxLayout(channel_panel)
+                    channel_layout.setContentsMargins(0, 0, 0, 0)
+                    channel_layout.setSpacing(2)
                     self._sweep_plots.append(plot)
-                    grid.addWidget(plot, channel // 2, channel % 2)
+                    channel_layout.addWidget(plot, 3)
+                    current_frame = _UltrasoundCurrentFramePlot(
+                        us.time_s,
+                        us.waterfall[channel],
+                        label,
+                        object_name=f"playback_ultrasound_frame_{channel + 1}",
+                    )
+                    self._sweep_plots.append(current_frame)
+                    channel_layout.addWidget(current_frame, 1)
+                    grid.addWidget(channel_panel, channel // 2, channel % 2)
                 else:
                     missing = _empty_tab(f"超声通道 {channel + 1}：数据缺失")
                     grid.addWidget(missing, channel // 2, channel % 2)
@@ -974,14 +961,6 @@ class PlaybackDialog(QDialog):
                 notice.setObjectName("playback_ultrasound_alignment_notice")
                 notice.setStyleSheet("color: #9a3412; background: #fff7ed; padding: 4px;")
                 grid.addWidget(notice, 2, 0, 1, 2)
-            current_frame = _UltrasoundCurrentFramePlot(
-                us.time_s,
-                us.waterfall,
-                us.channels,
-                object_name="playback_ultrasound_current_frame",
-            )
-            self._sweep_plots.append(current_frame)
-            tab_layout.addWidget(current_frame)
         self.tabs.addTab(tab, "超声 · 4 通道瀑布图")
 
     def _build_imu_tab(self, playback: TrialPlayback) -> None:
