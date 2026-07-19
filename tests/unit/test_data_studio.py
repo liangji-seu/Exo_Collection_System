@@ -277,6 +277,65 @@ def test_saved_password_builds_direct_remote_request_without_dialog(
     window.close()
 
 
+def test_startup_automatically_starts_silent_remote_status_sync(
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
+    settings = SharedAppSettings(
+        QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    )
+    settings.set_upload_endpoint(
+        {
+            "host": "10.192.26.253",
+            "port": 22,
+            "username": "liangji",
+            "remote_workdir": "/home/liangji/Master/My_Exo/data",
+            "authentication": "PASSWORD",
+            "remember_password": True,
+        }
+    )
+    monkeypatch.setattr(window_module, "load_password", lambda *_args: "saved-secret")  # type: ignore[attr-defined]
+    window = DataStudioWindow(tmp_path, settings=settings, autostart_refresh=False)
+    manifest = (tmp_path / "T/001/WALK/session1/.exo/manifest.json").resolve()
+    window._catalog_tree = [
+        {
+            "type": "trial",
+            "label": "session1",
+            "uuid": str(uuid4()),
+            "manifest_path": str(manifest),
+            "state": "FINALIZED",
+            "children": [],
+        }
+    ]
+    window._render_tree(window._catalog_tree)
+    captured: dict[str, object] = {}
+
+    def capture_start(
+        manifest_paths: tuple[Path, ...],
+        *,
+        status_only: bool,
+        force_dialog: bool = False,
+        silent: bool = False,
+    ) -> None:
+        captured.update(
+            manifest_paths=manifest_paths,
+            status_only=status_only,
+            force_dialog=force_dialog,
+            silent=silent,
+        )
+
+    monkeypatch.setattr(window, "_start_remote_operation", capture_start)  # type: ignore[attr-defined]
+    window._automatic_remote_sync_pending = True
+
+    window._start_automatic_remote_sync()
+
+    assert captured["manifest_paths"] == (manifest,)
+    assert captured["status_only"] is True
+    assert captured["silent"] is True
+    assert window._automatic_remote_sync_pending is False
+    window.close()
+
+
 def test_snapshot_scans_only_published_manifests_and_never_artifacts(
     tmp_path: Path, monkeypatch: object
 ) -> None:

@@ -195,6 +195,7 @@ class _ProcessTaskContext:
 class _UploadTaskContext:
     worker: UploadWorkerHandle
     progress_dialog: UploadProgressDialog
+    silent: bool = False
     terminal_handled: bool = False
     cancel_requested: bool = False
     empty_exit_polls: int = 0
@@ -246,6 +247,7 @@ class DataStudioWindow(QMainWindow):
         self._lightweight_mode = False
         self._catalog_tree: list[dict[str, Any]] = []
         self._remote_status_by_manifest: dict[str, tuple[RemoteTrialStatus, str]] = {}
+        self._automatic_remote_sync_pending = autostart_refresh
         self._management_index: ManagementIndex | None = None
         self._annex_scan: AnnexScanResult | None = None
         self._filtered_records: tuple[TrialManagementRecord, ...] = ()
@@ -547,6 +549,7 @@ class DataStudioWindow(QMainWindow):
         self.tree_widget.clear()
         self._catalog_tree = []
         self._remote_status_by_manifest.clear()
+        self._automatic_remote_sync_pending = refresh
         self._management_index = None
         self._annex_scan = None
         self._filtered_records = ()
@@ -622,6 +625,8 @@ class DataStudioWindow(QMainWindow):
             )
         self.statusBar().showMessage("Catalog 刷新完成。", 5000)
         self._finish_refresh(True)
+        if self._automatic_remote_sync_pending:
+            QTimer.singleShot(0, self._start_automatic_remote_sync)
 
     @Slot(str)
     def _refresh_failed(self, details: str) -> None:
@@ -1185,6 +1190,17 @@ class DataStudioWindow(QMainWindow):
                         self._upload_failed(
                             "INVALID_HOST_KEY_EVENT",
                             "上传 Worker 未返回主机指纹。",
+                            silent=context.silent,
+                        )
+                        self._cancel_active_upload()
+                    elif context.silent:
+                        _log.warning(
+                            "启动自动云端状态同步需要首次确认 SSH 主机指纹，"
+                            "已留待用户手动同步。"
+                        )
+                        self.statusBar().showMessage(
+                            "自动同步需要首次确认 SSH 主机指纹；请手动点击‘同步云端状态’。",
+                            10000,
                         )
                         self._cancel_active_upload()
                     else:
@@ -1194,18 +1210,24 @@ class DataStudioWindow(QMainWindow):
                     context.progress_dialog.mark_finished()
                     context.progress_dialog.close()
                     if isinstance(event.result, RemoteStatusSyncResult):
-                        self._remote_sync_succeeded(event.result)
+                        self._remote_sync_succeeded(event.result, silent=context.silent)
                     elif isinstance(event.result, (OfflineUploadResult, BatchOfflineUploadResult)):
                         self._upload_succeeded(event.result)
                     else:
                         self._upload_failed(
-                            "INVALID_RESULT", "远程 Worker 返回了无效结果。"
+                            "INVALID_RESULT",
+                            "远程 Worker 返回了无效结果。",
+                            silent=context.silent,
                         )
                 elif event.event_type is UploadWorkerEventType.FAILED:
                     context.terminal_handled = True
                     context.progress_dialog.mark_finished()
                     context.progress_dialog.close()
-                    self._upload_failed(event.error_code, event.message)
+                    self._upload_failed(
+                        event.error_code,
+                        event.message,
+                        silent=context.silent,
+                    )
 
             if not context.terminal_handled and worker.exitcode is not None:
                 context.empty_exit_polls += 1
@@ -1216,6 +1238,7 @@ class DataStudioWindow(QMainWindow):
                     self._upload_failed(
                         "WORKER_EXITED",
                         f"上传进程已退出（exitcode={worker.exitcode}），但未返回终态事件。",
+                        silent=context.silent,
                     )
 
         if context.terminal_handled and not worker.is_alive:
@@ -1502,8 +1525,47 @@ class DataStudioWindow(QMainWindow):
             return
         self._start_remote_operation(manifest_paths, status_only=True)
 
+    @Slot()
+    def _start_automatic_remote_sync(self) -> None:
+        """Silently sync cloud state once after the initial Catalog scan."""
+
+        if not self._automatic_remote_sync_pending or self._closing:
+            return
+        self._automatic_remote_sync_pending = False
+        self._apply_activity(read_activity(self._data_root))
+        if self._lightweight_mode or self._active_upload is not None:
+            _log.info(
+                "启动自动云端状态同步已跳过：lightweight=%s active_remote=%s",
+                self._lightweight_mode,
+                self._active_upload is not None,
+            )
+            return
+        manifest_paths = self._all_finalized_manifest_paths()
+        if not manifest_paths:
+            _log.info("启动自动云端状态同步已跳过：没有 FINALIZED Trial。")
+            return
+        if self._saved_remote_request(
+            manifest_paths, status_only=True, quiet=True
+        ) is None:
+            _log.info("启动自动云端状态同步已跳过：未保存完整凭据。")
+            self.statusBar().showMessage(
+                "尚未保存完整 SSH/SCP 凭据，本次未自动同步云端状态。",
+                8000,
+            )
+            return
+        _log.info("启动后自动同步云端状态：Trial 数=%d", len(manifest_paths))
+        self._start_remote_operation(
+            manifest_paths,
+            status_only=True,
+            silent=True,
+        )
+
     def _saved_remote_request(
-        self, manifest_paths: tuple[Path, ...], *, status_only: bool
+        self,
+        manifest_paths: tuple[Path, ...],
+        *,
+        status_only: bool,
+        quiet: bool = False,
     ) -> OfflineUploadRequest | None:
         endpoint = self._settings.upload_endpoint
         host = str(endpoint.get("host", "")).strip()
@@ -1523,7 +1585,10 @@ class DataStudioWindow(QMainWindow):
             try:
                 password = load_password(host, int(endpoint.get("port", 22)), username)
             except RuntimeError as exc:
-                QMessageBox.warning(self, "无法读取已保存密码", str(exc))
+                if not quiet:
+                    QMessageBox.warning(self, "无法读取已保存密码", str(exc))
+                else:
+                    _log.warning("启动自动同步无法读取已保存密码：%s", exc)
                 return None
             if not password:
                 return None
@@ -1553,13 +1618,16 @@ class DataStudioWindow(QMainWindow):
         *,
         status_only: bool,
         force_dialog: bool = False,
+        silent: bool = False,
     ) -> None:
         """Collect ephemeral credentials and start one isolated remote worker."""
 
         request = None if force_dialog else self._saved_remote_request(
-            manifest_paths, status_only=status_only
+            manifest_paths, status_only=status_only, quiet=silent
         )
         if request is None:
+            if silent:
+                return
             dialog = OfflineUploadDialog(
                 manifest_paths,
                 self,
@@ -1581,11 +1649,14 @@ class DataStudioWindow(QMainWindow):
         # Re-check immediately before process creation; selection and dialog
         # entry may have taken long enough for Collector to become active.
         if read_activity(self._data_root) is not None:
-            QMessageBox.warning(
-                self,
-                "采集已开始",
-                "Collector 已开始采集，本次上传未启动。",
-            )
+            if not silent:
+                QMessageBox.warning(
+                    self,
+                    "采集已开始",
+                    "Collector 已开始采集，本次上传未启动。",
+                )
+            else:
+                _log.info("启动自动云端状态同步已取消：Collector 开始采集。")
             return
 
         worker = self._upload_worker_factory()
@@ -1596,12 +1667,14 @@ class DataStudioWindow(QMainWindow):
         context = _UploadTaskContext(
             worker=worker,
             progress_dialog=progress_dialog,
+            silent=silent,
         )
         progress_dialog.cancel_requested.connect(self._cancel_active_upload)
         self._active_upload = context
         self._apply_activity(None)
-        progress_dialog.show()
-        progress_dialog.raise_()
+        if not silent:
+            progress_dialog.show()
+            progress_dialog.raise_()
         try:
             worker.start(request)
         except Exception as exc:
@@ -1614,7 +1687,14 @@ class DataStudioWindow(QMainWindow):
                     worker.close()
                 except Exception:
                     pass
-            QMessageBox.critical(self, "远程任务启动失败", str(exc))
+            if not silent:
+                QMessageBox.critical(self, "远程任务启动失败", str(exc))
+            else:
+                _log.exception("启动自动云端状态同步失败")
+                self.statusBar().showMessage(
+                    "自动云端状态同步启动失败；可稍后手动重试。",
+                    8000,
+                )
             self._apply_activity(read_activity(self._data_root))
             self.upload_finished.emit(False)
             return
@@ -1727,7 +1807,9 @@ class DataStudioWindow(QMainWindow):
             )
         self._render_tree(visible_tree)
 
-    def _remote_sync_succeeded(self, result: RemoteStatusSyncResult) -> None:
+    def _remote_sync_succeeded(
+        self, result: RemoteStatusSyncResult, *, silent: bool = False
+    ) -> None:
         self._remote_status_by_manifest = {
             str(record.manifest_path.expanduser().resolve()): (record.status, record.detail)
             for record in result.records
@@ -1742,27 +1824,59 @@ class DataStudioWindow(QMainWindow):
         counts = {status: 0 for status in RemoteTrialStatus}
         for record in result.records:
             counts[record.status] += 1
-        QMessageBox.information(
-            self,
-            "云端状态同步完成",
-            f"已核对 {len(result.records)} 个 Trial。\n"
-            f"已上传：{counts[RemoteTrialStatus.UPLOADED]}\n"
-            f"未上传：{counts[RemoteTrialStatus.NOT_UPLOADED]}\n"
-            f"部分缺失：{counts[RemoteTrialStatus.PARTIAL]}\n"
-            f"内容冲突：{counts[RemoteTrialStatus.CONFLICT]}",
+        if not silent:
+            QMessageBox.information(
+                self,
+                "云端状态同步完成",
+                f"已核对 {len(result.records)} 个 Trial。\n"
+                f"已上传：{counts[RemoteTrialStatus.UPLOADED]}\n"
+                f"未上传：{counts[RemoteTrialStatus.NOT_UPLOADED]}\n"
+                f"部分缺失：{counts[RemoteTrialStatus.PARTIAL]}\n"
+                f"内容冲突：{counts[RemoteTrialStatus.CONFLICT]}",
+            )
+        self.statusBar().showMessage(
+            "启动自动云端状态同步完成。"
+            if silent
+            else "云端 data/ 状态同步完成。",
+            8000,
         )
-        self.statusBar().showMessage("云端 data/ 状态同步完成。", 8000)
+        _log.info(
+            "云端状态同步完成：automatic=%s uploaded=%d missing=%d partial=%d conflict=%d",
+            silent,
+            counts[RemoteTrialStatus.UPLOADED],
+            counts[RemoteTrialStatus.NOT_UPLOADED],
+            counts[RemoteTrialStatus.PARTIAL],
+            counts[RemoteTrialStatus.CONFLICT],
+        )
         self.upload_finished.emit(True)
 
-    def _upload_failed(self, error_code: str | None, message: str | None) -> None:
+    def _upload_failed(
+        self,
+        error_code: str | None,
+        message: str | None,
+        *,
+        silent: bool = False,
+    ) -> None:
         safe_message = message or "上传 Worker 未返回错误详情。"
-        QMessageBox.critical(
-            self,
-            "人工 SSH/SCP 上传失败",
-            f"错误代码：{error_code or 'UNKNOWN'}\n{safe_message}\n\n"
-            "可在确认 Collector 未采集、远程空间与网络后重新执行上传。",
+        if not silent:
+            QMessageBox.critical(
+                self,
+                "人工 SSH/SCP 上传失败",
+                f"错误代码：{error_code or 'UNKNOWN'}\n{safe_message}\n\n"
+                "可在确认 Collector 未采集、远程空间与网络后重新执行上传。",
+            )
+        self.statusBar().showMessage(
+            "自动云端状态同步失败；本地数据仍可正常使用。"
+            if silent
+            else "人工 SSH/SCP 上传失败，可重试。",
+            8000,
         )
-        self.statusBar().showMessage("人工 SSH/SCP 上传失败，可重试。", 8000)
+        if silent:
+            _log.warning(
+                "启动自动云端状态同步失败：code=%s message=%s",
+                error_code or "UNKNOWN",
+                safe_message,
+            )
         self.upload_finished.emit(False)
 
     def _local_tool_succeeded(
