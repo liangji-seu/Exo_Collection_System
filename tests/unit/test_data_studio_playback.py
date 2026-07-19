@@ -109,7 +109,8 @@ def test_playback_has_requested_modality_layout_and_fixed_sweep_axes() -> None:
         assert amplitude_values is not None and amplitude_values.size == 1000
         assert frame_plot.getViewBox().viewRange()[0] == [0.0, 999.0]
         assert frame_plot.minimumHeight() >= 115
-        assert frame_plot._curve.opts["pen"].widthF() >= 2.0
+        assert frame_plot._curve.opts["pen"].widthF() == 1.0
+        assert frame_plot._curve.opts["antialias"] is True
     y_range = waterfalls[0].getViewBox().viewRange()[1]
     assert y_range[0] == 0.0
     assert y_range[1] == 999.0

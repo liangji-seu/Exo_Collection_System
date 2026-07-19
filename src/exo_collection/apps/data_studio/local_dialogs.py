@@ -528,7 +528,12 @@ class _UltrasoundCurrentFramePlot(pg.PlotWidget):
         self.showGrid(x=True, y=True, alpha=0.18)
         depth_count = int(self._frames.shape[1]) if self._frames.ndim == 2 else 0
         self.setXRange(0.0, float(max(1, min(1000, depth_count) - 1)), padding=0.0)
-        self._curve = self.plot([], [], pen=pg.mkPen("#FFD43B", width=2.0))
+        self._curve = self.plot(
+            [],
+            [],
+            pen=pg.mkPen("#FFD43B", width=1.0),
+            antialias=True,
+        )
 
         flattened = self._frames.reshape(-1) if self._frames.size else np.empty(0)
         stride = max(1, flattened.size // 200_000) if flattened.size else 1
