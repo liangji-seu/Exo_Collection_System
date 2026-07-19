@@ -45,7 +45,10 @@ class OfflineUploadDialog(QDialog):
 
         trial_group = QGroupBox("Trial")
         trial_form = QFormLayout(trial_group)
-        trial_path = QLineEdit(str(self._manifest_path.parent))
+        trial_dir = self._manifest_path.parent
+        if trial_dir.name == ".exo":
+            trial_dir = trial_dir.parent
+        trial_path = QLineEdit(str(trial_dir))
         trial_path.setReadOnly(True)
         trial_path.setObjectName("upload_trial_path")
         trial_form.addRow("本地数据包：", trial_path)

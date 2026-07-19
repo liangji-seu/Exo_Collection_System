@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import csv
 import hashlib
 import json
+import logging
 import math
 from pathlib import Path
 from typing import Any, Callable
@@ -31,6 +32,8 @@ from exo_collection.storage.manifest import TrialManifest, load_manifest
 from exo_collection.writers.binary_block import companion_paths
 
 from .service import load_catalog_snapshot
+
+_log = logging.getLogger(__name__)
 
 
 class DataStudioToolError(RuntimeError):
@@ -170,7 +173,10 @@ def _load_finalized_trial(
         raise DataStudioToolError(
             f"只能处理 FINALIZED Trial，当前状态为 {manifest.state.value}"
         )
-    return path, path.parent.resolve(), manifest
+    trial_root = path.parent.resolve()
+    if trial_root.name == ".exo":
+        trial_root = trial_root.parent.resolve()
+    return path, trial_root, manifest
 
 
 def _artifact_path(trial_root: Path, relative_path: str) -> Path:
@@ -609,9 +615,13 @@ def load_trial_playback(
 ) -> TrialPlayback:
     """Load a bounded, plot-ready view of one finalized Trial."""
 
+    _log.info("=== load_trial_playback 开始 ===")
+    _log.info("manifest_path=%s, data_root=%s", manifest_path, data_root)
+
     if min(max_signal_points, max_ultrasound_frames, max_ultrasound_depth_points) <= 0:
         raise ValueError("playback limits must be positive")
     path, trial_root, manifest = _load_finalized_trial(manifest_path)
+    _log.info("Manifest 已加载: trial_uuid=%s, trial_root=%s", manifest.trial_uuid, trial_root)
     dataset_root = (
         Path(data_root).expanduser().resolve()
         if data_root is not None
@@ -624,11 +634,15 @@ def load_trial_playback(
 
     idle_check()
     formal_t0_ns = manifest.timing.start_host_monotonic_ns
+    _log.info("formal_t0_ns=%d", formal_t0_ns)
+
     ultrasound: UltrasoundPlayback | None = None
     ultrasound_relative = _artifact_for(
         manifest, modality="ultrasound", suffix=".bin"
     )
+    _log.info("超声 artifact: %s", ultrasound_relative)
     if ultrasound_relative is not None:
+        _log.info("正在加载超声数据…")
         relative_meta, relative_index = companion_paths(ultrasound_relative)
         published_paths = {artifact.relative_path for artifact in manifest.artifacts}
         companion_relatives = (
@@ -641,6 +655,8 @@ def load_trial_playback(
                 "超声回放缺少 Manifest 所列 companion Artifact："
                 + ", ".join(sorted(missing_companions))
             )
+        _log.info("超声 .bin: %s, .meta: %s, .idx: %s",
+                  ultrasound_relative, companion_relatives[0], companion_relatives[1])
         ultrasound = _read_ultrasound(
             _artifact_path(trial_root, ultrasound_relative),
             meta_path=_artifact_path(trial_root, companion_relatives[0]),
@@ -650,6 +666,8 @@ def load_trial_playback(
             max_depth_points=max_ultrasound_depth_points,
             idle_check=idle_check,
         )
+        _log.info("超声加载完成: waterfall shape=%s, frames=%d",
+                  ultrasound.waterfall.shape, ultrasound.source_frame_count)
 
     signals: dict[str, SignalPlayback | None] = {
         "imu": None,
@@ -660,6 +678,7 @@ def load_trial_playback(
     for modality in signals:
         idle_check()
         relative = _artifact_for(manifest, modality=modality, suffix=".h5")
+        _log.info("HDF5 artifact [%s]: %s", modality, relative)
         if relative is None:
             continue
         series, trigger_times = _read_hdf5_signal(
@@ -668,9 +687,12 @@ def load_trial_playback(
             max_points=max_signal_points,
         )
         signals[modality] = series
+        _log.info("[%s] 加载完成: time_s=%d points, values shape=%s",
+                  modality, series.time_s.size, series.values.shape)
         if modality == "sync_pulse":
             sync_trigger_times = trigger_times
 
+    _log.info("=== load_trial_playback 完成 ===")
     return TrialPlayback(
         manifest_path=path,
         trial_uuid=str(manifest.trial_uuid),
@@ -761,7 +783,7 @@ def verify_trial_checksums(
     )
     _require_trial_under_data_root(path, dataset_root)
     _require_idle(dataset_root)
-    checksum_path = _artifact_path(trial_root, "checksums.sha256")
+    checksum_path = _artifact_path(trial_root, ".exo/checksums.sha256")
     if not checksum_path.is_file() or _has_active_component(checksum_path):
         raise DataStudioToolError("Trial 缺少已发布的 checksums.sha256")
 

@@ -436,7 +436,10 @@ def _load_finalized_trial(
             f"仅允许导入到 FINALIZED Trial；当前状态为 {manifest.state.value}。",
         )
     base_sha256 = _hash_file_with_idle(resolved, dataset_root)
-    return resolved, resolved.parent.resolve(), manifest, base_sha256
+    trial_root = resolved.parent.resolve()
+    if trial_root.name == ".exo":
+        trial_root = trial_root.parent.resolve()
+    return resolved, trial_root, manifest, base_sha256
 
 
 def _resolve_manifest_artifact(

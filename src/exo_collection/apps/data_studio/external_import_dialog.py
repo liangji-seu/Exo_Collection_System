@@ -159,11 +159,17 @@ class ExternalImportDialog(QDialog):
         self._apply_modality()
         self._apply_pulse_mode()
 
+    def _trial_root(self) -> Path:
+        parent = self.manifest_path.parent
+        if parent.name == ".exo":
+            return parent.parent
+        return parent
+
     def _choose_source(self) -> None:
         path, _selected_filter = QFileDialog.getOpenFileName(
             self,
             "选择外部模态原文件",
-            str(self.manifest_path.parent),
+            str(self._trial_root()),
             "所有文件 (*.*)",
         )
         if path:
@@ -173,7 +179,7 @@ class ExternalImportDialog(QDialog):
         path, _selected_filter = QFileDialog.getOpenFileName(
             self,
             "选择同步脉冲 CSV",
-            str(self.manifest_path.parent),
+            str(self._trial_root()),
             "CSV/文本 (*.csv *.txt);;所有文件 (*.*)",
         )
         if path:

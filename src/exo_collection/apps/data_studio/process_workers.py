@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import multiprocessing as mp
 from contextlib import suppress
 from multiprocessing.queues import Queue
 from queue import Empty
 import traceback
 from typing import Any, Literal
+
+_log = logging.getLogger(__name__)
 
 
 ProcessOperation = Literal[
@@ -36,15 +39,19 @@ def _local_process_entry(
 ) -> None:
     """Import tool implementations inside a clean spawned interpreter."""
 
+    _log.info("子进程启动: operation=%s, args_keys=%s", operation, list(keyword_arguments.keys()))
     try:
         if operation == "catalog_refresh":
             from .service import load_catalog_snapshot
 
             result = load_catalog_snapshot(**keyword_arguments)
         elif operation == "playback":
+            _log.info("导入 load_trial_playback…")
             from .local_tools import load_trial_playback
 
+            _log.info("开始执行 load_trial_playback…")
             result = load_trial_playback(**keyword_arguments)
+            _log.info("load_trial_playback 返回: %s", type(result).__name__)
         elif operation == "checksum":
             from .local_tools import verify_trial_checksums
 
@@ -63,8 +70,10 @@ def _local_process_entry(
             result = export_manifest_inventory_checked(**keyword_arguments)
         else:  # pragma: no cover - parent validates this before spawning
             raise ValueError(f"unsupported Data Studio process operation: {operation}")
+        _log.info("子进程完成: operation=%s", operation)
         result_queue.put(("completed", result))
     except BaseException:
+        _log.exception("子进程失败: operation=%s", operation)
         result_queue.put(("failed", traceback.format_exc(limit=30)))
 
 

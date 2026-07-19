@@ -76,21 +76,50 @@ def _validate_scanned_manifest_location(
     UUIDs in the Manifest remain authoritative.  Human F/T and subject-code
     folders are accepted only when they agree with those same Manifest labels;
     the legacy UUID directory layout remains readable.
+
+    Two canonical layouts are supported:
+
+    * **Human-readable** (current):
+      ``{root}/{project}/{subject}/{condition}/session{repeat}_{ts}/.exo/manifest.json``
+    * **Legacy UUID** (pre-0.2.0):
+      ``{root}/{project}/{subject}/trials/{trial_uuid}/manifest.json``
     """
 
     if path.name != "manifest.json" or len(path.parents) < 6:
         raise ValueError("Manifest is not in a canonical Trial directory")
-    trial_directory = path.parent
-    trials_directory = trial_directory.parent
-    session_directory = trials_directory.parent
-    subject_directory = session_directory.parent
-    project_directory = subject_directory.parent
-    if trials_directory.name.casefold() != "trials":
-        raise ValueError("Manifest parent hierarchy is missing the trials directory")
-    if trial_directory.name.casefold() != str(manifest.trial_uuid).casefold():
-        raise ValueError("Trial directory does not match Manifest trial_uuid")
-    if session_directory.name.casefold() != str(manifest.session_uuid).casefold():
-        raise ValueError("Session directory does not match Manifest session_uuid")
+
+    _EXO = ".exo"
+    if path.parent.name == _EXO:
+        # ------------------------------------------------------------------
+        # Human-readable layout: .exo/manifest.json is two levels below the
+        # trial root.  Only project and subject directory identity is
+        # validated; the trial leaf name carries a timestamp and cannot be
+        # checked against a single Manifest field.
+        # ------------------------------------------------------------------
+        trial_directory = path.parent.parent  # session{repeat}_{timestamp}
+        condition_directory = trial_directory.parent
+        subject_directory = condition_directory.parent
+        project_directory = subject_directory.parent
+        # The innermost condition directory merely groups trials — its name
+        # is not an identity claim, so skip it.
+        del condition_directory
+    else:
+        # ------------------------------------------------------------------
+        # Legacy UUID layout: manifest.json sits directly at the trial root
+        # and the parent-of-parent is always "trials".
+        # ------------------------------------------------------------------
+        trial_directory = path.parent
+        trials_directory = trial_directory.parent
+        session_directory = trials_directory.parent
+        subject_directory = session_directory.parent
+        project_directory = subject_directory.parent
+        if trials_directory.name.casefold() != "trials":
+            raise ValueError("Manifest parent hierarchy is missing the trials directory")
+        if trial_directory.name.casefold() != str(manifest.trial_uuid).casefold():
+            raise ValueError("Trial directory does not match Manifest trial_uuid")
+        if session_directory.name.casefold() != str(manifest.session_uuid).casefold():
+            raise ValueError("Session directory does not match Manifest session_uuid")
+
     accepted_subjects = {str(manifest.subject_uuid).casefold()}
     if manifest.subject_code:
         accepted_subjects.add(manifest.subject_code.casefold())
@@ -403,8 +432,37 @@ class CatalogRepository:
                 report.failures[str(path)] = f"{type(exc).__name__}: {exc}"
         return report
 
+    @staticmethod
+    def _trial_leaf_label(manifest_path: str | None) -> str:
+        """Extract the human-readable trial directory name from a manifest path.
+
+        New layout: ``.../session1_20260718_120000/.exo/manifest.json`` → ``session1_20260718_120000``
+        Legacy layout: ``.../trials/<uuid>/manifest.json`` → ``<uuid[:8]>``
+        """
+        if not manifest_path:
+            return "?"
+        p = Path(manifest_path)
+        if p.parent.name == ".exo":
+            return p.parent.parent.name
+        return p.parent.name[:8]
+
+    @staticmethod
+    def _session_label(trials: list[TrialRow]) -> str:
+        """Derive a short human-readable session label from constituent trials."""
+        if not trials:
+            return "Session ?"
+        first = trials[0]
+        condition = first.condition_code or "?"
+        repeat = first.repeat_index if first.repeat_index is not None else "?"
+        return f"{condition} · session {repeat}"
+
     def tree(self) -> list[dict[str, object]]:
-        """Return a deterministic Project→Subject→Session→Trial→Artifact tree."""
+        """Return a deterministic Project→Subject→Session→Trial→Artifact tree.
+
+        Labels are derived from the filesystem directory names (via
+        ``manifest_path``) so the tree mirrors what the operator sees in
+        ``data/`` rather than internal UUIDs.
+        """
 
         with self.catalog.session() as db:
             projects = db.scalars(select(ProjectRow).order_by(ProjectRow.name)).all()
@@ -428,24 +486,26 @@ class CatalogRepository:
             {
                 "type": "project",
                 "uuid": project.project_uuid,
-                "label": project.name,
+                "label": project.project_code or project.name,
                 "children": [
                     {
                         "type": "subject",
                         "uuid": subject.subject_uuid,
-                        "label": subject.subject_code,
+                        "label": subject.subject_code or subject.subject_uuid[:8],
                         "children": [
                             {
                                 "type": "session",
                                 "uuid": visit.session_uuid,
-                                "label": f"Session {visit.session_uuid[:8]}",
+                                "label": self._session_label(
+                                    trials_by_session.get(visit.session_uuid, [])
+                                ),
                                 "children": [
                                     {
                                         "type": "trial",
                                         "uuid": trial.trial_uuid,
                                         "label": (
-                                            f"{trial.condition_code} · repeat {trial.repeat_index} · "
-                                            f"{trial.state}"
+                                            f"{self._trial_leaf_label(trial.manifest_path)}"
+                                            f" · {trial.state}"
                                         ),
                                         "state": trial.state,
                                         "quality_grade": trial.quality_grade,

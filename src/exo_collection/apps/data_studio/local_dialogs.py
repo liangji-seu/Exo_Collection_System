@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from time import perf_counter
 
@@ -38,6 +39,8 @@ from .local_tools import (
     TrialPlayback,
 )
 
+_log = logging.getLogger(__name__)
+
 
 _PLOT_COLORS = (
     "#0072B2",
@@ -50,6 +53,15 @@ _PLOT_COLORS = (
     "#F0E442",
 )
 
+def _safe_colormap() -> np.ndarray | None:
+    """Return a viridis-ish lookup table that works across pyqtgraph versions."""
+    try:
+        import pyqtgraph as _pg
+        cmap = _pg.colormap.get("viridis")
+        return cmap.getLookupTable(nPts=256, alpha=False)
+    except Exception:
+        return None  # fall back to grayscale
+
 
 def _empty_tab(message: str) -> QWidget:
     widget = QWidget()
@@ -60,228 +72,332 @@ def _empty_tab(message: str) -> QWidget:
     return widget
 
 
-def _signal_tab(
-    series: SignalPlayback | None,
-    *,
-    y_label: str,
-    trigger_times_s: np.ndarray | None = None,
-    cursor_lines: list[pg.InfiniteLine] | None = None,
-) -> QWidget:
-    if series is None or series.time_s.size == 0:
-        return _empty_tab("该 Trial 没有可回放的已发布数据。")
-    plot = pg.PlotWidget()
-    plot.setBackground("w")
-    plot.showGrid(x=True, y=True, alpha=0.2)
-    plot.setLabel("bottom", "相对正式 t0 时间", units="s")
-    plot.setLabel("left", y_label)
-    plot.addLegend(offset=(10, 10))
-    channel_count = min(int(series.values.shape[1]), 12)
-    for index in range(channel_count):
-        name = series.channels[index] if index < len(series.channels) else f"ch_{index + 1}"
-        unit = series.units[index] if index < len(series.units) else ""
-        legend = f"{name} [{unit}]" if unit else name
-        plot.plot(
-            series.time_s,
-            series.values[:, index],
-            pen=pg.mkPen(_PLOT_COLORS[index % len(_PLOT_COLORS)], width=1.2),
-            name=legend,
-        )
-    for trigger_time in np.asarray(
-        trigger_times_s if trigger_times_s is not None else [], dtype=float
-    ):
-        plot.addItem(
-            pg.InfiniteLine(
-                pos=float(trigger_time),
-                angle=90,
-                pen=pg.mkPen("#C00000", width=1.5, style=Qt.PenStyle.DashLine),
-                label="trigger",
-            )
-        )
-    cursor = pg.InfiniteLine(
-        pos=0.0,
-        angle=90,
-        movable=False,
-        pen=pg.mkPen("#202020", width=1.4),
-    )
-    cursor.setZValue(20)
-    plot.addItem(cursor)
-    if cursor_lines is not None:
-        cursor_lines.append(cursor)
-    return plot
+# ---------------------------------------------------------------------------
+# Shared waterfall plot (one ultrasound channel)
+# ---------------------------------------------------------------------------
 
+class _WaterfallPlotWidget(pg.PlotWidget):
+    """Single-channel A-mode waterfall with a movable time cursor."""
 
-class _UltrasoundPlaybackWidget(QWidget):
-    """Time-addressable ultrasound waterfall and A-scan panel."""
-
-    def __init__(self, playback: TrialPlayback) -> None:
+    def __init__(
+        self,
+        title: str,
+        time_s: np.ndarray,
+        data_2d: np.ndarray,  # (frames, depth)
+    ) -> None:
         super().__init__()
-        ultrasound = playback.ultrasound
-        if ultrasound is None or ultrasound.waterfall.size == 0:
-            raise ValueError("ultrasound playback data is empty")
-        self.ultrasound = ultrasound
-        self._times = np.asarray(ultrasound.time_s, dtype=np.float64)
-        self._selected_frame = -1
+        self._times = np.asarray(time_s, dtype=np.float64)
+        self._data = np.asarray(data_2d, dtype=np.float32)
 
-        layout = QVBoxLayout(self)
-        controls = QHBoxLayout()
-        controls.addWidget(QLabel("瀑布通道："))
-        self.channel_combo = QComboBox()
-        self.channel_combo.setObjectName("playback_ultrasound_channel")
-        for index in range(int(ultrasound.waterfall.shape[0])):
-            label = (
-                ultrasound.channels[index]
-                if index < len(ultrasound.channels)
-                else f"ch_{index + 1}"
-            )
-            self.channel_combo.addItem(label, index)
-        self.channel_combo.currentIndexChanged.connect(self._set_waterfall_channel)
-        controls.addWidget(self.channel_combo)
-        self.frame_label = QLabel()
-        self.frame_label.setObjectName("playback_ultrasound_frame")
-        controls.addWidget(self.frame_label, 1)
-        layout.addLayout(controls)
+        self.setTitle(title)
+        self.setLabel("bottom", "时间", units="s")
+        self.setLabel("left", "深度点")
+        self.setMouseEnabled(x=False, y=False)
+        self.setMenuEnabled(False)
+        self.getViewBox().setMouseEnabled(x=False, y=False)
 
-        graphics = pg.GraphicsLayoutWidget()
-        graphics.setBackground("w")
-        self.waterfall_plot = graphics.addPlot(
-            row=0, col=0, title="A-mode 灰度瀑布（有界降采样）"
-        )
-        self.waterfall_plot.setLabel("bottom", "相对正式 t0 时间", units="s")
-        self.waterfall_plot.setLabel("left", "深度点")
+        _t0 = float(self._times[0]) if self._times.size else 0.0
+        _t1 = float(self._times[-1]) if self._times.size else 1.0
+
         self.image = pg.ImageItem()
-        self.waterfall_plot.addItem(self.image)
-        self.waterfall_plot.invertY(True)
+        lut = _safe_colormap()
+        if lut is not None:
+            self.image.setLookupTable(lut)
+        self.addItem(self.image)
+        self.invertY(True)
+
         self.cursor = pg.InfiniteLine(
-            pos=0.0,
-            angle=90,
-            movable=False,
-            pen=pg.mkPen("#202020", width=1.4),
+            pos=_t0, angle=90, movable=False,
+            pen=pg.mkPen("#E04040", width=2.0),
         )
-        self.cursor.setZValue(20)
-        self.waterfall_plot.addItem(self.cursor)
+        self.cursor.setZValue(100)
+        self.addItem(self.cursor)
 
-        self.waveform_plot = graphics.addPlot(
-            row=1, col=0, title="当前时标 A-scan（四通道）"
-        )
-        self.waveform_plot.showGrid(x=True, y=True, alpha=0.2)
-        self.waveform_plot.setLabel("bottom", "深度点")
-        self.waveform_plot.setLabel("left", "幅值")
-        self.waveform_plot.addLegend(offset=(10, 10))
-        self.waveform_curves: list[pg.PlotDataItem] = []
-        for channel_index in range(min(int(ultrasound.waterfall.shape[0]), 8)):
-            label = (
-                ultrasound.channels[channel_index]
-                if channel_index < len(ultrasound.channels)
-                else f"ch_{channel_index + 1}"
-            )
-            curve = self.waveform_plot.plot(
-                pen=pg.mkPen(
-                    _PLOT_COLORS[channel_index % len(_PLOT_COLORS)], width=1.2
+        if self._times.size and self._data.size:
+            # self._data is (depth, frames): axis 0 = Y (depth), axis 1 = X (time)
+            self.image.setImage(
+                self._data,
+                autoLevels=True,
+                rect=QRectF(
+                    _t0, 0.0,
+                    max(_t1 - _t0, 1e-9),
+                    float(max(1, self._data.shape[0])),
                 ),
-                name=label,
-            )
-            self.waveform_curves.append(curve)
-        layout.addWidget(graphics, 1)
-        self._set_waterfall_channel(0)
-        self.set_time(float(self._times[0]) if self._times.size else 0.0)
-
-    def _set_waterfall_channel(self, combo_index: int) -> None:
-        channel = self.channel_combo.itemData(combo_index)
-        channel_index = int(channel if channel is not None else max(combo_index, 0))
-        data = np.asarray(self.ultrasound.waterfall[channel_index]).T
-        self.image.setImage(data, autoLevels=True)
-        if self._times.size:
-            start = float(self._times[0])
-            end = float(self._times[-1])
-            width = max(end - start, 1e-9)
-            self.image.setRect(
-                QRectF(start, 0.0, width, float(max(1, data.shape[0])))
             )
 
-    def set_time(self, value: float) -> None:
-        self.cursor.setPos(float(value))
-        if not self._times.size:
-            return
-        insertion = int(np.searchsorted(self._times, value, side="left"))
-        if insertion <= 0:
-            frame_index = 0
-        elif insertion >= self._times.size:
-            frame_index = int(self._times.size - 1)
-        else:
-            before = insertion - 1
-            frame_index = (
-                before
-                if abs(value - float(self._times[before]))
-                <= abs(float(self._times[insertion]) - value)
-                else insertion
+
+# ---------------------------------------------------------------------------
+# Shared signal plot (one IMU / encoder group)
+# ---------------------------------------------------------------------------
+
+class _SignalPlotWidget(pg.PlotWidget):
+    """Multi-channel line plot with a movable time cursor."""
+
+    def __init__(
+        self,
+        title: str,
+        series: SignalPlayback,
+        channel_indices: tuple[int, ...],
+    ) -> None:
+        super().__init__()
+        self._times = np.asarray(series.time_s, dtype=np.float64)
+        self._values = np.asarray(series.values)
+
+        self.setTitle(title)
+        self.setLabel("bottom", "时间", units="s")
+        self.setMouseEnabled(x=False, y=False)
+        self.setMenuEnabled(False)
+        self.getViewBox().setMouseEnabled(x=False, y=False)
+
+        for idx in channel_indices:
+            if idx >= self._values.shape[1]:
+                continue
+            label = (
+                series.channels[idx]
+                if idx < len(series.channels)
+                else f"ch_{idx + 1}"
             )
-        if frame_index == self._selected_frame:
-            return
-        self._selected_frame = frame_index
-        for channel_index, curve in enumerate(self.waveform_curves):
-            curve.setData(
-                np.asarray(self.ultrasound.waterfall[channel_index, frame_index])
+            unit = series.units[idx] if idx < len(series.units) else ""
+            legend = f"{label} [{unit}]" if unit else label
+            pen = pg.mkPen(
+                _PLOT_COLORS[idx % len(_PLOT_COLORS)], width=1.0
             )
-        self.frame_label.setText(
-            f"抽样帧 {frame_index + 1}/{self._times.size} · "
-            f"t={float(self._times[frame_index]):.3f} s"
+            self.plot(
+                self._times,
+                self._values[:, idx],
+                pen=pen,
+                name=legend,
+            )
+
+        t0 = float(self._times[0]) if self._times.size else 0.0
+        self.cursor = pg.InfiniteLine(
+            pos=t0, angle=90, movable=False,
+            pen=pg.mkPen("#E04040", width=2.0),
         )
+        self.cursor.setZValue(100)
+        self.addItem(self.cursor)
 
+
+# ---------------------------------------------------------------------------
+# Channel grouping helpers
+# ---------------------------------------------------------------------------
+
+def _partition_indices(
+    total: int, groups: int
+) -> list[tuple[int, ...]]:
+    """Split *total* channel indices evenly into *groups* tuples."""
+    if total <= 0 or groups <= 0:
+        return [()]
+    base = total // groups
+    remainder = total % groups
+    result: list[tuple[int, ...]] = []
+    start = 0
+    for g in range(groups):
+        size = base + (1 if g < remainder else 0)
+        result.append(tuple(range(start, start + size)))
+        start += size
+    return result
+
+
+def _imu_groups(series: SignalPlayback) -> list[tuple[str, tuple[int, ...]]]:
+    """Heuristic: group IMU channels by sensor type prefix, max 3 groups."""
+    labels = [str(c).casefold() for c in series.channels]
+    col_count = int(series.values.shape[1])
+    # Try to split into accel / gyro / other
+    accel = tuple(i for i, n in enumerate(labels) if "accel" in n or "acc" in n)
+    gyro = tuple(i for i, n in enumerate(labels) if "gyro" in n or "gyr" in n)
+    mag = tuple(i for i, n in enumerate(labels) if "mag" in n)
+    used = set(accel + gyro + mag)
+    other = tuple(i for i in range(col_count) if i not in used)
+    groups: list[tuple[str, tuple[int, ...]]] = []
+    if accel:
+        groups.append(("IMU Accel", accel))
+    if gyro:
+        groups.append(("IMU Gyro", gyro))
+    if mag:
+        groups.append(("IMU Mag", mag))
+    if other:
+        groups.append(("IMU Other", other))
+    # Collapse to at most 3 groups
+    while len(groups) > 3:
+        # merge the two smallest groups
+        groups.sort(key=lambda g: len(g[1]))
+        name_a, idx_a = groups[0]
+        name_b, idx_b = groups[1]
+        groups = groups[2:]
+        groups.append((f"{name_a} + {name_b}", idx_a + idx_b))
+    if not groups:
+        for label, idx in _partition_indices(col_count, min(3, col_count)):
+            groups.append(("IMU", idx))
+    return groups
+
+
+def _encoder_groups(series: SignalPlayback) -> list[tuple[str, tuple[int, ...]]]:
+    """Split encoder channels into 2 windows."""
+    col_count = int(series.values.shape[1])
+    result: list[tuple[str, tuple[int, ...]]] = []
+    for idx_tuple in _partition_indices(col_count, min(2, max(1, col_count))):
+        labels = [
+            series.channels[i] if i < len(series.channels) else f"ch_{i + 1}"
+            for i in idx_tuple
+        ]
+        result.append(("Encoder " + " / ".join(labels), idx_tuple))
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Interactive playback dialog (fixed axes, sweeping cursor)
+# ---------------------------------------------------------------------------
 
 class PlaybackDialog(QDialog):
-    """Interactive, shared-cursor playback of one immutable Trial snapshot."""
+    """Collector-style offline playback with shared sweeping cursor.
+
+    Layout::
+
+        ┌──────────────┬──────────────┐
+        │  US Ch 1     │  US Ch 2     │
+        │  (waterfall) │  (waterfall) │
+        ├──────────────┼──────────────┤
+        │  US Ch 3     │  US Ch 4     │
+        │  (waterfall) │  (waterfall) │
+        ├──────────────┼──────────────┼──────────────┐
+        │  IMU group 1 │  IMU group 2 │  IMU group 3 │
+        ├──────────────┼──────────────┼──────────────┤
+        │  Encoder 1   │  Encoder 2   │              │
+        ├──────────────┴──────────────┴──────────────┤
+        │  [▶/⏸] ═══════timeline═══════ 1×  t=X/Xs  │
+        └─────────────────────────────────────────────┘
+    """
 
     def __init__(self, playback: TrialPlayback, parent: QWidget | None = None) -> None:
+        _log.info("=== PlaybackDialog.__init__ 开始 ===")
+        _log.info("Trial: %s, t0=%d ns", playback.trial_uuid, playback.formal_t0_host_monotonic_ns)
         super().__init__(parent)
         self.playback = playback
         self.setObjectName("trial_playback_dialog")
-        self.setWindowTitle(f"离线回放 · {playback.condition_code} · {playback.trial_uuid[:8]}")
-        self.resize(1180, 820)
-        self._cursor_lines: list[pg.InfiniteLine] = []
-        self._ultrasound_widget: _UltrasoundPlaybackWidget | None = None
+        self.setWindowTitle(
+            f"离线回放 · {playback.condition_code} · {playback.trial_uuid[:8]}"
+        )
+        self.resize(1480, 980)
         self._playing = False
         self._last_tick = perf_counter()
+        _log.info("计算时间边界…")
         self._time_min, self._time_max = self._playback_bounds(playback)
+        _log.info("时间范围: %.3f – %.3f s", self._time_min, self._time_max)
         self._current_time = self._time_min
 
+        # One cursor per plot — synced in set_playback_time
+        self._cursors: list[pg.InfiniteLine] = []
+
         layout = QVBoxLayout(self)
-        layout.addWidget(
-            QLabel(
-                f"Trial {playback.trial_uuid} · 正式 t0 = "
-                f"{playback.formal_t0_host_monotonic_ns} ns · 图形为有界降采样视图"
-            )
+
+        # --- info banner ---
+        _log.info("构建信息横幅…")
+        banner = QLabel(
+            f"Trial {playback.trial_uuid}  ·  t0 = "
+            f"{playback.formal_t0_host_monotonic_ns} ns  ·  降采样回放"
         )
-        if (
-            playback.ultrasound is not None
-            and not playback.ultrasound.device_synchronized
-        ):
-            alignment_notice = QLabel(
-                "⚠ Raw Ethernet 超声：独立通道包按到达序号组合，"
-                "仅用于回放，不代表设备同步。"
-                f" 原始包数 {playback.ultrasound.source_packet_count}，"
-                f" 完整四通道组数 {playback.ultrasound.source_frame_count}。"
-            )
-            alignment_notice.setObjectName("playback_ultrasound_alignment_notice")
-            alignment_notice.setWordWrap(True)
-            alignment_notice.setStyleSheet(
-                "QLabel { color: #8a3b00; background: #fff0d6; "
-                "border: 1px solid #e2a64a; padding: 7px; font-weight: 600; }"
-            )
-            layout.addWidget(alignment_notice)
+        banner.setObjectName("playback_banner")
+        banner.setStyleSheet(
+            "QLabel { padding: 4px 8px; background: #eef4fb; color: #16324f;"
+            " border: 1px solid #bdd3ea; font-weight: 600; }"
+        )
+        layout.addWidget(banner)
+
+        # --- plot grid ---
+        _log.info("构建绘图网格…")
+        grid = QGridLayout()
+        row = 0
+
+        # ---- Ultrasound row ----
+        us = playback.ultrasound
+        if us is not None and us.waterfall.size:
+            n_channels = min(int(us.waterfall.shape[0]), 4)
+            _log.info("超声瀑布图: %d 通道, waterfall shape=%s, times=%d",
+                      n_channels, us.waterfall.shape, us.time_s.size)
+            for ch in range(n_channels):
+                title = (
+                    f"US {us.channels[ch]}"
+                    if ch < len(us.channels)
+                    else f"US ch_{ch + 1}"
+                )
+                _log.info("创建 US 通道 %d 瀑布图…", ch)
+                wf = _WaterfallPlotWidget(
+                    title=title,
+                    time_s=us.time_s,
+                    data_2d=np.asarray(us.waterfall[ch]).T,
+                )
+                self._cursors.append(wf.cursor)
+                grid.addWidget(wf, row + ch // 2, ch % 2)
+            row += 2
+        else:
+            _log.info("无超声数据")
+            no_us = QLabel("无超声数据")
+            no_us.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            no_us.setStyleSheet("color: #888; padding: 40px;")
+            grid.addWidget(no_us, row, 0, 2, 2)
+            row += 2
+
+        # ---- IMU row ----
+        imu = playback.imu
+        if imu is not None and imu.time_s.size:
+            groups = _imu_groups(imu)
+            _log.info("IMU: %d 组, %d 个时间点", len(groups), imu.time_s.size)
+            for col, (title, indices) in enumerate(groups[:3]):
+                _log.info("创建 IMU 组 '%s' indices=%s…", title, indices)
+                sp = _SignalPlotWidget(title, imu, indices)
+                self._cursors.append(sp.cursor)
+                grid.addWidget(sp, row, col)
+            row += 1
+        else:
+            _log.info("无 IMU 数据")
+            no_imu = QLabel("无 IMU 数据")
+            no_imu.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            no_imu.setStyleSheet("color: #888; padding: 20px;")
+            grid.addWidget(no_imu, row, 0, 1, 3)
+            row += 1
+
+        # ---- Encoder row ----
+        enc = playback.encoder
+        if enc is not None and enc.time_s.size:
+            groups = _encoder_groups(enc)
+            _log.info("Encoder: %d 组, %d 个时间点", len(groups), enc.time_s.size)
+            for col, (title, indices) in enumerate(groups[:2]):
+                _log.info("创建 Encoder 组 '%s' indices=%s…", title, indices)
+                sp = _SignalPlotWidget(title, enc, indices)
+                self._cursors.append(sp.cursor)
+                grid.addWidget(sp, row, col)
+            row += 1
+        else:
+            _log.info("无 Encoder 数据")
+            no_enc = QLabel("无编码器数据")
+            no_enc.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            no_enc.setStyleSheet("color: #888; padding: 20px;")
+            grid.addWidget(no_enc, row, 0, 1, 2)
+            row += 1
+
+        _log.info("绘图网格完成，共 %d 个 cursor", len(self._cursors))
+        layout.addLayout(grid, 1)
+
+        # --- controls ---
+        _log.info("构建播放控件…")
         controls = QHBoxLayout()
-        self.play_button = QPushButton("播放")
+        self.play_button = QPushButton("▶ 播放")
         self.play_button.setObjectName("playback_play_pause")
         self.play_button.clicked.connect(self.toggle_playback)
         controls.addWidget(self.play_button)
+
         self.timeline_slider = QSlider(Qt.Orientation.Horizontal)
         self.timeline_slider.setObjectName("playback_timeline")
         self.timeline_slider.setRange(0, 10_000)
         self.timeline_slider.valueChanged.connect(self._slider_changed)
         controls.addWidget(self.timeline_slider, 1)
+
         self.time_label = QLabel()
         self.time_label.setObjectName("playback_time")
-        self.time_label.setMinimumWidth(170)
+        self.time_label.setMinimumWidth(200)
         controls.addWidget(self.time_label)
+
         controls.addWidget(QLabel("速度："))
         self.speed_combo = QComboBox()
         self.speed_combo.setObjectName("playback_speed")
@@ -291,49 +407,17 @@ class PlaybackDialog(QDialog):
         controls.addWidget(self.speed_combo)
         layout.addLayout(controls)
 
-        tabs = QTabWidget()
-        tabs.setObjectName("playback_tabs")
-        if playback.ultrasound is None or playback.ultrasound.waterfall.size == 0:
-            ultrasound_tab: QWidget = _empty_tab("该 Trial 没有可回放的超声数据。")
-        else:
-            self._ultrasound_widget = _UltrasoundPlaybackWidget(playback)
-            ultrasound_tab = self._ultrasound_widget
-        tabs.addTab(ultrasound_tab, "Ultrasound")
-        tabs.addTab(
-            _signal_tab(
-                playback.imu,
-                y_label="IMU",
-                cursor_lines=self._cursor_lines,
-            ),
-            "IMU",
-        )
-        tabs.addTab(
-            _signal_tab(
-                playback.encoder,
-                y_label="Encoder",
-                cursor_lines=self._cursor_lines,
-            ),
-            "Encoder",
-        )
-        tabs.addTab(
-            _signal_tab(
-                playback.sync,
-                y_label="Sync pulse",
-                trigger_times_s=playback.sync_trigger_times_s,
-                cursor_lines=self._cursor_lines,
-            ),
-            "Sync / trigger",
-        )
-        layout.addWidget(tabs, 1)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
+        _log.info("启动回放定时器…")
         self._timer = QTimer(self)
         self._timer.setInterval(33)
         self._timer.timeout.connect(self._advance_playback)
         self.finished.connect(lambda _result: self._timer.stop())
         self.set_playback_time(self._time_min)
+        _log.info("=== PlaybackDialog.__init__ 完成 ===")
+
+    # ------------------------------------------------------------------
+    # Time helpers
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _playback_bounds(playback: TrialPlayback) -> tuple[float, float]:
@@ -363,10 +447,8 @@ class PlaybackDialog(QDialog):
         self.time_label.setText(
             f"t={bounded:.3f} s / {self._time_max:.3f} s"
         )
-        for cursor in self._cursor_lines:
+        for cursor in self._cursors:
             cursor.setPos(bounded)
-        if self._ultrasound_widget is not None:
-            self._ultrasound_widget.set_time(bounded)
 
     def _slider_changed(self, slider_value: int) -> None:
         fraction = float(slider_value) / 10_000.0
@@ -375,6 +457,10 @@ class PlaybackDialog(QDialog):
         )
         self._last_tick = perf_counter()
 
+    # ------------------------------------------------------------------
+    # Playback
+    # ------------------------------------------------------------------
+
     def toggle_playback(self) -> None:
         self._playing = not self._playing
         if self._playing:
@@ -382,10 +468,10 @@ class PlaybackDialog(QDialog):
                 self.set_playback_time(self._time_min)
             self._last_tick = perf_counter()
             self._timer.start()
-            self.play_button.setText("暂停")
+            self.play_button.setText("⏸ 暂停")
         else:
             self._timer.stop()
-            self.play_button.setText("播放")
+            self.play_button.setText("▶ 播放")
 
     def _advance_playback(self) -> None:
         now = perf_counter()
@@ -397,7 +483,7 @@ class PlaybackDialog(QDialog):
             self.set_playback_time(self._time_max)
             self._playing = False
             self._timer.stop()
-            self.play_button.setText("播放")
+            self.play_button.setText("▶ 播放")
             return
         self.set_playback_time(target)
 

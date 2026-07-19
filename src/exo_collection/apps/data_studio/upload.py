@@ -356,6 +356,8 @@ def build_upload_plan(manifest_path: str | Path) -> TrialUploadPlan:
     path = Path(manifest_path).expanduser().resolve()
     manifest = validate_finalized_trial(path)
     trial_directory = path.parent
+    if trial_directory.name == ".exo":
+        trial_directory = trial_directory.parent
     files: list[TrialUploadFile] = []
     by_relative_path: dict[str, TrialUploadFile] = {}
     for local_path in sorted(_iter_trial_paths(trial_directory)):
@@ -374,8 +376,8 @@ def build_upload_plan(manifest_path: str | Path) -> TrialUploadPlan:
         files.append(item)
         by_relative_path[relative.as_posix()] = item
 
-    if not files or "manifest.json" not in by_relative_path:
-        raise UploadError("INCOMPLETE_PACKAGE", "Trial 包缺少 manifest.json。")
+    if not files or ".exo/manifest.json" not in by_relative_path:
+        raise UploadError("INCOMPLETE_PACKAGE", "Trial 包缺少 .exo/manifest.json。")
     for artifact in manifest.artifacts:
         local = by_relative_path.get(artifact.relative_path)
         if local is None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 import traceback
 from collections.abc import Callable
@@ -10,6 +11,8 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
+
+_log = logging.getLogger(__name__)
 
 from PySide6.QtCore import QDate, QObject, QRunnable, QThreadPool, QTimer, Qt, Signal, Slot
 from PySide6.QtGui import QAction, QCloseEvent
@@ -1075,9 +1078,13 @@ class DataStudioWindow(QMainWindow):
 
     @Slot()
     def playback_selected_trial(self) -> None:
+        _log.info("=== 离线回放请求开始 ===")
         manifest_path = self._selected_finalized_manifest_path()
         if manifest_path is None:
+            _log.warning("回放取消：未选中有效 Trial")
             return
+        _log.info("选中 Manifest: %s", manifest_path)
+        _log.info("数据根目录: %s", self._data_root)
         self._start_process_tool(
             "离线回放读取",
             "playback",
@@ -1085,6 +1092,7 @@ class DataStudioWindow(QMainWindow):
             manifest_path=str(manifest_path),
             data_root=str(self._data_root),
         )
+        _log.info("回放子进程已启动，等待结果…")
 
     @Slot()
     def run_full_statistics(self) -> None:
@@ -1484,11 +1492,17 @@ class DataStudioWindow(QMainWindow):
             self.local_tool_finished.emit(name, False)
 
     def _show_result_dialog(self, dialog: QDialog) -> None:
+        _log.info("准备显示对话框: %s", dialog.objectName())
         self._result_dialogs.append(dialog)
         dialog.finished.connect(
             lambda _result, current=dialog: self._forget_result_dialog(current)
         )
-        dialog.show()
+        try:
+            dialog.show()
+        except Exception:
+            _log.exception("dialog.show() 崩溃")
+            raise
+        _log.info("对话框已显示")
         dialog.raise_()
         dialog.activateWindow()
 
@@ -1498,9 +1512,22 @@ class DataStudioWindow(QMainWindow):
         dialog.deleteLater()
 
     def _show_playback(self, result: object) -> None:
+        _log.info("回放数据已就绪，创建 PlaybackDialog…")
         if not isinstance(result, TrialPlayback):
+            _log.error("回放 worker 返回了无效结果：%s", type(result))
             raise TypeError("playback worker returned an invalid result")
-        self._show_result_dialog(PlaybackDialog(result, self))
+        _log.info("Trial UUID: %s, US: %s, IMU: %s, Encoder: %s",
+                  result.trial_uuid,
+                  result.ultrasound is not None,
+                  result.imu is not None,
+                  result.encoder is not None)
+        try:
+            dialog = PlaybackDialog(result, self)
+        except Exception:
+            _log.exception("创建 PlaybackDialog 失败")
+            raise
+        _log.info("PlaybackDialog 创建成功，显示中…")
+        self._show_result_dialog(dialog)
 
     def _show_full_statistics(self, result: object) -> None:
         if not isinstance(result, FullStatistics):

@@ -7,11 +7,12 @@ import logging
 import multiprocessing
 import os
 import sys
+import traceback
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Sequence
 
-from PySide6.QtCore import QSettings, QTimer
+from PySide6.QtCore import QSettings, QTimer, QtMsgType, qInstallMessageHandler
 from PySide6.QtWidgets import QApplication
 
 from exo_collection.apps.data_studio.window import DataStudioWindow
@@ -20,6 +21,8 @@ from exo_collection.logging_setup import (
     data_studio_log_path,
     setup_data_studio_logging,
 )
+
+_log = logging.getLogger(__name__)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -123,10 +126,42 @@ def main(
         "Exo Data Studio application starting; log_file=%s",
         data_studio_log_path(),
     )
+
+    # ------------------------------------------------------------------
+    # Global crash capture: log EVERY unhandled exception before exit
+    # ------------------------------------------------------------------
+    _original_excepthook = sys.excepthook
+
+    def _crash_logger(exc_type, exc_value, exc_tb):
+        logger.critical(
+            "UNHANDLED EXCEPTION — Data Studio will terminate\n%s",
+            "".join(traceback.format_exception(exc_type, exc_value, exc_tb)),
+        )
+        _original_excepthook(exc_type, exc_value, exc_tb)
+
+    sys.excepthook = _crash_logger
+
+    # Qt warnings / errors also routed to the Python log
+    def _qt_message_handler(mode, _context, message):
+        level = {
+            QtMsgType.QtDebugMsg: logging.DEBUG,
+            QtMsgType.QtInfoMsg: logging.INFO,
+            QtMsgType.QtWarningMsg: logging.WARNING,
+            QtMsgType.QtCriticalMsg: logging.CRITICAL,
+            QtMsgType.QtFatalMsg: logging.CRITICAL,
+        }.get(mode, logging.WARNING)
+        logger.log(level, "Qt: %s", message)
+
+    qInstallMessageHandler(_qt_message_handler)
+
+    # ------------------------------------------------------------------
     try:
+        logger.debug("Parsing command-line arguments…")
         arguments = list(argv) if argv is not None else sys.argv[1:]
         options = _build_parser().parse_args(arguments)
+
         if options.smoke_test:
+            logger.debug("Smoke-test mode; using offscreen platform + temp dir")
             os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
             with TemporaryDirectory(prefix="exo-data-studio-smoke-") as directory:
                 data_root = Path(directory)
@@ -137,13 +172,18 @@ def main(
                     smoke_test=True,
                 )
 
+        logger.debug("Loading application settings…")
         settings_store = settings if settings is not None else SharedAppSettings()
-        return _run_ui(
+        logger.info("Data root: %s", settings_store.data_root)
+        logger.debug("Entering UI run loop…")
+        exit_code = _run_ui(
             arguments,
             settings_store.data_root,
             settings_store,
             smoke_test=False,
         )
+        logger.info("UI run loop ended; exit_code=%d", exit_code)
+        return exit_code
     except Exception:
         logger.exception("Exo Data Studio terminated by an unhandled exception")
         raise

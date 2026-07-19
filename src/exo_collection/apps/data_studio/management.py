@@ -448,22 +448,37 @@ def _safe_audit_relative(value: object) -> str:
     return relative.as_posix()
 
 
+def _trial_root_from_manifest_path(manifest_path: Path) -> Path:
+    """Return the trial root directory from a manifest.json path.
+
+    Handles both the current layout (``.exo/manifest.json``) and the legacy
+    layout where ``manifest.json`` sits directly at the trial root.
+    """
+    parent = manifest_path.parent.resolve()
+    if parent.name == ".exo":
+        return parent.parent.resolve()
+    return parent
+
+
 def _expected_upload_files(
     manifest_path: Path,
     manifest: TrialManifest,
 ) -> dict[str, tuple[int, str]]:
+    trial_root = manifest_path.parent
+    if trial_root.name == ".exo":
+        trial_root = trial_root.parent
     expected = {
         artifact.relative_path: (artifact.size_bytes, artifact.sha256)
         for artifact in manifest.artifacts
     }
-    expected["manifest.json"] = (
+    expected[".exo/manifest.json"] = (
         manifest_path.stat().st_size,
         sha256_file(manifest_path),
     )
-    checksum_path = manifest_path.parent / "checksums.sha256"
+    checksum_path = trial_root / ".exo" / "checksums.sha256"
     if not checksum_path.is_file():
-        raise ValueError("finalized Trial has no checksums.sha256 for upload audit")
-    expected["checksums.sha256"] = (
+        raise ValueError("finalized Trial has no .exo/checksums.sha256 for upload audit")
+    expected[".exo/checksums.sha256"] = (
         checksum_path.stat().st_size,
         sha256_file(checksum_path),
     )
@@ -1440,8 +1455,11 @@ def _reject_trial_package_destination(
     if path_has_unpublished_component(path):
         raise ManagementError("导出目标不能位于 recording/partial/aborted 包中")
     for record in records:
+        trial_root = record.manifest_path.parent
+        if trial_root.name == ".exo":
+            trial_root = trial_root.parent
         try:
-            path.relative_to(record.manifest_path.parent)
+            path.relative_to(trial_root)
         except ValueError:
             continue
         raise ManagementError("导出目标不能写入不可变 Trial 包")
@@ -1551,7 +1569,7 @@ def export_manifest_inventory_checked(
         stem = stem.with_suffix("")
     targets = (stem.with_suffix(".csv"), stem.with_suffix(".json"))
     immutable_roots = tuple(
-        manifest_path.parent.resolve()
+        _trial_root_from_manifest_path(manifest_path)
         for manifest_path in iter_finalized_manifest_paths(root)
     )
     for target in targets:
