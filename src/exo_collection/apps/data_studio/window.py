@@ -364,6 +364,14 @@ class DataStudioWindow(QMainWindow):
             "● 橙色 索引待补建   ● 紫色 内容冲突   ·   蓝色徽标表示模态数量"
         )
         self.remote_status_legend.setStyleSheet("QLabel { color: #46566b; }")
+        self.remote_status_legend.setToolTip(
+            "Trial 云端状态说明：\n"
+            "● 绿色：数据已上传，且远端索引与本地验证记录一致\n"
+            "● 灰色：未上传，或尚未执行云端状态同步\n"
+            "● 橙色：云端已有目录，但 .exo 索引/本地验证缓存尚未对上\n"
+            "● 紫色：本地与云端的内容指纹冲突\n"
+            "上传并逐文件校验成功后，Trial 会立即显示为绿色。"
+        )
         outer.addWidget(self.remote_status_legend)
 
         self.activity_banner = QLabel()
@@ -1655,6 +1663,14 @@ class DataStudioWindow(QMainWindow):
     def _upload_succeeded(
         self, result: OfflineUploadResult | BatchOfflineUploadResult
     ) -> None:
+        # The uploader has already verified every remote file and atomically
+        # updated both sync indexes. Reflect that terminal result immediately;
+        # otherwise the tree keeps showing its stale pre-upload (often orange)
+        # state until the operator performs another remote-status scan.
+        uploaded_results = (
+            result.results if isinstance(result, BatchOfflineUploadResult) else (result,)
+        )
+        self._mark_uploaded_results_verified(uploaded_results)
         if isinstance(result, BatchOfflineUploadResult):
             QMessageBox.information(
                 self,
@@ -1678,6 +1694,38 @@ class DataStudioWindow(QMainWindow):
         self.statusBar().showMessage("人工 SSH/SCP 上传并逐文件校验完成。", 8000)
         self.upload_finished.emit(True)
         self._schedule_catalog_refresh()
+
+    def _mark_uploaded_results_verified(
+        self, results: tuple[OfflineUploadResult, ...]
+    ) -> None:
+        uploaded_by_uuid = {str(item.trial_uuid): item for item in results}
+
+        def visit(nodes: list[dict[str, Any]]) -> None:
+            for node in nodes:
+                if str(node.get("type", "")) == "trial":
+                    uploaded = uploaded_by_uuid.get(str(node.get("uuid", "")))
+                    raw_manifest = node.get("manifest_path")
+                    if uploaded is not None and raw_manifest:
+                        manifest_key = str(
+                            Path(str(raw_manifest)).expanduser().resolve()
+                        )
+                        self._remote_status_by_manifest[manifest_key] = (
+                            RemoteTrialStatus.UPLOADED,
+                            "本次上传已完成逐文件 SHA-256 校验，"
+                            "远端 .exo 索引与本地验证缓存已更新。",
+                        )
+                children = node.get("children", [])
+                if isinstance(children, list):
+                    visit(children)
+
+        visit(self._catalog_tree)
+        visible_tree = self._catalog_tree
+        if self._management_index is not None:
+            visible_tree = self._filter_catalog_tree(
+                self._catalog_tree,
+                {record.trial_uuid for record in self._filtered_records},
+            )
+        self._render_tree(visible_tree)
 
     def _remote_sync_succeeded(self, result: RemoteStatusSyncResult) -> None:
         self._remote_status_by_manifest = {
@@ -2073,8 +2121,14 @@ class DataStudioWindow(QMainWindow):
                 None: "尚未同步",
             }
             item.setIcon(0, self._status_light_icon(colors[status]))
-            for column in (0, 1, 3):
-                item.setToolTip(column, f"云端：{labels[status]}\n{remote_detail}")
+            tooltip = (
+                f"当前状态：{labels[status]}\n"
+                f"判定原因：{remote_detail}\n\n"
+                "颜色说明：绿=已上传，灰=未上传/未同步，"
+                "橙=索引待补建，紫=内容冲突"
+            )
+            for column in range(4):
+                item.setToolTip(column, tooltip)
             item.setText(3, f"{details} · 云端：{labels[status]}")
         elif node_type == "external_annex":
             item.setData(

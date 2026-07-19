@@ -363,6 +363,29 @@ def test_remote_status_scan_distinguishes_uploaded_missing_partial_and_conflict(
     assert session.closed
 
 
+def test_remote_status_scan_recovers_legacy_verified_upload_as_green(
+    tmp_path: Path,
+) -> None:
+    manifest_path = _publish_trial(tmp_path)
+    request = _password_request(tmp_path, manifest_path)
+    session = _FakeRemoteSession()
+    uploaded = SshScpTrialUploader(lambda _request: session).upload(request)
+
+    # Simulate an upload made before the .exo sync indexes were introduced,
+    # while retaining its credential-free, per-file VERIFIED audit record.
+    remote_index = "/srv/exo-data/" + REMOTE_SYNC_INDEX_RELATIVE_PATH.as_posix()
+    session.files.pop(remote_index, None)
+    (tmp_path / ".exo" / "exo_sync_cache.json").unlink(missing_ok=True)
+    session.closed = False
+
+    result = RemoteDatasetStatusScanner(lambda _request: session).scan(request)
+
+    assert uploaded.audit_record_path.is_file()
+    assert len(result.records) == 1
+    assert result.records[0].status is RemoteTrialStatus.UPLOADED
+    assert "VERIFIED" in result.records[0].detail
+
+
 @pytest.mark.parametrize(
     "state_suffix",
     [".RECORDING", ".PaRtIaL", ".AbOrTeD", ".BUILDING"],

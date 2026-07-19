@@ -20,7 +20,10 @@ from exo_collection.apps.data_studio.local_tools import load_quality_audit
 from exo_collection.apps.data_studio.quality_reviews import list_quality_reviews
 from exo_collection.apps.data_studio.recovery_dialog import RecoveryDialog
 from exo_collection.apps.data_studio import window as window_module
-from exo_collection.apps.data_studio.upload import RemoteTrialStatus
+from exo_collection.apps.data_studio.upload import (
+    OfflineUploadResult,
+    RemoteTrialStatus,
+)
 from exo_collection.domain.models import ArtifactKind, Condition, QualityGrade
 from exo_collection.domain.states import TrialState
 from exo_collection.external import (
@@ -182,7 +185,60 @@ def test_upload_scope_accepts_parent_levels_and_remote_status_colors_trials(
     assert not colored.icon(0).isNull()
     assert "已上传" in colored.text(3)
     assert colored.text(2) == "2 个"
+    assert "当前状态：已上传" in colored.toolTip(0)
+    assert "颜色说明" in colored.toolTip(2)
     assert window.tree_widget.itemDelegateForColumn(2) is not None
+    window.close()
+    app.processEvents()
+
+
+def test_verified_upload_immediately_turns_matching_trial_green(
+    tmp_path: Path,
+) -> None:
+    app = QApplication.instance() or QApplication(["test-upload-status-green"])
+    trial_uuid = uuid4()
+    manifest = (tmp_path / "T/001/WALK/session1/.exo/manifest.json").resolve()
+    window = DataStudioWindow(tmp_path, autostart_refresh=False)
+    window._catalog_tree = [
+        {
+            "type": "project",
+            "label": "T",
+            "uuid": "project",
+            "children": [
+                {
+                    "type": "trial",
+                    "label": "session1",
+                    "uuid": str(trial_uuid),
+                    "manifest_path": str(manifest),
+                    "state": "FINALIZED",
+                    "modality_count": 2,
+                    "children": [],
+                }
+            ],
+        }
+    ]
+    window._remote_status_by_manifest[str(manifest)] = (
+        RemoteTrialStatus.PARTIAL,
+        "上传前的旧状态",
+    )
+    result = OfflineUploadResult(
+        trial_uuid=trial_uuid,
+        remote_trial_directory="/srv/data/T/001/WALK/session1",
+        file_count=3,
+        total_bytes=123,
+        verified_at_utc_ns=1,
+        transfer_batch_uuid=uuid4(),
+        audit_record_path=tmp_path / "audit.json",
+    )
+
+    window._mark_uploaded_results_verified((result,))
+
+    status, detail = window._remote_status_by_manifest[str(manifest)]
+    assert status is RemoteTrialStatus.UPLOADED
+    assert "SHA-256" in detail
+    trial_item = window.tree_widget.topLevelItem(0).child(0)
+    assert "云端：已上传" in trial_item.text(3)
+    assert "当前状态：已上传" in trial_item.toolTip(0)
     window.close()
     app.processEvents()
 

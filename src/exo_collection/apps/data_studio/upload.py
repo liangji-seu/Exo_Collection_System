@@ -1482,6 +1482,84 @@ class SshScpTrialUploader:
             )
 
 
+def _verified_upload_audit_entry(
+    request: OfflineUploadRequest,
+    trial_uuid: UUID,
+    remote_trial_directory: str,
+) -> dict[str, Any] | None:
+    """Recover verified status created before the sync-index feature existed."""
+
+    audit_directory = (
+        request.dataset_root / UPLOAD_AUDIT_DIRECTORY / str(trial_uuid)
+    )
+    if not audit_directory.is_dir():
+        return None
+    for audit_path in sorted(audit_directory.glob("*.json"), reverse=True):
+        try:
+            payload = json.loads(audit_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict) or payload.get("status") != "VERIFIED":
+            continue
+        if str(payload.get("trial_uuid", "")) != str(trial_uuid):
+            continue
+        remote = payload.get("remote")
+        if not isinstance(remote, dict):
+            continue
+        try:
+            audited_port = int(remote.get("port", -1))
+        except (TypeError, ValueError):
+            continue
+        if (
+            str(remote.get("host", "")) != request.host
+            or audited_port != request.port
+            or str(remote.get("username", "")) != request.username
+            or str(remote.get("trial_directory", "")) != remote_trial_directory
+        ):
+            continue
+        files = payload.get("files")
+        if not isinstance(files, list) or not files:
+            continue
+        normalized: list[tuple[str, int, str]] = []
+        valid = True
+        for item in files:
+            if not isinstance(item, dict):
+                valid = False
+                break
+            relative_path = str(item.get("relative_path", ""))
+            local_sha256 = str(item.get("local_sha256", ""))
+            remote_sha256 = str(item.get("remote_sha256", ""))
+            try:
+                size_bytes = int(item.get("size_bytes", -1))
+            except (TypeError, ValueError):
+                valid = False
+                break
+            if (
+                not relative_path
+                or size_bytes < 0
+                or not re.fullmatch(r"[0-9a-f]{64}", local_sha256)
+                or remote_sha256 != local_sha256
+            ):
+                valid = False
+                break
+            normalized.append((relative_path, size_bytes, local_sha256))
+        if not valid:
+            continue
+        digest = hashlib.sha256()
+        for relative_path, size_bytes, sha256 in sorted(normalized):
+            digest.update(relative_path.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(str(size_bytes).encode("ascii"))
+            digest.update(b"\0")
+            digest.update(sha256.encode("ascii"))
+            digest.update(b"\n")
+        return {
+            "package_fingerprint": digest.hexdigest(),
+            "file_count": len(normalized),
+        }
+    return None
+
+
 class RemoteDatasetStatusScanner:
     """Compare finalized local Trial packages with their exact remote mirrors."""
 
@@ -1537,16 +1615,44 @@ class RemoteDatasetStatusScanner:
                 )
                 entry = remote_entries.get(index_key)
                 local_entry = local_entries.get(index_key)
+                verified_audit = _verified_upload_audit_entry(
+                    request,
+                    manifest.trial_uuid,
+                    remote_dir,
+                )
                 if entry is None:
                     if session.exists(remote_dir):
-                        status = RemoteTrialStatus.PARTIAL
-                        detail = "云端存在旧数据但尚无 .exo 同步索引；请执行一次上传所选以补建索引"
+                        if verified_audit is not None:
+                            status = RemoteTrialStatus.UPLOADED
+                            detail = (
+                                "已找到该服务器目录的历史 VERIFIED 逐文件 "
+                                "SHA-256 上传审计；旧版远端数据可视为已上传。"
+                            )
+                        else:
+                            status = RemoteTrialStatus.PARTIAL
+                            detail = "云端存在旧数据但尚无 .exo 同步索引；请执行一次上传所选以补建索引"
                     else:
                         status = RemoteTrialStatus.NOT_UPLOADED
                         detail = "云端同步索引中没有该 Trial"
                 elif local_entry is None:
-                    status = RemoteTrialStatus.PARTIAL
-                    detail = "云端已有索引，但本机 .exo 尚无该服务器的验证缓存；请上传所选完成一次校验"
+                    audit_matches_index = (
+                        verified_audit is not None
+                        and str(entry.get("trial_uuid", ""))
+                        == str(manifest.trial_uuid)
+                        and str(entry.get("package_fingerprint", ""))
+                        == str(verified_audit.get("package_fingerprint", ""))
+                        and int(entry.get("file_count", -1))
+                        == int(verified_audit.get("file_count", -2))
+                    )
+                    if audit_matches_index:
+                        status = RemoteTrialStatus.UPLOADED
+                        detail = (
+                            "云端 .exo 索引与本机历史 VERIFIED "
+                            "逐文件上传审计一致。"
+                        )
+                    else:
+                        status = RemoteTrialStatus.PARTIAL
+                        detail = "云端已有索引，但本机 .exo 尚无该服务器的验证缓存；请上传所选完成一次校验"
                 elif (
                     str(entry.get("trial_uuid", "")) == str(manifest.trial_uuid)
                     and str(entry.get("package_fingerprint", ""))
