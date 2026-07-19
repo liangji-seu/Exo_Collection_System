@@ -53,6 +53,19 @@ def safe_relative_path(value: str | Path) -> PurePosixPath:
         raise ValueError(f"Expected a safe Trial-relative path, got {value!r}") from exc
 
 
+def _safe_path_segment(value: str) -> str:
+    """Replace characters unsafe for directory names with underscores."""
+    return re.sub(r"[<>:\"/\\|?*\x00-\x1f ]", "_", value).strip("_") or "_"
+
+
+def _condition_level_segment(level: int | str | None) -> str:
+    """Normalize a condition level value into a safe directory segment."""
+    if level is None:
+        return "L"
+    text = str(level).strip()
+    return _safe_path_segment(text) if text else "L"
+
+
 @dataclass(frozen=True, slots=True)
 class TrialLayout:
     dataset_root: Path
@@ -62,6 +75,9 @@ class TrialLayout:
     trial_uuid: UUID
     project_partition: str | None = None
     subject_code: str | None = None
+    condition_code: str | None = None
+    condition_level: int | str | None = None
+    repeat_index: int | None = None
 
     @classmethod
     def build(
@@ -73,6 +89,9 @@ class TrialLayout:
         trial_uuid: UUID,
         project_partition: str | None = None,
         subject_code: str | None = None,
+        condition_code: str | None = None,
+        condition_level: int | str | None = None,
+        repeat_index: int | None = None,
     ) -> TrialLayout:
         partition = None
         if project_partition is not None:
@@ -84,6 +103,11 @@ class TrialLayout:
             readable_subject = subject_code.strip()
             if re.fullmatch(r"\d{3}", readable_subject) is None:
                 raise ValueError("subject_code must contain exactly three digits")
+        safe_condition = None
+        if condition_code is not None:
+            safe_condition = _safe_path_segment(condition_code.strip())
+            if not safe_condition:
+                safe_condition = None
         return cls(
             Path(dataset_root).expanduser().resolve(),
             project_uuid,
@@ -92,6 +116,9 @@ class TrialLayout:
             trial_uuid,
             partition,
             readable_subject,
+            safe_condition,
+            condition_level,
+            repeat_index,
         )
 
     @property
@@ -110,12 +137,38 @@ class TrialLayout:
         return self.session_directory / "trials"
 
     @property
+    def _trial_leaf_name(self) -> str:
+        """Build the human-readable leaf directory name for this trial.
+
+        When all three grouping fields are available the name is
+        ``{condition_code}/{level_segment}/{repeat_index}``.
+        When any field is missing the leaf falls back to the trial UUID.
+        """
+        if self.condition_code and self.repeat_index is not None:
+            level_seg = _condition_level_segment(self.condition_level)
+            return f"{self.condition_code}/{level_seg}/{self.repeat_index}"
+        return str(self.trial_uuid)
+
+    @property
+    def _resolved_leaf_name(self) -> str:
+        """Leaf name with a short UUID discriminator when a finalized trial
+        already occupies the human-readable path."""
+        leaf = self._trial_leaf_name
+        base = self.trials_directory / leaf
+        if base.exists():
+            short = str(self.trial_uuid)[:8]
+            return f"{leaf}_{short}"
+        return leaf
+
+    @property
     def recording_directory(self) -> Path:
-        return self.trials_directory / f"{self.trial_uuid}.recording"
+        leaf = self._resolved_leaf_name
+        parent = self.trials_directory.joinpath(leaf).parent
+        return parent / f"{Path(leaf).name}.recording"
 
     @property
     def final_directory(self) -> Path:
-        return self.trials_directory / str(self.trial_uuid)
+        return self.trials_directory / self._resolved_leaf_name
 
     def create_recording(self) -> Path:
         if self.final_directory.exists():
