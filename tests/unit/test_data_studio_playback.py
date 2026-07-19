@@ -77,14 +77,17 @@ def test_playback_has_requested_modality_layout_and_fixed_sweep_axes() -> None:
     assert tabs is not None and tabs.count() == 4
     assert tabs.tabText(0) == "全部"
     assert tabs.currentIndex() == 0
-    assert dialog.findChild(QWidget, "playback_all_ultrasound") is not None
+    all_ultrasound = dialog.findChild(QWidget, "playback_all_ultrasound")
+    assert all_ultrasound is not None
     assert dialog.findChild(QWidget, "playback_all_imu") is not None
     assert dialog.findChild(QWidget, "playback_all_encoder") is not None
     waterfalls = dialog.findChildren(_SweepWaterfallPlot)
     current_frames = dialog.findChildren(_UltrasoundCurrentFramePlot)
     signals = dialog.findChildren(_SweepSignalPlot)
-    assert len(waterfalls) == 8  # combined tab + ultrasound-only tab
+    assert len(waterfalls) == 4  # waterfall history stays in ultrasound-only tab
     assert len(current_frames) == 8  # four channels in each ultrasound view
+    assert not all_ultrasound.findChildren(_SweepWaterfallPlot)
+    assert len(all_ultrasound.findChildren(_UltrasoundCurrentFramePlot)) == 4
     assert {
         widget.objectName() for widget in current_frames
     } == {

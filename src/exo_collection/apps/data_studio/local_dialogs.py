@@ -800,7 +800,7 @@ class PlaybackDialog(QDialog):
         outer.setContentsMargins(4, 4, 4, 4)
         outer.setSpacing(4)
 
-        ultrasound_box = QGroupBox("超声 · 4 通道瀑布图")
+        ultrasound_box = QGroupBox("超声 · 4 通道当前帧 A-scan")
         ultrasound_box.setObjectName("playback_all_ultrasound")
         ultrasound_grid = QGridLayout(ultrasound_box)
         ultrasound_grid.setContentsMargins(3, 3, 3, 3)
@@ -818,28 +818,18 @@ class PlaybackDialog(QDialog):
                     if channel < len(us.channels)
                     else f"ch_{channel + 1}"
                 )
-                plot = _SweepWaterfallPlot(
-                    f"通道 {channel + 1} · {label}",
-                    us.time_s,
-                    np.asarray(us.waterfall[channel]).T,
-                    self._window_s,
-                )
-                channel_panel = QWidget(ultrasound_box)
-                channel_layout = QVBoxLayout(channel_panel)
-                channel_layout.setContentsMargins(0, 0, 0, 0)
-                channel_layout.setSpacing(2)
-                self._sweep_plots.append(plot)
-                channel_layout.addWidget(plot, 2)
                 current_frame = _UltrasoundCurrentFramePlot(
                     us.time_s,
                     us.waterfall[channel],
                     label,
                     object_name=f"playback_all_ultrasound_frame_{channel + 1}",
                 )
+                # The combined dashboard mirrors Collector: four large
+                # current-frame A-scans, without a squeezed waterfall above.
+                current_frame.setMaximumHeight(16_777_215)
                 self._sweep_plots.append(current_frame)
-                channel_layout.addWidget(current_frame, 1)
                 ultrasound_grid.addWidget(
-                    channel_panel, channel // 2, channel % 2
+                    current_frame, channel // 2, channel % 2
                 )
             else:
                 ultrasound_grid.addWidget(
