@@ -509,6 +509,7 @@ def run_trial(
         subject_code=request.subject_code,
         condition_code=request.condition_code,
         repeat_index=request.repeat_index,
+        started_at_utc=utc_now(),
     )
     machine = TrialStateMachine()
     device_profile = load_device_profile(request.device_profile_key)

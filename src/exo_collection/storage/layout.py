@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import os
 import re
 from dataclasses import dataclass
@@ -79,6 +80,7 @@ class TrialLayout:
     subject_code: str | None = None
     condition_code: str | None = None
     repeat_index: int | None = None
+    started_at_utc: datetime | None = None
 
     # ------------------------------------------------------------------
     # Factory
@@ -96,6 +98,7 @@ class TrialLayout:
         subject_code: str | None = None,
         condition_code: str | None = None,
         repeat_index: int | None = None,
+        started_at_utc: datetime | None = None,
     ) -> TrialLayout:
         partition = None
         if project_partition is not None:
@@ -122,6 +125,7 @@ class TrialLayout:
             readable_subject,
             safe_condition,
             repeat_index,
+            started_at_utc,
         )
 
     # ------------------------------------------------------------------
@@ -142,35 +146,30 @@ class TrialLayout:
 
     @property
     def _trial_leaf_name(self) -> str:
-        """Human-readable leaf name: ``{condition}/{repeat}``.
+        """Human-readable leaf name: ``{condition}/{repeat}_{timestamp}``.
 
-        Falls back to the trial UUID when condition or repeat is missing.
+        The timestamp suffix (``YYYYmmdd_HHMMSS``) makes every trial directory
+        unique without resorting to UUIDs.  Falls back to the trial UUID when
+        condition or repeat is missing.
         """
         if self.condition_code and self.repeat_index is not None:
-            return f"{self.condition_code}/{self.repeat_index}"
+            ts = (
+                self.started_at_utc or datetime.now(timezone.utc)
+            ).strftime("%Y%m%d_%H%M%S")
+            return f"{self.condition_code}/{self.repeat_index}_{ts}"
         return str(self.trial_uuid)
-
-    @property
-    def _resolved_leaf_name(self) -> str:
-        """Leaf name with a short UUID discriminator on collision."""
-        leaf = self._trial_leaf_name
-        base = self.subject_directory / leaf
-        if base.exists():
-            short = str(self.trial_uuid)[:8]
-            return f"{leaf}_{short}"
-        return leaf
 
     @property
     def recording_directory(self) -> Path:
         """Active trial directory (``.recording`` suffix on the leaf)."""
-        leaf = self._resolved_leaf_name
+        leaf = self._trial_leaf_name
         parent = self.subject_directory.joinpath(leaf).parent
         return parent / f"{Path(leaf).name}.recording"
 
     @property
     def final_directory(self) -> Path:
         """Published trial directory (no suffix)."""
-        return self.subject_directory / self._resolved_leaf_name
+        return self.subject_directory / self._trial_leaf_name
 
     @property
     def exo_directory(self) -> Path:
