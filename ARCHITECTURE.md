@@ -654,6 +654,10 @@ Exo Data Studio 中的本地管理界面至少支持：
 7. 通过 SSH 在远端计算 SHA-256；
 8. 校验一致后将本地状态标记为“远端已验证”。
 
+逐文件远端校验全部成功后，transfer-worker 原子更新远端
+`data/.exo/exo_sync_index.json`，并同步更新本地
+`data/.exo/exo_sync_cache.json`。两者记录 Trial 相对路径、UUID、文件数和由完整文件清单生成的包指纹。Data Studio 的常规“同步云端状态”只读取远端索引并与本地缓存比较，不重复通过网络读取大型原始 Artifact；需要重新建立可信状态时，通过“上传所选”执行一次完整逐文件校验并补建索引。
+
 Data Studio 将上传批次交给独立 `transfer-worker`。推荐使用 `paramiko` 建立 SSH 会话，并使用 `scp.SCPClient` 执行 SCP，这样 Windows GUI 可以支持账号密码认证。密码认证为默认方式；操作者勾选“记住密码”时，只允许交由当前 Windows 用户的凭据管理器加密保存，不得写入 JSON、日志、SQLite、Manifest 或命令行参数。也应支持 SSH 私钥认证，私钥口令默认不持久化。
 
 ### 14.2 远端目录规范

@@ -9,6 +9,7 @@ from uuid import uuid4
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
 from exo_collection.apps.data_studio import DataStudioWindow, load_catalog_snapshot
@@ -37,6 +38,7 @@ from exo_collection.storage.manifest import (
     TrialTiming,
     save_manifest,
 )
+from exo_collection.configuration import SharedAppSettings
 
 
 def _make_manifest(*, condition_code: str = "WALK_LEVEL") -> TrialManifest:
@@ -180,6 +182,36 @@ def test_upload_scope_accepts_parent_levels_and_remote_status_colors_trials(
     assert "已上传" in colored.text(2)
     window.close()
     app.processEvents()
+
+
+def test_saved_password_builds_direct_remote_request_without_dialog(
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
+    settings = SharedAppSettings(
+        QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    )
+    settings.set_upload_endpoint(
+        {
+            "host": "server.internal",
+            "port": 22,
+            "username": "researcher",
+            "remote_workdir": "/srv/data",
+            "authentication": "PASSWORD",
+            "remember_password": True,
+        }
+    )
+    monkeypatch.setattr(window_module, "load_password", lambda *_args: "saved-secret")  # type: ignore[attr-defined]
+    window = DataStudioWindow(tmp_path, settings=settings, autostart_refresh=False)
+    manifest = (tmp_path / "T/001/WALK/session1/.exo/manifest.json").resolve()
+
+    request = window._saved_remote_request((manifest,), status_only=True)
+
+    assert request is not None
+    assert request.password == "saved-secret"
+    assert request.operation.value == "SYNC_REMOTE_STATUS"
+    assert window.quick_upload_button.text() == "上传所选"
+    window.close()
 
 
 def test_snapshot_scans_only_published_manifests_and_never_artifacts(

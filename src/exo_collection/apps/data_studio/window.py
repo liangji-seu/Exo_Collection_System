@@ -76,12 +76,15 @@ from .process_workers import DataStudioProcessWorker, ProcessOperation
 from .quality_reviews import append_quality_review
 from .recovery_dialog import RecoveryDialog
 from .service import DataStudioSnapshot
+from .credential_store import load_password
 from .upload import (
     BatchOfflineUploadResult,
     HostKeyInfo,
     OfflineUploadResult,
+    OfflineUploadRequest,
     RemoteStatusSyncResult,
     RemoteTrialStatus,
+    UploadOperation,
     UploadWorkerEventType,
     UploadWorkerHandle,
 )
@@ -297,10 +300,18 @@ class DataStudioWindow(QMainWindow):
         self.refresh_button = QPushButton("刷新 Catalog")
         self.refresh_button.clicked.connect(self.refresh_catalog)
         root_row.addWidget(self.refresh_button)
+        self.quick_upload_button = QPushButton("上传所选")
+        self.quick_upload_button.setObjectName("quick_upload_selected")
+        self.quick_upload_button.clicked.connect(self.upload_selected_trial)
+        root_row.addWidget(self.quick_upload_button)
         self.remote_sync_button = QPushButton("同步云端状态")
         self.remote_sync_button.setObjectName("sync_remote_status")
         self.remote_sync_button.clicked.connect(self.sync_remote_status)
         root_row.addWidget(self.remote_sync_button)
+        self.remote_settings_button = QPushButton("SSH/SCP 设置…")
+        self.remote_settings_button.setObjectName("configure_remote_upload")
+        self.remote_settings_button.clicked.connect(self.configure_remote_upload)
+        root_row.addWidget(self.remote_settings_button)
         outer.addLayout(root_row)
 
         self.remote_status_legend = QLabel(
@@ -1404,6 +1415,16 @@ class DataStudioWindow(QMainWindow):
         self._start_remote_operation(manifest_paths, status_only=False)
 
     @Slot()
+    def configure_remote_upload(self) -> None:
+        """Open endpoint settings explicitly, then upload the selected scope."""
+
+        manifest_paths = self._selected_finalized_manifest_paths()
+        if manifest_paths:
+            self._start_remote_operation(
+                manifest_paths, status_only=False, force_dialog=True
+            )
+
+    @Slot()
     def sync_remote_status(self) -> None:
         """Read-only compare every local finalized Trial with remote data/."""
 
@@ -1420,28 +1441,81 @@ class DataStudioWindow(QMainWindow):
             return
         self._start_remote_operation(manifest_paths, status_only=True)
 
-    def _start_remote_operation(
+    def _saved_remote_request(
         self, manifest_paths: tuple[Path, ...], *, status_only: bool
+    ) -> OfflineUploadRequest | None:
+        endpoint = self._settings.upload_endpoint
+        host = str(endpoint.get("host", "")).strip()
+        username = str(endpoint.get("username", "")).strip()
+        remote_workdir = str(endpoint.get("remote_workdir", "")).strip()
+        if not host or not username or not remote_workdir:
+            return None
+        authentication = str(endpoint.get("authentication", "PASSWORD"))
+        password: str | None = None
+        private_key_path: Path | None = None
+        if authentication == "PRIVATE_KEY":
+            raw_key = str(endpoint.get("private_key_path", "")).strip()
+            if not raw_key:
+                return None
+            private_key_path = Path(raw_key)
+        else:
+            try:
+                password = load_password(host, int(endpoint.get("port", 22)), username)
+            except RuntimeError as exc:
+                QMessageBox.warning(self, "无法读取已保存密码", str(exc))
+                return None
+            if not password:
+                return None
+        try:
+            return OfflineUploadRequest(
+                dataset_root=self._data_root,
+                manifest_path=manifest_paths[0],
+                additional_manifest_paths=manifest_paths[1:],
+                operation=(
+                    UploadOperation.SYNC_REMOTE_STATUS
+                    if status_only
+                    else UploadOperation.UPLOAD
+                ),
+                host=host,
+                port=int(endpoint.get("port", 22)),
+                username=username,
+                remote_workdir=remote_workdir,
+                password=password,
+                private_key_path=private_key_path,
+            )
+        except (TypeError, ValueError):
+            return None
+
+    def _start_remote_operation(
+        self,
+        manifest_paths: tuple[Path, ...],
+        *,
+        status_only: bool,
+        force_dialog: bool = False,
     ) -> None:
         """Collect ephemeral credentials and start one isolated remote worker."""
 
-        dialog = OfflineUploadDialog(
-            manifest_paths,
-            self,
-            status_only=status_only,
-            settings=self._settings,
+        request = None if force_dialog else self._saved_remote_request(
+            manifest_paths, status_only=status_only
         )
-        while dialog.exec() == QDialog.DialogCode.Accepted:
-            try:
-                request = dialog.take_request(self._data_root)
-            except (TypeError, ValueError) as exc:
-                QMessageBox.warning(self, "远程连接参数无效", str(exc))
-                continue
-            break
-        else:
+        if request is None:
+            dialog = OfflineUploadDialog(
+                manifest_paths,
+                self,
+                status_only=status_only,
+                settings=self._settings,
+            )
+            while dialog.exec() == QDialog.DialogCode.Accepted:
+                try:
+                    request = dialog.take_request(self._data_root)
+                except (TypeError, ValueError, RuntimeError) as exc:
+                    QMessageBox.warning(self, "远程连接参数无效", str(exc))
+                    continue
+                break
+            else:
+                dialog.deleteLater()
+                return
             dialog.deleteLater()
-            return
-        dialog.deleteLater()
 
         # Re-check immediately before process creation; selection and dialog
         # entry may have taken long enough for Collector to become active.
@@ -1875,7 +1949,13 @@ class DataStudioWindow(QMainWindow):
         )
         self.browse_button.setEnabled(root_controls_enabled)
         self.refresh_button.setEnabled(root_controls_enabled)
+        self.quick_upload_button.setEnabled(
+            root_controls_enabled and not self._lightweight_mode and bool(self._catalog_tree)
+        )
         self.remote_sync_button.setEnabled(
+            root_controls_enabled and not self._lightweight_mode and bool(self._catalog_tree)
+        )
+        self.remote_settings_button.setEnabled(
             root_controls_enabled and not self._lightweight_mode and bool(self._catalog_tree)
         )
 

@@ -23,6 +23,11 @@ from exo_collection.apps.data_studio.upload import (
     UploadError,
     UploadWorkerHandle,
     UploadWorkerEventType,
+    REMOTE_SYNC_INDEX_RELATIVE_PATH,
+    REMOTE_SYNC_INDEX_SCHEMA,
+    _package_fingerprint,
+    _remote_index_key,
+    _update_local_sync_cache,
     _remote_join,
     build_remote_trial_directory,
     build_upload_plan,
@@ -159,6 +164,9 @@ class _FakeRemoteSession:
             payload += b"corrupt"
         return hashlib.sha256(payload).hexdigest()
 
+    def read_bytes(self, remote_path: str) -> bytes:
+        return self.files[remote_path]
+
     def rename(self, source: str, destination: str) -> None:
         if source in self.files:
             assert destination not in self.files
@@ -187,6 +195,10 @@ class _FakeRemoteSession:
             if not (path == source or path.startswith(source + "/"))
         }
         self.directories.update(moved_directories)
+
+    def replace_file(self, source: str, destination: str) -> None:
+        self.files.pop(destination, None)
+        self.rename(source, destination)
 
     def remove_file(self, remote_path: str) -> None:
         self.files.pop(remote_path, None)
@@ -232,6 +244,7 @@ def test_upload_uses_manifest_hierarchy_verifies_every_file_and_writes_safe_audi
     assert all(".partial-" not in path for path in session.directories)
     assert f"{expected}/manifest.json" in session.files
     assert f"{expected}/raw/imu.h5" in session.files
+    assert "/srv/exo-data/.exo/exo_sync_index.json" in session.files
 
     audit_text = result.audit_record_path.read_text(encoding="utf-8")
     audit = json.loads(audit_text)
@@ -303,23 +316,41 @@ def test_remote_status_scan_distinguishes_uploaded_missing_partial_and_conflict(
         for plan in plans
     ]
 
-    # Trial 1 is an exact mirror.
-    session.ensure_directory(remote_dirs[0])
-    for item in plans[0].files:
-        session.files[f"{remote_dirs[0]}/{item.relative_path.as_posix()}"] = (
-            item.local_path.read_bytes()
-        )
-    # Trial 2 is absent. Trial 3 has only one file. Trial 4 has conflicting bytes.
+    # Trial 1 has a matching index entry. Trial 2 is absent. Trial 3 is legacy
+    # remote data without an index entry. Trial 4 has a conflicting index entry.
     session.ensure_directory(remote_dirs[2])
-    partial_item = plans[2].files[0]
-    session.files[f"{remote_dirs[2]}/{partial_item.relative_path.as_posix()}"] = (
-        partial_item.local_path.read_bytes()
-    )
-    session.ensure_directory(remote_dirs[3])
-    for item in plans[3].files:
-        session.files[f"{remote_dirs[3]}/{item.relative_path.as_posix()}"] = (
-            b"different" if item is plans[3].files[0] else item.local_path.read_bytes()
+    index_path = "/srv/exo-data/" + REMOTE_SYNC_INDEX_RELATIVE_PATH.as_posix()
+    session.ensure_directory(str(PurePosixPath(index_path).parent))
+    session.files[index_path] = json.dumps(
+        {
+            "schema": REMOTE_SYNC_INDEX_SCHEMA,
+            "trials": {
+                _remote_index_key(plans[0], tmp_path): {
+                    "trial_uuid": str(plans[0].trial_uuid),
+                    "package_fingerprint": _package_fingerprint(plans[0]),
+                    "file_count": len(plans[0].files),
+                },
+                _remote_index_key(plans[3], tmp_path): {
+                    "trial_uuid": str(plans[3].trial_uuid),
+                    "package_fingerprint": "0" * 64,
+                    "file_count": len(plans[3].files),
+                },
+            },
+        }
+    ).encode("utf-8")
+    for plan in (plans[0], plans[3]):
+        _update_local_sync_cache(
+            request,
+            plan,
+            {
+                "trial_uuid": str(plan.trial_uuid),
+                "package_fingerprint": _package_fingerprint(plan),
+                "file_count": len(plan.files),
+            },
         )
+    session.remote_sha256 = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("fast status sync must not hash remote Trial payloads")
+    )
 
     result = RemoteDatasetStatusScanner(lambda _request: session).scan(request)
 

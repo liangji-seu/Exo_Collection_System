@@ -20,6 +20,7 @@ import os
 import re
 import stat
 import sys
+import tempfile
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
@@ -41,6 +42,10 @@ from exo_collection.storage.manifest import TrialManifest, load_manifest
 _COPY_BUFFER_SIZE = 1024 * 1024
 _SAFE_REMOTE_SEGMENT = re.compile(r"^[A-Za-z0-9._-]+$")
 UPLOAD_AUDIT_DIRECTORY = ".upload-audit"
+REMOTE_SYNC_INDEX_RELATIVE_PATH = PurePosixPath(".exo/exo_sync_index.json")
+REMOTE_SYNC_INDEX_SCHEMA = "exo.remote-sync-index/v1"
+LOCAL_SYNC_CACHE_FILENAME = "exo_sync_cache.json"
+LOCAL_SYNC_CACHE_SCHEMA = "exo.local-sync-cache/v1"
 
 
 def _is_safe_remote_segment(value: str) -> bool:
@@ -306,7 +311,11 @@ class RemoteUploadSession(Protocol):
         progress: UploadByteProgress | None = None,
     ) -> str: ...
 
+    def read_bytes(self, remote_path: str) -> bytes: ...
+
     def rename(self, source: str, destination: str) -> None: ...
+
+    def replace_file(self, source: str, destination: str) -> None: ...
 
     def remove_file(self, remote_path: str) -> None: ...
 
@@ -492,6 +501,163 @@ def build_remote_trial_directory(
         validate_remote_directory(remote_workdir),
         *relative.parts,
     )
+
+
+def _package_fingerprint(plan: TrialUploadPlan) -> str:
+    """Fingerprint the complete immutable package from its verified file list."""
+
+    digest = hashlib.sha256()
+    for item in sorted(plan.files, key=lambda value: value.relative_path.as_posix()):
+        digest.update(item.relative_path.as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(str(item.size_bytes).encode("ascii"))
+        digest.update(b"\0")
+        digest.update(item.sha256.encode("ascii"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def _remote_index_key(plan: TrialUploadPlan, dataset_root: Path) -> str:
+    return plan.trial_directory.relative_to(dataset_root).as_posix()
+
+
+def _endpoint_cache_key(request: OfflineUploadRequest) -> str:
+    identity = (
+        f"{request.host.casefold()}:{request.port}:{request.username}:"
+        f"{request.remote_workdir}"
+    )
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _local_sync_cache_path(dataset_root: Path) -> Path:
+    return dataset_root / ".exo" / LOCAL_SYNC_CACHE_FILENAME
+
+
+def _read_local_sync_cache(request: OfflineUploadRequest) -> dict[str, dict[str, Any]]:
+    path = _local_sync_cache_path(request.dataset_root)
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict) or payload.get("schema") != LOCAL_SYNC_CACHE_SCHEMA:
+        return {}
+    endpoints = payload.get("endpoints", {})
+    endpoint = endpoints.get(_endpoint_cache_key(request), {}) if isinstance(endpoints, dict) else {}
+    trials = endpoint.get("trials", {}) if isinstance(endpoint, dict) else {}
+    return {
+        str(key): dict(value)
+        for key, value in trials.items()
+        if isinstance(key, str) and isinstance(value, dict)
+    } if isinstance(trials, dict) else {}
+
+
+def _update_local_sync_cache(
+    request: OfflineUploadRequest, plan: TrialUploadPlan, entry: dict[str, Any]
+) -> None:
+    path = _local_sync_cache_path(request.dataset_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+        payload = {}
+    if not isinstance(payload, dict) or payload.get("schema") != LOCAL_SYNC_CACHE_SCHEMA:
+        payload = {"schema": LOCAL_SYNC_CACHE_SCHEMA, "endpoints": {}}
+    endpoints = payload.setdefault("endpoints", {})
+    if not isinstance(endpoints, dict):
+        endpoints = {}
+        payload["endpoints"] = endpoints
+    endpoint = endpoints.setdefault(_endpoint_cache_key(request), {"trials": {}})
+    if not isinstance(endpoint, dict):
+        endpoint = {"trials": {}}
+        endpoints[_endpoint_cache_key(request)] = endpoint
+    trials = endpoint.setdefault("trials", {})
+    if not isinstance(trials, dict):
+        trials = {}
+        endpoint["trials"] = trials
+    trials[_remote_index_key(plan, request.dataset_root)] = dict(entry)
+    payload["updated_at_utc_ns"] = time.time_ns()
+    temporary = path.with_name(f".{path.name}.partial-{uuid4().hex}")
+    try:
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _read_remote_sync_index(
+    session: RemoteUploadSession, remote_workdir: str
+) -> tuple[str, dict[str, dict[str, Any]]]:
+    remote_path = _remote_join(
+        remote_workdir, *REMOTE_SYNC_INDEX_RELATIVE_PATH.parts
+    )
+    if not session.exists(remote_path):
+        return remote_path, {}
+    try:
+        payload = json.loads(session.read_bytes(remote_path).decode("utf-8"))
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        raise UploadError(
+            "REMOTE_INDEX_INVALID",
+            "云端 data/.exo/exo_sync_index.json 无法解析，请检查服务器文件。",
+        ) from exc
+    if not isinstance(payload, dict) or payload.get("schema") != REMOTE_SYNC_INDEX_SCHEMA:
+        raise UploadError("REMOTE_INDEX_INVALID", "云端同步索引版本无效。")
+    entries = payload.get("trials", {})
+    if not isinstance(entries, dict):
+        raise UploadError("REMOTE_INDEX_INVALID", "云端同步索引 trials 字段无效。")
+    return remote_path, {
+        str(key): dict(value)
+        for key, value in entries.items()
+        if isinstance(key, str) and isinstance(value, dict)
+    }
+
+
+def _update_remote_sync_index(
+    session: RemoteUploadSession,
+    request: OfflineUploadRequest,
+    plan: TrialUploadPlan,
+) -> None:
+    remote_path, entries = _read_remote_sync_index(session, request.remote_workdir)
+    key = _remote_index_key(plan, request.dataset_root)
+    entry = {
+        "trial_uuid": str(plan.trial_uuid),
+        "package_fingerprint": _package_fingerprint(plan),
+        "file_count": len(plan.files),
+        "total_bytes": plan.total_bytes,
+        "verified_at_utc_ns": time.time_ns(),
+    }
+    entries[key] = entry
+    payload = json.dumps(
+        {
+            "schema": REMOTE_SYNC_INDEX_SCHEMA,
+            "updated_at_utc_ns": time.time_ns(),
+            "trials": entries,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8") + b"\n"
+    remote_parent = str(PurePosixPath(remote_path).parent)
+    session.ensure_directory(remote_parent)
+    remote_temporary = f"{remote_path}.partial-{uuid4().hex}"
+    local_temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix="exo-sync-index-", suffix=".json", delete=False) as stream:
+            stream.write(payload)
+            local_temporary = Path(stream.name)
+        session.upload_file(local_temporary, remote_temporary)
+        if session.remote_sha256(remote_temporary) != hashlib.sha256(payload).hexdigest():
+            raise UploadError("REMOTE_INDEX_VERIFY_FAILED", "云端同步索引校验失败。")
+        session.replace_file(remote_temporary, remote_path)
+        _update_local_sync_cache(request, plan, entry)
+    finally:
+        if local_temporary is not None:
+            local_temporary.unlink(missing_ok=True)
+        session.remove_file(remote_temporary)
 
 
 def _write_upload_audit(
@@ -778,8 +944,19 @@ class ParamikoScpSession:
                     progress(transferred_bytes, total_bytes)
         return digest.hexdigest()
 
+    def read_bytes(self, remote_path: str) -> bytes:
+        with self.sftp.open(remote_path, "rb") as stream:
+            return bytes(stream.read())
+
     def rename(self, source: str, destination: str) -> None:
         self.sftp.rename(source, destination)
+
+    def replace_file(self, source: str, destination: str) -> None:
+        try:
+            self.sftp.posix_rename(source, destination)
+        except (AttributeError, OSError):
+            self.remove_file(destination)
+            self.sftp.rename(source, destination)
 
     def remove_file(self, remote_path: str) -> None:
         try:
@@ -876,6 +1053,8 @@ class SshScpTrialUploader:
                     report=report,
                     cancelled=is_cancelled,
                 )
+                report(UploadProgress(UploadPhase.PUBLISHING, "正在更新云端 .exo 同步索引…"))
+                _update_remote_sync_index(session, request, plan)
                 verified_at_utc_ns = time.time_ns()
                 audit_record_path = _write_upload_audit(
                     request,
@@ -1052,6 +1231,8 @@ class SshScpTrialUploader:
             session.rename(remote_staging, remote_final)
             created_directories.clear()
             cleanup_files.clear()
+            report(UploadProgress(UploadPhase.PUBLISHING, "正在更新云端 .exo 同步索引…"))
+            _update_remote_sync_index(session, request, plan)
             verified_at_utc_ns = time.time_ns()
             audit_record_path = _write_upload_audit(
                 request,
@@ -1322,50 +1503,66 @@ class RemoteDatasetStatusScanner:
         session = self._session_factory(request)
         records: list[RemoteTrialStatusRecord] = []
         try:
+            _index_path, remote_entries = _read_remote_sync_index(
+                session, request.remote_workdir
+            )
+            local_entries = _read_local_sync_cache(request)
             total = len(request.manifest_paths)
             for index, manifest_path in enumerate(request.manifest_paths, start=1):
                 if is_cancelled():
                     raise UploadCancelled()
-                plan = build_upload_plan(manifest_path)
-                remote_dir = build_remote_trial_directory(
-                    request.remote_workdir, plan, request.dataset_root
+                manifest = validate_finalized_trial(manifest_path)
+                trial_directory = manifest_path.parent
+                if trial_directory.name == ".exo":
+                    trial_directory = trial_directory.parent
+                try:
+                    index_key = trial_directory.relative_to(
+                        request.dataset_root
+                    ).as_posix()
+                except ValueError as exc:
+                    raise UploadError(
+                        "TRIAL_OUTSIDE_DATA_ROOT",
+                        "Manifest 不在当前 data 根目录内。",
+                    ) from exc
+                remote_dir = _remote_join(
+                    request.remote_workdir, *PurePosixPath(index_key).parts
                 )
                 report(
                     UploadProgress(
                         UploadPhase.VERIFYING,
-                        f"正在核对云端 Trial {index}/{total}：{plan.trial_uuid}",
+                        f"正在核对云端 Trial {index}/{total}：{manifest.trial_uuid}",
                         index - 1,
                         total,
                     )
                 )
-                if not session.exists(remote_dir):
-                    status = RemoteTrialStatus.NOT_UPLOADED
-                    detail = "云端不存在该 Trial 目录"
-                else:
-                    missing: list[str] = []
-                    conflicts: list[str] = []
-                    for item in plan.files:
-                        if is_cancelled():
-                            raise UploadCancelled()
-                        remote_file = _remote_join(remote_dir, *item.relative_path.parts)
-                        if not session.exists(remote_file):
-                            missing.append(item.relative_path.as_posix())
-                            continue
-                        if session.remote_sha256(remote_file) != item.sha256:
-                            conflicts.append(item.relative_path.as_posix())
-                    if conflicts:
-                        status = RemoteTrialStatus.CONFLICT
-                        detail = f"{len(conflicts)} 个同路径文件内容冲突"
-                    elif missing:
+                entry = remote_entries.get(index_key)
+                local_entry = local_entries.get(index_key)
+                if entry is None:
+                    if session.exists(remote_dir):
                         status = RemoteTrialStatus.PARTIAL
-                        detail = f"云端缺少 {len(missing)} 个文件"
+                        detail = "云端存在旧数据但尚无 .exo 同步索引；请执行一次上传所选以补建索引"
                     else:
-                        status = RemoteTrialStatus.UPLOADED
-                        detail = "本地全部文件已在云端且 SHA-256 一致"
+                        status = RemoteTrialStatus.NOT_UPLOADED
+                        detail = "云端同步索引中没有该 Trial"
+                elif local_entry is None:
+                    status = RemoteTrialStatus.PARTIAL
+                    detail = "云端已有索引，但本机 .exo 尚无该服务器的验证缓存；请上传所选完成一次校验"
+                elif (
+                    str(entry.get("trial_uuid", "")) == str(manifest.trial_uuid)
+                    and str(entry.get("package_fingerprint", ""))
+                    == str(local_entry.get("package_fingerprint", ""))
+                    and int(entry.get("file_count", -1))
+                    == int(local_entry.get("file_count", -2))
+                ):
+                    status = RemoteTrialStatus.UPLOADED
+                    detail = "云端 .exo 索引中的完整包指纹与本地一致"
+                else:
+                    status = RemoteTrialStatus.CONFLICT
+                    detail = "云端 .exo 索引中的完整包指纹与本地不一致"
                 records.append(
                     RemoteTrialStatusRecord(
                         manifest_path=manifest_path,
-                        trial_uuid=plan.trial_uuid,
+                        trial_uuid=manifest.trial_uuid,
                         remote_trial_directory=remote_dir,
                         status=status,
                         detail=detail,
