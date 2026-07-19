@@ -353,8 +353,8 @@ def test_management_filters_preserve_hierarchy_and_show_annex_integrity(
             if child.data(1, Qt.ItemDataRole.UserRole) == "external_annex":
                 annex_items.append(child)
     assert len(annex_items) == 1
-    assert "完整性 VERIFIED" in annex_items[0].text(2)
-    assert "映射 GOOD" in annex_items[0].text(2)
+    assert "完整性 VERIFIED" in annex_items[0].text(3)
+    assert "映射 GOOD" in annex_items[0].text(3)
     assert annex_items[0].child(0).data(1, Qt.ItemDataRole.UserRole) == "external_artifact"
 
     window.clear_management_filters()
@@ -366,8 +366,8 @@ def test_management_filters_preserve_hierarchy_and_show_annex_integrity(
         for child in (trial.child(index) for index in range(trial.childCount()))
         if child.data(1, Qt.ItemDataRole.UserRole) == "external_annex"
     )
-    assert "完整性 INVALID" in invalid_annex.text(2)
-    assert "SHA-256 mismatch" in invalid_annex.toolTip(2)
+    assert "完整性 INVALID" in invalid_annex.text(3)
+    assert "SHA-256 mismatch" in invalid_annex.toolTip(3)
 
     window.clear_management_filters()
     window.start_date_enabled.setChecked(True)

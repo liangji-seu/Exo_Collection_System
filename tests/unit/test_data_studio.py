@@ -175,11 +175,14 @@ def test_upload_scope_accepts_parent_levels_and_remote_status_colors_trials(
             "uuid": "trial-1",
             "manifest_path": str(first),
             "state": "FINALIZED",
+            "modality_count": 2,
             "children": [],
         }
     )
-    assert colored.foreground(0).color().name() == "#16803c"
-    assert "已上传" in colored.text(2)
+    assert not colored.icon(0).isNull()
+    assert "已上传" in colored.text(3)
+    assert colored.text(2) == "2 个"
+    assert window.tree_widget.itemDelegateForColumn(2) is not None
     window.close()
     app.processEvents()
 

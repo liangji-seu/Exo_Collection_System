@@ -14,8 +14,8 @@ from typing import Any
 
 _log = logging.getLogger(__name__)
 
-from PySide6.QtCore import QDate, QObject, QRunnable, QThreadPool, QTimer, Qt, Signal, Slot
-from PySide6.QtGui import QAction, QBrush, QCloseEvent, QColor
+from PySide6.QtCore import QDate, QModelIndex, QObject, QRect, QRunnable, QSize, QThreadPool, QTimer, Qt, Signal, Slot
+from PySide6.QtGui import QAction, QBrush, QCloseEvent, QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QFileDialog,
     QCheckBox,
@@ -32,6 +32,8 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSplitter,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTableWidget,
     QTableWidgetItem,
     QTreeWidget,
@@ -111,6 +113,49 @@ _MODALITY_LABELS = {
     "encoder": "电机编码器",
     "sync_pulse": "同步脉冲",
 }
+
+
+class _ModalityBadgeDelegate(QStyledItemDelegate):
+    """Paint separated rounded modality-count badges in the Trial tree."""
+
+    def paint(
+        self,
+        painter: QPainter,
+        option: QStyleOptionViewItem,
+        index: QModelIndex,
+    ) -> None:
+        text = str(index.data(Qt.ItemDataRole.DisplayRole) or "")
+        node_type = str(
+            index.siblingAtColumn(1).data(Qt.ItemDataRole.UserRole) or ""
+        )
+        base = QStyleOptionViewItem(option)
+        base.text = ""
+        super().paint(painter, base, index)
+        if node_type != "trial" or not text:
+            return
+        count_text = text.split()[0]
+        try:
+            has_modalities = int(count_text) > 0
+        except ValueError:
+            has_modalities = False
+        width = min(54, max(42, option.rect.width() - 12))
+        height = min(18, max(12, option.rect.height() - 6))
+        badge = QRect(option.rect)
+        badge.setLeft(option.rect.center().x() - width // 2)
+        badge.setWidth(width)
+        badge.setTop(option.rect.center().y() - height // 2)
+        badge.setHeight(height)
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#2f6fed" if has_modalities else "#d7dde7"))
+        painter.drawRoundedRect(badge, 7, 7)
+        painter.setPen(QColor("#ffffff" if has_modalities else "#52606d"))
+        font = painter.font()
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, text)
+        painter.restore()
 
 
 class _LocalToolSignals(QObject):
@@ -315,8 +360,8 @@ class DataStudioWindow(QMainWindow):
         outer.addLayout(root_row)
 
         self.remote_status_legend = QLabel(
-            "云端状态：● 绿色 已上传   ● 红色 未上传   ● 橙色 部分缺失   "
-            "● 紫色 内容冲突   ● 灰色 尚未同步"
+            "Trial 状态灯：● 绿色 已上传   ● 灰色 未上传/尚未同步   "
+            "● 橙色 索引待补建   ● 紫色 内容冲突   ·   蓝色徽标表示模态数量"
         )
         self.remote_status_legend.setStyleSheet("QLabel { color: #46566b; }")
         outer.addWidget(self.remote_status_legend)
@@ -423,12 +468,20 @@ class DataStudioWindow(QMainWindow):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         self.tree_widget = QTreeWidget()
         self.tree_widget.setObjectName("catalog_tree")
-        self.tree_widget.setHeaderLabels(["名称", "类型", "详情"])
+        self.tree_widget.setHeaderLabels(["名称", "类型", "模态", "详情"])
+        self.tree_widget.setIconSize(QSize(16, 16))
+        self.tree_widget.setItemDelegateForColumn(
+            2, _ModalityBadgeDelegate(self.tree_widget)
+        )
         self.tree_widget.setAlternatingRowColors(True)
         self.tree_widget.setUniformRowHeights(True)
+        self.tree_widget.setStyleSheet(
+            "QTreeWidget#catalog_tree::item { min-height: 24px; }"
+        )
         self.tree_widget.header().setStretchLastSection(True)
-        self.tree_widget.setColumnWidth(0, 370)
+        self.tree_widget.setColumnWidth(0, 350)
         self.tree_widget.setColumnWidth(1, 90)
+        self.tree_widget.setColumnWidth(2, 70)
         splitter.addWidget(self.tree_widget)
 
         statistics_panel = QGroupBox("基础统计（来自 SQLite Catalog）")
@@ -1979,6 +2032,7 @@ class DataStudioWindow(QMainWindow):
             [
                 str(node.get("label", "")),
                 _TYPE_LABELS.get(node_type, node_type),
+                "",
                 details,
             ]
         )
@@ -1991,6 +2045,9 @@ class DataStudioWindow(QMainWindow):
                 node.get("manifest_path"),
             )
             item.setData(0, Qt.ItemDataRole.UserRole + 2, node.get("state"))
+            modality_count = int(node.get("modality_count") or 0)
+            item.setText(2, f"{modality_count} 个")
+            item.setTextAlignment(2, Qt.AlignmentFlag.AlignCenter)
             raw_manifest = node.get("manifest_path")
             remote_state = (
                 self._remote_status_by_manifest.get(
@@ -1999,25 +2056,26 @@ class DataStudioWindow(QMainWindow):
                 if raw_manifest
                 else None
             )
-            if remote_state is not None:
-                status, remote_detail = remote_state
-                colors = {
-                    RemoteTrialStatus.UPLOADED: "#16803c",
-                    RemoteTrialStatus.NOT_UPLOADED: "#c62828",
-                    RemoteTrialStatus.PARTIAL: "#c26a00",
-                    RemoteTrialStatus.CONFLICT: "#8e245d",
-                }
-                labels = {
-                    RemoteTrialStatus.UPLOADED: "已上传",
-                    RemoteTrialStatus.NOT_UPLOADED: "未上传",
-                    RemoteTrialStatus.PARTIAL: "部分缺失",
-                    RemoteTrialStatus.CONFLICT: "内容冲突",
-                }
-                brush = QBrush(QColor(colors[status]))
-                for column in range(3):
-                    item.setForeground(column, brush)
-                    item.setToolTip(column, f"云端：{labels[status]}\n{remote_detail}")
-                item.setText(2, f"{details} · 云端：{labels[status]}")
+            status = remote_state[0] if remote_state is not None else None
+            remote_detail = remote_state[1] if remote_state is not None else "尚未同步云端状态"
+            colors = {
+                RemoteTrialStatus.UPLOADED: "#20a35a",
+                RemoteTrialStatus.NOT_UPLOADED: "#9aa3ad",
+                RemoteTrialStatus.PARTIAL: "#e39a22",
+                RemoteTrialStatus.CONFLICT: "#8e44ad",
+                None: "#9aa3ad",
+            }
+            labels = {
+                RemoteTrialStatus.UPLOADED: "已上传",
+                RemoteTrialStatus.NOT_UPLOADED: "未上传",
+                RemoteTrialStatus.PARTIAL: "索引待补建",
+                RemoteTrialStatus.CONFLICT: "内容冲突",
+                None: "尚未同步",
+            }
+            item.setIcon(0, self._status_light_icon(colors[status]))
+            for column in (0, 1, 3):
+                item.setToolTip(column, f"云端：{labels[status]}\n{remote_detail}")
+            item.setText(3, f"{details} · 云端：{labels[status]}")
         elif node_type == "external_annex":
             item.setData(
                 0,
@@ -2026,7 +2084,7 @@ class DataStudioWindow(QMainWindow):
             )
         errors = node.get("errors")
         if isinstance(errors, list) and errors:
-            item.setToolTip(2, "\n".join(str(error) for error in errors))
+            item.setToolTip(3, "\n".join(str(error) for error in errors))
         children = node.get("children", [])
         if node_type == "trial":
             children = self._group_trial_artifacts(children)
@@ -2034,6 +2092,18 @@ class DataStudioWindow(QMainWindow):
             if isinstance(child, dict):
                 item.addChild(self._make_tree_item(child))
         return item
+
+    @staticmethod
+    def _status_light_icon(color: str) -> QIcon:
+        pixmap = QPixmap(16, 16)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(QPen(QColor("#5f6b76"), 1))
+        painter.setBrush(QBrush(QColor(color)))
+        painter.drawEllipse(2, 2, 12, 12)
+        painter.end()
+        return QIcon(pixmap)
 
     @staticmethod
     def _group_trial_artifacts(children: object) -> list[dict[str, Any]]:
@@ -2088,8 +2158,7 @@ class DataStudioWindow(QMainWindow):
         if node_type == "trial":
             duration = float(node.get("duration_s") or 0.0)
             quality = node.get("quality_grade") or "-"
-            modality_count = int(node.get("modality_count") or 0)
-            return f"{modality_count} 个模态 | {duration:.2f} s | 质量 {quality}"
+            return f"{duration:.2f} s | 质量 {quality}"
         if node_type in {"modality", "supporting_files"}:
             count = int(node.get("artifact_count") or 0)
             size = int(node.get("size_bytes") or 0)
