@@ -183,6 +183,72 @@ def test_required_modality_absence_is_invalid_and_gap_is_c() -> None:
     assert any(issue.code == "SEQUENCE_CONTINUITY" for issue in discontinuous.issues)
 
 
+def test_optional_sync_does_not_hide_modality_loss() -> None:
+    optional_sync = evaluate_trial_quality(
+        clean_evidence(
+            sync_edges=(),
+            first_trigger_host_monotonic_ns=None,
+            synchronization_required=False,
+            clock_mappings=(),
+        ),
+        load_quality_rules(),
+    )
+
+    assert optional_sync.grade is QualityGrade.A
+    assert not optional_sync.issues
+    optional_codes = {
+        result.code
+        for result in optional_sync.results
+        if result.status is RuleStatus.UNASSESSED
+    }
+    assert {
+        "SYNC_RISING_EDGE_COUNT",
+        "FIRST_SYNC_TRIGGER",
+        "SYNC_COMPLETE_PULSE_COUNT",
+        "SYNC_PULSE_WIDTH",
+        "SYNC_PULSE_INTERVAL",
+        "CLOCK_MAPPING_ANCHORS",
+        "CLOCK_MAPPING_RESIDUAL",
+    } <= optional_codes
+
+    optional_rising_only = evaluate_trial_quality(
+        clean_evidence(
+            sync_edges=(
+                SyncEdgeEvidence(
+                    pulse_id="optional-pulse",
+                    edge_type="rising",
+                    host_monotonic_ns=100,
+                ),
+            ),
+            first_trigger_host_monotonic_ns=100,
+            synchronization_required=False,
+            clock_mappings=(),
+        ),
+        load_quality_rules(),
+    )
+    assert optional_rising_only.grade is QualityGrade.A
+    assert not optional_rising_only.issues
+
+    counts = dict(clean_evidence().formal_item_counts)
+    counts["imu"] = 0
+    missing_modality = evaluate_trial_quality(
+        clean_evidence(
+            formal_item_counts=counts,
+            sync_edges=(),
+            first_trigger_host_monotonic_ns=None,
+            synchronization_required=False,
+            clock_mappings=(),
+        ),
+        load_quality_rules(),
+    )
+
+    assert missing_modality.grade is QualityGrade.INVALID
+    assert any(
+        issue.code == "REQUIRED_MODALITY_FORMAL_DATA" and issue.modality == "imu"
+        for issue in missing_modality.issues
+    )
+
+
 def test_nonfinite_constant_and_all_zero_rules_are_not_silent_a() -> None:
     signals = dict(clean_evidence().signals)
     signals["imu"] = SignalEvidence(

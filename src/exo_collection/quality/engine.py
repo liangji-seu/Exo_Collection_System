@@ -104,6 +104,7 @@ class TrialQualityEvidence(QualityEvidenceModel):
     dropped_batch_counts: dict[str, int]
     sync_edges: tuple[SyncEdgeEvidence, ...]
     first_trigger_host_monotonic_ns: int | None = Field(default=None, ge=0)
+    synchronization_required: bool = True
     clock_mappings: tuple[ClockMappingEvidence, ...]
     ultrasound: UltrasoundEvidence
     signals: dict[str, SignalEvidence]
@@ -545,61 +546,91 @@ def evaluate_trial_quality(
 
     rising = [edge for edge in evidence.sync_edges if edge.edge_type == "rising"]
     falling = [edge for edge in evidence.sync_edges if edge.edge_type == "falling"]
-    results.append(
-        _result(
-            "SYNC_RISING_EDGE_COUNT",
-            RuleStatus.PASS
-            if len(rising) >= rules.sync.minimum_rising_edges
-            else RuleStatus.FAIL,
-            "sync",
-            f"detected {len(rising)} qualified rising synchronization edges",
-            modality="sync_pulse",
-            metric="rising_edge_count",
-            observed_value=len(rising),
-            threshold=rules.sync.minimum_rising_edges,
-            required_for_grade_a=True,
+    if evidence.synchronization_required:
+        results.append(
+            _result(
+                "SYNC_RISING_EDGE_COUNT",
+                RuleStatus.PASS
+                if len(rising) >= rules.sync.minimum_rising_edges
+                else RuleStatus.FAIL,
+                "sync",
+                f"detected {len(rising)} qualified rising synchronization edges",
+                modality="sync_pulse",
+                metric="rising_edge_count",
+                observed_value=len(rising),
+                threshold=rules.sync.minimum_rising_edges,
+                required_for_grade_a=True,
+            )
         )
-    )
-    results.append(
-        _result(
-            "FIRST_SYNC_TRIGGER",
-            RuleStatus.PASS
-            if evidence.first_trigger_host_monotonic_ns is not None
-            else RuleStatus.FAIL,
-            "sync",
-            "the first qualified rising edge established formal t0"
-            if evidence.first_trigger_host_monotonic_ns is not None
-            else "no qualified rising edge established formal t0",
-            modality="sync_pulse",
-            metric="first_trigger_host_monotonic_ns",
-            observed_value=evidence.first_trigger_host_monotonic_ns,
-            threshold="required",
-            required_for_grade_a=True,
+        results.append(
+            _result(
+                "FIRST_SYNC_TRIGGER",
+                RuleStatus.PASS
+                if evidence.first_trigger_host_monotonic_ns is not None
+                else RuleStatus.FAIL,
+                "sync",
+                "the first qualified rising edge established formal t0"
+                if evidence.first_trigger_host_monotonic_ns is not None
+                else "no qualified rising edge established formal t0",
+                modality="sync_pulse",
+                metric="first_trigger_host_monotonic_ns",
+                observed_value=evidence.first_trigger_host_monotonic_ns,
+                threshold="required",
+                required_for_grade_a=True,
+            )
         )
-    )
-    results.append(
-        _result(
-            "SYNC_COMPLETE_PULSE_COUNT",
-            RuleStatus.PASS
-            if len(falling) >= rules.sync.minimum_complete_pulses
-            else RuleStatus.FAIL,
-            "sync",
-            f"detected {len(falling)} complete synchronization pulses",
-            modality="sync_pulse",
-            metric="complete_pulse_count",
-            observed_value=len(falling),
-            threshold=rules.sync.minimum_complete_pulses,
-            required_for_grade_a=True,
+        results.append(
+            _result(
+                "SYNC_COMPLETE_PULSE_COUNT",
+                RuleStatus.PASS
+                if len(falling) >= rules.sync.minimum_complete_pulses
+                else RuleStatus.FAIL,
+                "sync",
+                f"detected {len(falling)} complete synchronization pulses",
+                modality="sync_pulse",
+                metric="complete_pulse_count",
+                observed_value=len(falling),
+                threshold=rules.sync.minimum_complete_pulses,
+                required_for_grade_a=True,
+            )
         )
-    )
+    else:
+        for code, metric, observed in (
+            ("SYNC_RISING_EDGE_COUNT", "rising_edge_count", len(rising)),
+            (
+                "FIRST_SYNC_TRIGGER",
+                "first_trigger_host_monotonic_ns",
+                evidence.first_trigger_host_monotonic_ns,
+            ),
+            ("SYNC_COMPLETE_PULSE_COUNT", "complete_pulse_count", len(falling)),
+        ):
+            results.append(
+                _result(
+                    code,
+                    RuleStatus.UNASSESSED,
+                    "sync",
+                    "synchronization is optional for this Trial; no failure was inferred",
+                    modality="sync_pulse",
+                    metric=metric,
+                    observed_value=observed,
+                )
+            )
     widths = [float(edge.pulse_width_ns) for edge in falling if edge.pulse_width_ns is not None]
     results.append(
         _range_result(
             code="SYNC_PULSE_WIDTH",
             scope="sync",
             values=widths,
-            minimum=rules.sync.pulse_width_ns.minimum,
-            maximum=rules.sync.pulse_width_ns.maximum,
+            minimum=(
+                rules.sync.pulse_width_ns.minimum
+                if evidence.synchronization_required
+                else None
+            ),
+            maximum=(
+                rules.sync.pulse_width_ns.maximum
+                if evidence.synchronization_required
+                else None
+            ),
             metric="pulse_width_ns",
             modality="sync_pulse",
         )
@@ -614,8 +645,16 @@ def evaluate_trial_quality(
             code="SYNC_PULSE_INTERVAL",
             scope="sync",
             values=intervals,
-            minimum=rules.sync.pulse_interval_ns.minimum,
-            maximum=rules.sync.pulse_interval_ns.maximum,
+            minimum=(
+                rules.sync.pulse_interval_ns.minimum
+                if evidence.synchronization_required
+                else None
+            ),
+            maximum=(
+                rules.sync.pulse_interval_ns.maximum
+                if evidence.synchronization_required
+                else None
+            ),
             metric="pulse_interval_ns",
             modality="sync_pulse",
         )
@@ -625,6 +664,32 @@ def evaluate_trial_quality(
     for modality in rules.required_modalities:
         mapping = mapping_by_modality.get(modality)
         anchors = 0 if mapping is None else mapping.anchor_count
+        if not evidence.synchronization_required:
+            results.append(
+                _result(
+                    "CLOCK_MAPPING_ANCHORS",
+                    RuleStatus.UNASSESSED,
+                    "clock",
+                    "synchronization is optional for this Trial; clock mapping was not required",
+                    modality=modality,
+                    metric="anchor_count",
+                    observed_value=anchors,
+                )
+            )
+            results.append(
+                _result(
+                    "CLOCK_MAPPING_RESIDUAL",
+                    RuleStatus.UNASSESSED,
+                    "clock",
+                    "synchronization is optional for this Trial; clock residual was not required",
+                    modality=modality,
+                    metric="rms_residual_ns",
+                    observed_value=(
+                        None if mapping is None else mapping.rms_residual_ns
+                    ),
+                )
+            )
+            continue
         results.append(
             _result(
                 "CLOCK_MAPPING_ANCHORS",

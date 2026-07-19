@@ -1340,7 +1340,7 @@ def test_start_rejects_stale_ready_state_without_live_preview_handle(
     window.close()
 
 
-def test_missing_sync_trigger_is_prominent_and_never_looks_recording(
+def test_optional_missing_sync_is_neutral_and_does_not_prevent_finalization(
     tmp_path: Path,
     caplog,
 ) -> None:
@@ -1370,43 +1370,61 @@ def test_missing_sync_trigger_is_prominent_and_never_looks_recording(
     )
     _wait_until(app, lambda: window.overall_status == "等待同步")
     assert window.overall_status == "等待同步"
-    assert window.sync_status_label.property("indicatorState") == "red"
-    assert "等待同步信号" in window.sync_status_label.toolTip()
-
-    worker.events.extend(
-        [
-            WorkerEvent(
-                event_type=WorkerEventType.SYNC,
-                payload={
-                    "status": "MISSING_TRIGGER",
-                    "quality": "FAIL",
-                    "trigger_count": 0,
-                    "first_trigger_host_monotonic_ns": None,
-                    "trigger_time_utc": None,
-                },
-            ),
-            WorkerEvent(
-                event_type=WorkerEventType.FAILED,
-                message="sync trigger missing before controlled stop",
-            ),
-        ]
-    )
-    worker.finish(1)
-
-    _wait_until(app, lambda: window.worker is None)
-    assert window.overall_status == "失败"
-    assert window.sync_status_label.text() == ""
-    assert window.sync_status_label.property("indicatorState") == "red"
+    assert window.sync_status_label.property("indicatorState") == "yellow"
     assert window.sync_status_label.property("syncReceived") is False
-    assert "未收到合格同步信号" in window.sync_status_label.toolTip()
-    assert "质量：FAIL" in window.sync_status_label.toolTip()
-    alerts = caplog.text
-    assert alerts.count("未检测到合格同步触发") == 1
-    assert "background-color:#EF4444" in window.sync_status_label.styleSheet()
-    assert any(
-        "MISSING_TRIGGER" in text or "FAILED" in text
-        for text in window._timeline_text
+    assert "等待同步信号" in window.sync_status_label.toolTip()
+    assert "background-color:#FBBF24" in window.sync_status_label.styleSheet()
+
+    worker.events.append(
+        WorkerEvent(
+            event_type=WorkerEventType.SYNC,
+            payload={
+                "status": "NOT_RECEIVED",
+                "quality": "OPTIONAL",
+                "trigger_count": 0,
+                "first_trigger_host_monotonic_ns": None,
+                "trigger_time_utc": None,
+            },
+        )
     )
+    _wait_until(
+        app,
+        lambda: window.sync_status_label.property("indicatorState") == "neutral",
+    )
+    assert window.overall_status == "等待同步"
+    assert window.sync_status_label.text() == ""
+    assert window.sync_status_label.property("syncReceived") is False
+    assert "未收到同步信号（可选）" in window.sync_status_label.toolTip()
+    assert "质量：OPTIONAL" in window.sync_status_label.toolTip()
+    assert "background-color:#94A3B8" in window.sync_status_label.styleSheet()
+    assert any("NOT_RECEIVED" in text for text in window._timeline_text)
+
+    manifest_path = tmp_path / "trial-without-sync" / "manifest.json"
+    worker.events.append(
+        WorkerEvent(
+            event_type=WorkerEventType.COMPLETED,
+            message="Trial package finalized without optional sync pulse",
+            payload={
+                "state": "FINALIZED",
+                "manifest_path": str(manifest_path),
+            },
+        )
+    )
+    worker.finish(0)
+    _wait_until(app, lambda: window.worker is None)
+    assert window.overall_status == "可采集"
+    assert worker.closed
+    assert str(manifest_path) in caplog.text
+    assert not any(
+        record.levelno >= logging.WARNING and "同步" in record.getMessage()
+        for record in caplog.records
+    )
+    assert "sync trigger missing" not in caplog.text
+    assert "未检测到合格同步触发" not in caplog.text
+
+    # Device/recording failures remain severe and are covered separately by
+    # test_collector_shows_failed_worker_error_without_blocking_ui; only the
+    # absence of the optional pulse is neutral here.
     window.close()
 
 
@@ -2075,7 +2093,8 @@ def test_health_table_has_four_modalities(tmp_path: Path) -> None:
     for row in range(window.health_table.rowCount()):
         modalities_displayed.add(window.health_table.item(row, 0).text())
     assert modalities_displayed == {"超声", "IMU", "电机编码器", "同步脉冲"}
-    assert window.sync_status_label.property("indicatorState") == "red"
+    assert window.sync_status_label.property("indicatorState") == "yellow"
+    assert "等待同步信号" in window.sync_status_label.toolTip()
     assert window.health_table.cellWidget(window._health_rows["sync_pulse"], 4) is not None
     assert not hasattr(window, "manifest_label")
     assert not hasattr(window, "open_log_dir_button")

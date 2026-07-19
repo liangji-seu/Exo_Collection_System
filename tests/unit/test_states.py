@@ -83,12 +83,12 @@ def test_start_and_stop_failures_reach_legal_failure_states() -> None:
     assert start_failed.state is TrialState.FAILED
     assert start_failed.is_terminal
 
-    missing_trigger = TrialStateMachine(TrialState.WAITING_SYNC)
-    missing_trigger.transition(
+    post_arm_failure = TrialStateMachine(TrialState.WAITING_SYNC)
+    post_arm_failure.transition(
         TrialState.RECOVERABLE,
-        reason="stopped before synchronization trigger",
+        reason="writer failed after devices were armed",
     )
-    assert missing_trigger.state is TrialState.RECOVERABLE
+    assert post_arm_failure.state is TrialState.RECOVERABLE
 
     stop_interrupted = TrialStateMachine(TrialState.STOPPING)
     stop_interrupted.transition(

@@ -123,40 +123,6 @@ class _NeverStop:
         return False
 
 
-class MissingSyncTriggerError(RuntimeError):
-    """A Trial that acquired pre-trigger raw data but never received its t0."""
-
-    def __init__(
-        self,
-        reason: str,
-        recording_directory: Path,
-        *,
-        primary_exception: BaseException | None = None,
-    ) -> None:
-        super().__init__(reason)
-        self.reason = reason
-        self.recording_directory = recording_directory
-        self.primary_exception_type = (
-            None if primary_exception is None else type(primary_exception).__name__
-        )
-        self.primary_exception_message = (
-            None if primary_exception is None else str(primary_exception)
-        )
-
-    def worker_payload(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "failure_code": "MISSING_SYNC_TRIGGER",
-            "state": TrialState.RECOVERABLE.value,
-            "recovery_state": TrialState.RECOVERABLE.value,
-            "sync_status": "MISSING_TRIGGER",
-            "recording_directory": str(self.recording_directory),
-        }
-        if self.primary_exception_type is not None:
-            payload["primary_exception_type"] = self.primary_exception_type
-            payload["primary_exception_message"] = self.primary_exception_message
-        return payload
-
-
 class _JsonlJournal:
     def __init__(self, layout: TrialLayout) -> None:
         self.layout = layout
@@ -766,7 +732,9 @@ def run_trial(
                     "primary_timeline": "host_monotonic_ns",
                     "host_monotonic_api": "time.perf_counter_ns",
                     "utc_role": "audit_only_not_interval_measurement",
-                    "formal_t0": "first_qualified_sync_rising_edge",
+                    "formal_t0": (
+                        "first_qualified_sync_rising_edge_or_recording_gate_start"
+                    ),
                     "pretrigger_raw_data_preserved": True,
                     "per_sample_host_monotonic_timestamps": True,
                     "device_clock_mapping": (
@@ -793,7 +761,15 @@ def run_trial(
             )
 
             started_at_utc: datetime | None = None
-            recording_deadline_ns: int | None = None
+            # Opening the recording gate starts acquisition immediately.  A
+            # later qualified sync edge may refine formal t0, but it must not
+            # gate writing, UI state, or manual stopping.
+            recording_deadline_ns: int | None = (
+                None
+                if request.duration_s is None
+                else start_token.host_monotonic_ns
+                + int(request.duration_s * 1_000_000_000)
+            )
             formal_stop_monotonic_ns: int | None = None
             sync_wait_deadline_ns = (
                 None
@@ -801,6 +777,7 @@ def run_trial(
                 else start_token.host_monotonic_ns
                 + int(request.sync_wait_timeout_s * 1_000_000_000)
             )
+            optional_sync_status_published = False
 
             def sync_payload(status: str, quality: str) -> dict[str, Any]:
                 trigger_time = (
@@ -825,6 +802,10 @@ def run_trial(
                     message="Waiting for synchronization trigger",
                     payload=sync_payload("WAITING_SYNC", "WAITING"),
                 ),
+            )
+            transition(
+                TrialState.RECORDING,
+                "recording gate opened; synchronization is optional alignment metadata",
             )
 
             def accept_raw_event(modality: str, event: Any, now_ns: int) -> None:
@@ -907,10 +888,6 @@ def run_trial(
                                 if request.duration_s is None
                                 else first_trigger_host_monotonic_ns
                                 + int(request.duration_s * 1_000_000_000)
-                            )
-                            transition(
-                                TrialState.RECORDING,
-                                "qualified sync rising edge received; formal Trial t0 established",
                             )
                             trigger_payload = sync_payload("TRIGGERED", "PASS")
                             trigger_payload.update(
@@ -1033,14 +1010,6 @@ def run_trial(
                         stop_reason = "configured post-trigger duration elapsed"
                         formal_stop_monotonic_ns = recording_deadline_ns
                         break
-                    if (
-                        first_trigger_host_monotonic_ns is None
-                        and sync_wait_deadline_ns is not None
-                        and now_ns >= sync_wait_deadline_ns
-                    ):
-                        stop_reason = "synchronization wait timeout elapsed"
-                        formal_stop_monotonic_ns = sync_wait_deadline_ns
-                        break
                 for modality, adapter in adapters.items():
                     for _ in range(32):
                         event = adapter.get_event(timeout=0)
@@ -1048,6 +1017,36 @@ def run_trial(
                             break
                         processed = True
                         accept_raw_event(modality, event, now_ns)
+
+                # Drain events before declaring the optional wait expired.  A
+                # qualified edge timestamped inside the window may already be
+                # queued when this loop first observes the deadline.
+                if (
+                    first_trigger_host_monotonic_ns is None
+                    and sync_wait_deadline_ns is not None
+                    and now_ns >= sync_wait_deadline_ns
+                    and not optional_sync_status_published
+                ):
+                    optional_sync_status_published = True
+                    _publish(
+                        publish,
+                        WorkerEvent(
+                            event_type=WorkerEventType.SYNC,
+                            trial_uuid=str(request.trial_uuid),
+                            modality="sync_pulse",
+                            message=(
+                                "No synchronization pulse received before the "
+                                "optional wait deadline; acquisition continues"
+                            ),
+                            payload={
+                                **sync_payload("NOT_RECEIVED", "OPTIONAL"),
+                                "formal_t0_source": "recording_gate_start",
+                                "formal_start_host_monotonic_ns": (
+                                    start_token.host_monotonic_ns
+                                ),
+                            },
+                        ),
+                    )
 
                 if now_ns - last_health_ns >= 500_000_000:
                     for modality, adapter in adapters.items():
@@ -1103,11 +1102,8 @@ def run_trial(
                 if not processed:
                     time.sleep(0.001)
 
-            stopping_transition_recorded = False
             assert formal_stop_monotonic_ns is not None
-            if first_trigger_host_monotonic_ns is not None:
-                transition(TrialState.STOPPING, stop_reason)
-                stopping_transition_recorded = True
+            transition(TrialState.STOPPING, stop_reason)
             for modality, adapter in adapters.items():
                 stop_reports[modality] = adapter.stop()
             # A stop can race the final produced batch; drain every bounded raw queue.
@@ -1141,52 +1137,43 @@ def run_trial(
                 )
                 raise AdapterError(f"fatal adapter fault after stop: {detail}")
 
-            if first_trigger_host_monotonic_ns is None:
-                failure_reason = (
-                    "No qualified synchronization rising edge was received before "
-                    + stop_reason
+            synchronization_received = first_trigger_host_monotonic_ns is not None
+            formal_start_host_monotonic_ns = (
+                first_trigger_host_monotonic_ns
+                if synchronization_received
+                else start_token.host_monotonic_ns
+            )
+            formal_start_utc_ns = (
+                first_trigger_utc_ns
+                if synchronization_received
+                else start_token.host_utc_ns
+            )
+            assert formal_start_host_monotonic_ns is not None
+            assert formal_start_utc_ns is not None
+            if started_at_utc is None:
+                started_at_utc = datetime.fromtimestamp(
+                    formal_start_utc_ns / 1e9,
+                    timezone.utc,
                 )
-                failure_document = {
-                    "schema_version": "1.0.0",
-                    "trial_uuid": str(request.trial_uuid),
-                    "state": TrialState.RECOVERABLE.value,
-                    "failure_code": "MISSING_SYNC_TRIGGER",
-                    "reason": failure_reason,
-                    "sync": sync_payload("MISSING_TRIGGER", "FAIL"),
-                    "modality_counts": dict(counts),
-                    "pulse_event_count": pulse_event_count,
-                    "stop_reports": {
-                        name: asdict(report) for name, report in stop_reports.items()
-                    },
-                }
+            if not synchronization_received and not optional_sync_status_published:
                 _publish(
                     publish,
                     WorkerEvent(
                         event_type=WorkerEventType.SYNC,
                         trial_uuid=str(request.trial_uuid),
                         modality="sync_pulse",
-                        message=failure_reason,
-                        payload=sync_payload("MISSING_TRIGGER", "FAIL"),
+                        message=(
+                            "No synchronization pulse received; Trial finalized "
+                            "using host recording-gate time"
+                        ),
+                        payload={
+                            **sync_payload("NOT_RECEIVED", "OPTIONAL"),
+                            "formal_t0_source": "recording_gate_start",
+                            "formal_start_host_monotonic_ns": (
+                                formal_start_host_monotonic_ns
+                            ),
+                        },
                     ),
-                )
-                assert journal is not None
-                journal.write("sync_trigger_missing", failure_document)
-                publish_json(layout, "reports/sync_failure.json", failure_document)
-                transition(TrialState.RECOVERABLE, failure_reason)
-                for writer in writers.values():
-                    writer.close()
-                for adapter in adapters.values():
-                    adapter.close()
-                journal.close_incomplete()
-                raise MissingSyncTriggerError(
-                    failure_reason,
-                    layout.recording_directory,
-                )
-
-            if not stopping_transition_recorded:
-                transition(
-                    TrialState.STOPPING,
-                    f"{stop_reason}; sync trigger was accepted during final queue drain",
                 )
 
             transition(TrialState.FINALIZING, "all adapters acknowledged stop")
@@ -1198,18 +1185,15 @@ def run_trial(
                 stopped_utc_ns / 1e9,
                 timezone.utc,
             )
-            assert first_trigger_host_monotonic_ns is not None
-            assert first_trigger_utc_ns is not None
-            assert accepted_trigger is not None
             assert started_at_utc is not None
             formal_duration_s = max(
                 0.0,
-                (stopped_reading_ns - first_trigger_host_monotonic_ns) / 1e9,
+                (stopped_reading_ns - formal_start_host_monotonic_ns) / 1e9,
             )
             pretrigger_duration_s = max(
                 0.0,
                 (
-                    first_trigger_host_monotonic_ns
+                    formal_start_host_monotonic_ns
                     - start_token.host_monotonic_ns
                 )
                 / 1e9,
@@ -1241,7 +1225,7 @@ def run_trial(
             preview_bundle = publish_quality_preview_pngs(
                 layout,
                 preview_history,
-                formal_t0_host_monotonic_ns=first_trigger_host_monotonic_ns,
+                formal_t0_host_monotonic_ns=formal_start_host_monotonic_ns,
                 include_ultrasound="ultrasound" in adapters,
                 include_signals=bool({"imu", "encoder"} & set(adapters)),
             )
@@ -1251,7 +1235,7 @@ def run_trial(
                 formal_item_counts["ultrasound"] = _ultrasound_formal_frame_count(
                     ultrasound_scan.headers,
                     frame_rate_hz=descriptors["ultrasound"].nominal_rate_hz,
-                    formal_start_ns=first_trigger_host_monotonic_ns,
+                    formal_start_ns=formal_start_host_monotonic_ns,
                     formal_stop_ns=stopped_reading_ns,
                 )
             signal_evidence: dict[str, SignalEvidence] = {}
@@ -1261,7 +1245,7 @@ def run_trial(
                     continue
                 scanned_signal = scan_hdf5_signal_evidence(
                     layout.partial_path(f"raw/{modality}.h5"),
-                    formal_start_ns=first_trigger_host_monotonic_ns,
+                    formal_start_ns=formal_start_host_monotonic_ns,
                     formal_stop_ns=stopped_reading_ns,
                 )
                 hdf5_signal_evidence[modality] = scanned_signal
@@ -1293,7 +1277,7 @@ def run_trial(
                 )
                 for event in sync_edge_events
                 if (
-                    event.host_monotonic_ns >= first_trigger_host_monotonic_ns
+                    event.host_monotonic_ns >= formal_start_host_monotonic_ns
                     and event.host_monotonic_ns <= stopped_reading_ns
                 )
             )
@@ -1318,6 +1302,10 @@ def run_trial(
                 dropped_batch_counts=dropped_batch_counts,
                 sync_edges=quality_sync_edges,
                 first_trigger_host_monotonic_ns=first_trigger_host_monotonic_ns,
+                # Synchronization is optional alignment metadata.  Receiving
+                # an edge must not make the quality policy stricter than a
+                # Trial that received no edge at all.
+                synchronization_required=False,
                 clock_mappings=mapping_evidence,
                 ultrasound=UltrasoundEvidence(
                     formal_frame_count=formal_item_counts.get("ultrasound", 0),
@@ -1372,6 +1360,12 @@ def run_trial(
                 "trigger_count": trigger_count,
                 "first_trigger_host_monotonic_ns": first_trigger_host_monotonic_ns,
                 "first_trigger_utc_ns": first_trigger_utc_ns,
+                "formal_start_host_monotonic_ns": formal_start_host_monotonic_ns,
+                "formal_t0_source": (
+                    "sync_rising_edge"
+                    if synchronization_received
+                    else "recording_gate_start"
+                ),
                 "ultrasound_block_count": ultrasound_scan.complete_block_count if ultrasound_scan is not None else 0,
                 "stop_reports": {name: asdict(report) for name, report in stop_reports.items()},
                 "soft_quality_metrics": preview_bundle.soft_metrics,
@@ -1494,19 +1488,39 @@ def run_trial(
                 {
                     "schema_version": "1.0.0",
                     "trial_uuid": str(request.trial_uuid),
-                    "status": "TRIGGERED",
-                    "quality": "PASS",
+                    "status": (
+                        "TRIGGERED" if synchronization_received else "NOT_RECEIVED"
+                    ),
+                    "quality": "PASS" if synchronization_received else "OPTIONAL",
                     "trigger_count": trigger_count,
                     "pulse_event_count": pulse_event_count,
                     "first_trigger_host_monotonic_ns": first_trigger_host_monotonic_ns,
                     "first_trigger_utc_ns": first_trigger_utc_ns,
-                    "first_trigger_time_utc": started_at_utc.isoformat().replace(
-                        "+00:00", "Z"
+                    "first_trigger_time_utc": (
+                        started_at_utc.isoformat().replace("+00:00", "Z")
+                        if synchronization_received
+                        else ""
                     ),
-                    "pulse_id": accepted_trigger.pulse_id,
-                    "source_device": accepted_trigger.source_device,
-                    "confidence": round(accepted_trigger.confidence, 6),
-                    "detection_threshold": accepted_trigger.detection_threshold,
+                    "pulse_id": (
+                        accepted_trigger.pulse_id
+                        if accepted_trigger is not None
+                        else ""
+                    ),
+                    "source_device": (
+                        accepted_trigger.source_device
+                        if accepted_trigger is not None
+                        else ""
+                    ),
+                    "confidence": (
+                        round(accepted_trigger.confidence, 6)
+                        if accepted_trigger is not None
+                        else ""
+                    ),
+                    "detection_threshold": (
+                        accepted_trigger.detection_threshold
+                        if accepted_trigger is not None
+                        else ""
+                    ),
                     "pretrigger_duration_s": round(pretrigger_duration_s, 9),
                     "formal_duration_s": round(formal_duration_s, 9),
                 }
@@ -1544,10 +1558,12 @@ def run_trial(
                         "detection_threshold": edge.detection_threshold,
                         "confidence": edge.confidence,
                         "detector_version": edge.detector_version,
-                        "accepted_as_formal_t0": edge.event_uuid
-                        == accepted_trigger.event_uuid,
+                        "accepted_as_formal_t0": bool(
+                            accepted_trigger is not None
+                            and edge.event_uuid == accepted_trigger.event_uuid
+                        ),
                         "within_formal_window": (
-                            first_trigger_host_monotonic_ns
+                            formal_start_host_monotonic_ns
                             <= edge.host_monotonic_ns
                             <= stopped_reading_ns
                         ),
@@ -1580,7 +1596,16 @@ def run_trial(
             sync_manifest_document = {
                 "schema_version": "1.0.0",
                 "trial_uuid": str(request.trial_uuid),
-                "status": "TRIGGERED",
+                "status": (
+                    "TRIGGERED" if synchronization_received else "NOT_RECEIVED"
+                ),
+                "quality": "PASS" if synchronization_received else "OPTIONAL",
+                "formal_t0_source": (
+                    "sync_rising_edge"
+                    if synchronization_received
+                    else "recording_gate_start"
+                ),
+                "formal_start_host_monotonic_ns": formal_start_host_monotonic_ns,
                 "first_trigger_host_monotonic_ns": first_trigger_host_monotonic_ns,
                 "first_trigger_utc_ns": first_trigger_utc_ns,
                 "formal_stop_host_monotonic_ns": stopped_reading_ns,
@@ -1988,7 +2013,7 @@ def run_trial(
                     started_at_utc=started_at_utc,
                     stopped_at_utc=stopped_at_utc,
                     finalized_at_utc=finalized_at_utc,
-                    start_host_monotonic_ns=first_trigger_host_monotonic_ns,
+                    start_host_monotonic_ns=formal_start_host_monotonic_ns,
                     stop_host_monotonic_ns=stopped_reading_ns,
                     finalize_host_monotonic_ns=finalize_monotonic_ns,
                 ),
@@ -2097,11 +2122,6 @@ def run_trial(
                 quality_grade=grade.value,
             )
     except BaseException as exc:
-        missing_sync_during_failure = (
-            machine.state is TrialState.WAITING_SYNC
-            and first_trigger_host_monotonic_ns is None
-            and not isinstance(exc, MissingSyncTriggerError)
-        )
         failure_target = {
             TrialState.PREPARING: TrialState.FAILED,
             TrialState.READY: TrialState.FAILED,
@@ -2121,71 +2141,7 @@ def run_trial(
             failure_payload["stop_reports"] = {
                 name: asdict(report) for name, report in stop_reports.items()
             }
-        missing_sync_reason: str | None = None
-        if missing_sync_during_failure:
-            missing_sync_reason = (
-                "No qualified synchronization rising edge was established before "
-                f"{type(exc).__name__}: {exc}"
-            )
-            missing_sync_payload = {
-                "status": "MISSING_TRIGGER",
-                "quality": "FAIL",
-                "trigger_count": trigger_count,
-                "first_trigger_host_monotonic_ns": None,
-                "trigger_time_utc": None,
-            }
-            failure_payload.update(
-                {
-                    "failure_code": "MISSING_SYNC_TRIGGER",
-                    "sync_status": "MISSING_TRIGGER",
-                    "sync": missing_sync_payload,
-                }
-            )
-            sync_failure_document = {
-                "schema_version": "1.0.0",
-                **failure_payload,
-                "failure_state": machine.state.value,
-                "state": TrialState.RECOVERABLE.value,
-                "recovery_state": TrialState.RECOVERABLE.value,
-                "reason": missing_sync_reason,
-                "modality_counts": dict(counts),
-                "pulse_event_count": pulse_event_count,
-                "stop_reports": {
-                    name: asdict(report) for name, report in stop_reports.items()
-                },
-            }
-            _publish(
-                publish,
-                WorkerEvent(
-                    event_type=WorkerEventType.SYNC,
-                    trial_uuid=str(request.trial_uuid),
-                    modality="sync_pulse",
-                    message=missing_sync_reason,
-                    payload=missing_sync_payload,
-                ),
-            )
-            if journal is not None and not journal.closed:
-                try:
-                    journal.write("sync_trigger_missing", sync_failure_document)
-                except BaseException:
-                    pass
-            if layout.recording_directory.is_dir():
-                try:
-                    sync_failure_path = layout.path("reports/sync_failure.json")
-                    if not sync_failure_path.exists():
-                        publish_json(
-                            layout,
-                            "reports/sync_failure.json",
-                            sync_failure_document,
-                        )
-                except BaseException:
-                    pass
-
-        if isinstance(exc, MissingSyncTriggerError):
-            # The controlled missing-trigger path already wrote its dedicated
-            # audit report.  Do not mislabel it as a finalization failure.
-            pass
-        elif journal is not None and not journal.closed:
+        if journal is not None and not journal.closed:
             try:
                 journal.write("trial_failure", failure_payload)
             except BaseException:
@@ -2233,12 +2189,6 @@ def run_trial(
                 journal.close_incomplete()
             except BaseException:
                 pass
-        if missing_sync_during_failure and missing_sync_reason is not None:
-            raise MissingSyncTriggerError(
-                missing_sync_reason,
-                layout.recording_directory,
-                primary_exception=exc,
-            ) from exc
         raise
     finally:
         if catalog is not None:
@@ -2264,4 +2214,4 @@ def run_simulated_trial(
     )
 
 
-__all__ = ["MissingSyncTriggerError", "run_simulated_trial", "run_trial"]
+__all__ = ["run_simulated_trial", "run_trial"]

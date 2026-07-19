@@ -30,15 +30,15 @@ python run_data_studio.py
 1. 选择项目 `F — 正式` 或 `T — 测试`（默认为更安全的 `T`），并输入三位受试者编码，例如 `001`。数据分别进入数据根目录下的 `F` 或 `T` 分区，实际关联仍由 UUID + Manifest 确定。
 2. 在“设备连接”中点击蓝色下划线的超声、IMU、电机编码器或同步脉冲名称，分别设置该模态的设备参数；保存后立即写入当前 Windows 用户设置，后续启动自动恢复。随后分别点击各行“连接”，或使用“全部连接”。每个模态收到首批真实帧/样本后才显示 `READY`，并立即驱动右侧对应预览窗口。
 3. 连接/预览阶段不创建 Trial、Manifest、HDF5 或超声二进制原始文件。四个必需模态都 `READY` 后“开始 Trial”才可用；点击后系统会先释放预览进程对设备的独占，再由独立 Collector Worker 开始原始写盘。
-4. Trial Worker 先 arm 设备并显示“等待同步”。首个合格同步脉冲上升沿才建立正式 `t0`，状态随后进入“采集中”。触发前原始数据仍保留供审计。
+4. Trial Worker 打开写盘 gate 后立即进入“采集中”；同步状态独立显示为“等待同步”。若收到合格同步上升沿，则以该边沿建立正式 `t0`；否则以写盘 gate 的主机单调时钟作为 `t0`。同步前原始数据仍保留供审计。
 5. 实验完成时人工点击“受控停止”，无需预先设置采集秒数。Writer 完成 flush、校验和最终化后才会发布 Manifest。
-6. 若停止前从未收到合格触发，系统会显式标记失败，保留 `.recording` 数据和恢复信息，不会把它伪装成正常的已同步 Trial。
+6. 若停止前从未收到合格触发，系统记录 `NOT_RECEIVED / OPTIONAL` 并正常最终化，不产生告警。只有已启用模态断流、设备故障、序列缺口、队列溢出或写盘完整性失败才保留 `.recording` 数据并进入失败/恢复流程。
 
 每个成功 Trial 都会生成 `manifest.json`、`quality_report.json`、`device_status.csv`、`sync_check.csv`、完整边沿/脉宽/间隔/时钟映射审计 `sync_manifest.json`、两张质控预览图和 `warnings.txt`，并纳入 Manifest Artifact 和 SHA-256 校验。实际使用的 `config/quality_rules/default.json` 与 `config/storage.json` 会冻结到 `derived/quality_rules_snapshot.json`；其算法版本和文件 SHA-256 同时写入统计、质量报告、配置快照及 Manifest Artifact。
 
 Collector 和 Data Studio 在项目/安装目录的 `log\` 中为每次启动创建一份独立 UTF-8 系统日志，文件名包含启动时间和进程 PID，例如 `ExoCollector_20260718_130501_123456_pid1234.log`。UI 中的“打开日志目录”可直接定位。单次日志达到 10 MiB 时会滚动；每个 Trial 另有自己的 `logs/trial.jsonl`。常见密码、token、secret 和 key 字段在写入主日志前会被脱敏。
 
-质量等级不会再因为“没有生成异常”就自动成为 A。A 要求所有必需结构规则确实执行并通过，包括正式时间窗内各必需模态存在、sequence/丢批检查、同步触发和时钟映射证据。尚无真实硬件校准依据的超声饱和、IMU/编码器量程与跳变、时钟残差等阈值默认明确记录为 `UNASSESSED`，不会伪造硬件阈值或误报硬失败；取得校准依据后可在质量规则配置中填写阈值及 `calibration_reference`。
+质量等级不会再因为“没有生成异常”就自动成为 A。A 要求所有必需结构规则确实执行并通过，包括正式时间窗内各已启用必需模态存在以及 sequence/丢批检查。同步触发和依赖同步的时钟映射属于可选对齐证据，未收到时明确记录为 `UNASSESSED`，不降低质量等级。尚无真实硬件校准依据的超声饱和、IMU/编码器量程与跳变、时钟残差等阈值也默认记录为 `UNASSESSED`，不会伪造硬件阈值或误报硬失败；取得校准依据后可在质量规则配置中填写阈值及 `calibration_reference`。
 
 ## Data Studio 数据管理流程
 

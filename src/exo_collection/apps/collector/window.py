@@ -875,7 +875,6 @@ class CollectorWindow(QMainWindow):
         self._worker_state = "IDLE"
         self._trial_succeeded = False
         self._recording_branch_fault: str | None = None
-        self._missing_trigger_alerted = False
 
         # Per-modality preview workers
         self._preview_workers: dict[str, ModalityPreviewHandle] = {}
@@ -1823,13 +1822,19 @@ class CollectorWindow(QMainWindow):
     ) -> None:
         """Render the compact table indicator for qualified synchronization."""
         received = status == "TRIGGERED" and quality == "PASS" and trigger_count > 0
-        indicator_state = "green" if received else "red"
-        fill = "#22C55E" if received else "#EF4444"
-        border = "#15803D" if received else "#B91C1C"
+        if received:
+            indicator_state, fill, border = "green", "#22C55E", "#15803D"
+        elif status == "WAITING_SYNC":
+            indicator_state, fill, border = "yellow", "#FBBF24", "#D97706"
+        else:
+            # Synchronization is optional.  Not receiving a pulse is neutral,
+            # not a device or Trial failure.
+            indicator_state, fill, border = "neutral", "#94A3B8", "#64748B"
         status_text = {
             "WAITING_SYNC": "等待同步信号",
             "TRIGGERED": "已收到合格同步信号",
-            "MISSING_TRIGGER": "未收到合格同步信号",
+            "MISSING_TRIGGER": "未收到同步信号（可选）",
+            "NOT_RECEIVED": "未收到同步信号（可选）",
         }.get(status, status)
         self.sync_status_label.setText("")
         self.sync_status_label.setProperty("indicatorState", indicator_state)
@@ -2396,7 +2401,6 @@ class CollectorWindow(QMainWindow):
         # recording is not a device-stream boundary and must be visually
         # imperceptible apart from the Trial state controls.
         self._last_health_status.clear()
-        self._missing_trigger_alerted = False
         self._set_sync_indicator("WAITING_SYNC", "WAITING", 0, "—")
         for row in self._health_rows.values():
             self.health_table.item(row, HEALTH_COLUMN_MODALITY).setToolTip("")
@@ -2643,13 +2647,8 @@ class CollectorWindow(QMainWindow):
         else:
             first_text = "—"
         self._set_sync_indicator(status, quality, trigger_count, first_text)
-        if status == "MISSING_TRIGGER" or quality == "FAIL":
-            if not self._missing_trigger_alerted:
-                message = "严重：未检测到合格同步触发，本 Trial 不得作为已同步采集使用。"
-                self._append_alert(message)
-                self._add_timeline_event(2, message)
-                self._missing_trigger_alerted = True
-            self._set_trial_state("FAILED")
+        # Missing synchronization is deliberately informational.  Acquisition
+        # faults and modality loss still arrive through HEALTH/FAILED events.
         if record_event:
             self._add_timeline_event(1, f"{status} · {quality} · trigger={trigger_count}")
 

@@ -22,10 +22,7 @@ from exo_collection.domain.events import FrameBatch
 from exo_collection.domain.models import ArtifactKind
 from exo_collection.domain.states import TrialState
 from exo_collection.orchestration.models import TrialRunRequest
-from exo_collection.orchestration.simulated import (
-    MissingSyncTriggerError,
-    run_simulated_trial,
-)
+from exo_collection.orchestration.simulated import run_simulated_trial
 from exo_collection.quality import DiskSpaceEvidence, InsufficientDiskSpaceError
 from exo_collection.readers.binary_block import BlockBinaryReader
 from exo_collection.readers.binary_block import scan_binary_file
@@ -323,7 +320,9 @@ def test_simulated_trial_produces_complete_immutable_package(tmp_path) -> None:
                 "device_clock_mapping": (
                     "post_acquisition_affine_mapping_to_host_monotonic"
                 ),
-                "formal_t0": "first_qualified_sync_rising_edge",
+                "formal_t0": (
+                    "first_qualified_sync_rising_edge_or_recording_gate_start"
+                ),
                 "host_monotonic_api": "time.perf_counter_ns",
                 "per_sample_host_monotonic_timestamps": True,
                 "pretrigger_raw_data_preserved": True,
@@ -605,6 +604,19 @@ def test_unbounded_trial_waits_for_sync_then_ends_only_on_manual_stop(tmp_path) 
         "FINALIZING",
         "FINALIZED",
     ]
+    recording_event_index = next(
+        index
+        for index, event in enumerate(events)
+        if event.event_type is WorkerEventType.STATE
+        and event.payload["state"] == "RECORDING"
+    )
+    trigger_event_index = next(
+        index
+        for index, event in enumerate(events)
+        if event.event_type is WorkerEventType.SYNC
+        and event.payload["status"] == "TRIGGERED"
+    )
+    assert recording_event_index < trigger_event_index
     sync_events = [
         event for event in events if event.event_type is WorkerEventType.SYNC
     ]
@@ -670,88 +682,124 @@ def test_stop_immediately_after_trigger_keeps_timing_order_and_marks_zero_window
     assert manifest.quality.algorithm_version == "exo-quality-rules-1.0.0"
 
 
-def test_missing_sync_trigger_is_recoverable_and_never_finalized(tmp_path) -> None:
+def test_missing_sync_is_optional_and_finalizes_from_recording_gate(tmp_path) -> None:
     events = []
     request = TrialRunRequest(
         data_root=tmp_path,
-        duration_s=None,
-        sync_wait_timeout_s=0.15,
+        duration_s=0.15,
+        sync_wait_timeout_s=0.03,
         simulation={"sync_pulse": {"first_pulse_s": 10.0}},
     )
 
-    with pytest.raises(MissingSyncTriggerError, match="No qualified synchronization"):
-        run_simulated_trial(request, publish=events.append)
+    result = run_simulated_trial(request, publish=events.append)
 
-    recordings = list(tmp_path.rglob("*.recording"))
-    assert len(recordings) == 1
-    recording = recordings[0]
-    assert not list(tmp_path.rglob("manifest.json"))
-    assert not any(
-        event.event_type is WorkerEventType.COMPLETED for event in events
-    )
+    assert result.state == "FINALIZED"
+    assert result.first_trigger_host_monotonic_ns is None
+    assert result.trigger_count == 0
+    assert result.duration_s == pytest.approx(0.15, abs=0.02)
+    assert result.quality_grade == "A"
+    assert not list(tmp_path.rglob("*.recording"))
+    manifest = load_manifest(result.manifest_path)
+    assert manifest.state is TrialState.FINALIZED
+    assert manifest.timing.start_host_monotonic_ns < manifest.timing.stop_host_monotonic_ns
     sync_events = [
         event for event in events if event.event_type is WorkerEventType.SYNC
     ]
     assert [event.payload["status"] for event in sync_events] == [
         "WAITING_SYNC",
-        "MISSING_TRIGGER",
+        "NOT_RECEIVED",
     ]
-    assert sync_events[-1].payload == {
-        "status": "MISSING_TRIGGER",
-        "quality": "FAIL",
-        "trigger_count": 0,
-        "first_trigger_host_monotonic_ns": None,
-        "trigger_time_utc": None,
-    }
+    assert sync_events[-1].payload["quality"] == "OPTIONAL"
+    assert sync_events[-1].payload["trigger_count"] == 0
+    assert sync_events[-1].payload["first_trigger_host_monotonic_ns"] is None
+    assert sync_events[-1].payload["formal_t0_source"] == "recording_gate_start"
+    assert (
+        sync_events[-1].payload["formal_start_host_monotonic_ns"]
+        == manifest.timing.start_host_monotonic_ns
+    )
+    recording_event_index = next(
+        index
+        for index, event in enumerate(events)
+        if event.event_type is WorkerEventType.STATE
+        and event.payload["state"] == "RECORDING"
+    )
+    optional_sync_event_index = next(
+        index
+        for index, event in enumerate(events)
+        if event.event_type is WorkerEventType.SYNC
+        and event.payload["status"] == "NOT_RECEIVED"
+    )
+    assert recording_event_index < optional_sync_event_index
     state_sequence = [
         event.payload["state"]
         for event in events
         if event.event_type is WorkerEventType.STATE
     ]
-    assert state_sequence[-2:] == ["WAITING_SYNC", "RECOVERABLE"]
+    assert state_sequence[-3:] == ["STOPPING", "FINALIZING", "FINALIZED"]
+    assert state_sequence.index("RECORDING") < state_sequence.index("STOPPING")
 
     report = json.loads(
-        (recording / "reports/sync_failure.json").read_text(encoding="utf-8")
+        (result.trial_directory / "reports/sync_manifest.json").read_text(
+            encoding="utf-8"
+        )
     )
-    assert report["failure_code"] == "MISSING_SYNC_TRIGGER"
-    assert report["sync"]["trigger_count"] == 0
-    assert report["modality_counts"]["sync_pulse"] > 0
-    with h5py.File(recording / "raw/sync_pulse.h5.partial", "r") as file:
+    assert report["status"] == "NOT_RECEIVED"
+    assert report["quality"] == "OPTIONAL"
+    assert report["trigger_count"] == 0
+    assert report["formal_t0_source"] == "recording_gate_start"
+    assert (
+        report["formal_start_host_monotonic_ns"]
+        == manifest.timing.start_host_monotonic_ns
+    )
+    assert not (result.trial_directory / "reports/sync_failure.json").exists()
+    with h5py.File(result.trial_directory / "raw/sync_pulse.h5", "r") as file:
         assert bool(file.attrs["closed_cleanly"])
         assert file["samples/data"].shape[0] > 0
         assert file["events/records"].shape[0] == 0
     journal_records = [
         json.loads(line)
-        for line in (recording / "logs/trial.jsonl.partial")
+        for line in (result.trial_directory / "logs/trial.jsonl")
         .read_text(encoding="utf-8")
         .splitlines()
     ]
-    assert any(record["event_type"] == "sync_trigger_missing" for record in journal_records)
-    assert any(record.get("to_state") == "RECOVERABLE" for record in journal_records)
-    assert not list((recording / "reports").glob("finalization-failure-*.json"))
+    assert not any(record["event_type"] == "trial_failure" for record in journal_records)
+    assert any(record.get("to_state") == "FINALIZING" for record in journal_records)
 
 
-def test_trigger_after_sync_wait_deadline_is_raw_but_not_accepted(tmp_path) -> None:
+def test_trigger_after_sync_wait_deadline_remains_raw_but_sync_is_optional(
+    tmp_path,
+) -> None:
     request = TrialRunRequest(
         data_root=tmp_path,
-        duration_s=None,
-        sync_wait_timeout_s=0.15,
-        simulation={"sync_pulse": {"first_pulse_s": 0.151}},
+        duration_s=0.15,
+        sync_wait_timeout_s=0.1,
+        simulation={"sync_pulse": {"first_pulse_s": 0.101}},
     )
 
-    with pytest.raises(MissingSyncTriggerError):
-        run_simulated_trial(request)
+    result = run_simulated_trial(request)
 
-    recording = next(tmp_path.rglob("*.recording"))
+    assert result.state == "FINALIZED"
+    assert result.trigger_count == 0
+    assert result.first_trigger_host_monotonic_ns is None
     report = json.loads(
-        (recording / "reports/sync_failure.json").read_text(encoding="utf-8")
+        (result.trial_directory / "reports/sync_manifest.json").read_text(
+            encoding="utf-8"
+        )
     )
-    assert report["sync"]["trigger_count"] == 0
-    assert report["pulse_event_count"] >= 1
-    assert not list(tmp_path.rglob("manifest.json"))
+    statistics = json.loads(
+        (result.trial_directory / "derived/statistics.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert report["status"] == "NOT_RECEIVED"
+    assert report["quality"] == "OPTIONAL"
+    assert report["formal_t0_source"] == "recording_gate_start"
+    assert report["trigger_count"] == 0
+    assert statistics["pulse_event_count"] >= 1
+    assert not (result.trial_directory / "reports/sync_failure.json").exists()
 
 
-def test_device_failure_while_waiting_sync_reports_missing_trigger_and_primary_cause(
+def test_device_failure_while_waiting_sync_still_fails_with_adapter_error(
     tmp_path,
 ) -> None:
     events = []
@@ -766,22 +814,25 @@ def test_device_failure_while_waiting_sync_reports_missing_trigger_and_primary_c
         },
     )
 
-    with pytest.raises(MissingSyncTriggerError) as captured:
+    with pytest.raises(AdapterError, match="injected disconnect"):
         run_simulated_trial(request, publish=events.append)
 
-    assert captured.value.primary_exception_type == "AdapterError"
-    assert any(
-        event.event_type is WorkerEventType.SYNC
-        and event.payload["status"] == "MISSING_TRIGGER"
-        for event in events
-    )
     recording = next(tmp_path.rglob("*.recording"))
-    report = json.loads(
-        (recording / "reports/sync_failure.json").read_text(encoding="utf-8")
+    assert not (recording / "reports/sync_failure.json").exists()
+    journal_records = [
+        json.loads(line)
+        for line in (recording / "logs/trial.jsonl.partial")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    failure = next(
+        record for record in journal_records if record["event_type"] == "trial_failure"
     )
-    assert report["failure_state"] == "WAITING_SYNC"
-    assert report["state"] == "RECOVERABLE"
-    assert report["exception_type"] == "AdapterError"
+    assert failure["state"] == "RECORDING"
+    assert failure["recovery_state"] == "ABORTED"
+    assert failure["exception_type"] == "AdapterError"
+    assert any(record.get("to_state") == "ABORTED" for record in journal_records)
+    assert not list(tmp_path.rglob("manifest.json"))
     assert not list((recording / "reports").glob("finalization-failure-*.json"))
 
 
@@ -789,13 +840,16 @@ def test_adapter_fault_between_health_poll_and_stop_is_never_finalized(
     tmp_path,
 ) -> None:
     # The first periodic health poll is immediate and the next is 0.5 s later.
-    # This injected disconnect occurs at about 0.4 s, just before the formal
-    # stop at about 0.45 s, so the post-stop fault check is the only reliable
+    # This injected disconnect occurs at about 0.15 s, just before the formal
+    # stop at about 0.21 s, so the post-stop fault check is the only reliable
     # place to catch it. These rates are the built-in simulator profile only.
     request = TrialRunRequest(
         data_root=tmp_path,
         duration_s=0.2,
-        simulation={"ultrasound": {"disconnect_after_batches": 8}},
+        simulation={
+            "ultrasound": {"disconnect_after_batches": 3},
+            "sync_pulse": {"first_pulse_s": 0.01},
+        },
     )
 
     with pytest.raises(AdapterError, match="ultrasound"):
@@ -840,10 +894,8 @@ def test_simulated_raw_queue_saturation_is_explicit_and_never_finalized(
     def briefly_slow_append(self, *args, **kwargs):
         nonlocal append_calls, delayed_once
         append_calls += 1
-        # Inject the stall well after the deliberately early sync pulse.  The
-        # former first-append delay raced the WAITING_SYNC transition, making
-        # the same test nondeterministically exercise either missing-trigger
-        # recovery or post-trigger queue-overflow abort semantics.
+        # Inject the stall well after the deliberately early sync pulse so the
+        # test deterministically exercises recording queue-overflow semantics.
         if not delayed_once and append_calls == 10:
             delayed_once = True
             time.sleep(0.3)
@@ -922,12 +974,12 @@ def test_mid_acquisition_disk_write_error_is_explicit_and_leaves_recovery_data(
     assert "disk full" in failure["message"]
 
 
-def test_worker_reports_structured_missing_trigger_failure(tmp_path) -> None:
+def test_worker_completes_without_sync_and_reports_optional_status(tmp_path) -> None:
     worker = CollectorWorker(
         TrialRunRequest(
             data_root=tmp_path,
-            duration_s=None,
-            sync_wait_timeout_s=0.15,
+            duration_s=0.15,
+            sync_wait_timeout_s=0.03,
             simulation={"sync_pulse": {"first_pulse_s": 10.0}},
         )
     )
@@ -936,7 +988,10 @@ def test_worker_reports_structured_missing_trigger_failure(tmp_path) -> None:
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
         events.extend(worker.poll_events(limit=1000))
-        if any(event.event_type is WorkerEventType.FAILED for event in events):
+        if any(
+            event.event_type in {WorkerEventType.COMPLETED, WorkerEventType.FAILED}
+            for event in events
+        ):
             break
         time.sleep(0.02)
     exitcode = worker.join(timeout=10)
@@ -945,15 +1000,25 @@ def test_worker_reports_structured_missing_trigger_failure(tmp_path) -> None:
         failures = [
             event for event in events if event.event_type is WorkerEventType.FAILED
         ]
-        assert exitcode != 0
-        assert len(failures) == 1
-        assert failures[0].payload["failure_code"] == "MISSING_SYNC_TRIGGER"
-        assert failures[0].payload["state"] == "RECOVERABLE"
-        assert failures[0].payload["sync_status"] == "MISSING_TRIGGER"
-        assert Path(failures[0].payload["recording_directory"]).is_dir()
-        assert not any(
-            event.event_type is WorkerEventType.COMPLETED for event in events
+        completed = [
+            event for event in events if event.event_type is WorkerEventType.COMPLETED
+        ]
+        assert exitcode == 0
+        assert not failures
+        assert len(completed) == 1
+        assert completed[0].payload["state"] == "FINALIZED"
+        assert completed[0].payload["first_trigger_host_monotonic_ns"] is None
+        trial_directory = Path(completed[0].payload["trial_directory"])
+        assert trial_directory.is_dir()
+        sync_manifest = json.loads(
+            (trial_directory / "reports/sync_manifest.json").read_text(
+                encoding="utf-8"
+            )
         )
+        assert sync_manifest["status"] == "NOT_RECEIVED"
+        assert sync_manifest["quality"] == "OPTIONAL"
+        assert sync_manifest["formal_t0_source"] == "recording_gate_start"
+        assert not (trial_directory / "reports/sync_failure.json").exists()
     finally:
         if worker.is_alive:
             worker.terminate_for_recovery()

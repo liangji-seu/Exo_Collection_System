@@ -198,8 +198,8 @@ stateDiagram-v2
     IDLE --> PREPARING: 选择工况并检查设备
     PREPARING --> READY: 所有必需设备已就绪
     READY --> WAITING_SYNC: 点击开始并 arm 所有设备
-    WAITING_SYNC --> RECORDING: 首个合格同步上升沿建立 t0
-    WAITING_SYNC --> RECOVERABLE: 停止或超时仍未收到合格触发
+    WAITING_SYNC --> RECORDING: 写盘 gate 已打开（同步状态独立等待）
+    WAITING_SYNC --> RECOVERABLE: arm 后发生设备或写盘故障
     RECORDING --> STOPPING: 请求停止
     STOPPING --> FINALIZING: 各设备确认停止
     FINALIZING --> FINALIZED: 文件关闭并通过完整性检查
@@ -211,9 +211,9 @@ stateDiagram-v2
 
 状态转换只能由 Orchestrator 执行。UI 不得直接修改设备状态或数据库状态。
 
-现场 Trial 不预设固定采集时长。点击开始后，所有 Writer 先记录可审计的触发前原始数据，但状态保持 `WAITING_SYNC`；首个合格同步上升沿才定义正式 Trial 时间零点并进入 `RECORDING`。用户之后人工点击停止。有限时长只允许用于自动测试和诊断 smoke run，且从正式 t0 起算。
+现场 Trial 不预设固定采集时长。点击开始后，所有 Writer 立即开始记录原始数据，状态经 `WAITING_SYNC` 进入 `RECORDING`；同步状态是与 Trial 主状态正交的对齐信息，不得阻塞写盘或预览。首个合格同步上升沿存在时用于定义正式 Trial 时间零点；整段采集未收到同步脉冲时，以写盘 gate 打开的主机单调时钟作为正式 `t0`。用户之后人工点击停止。有限时长只允许用于自动测试和诊断 smoke run；同步存在时从同步 `t0` 起算，否则从写盘 gate 起算。
 
-停止采集后，UI 立即显示“正在停止”，各 Adapter 返回停止确认，Writer 完成 flush、关闭和校验后，Trial 才进入 `FINALIZED`。若在 `WAITING_SYNC` 期间停止或超时，必须保留 `.recording`、Journal、原始波形和同步失败报告，不得生成看似正常的最终化 Trial。只有 `FINALIZED` 或人工确认的 `ABORTED` Trial 可以进入离线上传列表。
+停止采集后，UI 立即显示“正在停止”，各 Adapter 返回停止确认，Writer 完成 flush、关闭和校验后，Trial 才进入 `FINALIZED`。未收到同步脉冲只记录为 `NOT_RECEIVED / OPTIONAL`，不产生告警、不生成同步失败报告，也不阻止最终化。任一已启用模态断流、设备故障、序列缺口、队列溢出或文件未正常关闭时，仍必须保留 `.recording`、Journal 和恢复信息，不得生成看似正常的最终化 Trial。只有 `FINALIZED` 或人工确认的 `ABORTED` Trial 可以进入离线上传列表。
 
 ## 6. 设备与模态扩展接口
 
@@ -332,7 +332,7 @@ detector_version
 
 边沿检测应使用双阈值迟滞、最小脉宽和去抖时间，避免噪声产生假脉冲。条件允许时，优先使用多脉冲编码序列，而不是只有一个无法识别序号的单脉冲。
 
-采集端的启动触发与离线外部时钟映射是两个层次。在当前 Trial 内，首个通过迟滞、脉宽和去抖规则的上升沿用于建立正式 `t0`；后续脉冲全部保留，用于终止事件审计、漏脉冲检查和外部时钟拟合。界面必须明确区分“等待同步”、“已触发”和“同步失败”。
+采集端的启动触发与离线外部时钟映射是两个层次。在当前 Trial 内，首个通过迟滞、脉宽和去抖规则的上升沿用于建立正式 `t0`；后续脉冲全部保留，用于终止事件审计、漏脉冲检查和外部时钟拟合。若没有合格上升沿，则使用写盘 gate 的主机单调时钟作为 `t0`，同步质量记为可选且未收到。界面必须明确区分“等待同步”、“已触发”和“未收到（可选）”；后者不是采集失败。
 
 核心超声、IMU、编码器先通过本系统公共时间轴完成内部对齐。外部测力台或动捕文件导入后，通过共同脉冲事件建立：
 

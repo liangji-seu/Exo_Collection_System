@@ -114,8 +114,9 @@ class TrialRunRequest(OrchestrationModel):
     device_profile_key: Literal["simulated", "hardware"] = "simulated"
     device_overrides: dict[str, dict[str, Any]] = Field(default_factory=dict)
     # Interactive collection has no predetermined duration.  CLI/smoke callers
-    # can still provide a finite duration, measured from the qualified sync
-    # trigger rather than from device start-up.
+    # can still provide a finite duration.  It is measured from a qualified
+    # sync trigger when one arrives in time, otherwise from recording-gate
+    # start so an optional missing pulse can never hang the Worker.
     duration_s: float | None = Field(default=None, gt=0, le=86_400)
     sync_wait_timeout_s: float | None = Field(default=None, gt=0, le=86_400)
     project_code: Literal["F", "T"] = "T"
