@@ -1,4 +1,11 @@
-"""Spawn-safe collector worker boundary used by the desktop UI."""
+"""Spawn-safe collector worker boundary used by the desktop UI.
+
+The CollectorWorker spawns a ``collector-core`` process.  Preview events are
+exclusively published by the persistent per-modality preview workers; the
+recording worker publishes only state, health, sync, and terminal events.
+Raw domain data reaches the Writer through proxied recording IPC queues
+managed by the preview workers (see ``StreamProxyAdapter``).
+"""
 
 from __future__ import annotations
 
@@ -7,7 +14,7 @@ import multiprocessing as mp
 from multiprocessing.queues import Queue
 from queue import Empty, Full
 import traceback
-from typing import Any
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 
@@ -16,6 +23,7 @@ from exo_collection.acquisition.buffers import (
     SharedPreviewBuffer,
 )
 from exo_collection.acquisition.messages import WorkerEvent, WorkerEventType
+from exo_collection.acquisition.recording_stream import RecordingStreamEndpoint
 from exo_collection.orchestration.models import TrialRunRequest
 
 
@@ -54,6 +62,7 @@ def _trial_worker_entry(
     control_queue: Queue[Any],
     stop_event: Any,
     preview_descriptors: dict[str, PreviewBufferDescriptor],
+    stream_endpoints: dict[str, RecordingStreamEndpoint] | None,
 ) -> None:
     """Import the orchestration implementation inside the spawned process."""
 
@@ -69,8 +78,13 @@ def _trial_worker_entry(
         modality: SharedPreviewBuffer.attach(descriptor)
         for modality, descriptor in preview_descriptors.items()
     }
+    external_stream_mode = bool(stream_endpoints)
 
     def publish(event: WorkerEvent) -> None:
+        if external_stream_mode and event.event_type is WorkerEventType.PREVIEW:
+            # The persistent device process remains the sole UI preview source
+            # while its raw stream is being recorded.
+            return
         if event.event_type is WorkerEventType.PREVIEW and event.modality in preview_buffers:
             payload = dict(event.payload)
             channels = payload.pop("channels", None)
@@ -86,36 +100,23 @@ def _trial_worker_entry(
                 signal_values = np.asarray(values or (), dtype=np.float32).reshape(-1)
                 channel_count = 1
                 points_per_channel = int(signal_values.size)
-
-            # Keep paired time/value arrays aligned if an adapter provides a
-            # larger preview than the shared segment. Raw acquisition data is
-            # unaffected; this branch only thins the replaceable UI view.
             capacity = preview_buffers[event.modality].capacity
             if x_values.size and x_values.size == signal_values.size:
                 maximum_points = max(1, capacity // 2)
                 if signal_values.size > maximum_points:
                     selection = np.linspace(
-                        0,
-                        signal_values.size - 1,
-                        maximum_points,
-                        dtype=np.int64,
+                        0, signal_values.size - 1, maximum_points, dtype=np.int64
                     )
                     x_values = x_values[selection]
                     signal_values = signal_values[selection]
                     points_per_channel = int(signal_values.size)
             elif x_values.size:
-                # A malformed preview time axis must never be paired with a
-                # different signal. Drop only the optional x values; the UI
-                # will use a local sample index for this lossy preview.
                 x_values = np.empty(0, dtype=np.float32)
-
             shared_values = np.concatenate((x_values, signal_values))
             if shared_values.size:
                 generation = preview_buffers[event.modality].write(
                     shared_values,
-                    host_monotonic_ns=int(
-                        payload.get("host_monotonic_ns") or 0
-                    ),
+                    host_monotonic_ns=int(payload.get("host_monotonic_ns") or 0),
                 )
                 payload["shared_preview"] = {
                     "generation": generation,
@@ -135,6 +136,7 @@ def _trial_worker_entry(
             stop_requested=stop_event,
             publish=publish,
             enabled_modalities=request.enabled_modalities,
+            recording_streams=stream_endpoints,
         )
         publish(
             WorkerEvent(
@@ -148,9 +150,6 @@ def _trial_worker_entry(
         failure_payload: dict[str, Any] = {
             "traceback": traceback.format_exc(limit=20),
         }
-        # Orchestration failures may expose a small JSON-safe audit context.
-        # Keeping this generic avoids coupling the spawn boundary to one
-        # concrete adapter or simulated implementation.
         structured_context = getattr(exc, "worker_payload", None)
         if callable(structured_context):
             try:
@@ -174,9 +173,26 @@ def _trial_worker_entry(
 
 
 class CollectorWorker:
-    """Own one spawned collector-core process and its bounded control queue."""
+    """Own one spawned collector-core process and its bounded control queue.
 
-    def __init__(self, request: TrialRunRequest, *, queue_capacity: int = 256) -> None:
+    The CollectorWorker receives ``RecordingStreamEndpoint`` instances from
+    the UI and passes them to the spawned process.  The recording subprocess
+    builds ``StreamProxyAdapter`` instances that drain raw data from the preview
+    workers' recording queues, so the real hardware Adapter is never stopped
+    or reopened during a Trial.
+    """
+
+    def __init__(
+        self,
+        request: TrialRunRequest,
+        stream_endpoints: (
+            Mapping[str, RecordingStreamEndpoint]
+            | Sequence[RecordingStreamEndpoint]
+            | None
+        ) = None,
+        *,
+        queue_capacity: int = 256,
+    ) -> None:
         if queue_capacity <= 0:
             raise ValueError("queue_capacity must be positive")
         self.request = request
@@ -184,12 +200,35 @@ class CollectorWorker:
         self._events = self._context.Queue(maxsize=queue_capacity)
         self._control_events = self._context.Queue(maxsize=32)
         self._stop_requested = self._context.Event()
-        self._preview_buffers = {
-            "ultrasound": SharedPreviewBuffer.create(16 * 512),
-            "imu": SharedPreviewBuffer.create(4096),
-            "encoder": SharedPreviewBuffer.create(4096),
-            "sync_pulse": SharedPreviewBuffer.create(4096),
-        }
+        if not stream_endpoints:
+            self._stream_endpoints = None
+        elif isinstance(stream_endpoints, Mapping):
+            self._stream_endpoints = dict(stream_endpoints)
+        else:
+            endpoint_items = tuple(stream_endpoints)
+            self._stream_endpoints = {
+                endpoint.modality: endpoint for endpoint in endpoint_items
+            }
+            if len(self._stream_endpoints) != len(endpoint_items):
+                raise ValueError("recording stream modalities must be unique")
+        if self._stream_endpoints is not None:
+            for modality, endpoint in self._stream_endpoints.items():
+                if endpoint.modality != modality:
+                    raise ValueError(
+                        f"recording stream key {modality!r} differs from endpoint "
+                        f"modality {endpoint.modality!r}"
+                    )
+        self._preview_buffers = (
+            {}
+            if self._stream_endpoints is not None
+            else {
+                "ultrasound": SharedPreviewBuffer.create(16 * 512),
+                "imu": SharedPreviewBuffer.create(4096),
+                "encoder": SharedPreviewBuffer.create(4096),
+                "sync_pulse": SharedPreviewBuffer.create(4096),
+            }
+        )
+
         self._process = self._context.Process(
             target=_trial_worker_entry,
             args=(
@@ -201,6 +240,7 @@ class CollectorWorker:
                     modality: buffer.descriptor
                     for modality, buffer in self._preview_buffers.items()
                 },
+                self._stream_endpoints,
             ),
             name=f"collector-core-{str(request.trial_uuid)[:8]}",
             daemon=False,
@@ -228,9 +268,6 @@ class CollectorWorker:
         try:
             self._process.start()
         except BaseException:
-            # A Windows spawn failure can occur after queues/shared-memory
-            # segments have been created. No window poller owns the handle in
-            # that path, so release every resource before propagating it.
             self._cleanup_after_start_failure()
             raise
 
@@ -270,10 +307,6 @@ class CollectorWorker:
             )
         except (RuntimeError, TypeError, ValueError):
             return event
-        # A later preview may overwrite shared memory before its Queue marker
-        # is consumed. Never combine metadata from one generation with values
-        # from another; the next replaceable preview event will carry the new
-        # marker.
         if observed_generation != expected_generation:
             return event
         payload = dict(event.payload)
@@ -308,7 +341,7 @@ class CollectorWorker:
     def terminate_for_recovery(self, timeout: float = 5.0) -> int | None:
         """Last-resort shutdown after a controlled stop timeout.
 
-        A forced process exit intentionally leaves the Trial as `.recording`;
+        A forced process exit intentionally leaves the Trial as ``.recording``;
         the normal startup recovery workflow will inspect it before publication.
         """
 

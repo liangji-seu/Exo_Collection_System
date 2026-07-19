@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from uuid import uuid4
 
@@ -15,6 +15,7 @@ from PySide6.QtGui import QValidator
 from PySide6.QtWidgets import QApplication, QDialog, QScrollArea, QSplitter, QWidget
 
 from exo_collection.acquisition.messages import WorkerEvent, WorkerEventType
+from exo_collection.acquisition.recording_stream import RecordingStreamEndpoint
 from exo_collection.apps.collector import CollectorWindow
 from exo_collection.apps.collector.device_settings import (
     DEVICE_SETTINGS_DIALOGS,
@@ -41,8 +42,13 @@ from exo_collection.orchestration.models import (
 
 
 class FakeCollectorWorker:
-    def __init__(self, request: TrialRunRequest) -> None:
+    def __init__(
+        self,
+        request: TrialRunRequest,
+        stream_endpoints: tuple[RecordingStreamEndpoint, ...] = (),
+    ) -> None:
         self.request = request
+        self.stream_endpoints = stream_endpoints
         self.events: list[WorkerEvent] = []
         self.started = False
         self.alive = False
@@ -231,6 +237,32 @@ class FakePreviewHandle:
         self.stop_requests = 0
         self.join_calls = 0
         self.closed = False
+        self.events: list[WorkerEvent] = []
+        self.begin_recording_calls: list[str] = []
+        self.end_recording_calls: list[str] = []
+        self.discard_recording_backlog_calls = 0
+        self.recording_backlog: list[object] = []
+        self.begin_recording_error: Exception | None = None
+        self.active_trial_uuid: str | None = None
+        self._recording_endpoint = RecordingStreamEndpoint(
+            queue=object(),
+            device_id=self.device_id,
+            modality=modality,
+            descriptor={
+                "device_id": self.device_id,
+                "modality": modality,
+                "display_name": f"Fake {modality}",
+                "clock_domain": f"{modality}_clock",
+                "event_kind": "frame_batch",
+                "channels": [f"{modality}_channel"],
+                "units": ["a.u."],
+                "nominal_rate_hz": 100.0,
+                "sample_shape": [1],
+                "dtype": "<f8",
+                "metadata": {"test_descriptor": modality},
+            },
+            configuration_snapshot={"test_config": modality},
+        )
 
     @property
     def is_alive(self) -> bool:
@@ -244,8 +276,30 @@ class FakePreviewHandle:
         self.stop_requests += 1
 
     def poll_events(self, limit: int = 100) -> list[WorkerEvent]:
-        del limit
-        return []
+        result = self.events[:limit]
+        del self.events[:limit]
+        return result
+
+    @property
+    def recording_endpoint(self) -> RecordingStreamEndpoint:
+        return self._recording_endpoint
+
+    def begin_recording(self, trial_uuid: str) -> None:
+        self.begin_recording_calls.append(trial_uuid)
+        if self.begin_recording_error is not None:
+            raise self.begin_recording_error
+        self.active_trial_uuid = trial_uuid
+
+    def end_recording(self, trial_uuid: str) -> None:
+        self.end_recording_calls.append(trial_uuid)
+        assert self.active_trial_uuid == trial_uuid
+        self.active_trial_uuid = None
+
+    def discard_recording_backlog(self) -> int:
+        self.discard_recording_backlog_calls += 1
+        discarded = len(self.recording_backlog)
+        self.recording_backlog.clear()
+        return discarded
 
     def join(self, timeout: float | None = None) -> int | None:
         del timeout
@@ -281,8 +335,11 @@ def _window_with_fake(
     app = QApplication.instance() or QApplication(["test-exo-collector"])
     created: list[FakeCollectorWorker] = []
 
-    def factory(request: TrialRunRequest) -> FakeCollectorWorker:
-        worker = FakeCollectorWorker(request)
+    def factory(
+        request: TrialRunRequest,
+        endpoints: Mapping[str, RecordingStreamEndpoint],
+    ) -> FakeCollectorWorker:
+        worker = FakeCollectorWorker(request, tuple(endpoints.values()))
         created.append(worker)
         return worker
 
@@ -350,17 +407,29 @@ def _window_with_fake(
     return app, window, created
 
 
-def _connect_all_previews_for_trial(window: CollectorWindow) -> None:
+def _connect_all_previews_for_trial(
+    window: CollectorWindow,
+) -> dict[str, FakePreviewHandle]:
     """Simulate all modalities being connected via preview (marks them READY).
 
     This bypasses the actual spawn-based preview workers so that trial-flow
     tests can proceed without subprocesses.
     """
+    handles: dict[str, FakePreviewHandle] = {}
     for modality in ("ultrasound", "imu", "encoder", "sync_pulse"):
+        existing = window._preview_workers.get(modality)
+        handle = (
+            existing
+            if isinstance(existing, FakePreviewHandle)
+            else FakePreviewHandle(modality)
+        )
+        window._preview_workers[modality] = handle
+        handles[modality] = handle
         window._preview_connected_modalities.add(modality)
         window._preview_connection_status[modality] = "已连接"
     window._update_start_button()
     window._update_connect_button_state()
+    return handles
 
 
 # ── Ultrasound 2x2 grid tests ──
@@ -464,16 +533,14 @@ def test_collector_theme_uses_direct_toggle_styles(tmp_path: Path) -> None:
 
 # ── IMU ring trace tests ──
 
-def test_imu_three_ring_traces(tmp_path: Path) -> None:
+def test_imu_three_sensor_plots_expose_nine_axis_traces(tmp_path: Path) -> None:
     _app, window, _created = _window_with_fake(tmp_path)
-    assert len(window._imu_traces) == 3
-    assert "imu_trunk" in window._imu_traces
-    assert "imu_left" in window._imu_traces
-    assert "imu_right" in window._imu_traces
+    assert len(window._imu_traces) == 9
     for label in ("imu_trunk", "imu_left", "imu_right"):
         plot = window.findChild(QWidget, f"imu_ring_{label}")
         assert plot is not None, f"imu_ring_{label} not found"
-        assert isinstance(window._imu_traces[label], RingTrace)
+        for axis in ("acc_x", "acc_y", "acc_z"):
+            assert isinstance(window._imu_traces[f"{label}_{axis}"], RingTrace)
     window.close()
 
 
@@ -609,7 +676,7 @@ def test_preview_ultrasound_4_channels(tmp_path: Path) -> None:
     for i in range(4):
         _, y = window._us_curves[i].getData()
         assert list(y[:4]) == channels[i]
-        assert len(y) == 512
+        assert len(y) == 1000
         assert np.all(np.isnan(y[4:]))
     window.close()
 
@@ -660,17 +727,17 @@ def test_preview_imu_streams_payload(tmp_path: Path) -> None:
             payload={
                 "host_monotonic_ns": 2_000,
                 "streams": [
-                    {"label": "imu_trunk", "values": [0.1, 0.2, 0.3], "channel": "acc_x"},
-                    {"label": "imu_left", "values": [-0.1, -0.2, -0.3], "channel": "acc_x"},
-                    {"label": "imu_right", "values": [0.05, 0.06, 0.07], "channel": "acc_x"},
+                    {"label": "imu_trunk_acc_x", "values": [0.1, 0.2, 0.3]},
+                    {"label": "imu_left_acc_x", "values": [-0.1, -0.2, -0.3]},
+                    {"label": "imu_right_acc_x", "values": [0.05, 0.06, 0.07]},
                 ],
             },
         )
     )
     # Check that each trace received data
-    _, y_trunk = window._imu_traces["imu_trunk"].curve.getData()
-    _, y_left = window._imu_traces["imu_left"].curve.getData()
-    _, y_right = window._imu_traces["imu_right"].curve.getData()
+    _, y_trunk = window._imu_traces["imu_trunk_acc_x"].curve.getData()
+    _, y_left = window._imu_traces["imu_left_acc_x"].curve.getData()
+    _, y_right = window._imu_traces["imu_right_acc_x"].curve.getData()
     assert y_trunk[0] == 0.1
     assert y_trunk[2] == 0.3
     assert y_left[0] == -0.1
@@ -710,15 +777,15 @@ def test_preferred_labeled_channel_payload_updates_each_ring(tmp_path: Path) -> 
             event_type=WorkerEventType.PREVIEW,
             modality="imu",
             payload={
-                "labels": ["imu_trunk", "imu_left", "imu_right"],
+                "labels": ["imu_trunk_acc_x", "imu_left_acc_x", "imu_right_acc_x"],
                 "channels": [[1.0], [2.0], [3.0]],
                 "channel": "acc_x",
             },
         )
     )
-    assert window._imu_traces["imu_trunk"]._buffer[0] == 1.0
-    assert window._imu_traces["imu_left"]._buffer[0] == 2.0
-    assert window._imu_traces["imu_right"]._buffer[0] == 3.0
+    assert window._imu_traces["imu_trunk_acc_x"]._buffer[0] == 1.0
+    assert window._imu_traces["imu_left_acc_x"]._buffer[0] == 2.0
+    assert window._imu_traces["imu_right_acc_x"]._buffer[0] == 3.0
     window.close()
 
 
@@ -787,8 +854,8 @@ def test_legacy_single_series_payload_updates_only_first_window(tmp_path: Path) 
                 payload={"values": [4.0, 5.0]},
             )
         )
-    assert window._imu_traces["imu_trunk"]._buffer[0] == 4.0
-    assert np.isnan(window._imu_traces["imu_left"]._buffer[0])
+    assert window._imu_traces["imu_trunk_acc_x"]._buffer[0] == 4.0
+    assert np.isnan(window._imu_traces["imu_trunk_acc_y"]._buffer[0])
     assert window._enc_traces["left_position"]._buffer[0] == 4.0
     assert np.isnan(window._enc_traces["right_position"]._buffer[0])
     window.close()
@@ -828,7 +895,7 @@ def test_preview_ultrasound_curve_label_format(tmp_path: Path) -> None:
 
 
 def test_preview_imu_ring_label_format(tmp_path: Path) -> None:
-    """Verify IMU ring trace has acc_x in its plot title."""
+    """Each sensor plot contains the configured three-axis traces."""
     import pyqtgraph as pg
 
     _app, window, _created = _window_with_fake(tmp_path)
@@ -836,7 +903,11 @@ def test_preview_imu_ring_label_format(tmp_path: Path) -> None:
         plot: pg.PlotWidget = window.findChild(QWidget, f"imu_ring_{label}")  # type: ignore[assignment]
         assert plot is not None, f"imu_ring_{label} not found"
         title_text = plot.getPlotItem().titleLabel.text
-        assert "acc_x" in title_text, f"{label} title missing acc_x: {title_text}"
+        assert "acc_z" in title_text, f"{label} title missing axis: {title_text}"
+        assert all(
+            f"{label}_{axis}" in window._imu_traces
+            for axis in ("acc_x", "acc_y", "acc_z")
+        )
     window.close()
 
 
@@ -854,36 +925,55 @@ def test_grid_widgets_exist(tmp_path: Path) -> None:
     window.close()
 
 
-# ── Reset on new trial ──
+# ── Preserve continuous preview at Trial boundaries ──
 
-def test_trial_start_resets_all_ring_traces(tmp_path: Path) -> None:
-    """Starting a new trial should reset ring traces via trial cleanup."""
-    app, window, created = _window_with_fake(tmp_path)
+def test_trial_start_preserves_all_live_preview_curves(tmp_path: Path) -> None:
+    """Opening the recording gate must not create a visible signal gap."""
+    _app, window, created = _window_with_fake(tmp_path)
 
-    # Prime with data
+    # Prime ultrasound, IMU and encoder displays before disk recording.
+    window._handle_worker_event(
+        WorkerEvent(
+            event_type=WorkerEventType.PREVIEW,
+            modality="ultrasound",
+            payload={"channel_index": 1, "values": [5.0] * 1000},
+        )
+    )
     window._handle_worker_event(
         WorkerEvent(
             event_type=WorkerEventType.PREVIEW,
             modality="imu",
             payload={
                 "streams": [
-                    {"label": "imu_trunk", "values": [1.0, 2.0], "channel": "acc_x"},
+                        {"label": "imu_trunk_acc_x", "values": [1.0, 2.0]},
                 ],
             },
         )
     )
-    _, y_before = window._imu_traces["imu_trunk"].curve.getData()
-    assert not np.all(np.isnan(y_before))
+    window._handle_worker_event(
+        WorkerEvent(
+            event_type=WorkerEventType.PREVIEW,
+            modality="encoder",
+            payload={"channels": {"left_position": [3.0, 4.0]}},
+        )
+    )
+    _x, ultrasound_before = window._us_curves[1].getData()
+    _x, imu_before = window._imu_traces["imu_trunk_acc_x"].curve.getData()
+    _x, encoder_before = window._enc_traces["left_position"].curve.getData()
+    assert ultrasound_before[0] == 5.0
+    assert imu_before[0] == 1.0
+    assert encoder_before[0] == 3.0
 
-    # Connect all previews then start a trial
     _connect_all_previews_for_trial(window)
-    window.build_request()  # validates inputs
     window.start_trial()
     worker = created[0]
 
-    # After trial start, ring traces should be reset
-    _, y_after = window._imu_traces["imu_trunk"].curve.getData()
-    assert np.all(np.isnan(y_after))
+    _x, ultrasound_after = window._us_curves[1].getData()
+    _x, imu_after = window._imu_traces["imu_trunk_acc_x"].curve.getData()
+    _x, encoder_after = window._enc_traces["left_position"].curve.getData()
+    np.testing.assert_allclose(ultrasound_after, ultrasound_before, equal_nan=True)
+    np.testing.assert_allclose(imu_after, imu_before, equal_nan=True)
+    np.testing.assert_allclose(encoder_after, encoder_before, equal_nan=True)
 
     worker.finish(0)
     window.close()
@@ -1052,9 +1142,9 @@ def test_collector_locks_condition_polls_events_and_finalizes(
                 payload={
                     "host_monotonic_ns": 2_000,
                     "streams": [
-                        {"label": "imu_trunk", "values": [0.1, 0.2, 0.3], "channel": "acc_x"},
-                        {"label": "imu_left", "values": [0.4, 0.5, 0.6], "channel": "acc_x"},
-                        {"label": "imu_right", "values": [0.7, 0.8, 0.9], "channel": "acc_x"},
+                            {"label": "imu_trunk_acc_x", "values": [0.1, 0.2, 0.3]},
+                            {"label": "imu_left_acc_x", "values": [0.4, 0.5, 0.6]},
+                            {"label": "imu_right_acc_x", "values": [0.7, 0.8, 0.9]},
                     ],
                 },
             ),
@@ -1071,7 +1161,7 @@ def test_collector_locks_condition_polls_events_and_finalizes(
             ),
         ]
     )
-    _wait_until(app, lambda: window.overall_status == "采集中")
+    _wait_until(app, lambda: "采集中" in window.overall_status)
 
     imu_row = window._health_rows["imu"]
     assert window.health_table.item(imu_row, 0).text() == "IMU"
@@ -1088,7 +1178,7 @@ def test_collector_locks_condition_polls_events_and_finalizes(
     assert np.all(np.isnan(ch0[4:]))
 
     # Check IMU ring traces received data
-    _, trunk_y = window._imu_traces["imu_trunk"].curve.getData()
+    _, trunk_y = window._imu_traces["imu_trunk_acc_x"].curve.getData()
     assert trunk_y[0] == 0.1
     assert trunk_y[2] == 0.3
 
@@ -1125,13 +1215,13 @@ def test_collector_locks_condition_polls_events_and_finalizes(
     worker.finish(0)
     _wait_until(app, lambda: window.worker is None)
 
-    assert window.overall_status == "未连接"
+    assert window.overall_status == "可采集"
     assert str(manifest_path) in caplog.text
     assert not hasattr(window, "manifest_label")
     assert not hasattr(window, "open_log_dir_button")
     assert not window.configuration_locked
     assert window.condition_combo.isEnabled()
-    assert not window.start_button.isEnabled()
+    assert window.start_button.isEnabled()
     assert worker.closed
     assert worker.join_timeouts == [0]
     window.close()
@@ -1143,7 +1233,8 @@ def test_collector_shows_failed_worker_error_without_blocking_ui(
 ) -> None:
     caplog.set_level(logging.INFO, logger="exo_collection.collector.ui")
     app, window, created = _window_with_fake(tmp_path)
-    _connect_all_previews_for_trial(window)
+    handles = _connect_all_previews_for_trial(window)
+    identities = {name: id(handle) for name, handle in handles.items()}
     window.build_request()
     window.start_trial()
     worker = created[0]
@@ -1159,8 +1250,14 @@ def test_collector_shows_failed_worker_error_without_blocking_ui(
     _wait_until(app, lambda: window.worker is None)
     assert window.overall_status == "失败"
     assert "simulated disk full" in caplog.text
-    assert not window.start_button.isEnabled()
+    assert window.start_button.isEnabled()
     assert worker.closed
+    assert window._preview_connected_modalities == set(MODALITIES)
+    assert {
+        name: id(window._preview_workers[name]) for name in MODALITIES
+    } == identities
+    assert all(handle.stop_requests == 0 for handle in handles.values())
+    assert all(len(handle.end_recording_calls) == 1 for handle in handles.values())
     window.close()
 
 
@@ -1222,14 +1319,15 @@ def test_collector_forces_hung_controlled_stop_and_preserves_recovery_semantics(
     window.close()
 
 
-def test_preflight_gates_start_and_reports_missing_critical_device(
+def test_start_rejects_stale_ready_state_without_live_preview_handle(
     tmp_path: Path,
     caplog,
 ) -> None:
     caplog.set_level(logging.INFO, logger="exo_collection.collector.ui")
     _app, window, created = _window_with_fake(tmp_path)
 
-    # Only connect 3 of 4 modalities (sync_pulse missing)
+    # A stale UI READY flag is insufficient without the corresponding live
+    # handle and its complete recording endpoint.
     for modality in ("ultrasound", "imu", "encoder"):
         window._preview_connected_modalities.add(modality)
         window._preview_connection_status[modality] = "已连接"
@@ -1237,8 +1335,8 @@ def test_preflight_gates_start_and_reports_missing_critical_device(
 
     window.start_trial()
     assert not created
-    assert "sync_pulse 尚未连接" in caplog.text
-    assert not window.start_button.isEnabled()
+    assert "preview is not READY" in caplog.text
+    assert not window.configuration_locked
     window.close()
 
 
@@ -1502,8 +1600,9 @@ def test_single_modality_connect_only_updates_that_modality(tmp_path: Path) -> N
     assert "encoder" not in window._preview_connected_modalities
     assert "sync_pulse" not in window._preview_connected_modalities
 
-    # Start trial should NOT be enabled (missing 3 modalities)
-    assert not window.start_button.isEnabled()
+    # The current policy allows recording any explicit READY subset; the live
+    # endpoint itself is validated again when start is clicked.
+    assert window.start_button.isEnabled()
     window.close()
 
 
@@ -1598,7 +1697,7 @@ def test_modality_disconnect_button_requests_nonblocking_stop(tmp_path: Path) ->
     window.close()
 
 
-def test_trial_waits_for_preview_process_release_without_blocking_ui(
+def test_trial_reuses_ready_preview_handles_without_disconnect_or_reconnect(
     tmp_path: Path,
 ) -> None:
     _app, window, created = _window_with_fake(tmp_path)
@@ -1611,20 +1710,308 @@ def test_trial_waits_for_preview_process_release_without_blocking_ui(
 
     window.start_trial()
 
-    assert not created
-    assert window._pending_trial_request is not None
-    assert all(handle.stop_requests == 1 for handle in handles.values())
-    assert all(handle.join_calls == 0 for handle in handles.values())
-
-    for handle in handles.values():
-        handle.alive = False
-    window._poll_preview_workers()
     assert len(created) == 1
-    assert created[0].started
-    assert window._pending_trial_request is None
+    worker = created[0]
+    assert worker.started
+    assert len(worker.stream_endpoints) == len(MODALITIES)
+    assert {endpoint.modality for endpoint in worker.stream_endpoints} == set(
+        MODALITIES
+    )
+    assert all(handle.stop_requests == 0 for handle in handles.values())
+    assert all(handle.join_calls == 0 for handle in handles.values())
+    assert all(len(handle.begin_recording_calls) == 1 for handle in handles.values())
+    assert all(
+        endpoint.descriptor["metadata"]["test_descriptor"]
+        == endpoint.modality
+        for endpoint in worker.stream_endpoints
+    )
+    assert all(
+        endpoint.configuration_snapshot["test_config"] == endpoint.modality
+        for endpoint in worker.stream_endpoints
+    )
+    identities = {name: id(handle) for name, handle in handles.items()}
 
-    window._preview_restore_modalities.clear()
+    window.request_controlled_stop()
+    assert all(handle.stop_requests == 0 for handle in handles.values())
+    assert all(len(handle.end_recording_calls) == 1 for handle in handles.values())
+
+    worker.events.append(
+        WorkerEvent(
+            event_type=WorkerEventType.COMPLETED,
+            payload={"state": "FINALIZED"},
+        )
+    )
+    worker.finish(0)
+    window.poll_worker_events()
+
+    assert window.worker is None
+    assert window._preview_connected_modalities == set(MODALITIES)
+    assert {
+        name: id(window._preview_workers[name]) for name in MODALITIES
+    } == identities
+    assert all(handle.stop_requests == 0 for handle in handles.values())
+    assert window._worker_state == "PREFLIGHT_READY"
+    assert window.start_button.isEnabled()
+    window.close()
+
+
+def test_new_trial_discards_stale_recording_queue_items_before_attach(
+    tmp_path: Path,
+) -> None:
+    _app, window, created = _window_with_fake(tmp_path)
+    handles = _connect_all_previews_for_trial(window)
+    for modality, handle in handles.items():
+        handle.recording_backlog.extend(
+            [f"stale-{modality}-boundary", f"stale-{modality}-raw"]
+        )
+
+    window.start_trial()
+
+    assert len(created) == 1
+    assert all(
+        handle.discard_recording_backlog_calls == 1
+        for handle in handles.values()
+    )
+    assert all(not handle.recording_backlog for handle in handles.values())
+    assert all(
+        len(handle.begin_recording_calls) == 1 for handle in handles.values()
+    )
     created[0].finish(0)
+    window.close()
+
+
+def test_partial_begin_failure_rolls_back_only_successful_recording_gates(
+    tmp_path: Path,
+) -> None:
+    _app, window, created = _window_with_fake(tmp_path)
+    handles = _connect_all_previews_for_trial(window)
+    handles["imu"].begin_recording_error = RuntimeError("IMU gate refused")
+
+    window.start_trial()
+
+    assert len(created) == 1
+    worker = created[0]
+    assert worker.started
+    assert worker.stop_requests == 1
+    assert worker.exitcode == -15
+    assert worker.closed
+    # Handles are attached in sorted modality order: encoder succeeds, IMU
+    # fails, and the remaining two gates are never opened.
+    assert len(handles["encoder"].begin_recording_calls) == 1
+    assert len(handles["encoder"].end_recording_calls) == 1
+    assert len(handles["imu"].begin_recording_calls) == 1
+    assert handles["imu"].end_recording_calls == []
+    assert handles["sync_pulse"].begin_recording_calls == []
+    assert handles["ultrasound"].begin_recording_calls == []
+    assert all(handle.stop_requests == 0 for handle in handles.values())
+    assert window.worker is None
+    assert not window.configuration_locked
+    assert window.overall_status == "失败"
+    assert window._preview_connected_modalities == set(MODALITIES)
+    window.close()
+
+
+def test_preview_events_continue_before_during_and_after_disk_recording(
+    tmp_path: Path,
+) -> None:
+    _app, window, created = _window_with_fake(tmp_path)
+    handles = _connect_all_previews_for_trial(window)
+    ultrasound = handles["ultrasound"]
+    original_identity = id(ultrasound)
+
+    def publish_four_channel_frames(base_value: float) -> None:
+        for channel_index in range(4):
+            value = base_value + channel_index
+            ultrasound.events.append(
+                WorkerEvent(
+                    event_type=WorkerEventType.PREVIEW,
+                    modality="ultrasound",
+                    payload={
+                        "channel_index": channel_index,
+                        "values": [value] * 1000,
+                    },
+                )
+            )
+        window._poll_preview_workers()
+        for channel_index, curve in enumerate(window._us_curves):
+            _x, y = curve.getData()
+            assert y is not None
+            assert y[0] == base_value + channel_index
+
+    publish_four_channel_frames(10.0)  # connected preview, before any Trial
+
+    window.start_trial()
+    worker = created[0]
+    publish_four_channel_frames(20.0)  # recording gate open
+
+    window.request_controlled_stop()
+    publish_four_channel_frames(30.0)  # gate closed, finalization still running
+
+    worker.events.append(
+        WorkerEvent(
+            event_type=WorkerEventType.COMPLETED,
+            payload={"state": "FINALIZED"},
+        )
+    )
+    worker.finish(0)
+    window.poll_worker_events()
+    publish_four_channel_frames(40.0)  # finalized, same worker remains READY
+
+    assert id(window._preview_workers["ultrasound"]) == original_identity
+    assert "ultrasound" in window._preview_connected_modalities
+    assert ultrasound.stop_requests == 0
+    assert ultrasound.begin_recording_calls == [str(worker.request.trial_uuid)]
+    assert ultrasound.end_recording_calls == [str(worker.request.trial_uuid)]
+    window.close()
+
+
+def test_legacy_one_argument_worker_factory_remains_supported(
+    tmp_path: Path,
+) -> None:
+    _app, window, _created = _window_with_fake(tmp_path)
+    handle = FakePreviewHandle("ultrasound")
+    calls: list[TrialRunRequest] = []
+
+    def legacy_factory(request: TrialRunRequest) -> FakeCollectorWorker:
+        calls.append(request)
+        return FakeCollectorWorker(request)
+
+    window._worker_factory = legacy_factory
+    request = window.build_request()
+    worker = window._create_recording_worker(
+        request,
+        {"ultrasound": handle.recording_endpoint},
+    )
+
+    assert calls == [request]
+    assert worker.request is request
+    window.close()
+
+
+def test_close_finalizes_recording_before_shutting_down_preview_workers(
+    tmp_path: Path,
+) -> None:
+    app, window, created = _window_with_fake(tmp_path)
+    handles = _connect_all_previews_for_trial(window)
+    window.start_trial()
+    worker = created[0]
+
+    window.close()
+
+    assert window.worker is worker
+    assert worker.stop_requests == 1
+    assert all(len(handle.end_recording_calls) == 1 for handle in handles.values())
+    assert all(handle.stop_requests == 0 for handle in handles.values())
+
+    worker.events.append(
+        WorkerEvent(
+            event_type=WorkerEventType.COMPLETED,
+            payload={"state": "FINALIZED"},
+        )
+    )
+    worker.finish(0)
+    window.poll_worker_events()
+    app.processEvents()
+
+    assert window.worker is None
+    assert all(handle.stop_requests == 1 for handle in handles.values())
+    assert not window._preview_workers
+
+
+def test_recording_branch_fault_fails_trial_but_keeps_preview_alive(
+    tmp_path: Path,
+) -> None:
+    _app, window, created = _window_with_fake(tmp_path)
+    handles = _connect_all_previews_for_trial(window)
+    identities = {name: id(handle) for name, handle in handles.items()}
+    window.start_trial()
+    worker = created[0]
+    trial_uuid = str(worker.request.trial_uuid)
+    ultrasound = handles["ultrasound"]
+
+    ultrasound.events.extend(
+        [
+            WorkerEvent(
+                event_type=WorkerEventType.FAILED,
+                modality="ultrasound",
+                trial_uuid=trial_uuid,
+                payload={
+                    "state": "FAULT",
+                    "trial_uuid": trial_uuid,
+                    "fault": "recording queue full for ultrasound",
+                },
+                message="recording queue full for ultrasound",
+            ),
+            WorkerEvent(
+                event_type=WorkerEventType.PREVIEW,
+                modality="ultrasound",
+                payload={
+                    "channel_index": 2,
+                    "values": [77.0] * 1000,
+                },
+            ),
+        ]
+    )
+    window._poll_preview_workers()
+
+    assert window.overall_status == "失败"
+    assert window.configuration_locked
+    assert worker.stop_requests == 1
+    assert all(len(handle.end_recording_calls) == 1 for handle in handles.values())
+    assert all(handle.stop_requests == 0 for handle in handles.values())
+    assert not window._preview_disconnect_deadlines
+    assert window._preview_connected_modalities == set(MODALITIES)
+    assert {
+        name: id(window._preview_workers[name]) for name in MODALITIES
+    } == identities
+    _x, channel_three = window._us_curves[2].getData()
+    assert channel_three is not None
+    assert channel_three[0] == 77.0
+
+    # A late COMPLETED event cannot erase the latched lossless recording fault.
+    worker.events.append(
+        WorkerEvent(
+            event_type=WorkerEventType.COMPLETED,
+            trial_uuid=trial_uuid,
+            payload={"state": "FINALIZED", "trial_uuid": trial_uuid},
+        )
+    )
+    worker.finish(0)
+    window.poll_worker_events()
+
+    assert window.worker is None
+    assert window.overall_status == "失败"
+    assert not window.configuration_locked
+    assert window.start_button.isEnabled()
+    assert window._preview_connected_modalities == set(MODALITIES)
+    assert {
+        name: id(window._preview_workers[name]) for name in MODALITIES
+    } == identities
+    window.close()
+
+
+def test_true_preview_worker_failure_still_disconnects_that_modality(
+    tmp_path: Path,
+) -> None:
+    _app, window, _created = _window_with_fake(tmp_path)
+    handle = FakePreviewHandle("ultrasound")
+    window._preview_workers["ultrasound"] = handle
+    window._preview_connected_modalities.add("ultrasound")
+
+    window._handle_preview_worker_event(
+        WorkerEvent(
+            event_type=WorkerEventType.FAILED,
+            modality="ultrasound",
+            payload={"state": "FAILED", "traceback": "adapter crashed"},
+            message="Preview worker failed",
+        ),
+        handle,
+        "ultrasound",
+    )
+
+    assert handle.stop_requests == 1
+    assert "ultrasound" not in window._preview_connected_modalities
+    assert "ultrasound" in window._preview_disconnect_deadlines
     window.close()
 
 
@@ -1755,8 +2142,7 @@ def test_worker_request_uses_selected_profile(tmp_path: Path) -> None:
 
 
 def test_preview_imu_two_device_labels_skip_empty_slot(tmp_path: Path) -> None:
-    """With slots 1+3 enabled, labels [imu_trunk, imu_right] update the
-    correct ring traces while imu_left stays untouched (NaN)."""
+    """With slots 1+3 enabled, their acc_x traces update independently."""
     _app, window, _created = _window_with_fake(tmp_path)
     window._handle_worker_event(
         WorkerEvent(
@@ -1764,17 +2150,17 @@ def test_preview_imu_two_device_labels_skip_empty_slot(tmp_path: Path) -> None:
             modality="imu",
             payload={
                 "host_monotonic_ns": 2_000,
-                "labels": ["imu_trunk", "imu_right"],
+                "labels": ["imu_trunk_acc_x", "imu_right_acc_x"],
                 "channels": [[1.0], [2.0]],
                 "channel": "acc_x",
             },
         )
     )
     # Only trunk and right traces should update
-    assert window._imu_traces["imu_trunk"]._buffer[0] == 1.0
-    assert window._imu_traces["imu_right"]._buffer[0] == 2.0
+    assert window._imu_traces["imu_trunk_acc_x"]._buffer[0] == 1.0
+    assert window._imu_traces["imu_right_acc_x"]._buffer[0] == 2.0
     # Left trace must stay untouched (still NaN)
-    assert np.isnan(window._imu_traces["imu_left"]._buffer[0])
+    assert np.isnan(window._imu_traces["imu_left_acc_x"]._buffer[0])
     window.close()
 
 
@@ -1790,14 +2176,14 @@ def test_preview_imu_streams_two_device_labels_skip_empty_slot(
             payload={
                 "host_monotonic_ns": 3_000,
                 "streams": [
-                    {"label": "imu_trunk", "values": [0.5, 0.6], "channel": "acc_x"},
-                    {"label": "imu_right", "values": [0.7, 0.8], "channel": "acc_x"},
+                    {"label": "imu_trunk_acc_x", "values": [0.5, 0.6]},
+                    {"label": "imu_right_acc_x", "values": [0.7, 0.8]},
                 ],
             },
         )
     )
-    assert window._imu_traces["imu_trunk"]._buffer[0] == 0.5
-    assert window._imu_traces["imu_right"]._buffer[0] == 0.7
+    assert window._imu_traces["imu_trunk_acc_x"]._buffer[0] == 0.5
+    assert window._imu_traces["imu_right_acc_x"]._buffer[0] == 0.7
     # Left trace must stay untouched
-    assert np.isnan(window._imu_traces["imu_left"]._buffer[0])
+    assert np.isnan(window._imu_traces["imu_left_acc_x"]._buffer[0])
     window.close()

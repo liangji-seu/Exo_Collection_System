@@ -1,11 +1,14 @@
 """Responsive PySide6 shell for the Collector worker process.
 
 Per-modality preview connect/disconnect with independent subprocess workers.
-Trial lifecycle: stop previews → start CollectorWorker → restore previews.
+Trial lifecycle: continuous preview workers forward raw events to the
+CollectorWorker through bounded IPC queues (StreamProxyAdapter).
+Preview workers are never stopped or reconnected during a Trial.
 """
 
 from __future__ import annotations
 
+import inspect
 import logging
 import math
 import time
@@ -56,6 +59,7 @@ from PySide6.QtWidgets import (
 )
 
 from exo_collection.acquisition.messages import WorkerEvent, WorkerEventType
+from exo_collection.acquisition.recording_stream import RecordingStreamEndpoint
 from exo_collection.acquisition.workers import CollectorWorker
 from exo_collection.apps.collector.device_preview import (
     AdapterFactory,
@@ -149,7 +153,9 @@ class WorkerHandle(Protocol):
     def close(self) -> None: ...
 
 
-WorkerFactory = Callable[[TrialRunRequest], WorkerHandle]
+WorkerFactory = Callable[
+    [TrialRunRequest, Mapping[str, RecordingStreamEndpoint]], WorkerHandle
+]
 
 
 class PreflightWorkerHandle(Protocol):
@@ -868,6 +874,7 @@ class CollectorWindow(QMainWindow):
         self._preflight_root: Path | None = None
         self._worker_state = "IDLE"
         self._trial_succeeded = False
+        self._recording_branch_fault: str | None = None
         self._missing_trigger_alerted = False
 
         # Per-modality preview workers
@@ -877,8 +884,8 @@ class CollectorWindow(QMainWindow):
             m: "未连接" for m in MODALITIES
         }
         self._preview_disconnect_deadlines: dict[str, float] = {}
-        self._preview_restore_modalities: set[str] = set()
-        self._pending_trial_request: TrialRunRequest | None = None
+        self._recording_preview_handles: dict[str, ModalityPreviewHandle] = {}
+        self._recording_streams_ended = False
         self._injected_preview_factory = preview_worker_factory
 
         self._experiment_metadata = TrialExperimentMetadata()
@@ -1958,7 +1965,6 @@ class CollectorWindow(QMainWindow):
         """Poll events from all active preview workers and dispatch to UI handlers."""
         if not self._preview_workers:
             self._preview_timer.stop()
-            self._maybe_launch_pending_trial()
             return
         now = time.monotonic()
         for modality, handle in list(self._preview_workers.items()):
@@ -1978,6 +1984,20 @@ class CollectorWindow(QMainWindow):
                         f"{type(exc).__name__}: {exc}"
                     )
 
+            # Recording control ACKs update the handle's local active UUID.
+            # Draining them is essential for a later Trial to reuse this same
+            # persistent preview handle after STOPPED or FAULT.
+            drain_control_ack = getattr(handle, "drain_control_ack", None)
+            if callable(drain_control_ack):
+                try:
+                    drain_control_ack()
+                except Exception as exc:
+                    LOG.warning(
+                        "draining %s recording control ACKs failed: %s",
+                        modality,
+                        exc,
+                    )
+
             if not handle.is_alive and handle.exitcode is not None:
                 self._handle_preview_worker_death(modality, handle)
                 continue
@@ -1989,7 +2009,6 @@ class CollectorWindow(QMainWindow):
                 except Exception as exc:
                     LOG.error("强制回收 %s 预览失败: %s", modality, exc)
                 self._handle_preview_worker_death(modality, handle)
-        self._maybe_launch_pending_trial()
 
     def _handle_preview_worker_event(self, event: WorkerEvent,
                                       handle: ModalityPreviewHandle,
@@ -2015,6 +2034,9 @@ class CollectorWindow(QMainWindow):
                 self._update_connect_button_state()
                 self._update_start_button()
         elif event.event_type is WorkerEventType.FAILED:
+            if str(event.payload.get("state") or "").upper() == "FAULT":
+                self._handle_recording_branch_fault(event, modality)
+                return
             error_msg = event.message or "未知错误"
             full_tb = str(event.payload.get("traceback") or "")
             self._preview_connected_modalities.discard(modality)
@@ -2036,6 +2058,65 @@ class CollectorWindow(QMainWindow):
             self._handle_preview_health(event, modality)
         elif event.event_type is WorkerEventType.PREVIEW:
             self._handle_preview(event)
+
+    def _handle_recording_branch_fault(
+        self,
+        event: WorkerEvent,
+        modality: str,
+    ) -> None:
+        """Fail only the Trial recording branch; keep device preview alive."""
+
+        event_trial_uuid = event.trial_uuid or event.payload.get("trial_uuid")
+        active_trial_uuid = self._active_trial_uuid
+        fault = str(
+            event.payload.get("fault")
+            or event.message
+            or "unknown recording stream fault"
+        )
+        if (
+            active_trial_uuid is None
+            or (
+                event_trial_uuid is not None
+                and str(event_trial_uuid) != active_trial_uuid
+            )
+        ):
+            self._append_alert(
+                f"已忽略 {modality} 的过期记录支路 FAULT："
+                f"trial={event_trial_uuid or '未知'}，{fault}"
+            )
+            LOG.warning(
+                "ignored stale recording branch fault: modality=%s "
+                "event_trial=%s active_trial=%s fault=%s",
+                modality,
+                event_trial_uuid,
+                active_trial_uuid,
+                fault,
+            )
+            return
+
+        if self._recording_branch_fault is None:
+            self._recording_branch_fault = f"{modality}: {fault}"
+            self._append_alert(
+                f"Trial 记录支路故障（{modality}）：{fault}。"
+                "已停止全部写盘转发；设备预览保持连接。"
+            )
+            self._add_timeline_event(2, f"RECORDING FAULT · {modality} · {fault}")
+        self._trial_succeeded = False
+        self._end_recording_streams()
+
+        worker = self._worker
+        if worker is not None and not self._stop_requested:
+            try:
+                worker.request_stop()
+            except Exception as exc:
+                self._append_alert(
+                    f"记录支路故障后发送 Collector 停止请求失败："
+                    f"{type(exc).__name__}: {exc}"
+                )
+            self._stop_requested = True
+            self._stop_requested_at = time.monotonic()
+        self.start_button.setEnabled(False)
+        self._set_trial_state("FAILED")
 
     def _handle_preview_health(self, event: WorkerEvent, modality: str) -> None:
         payload = event.payload
@@ -2162,7 +2243,6 @@ class CollectorWindow(QMainWindow):
         if (
             self._worker is not None
             or self._preflight_worker is not None
-            or self._pending_trial_request is not None
         ):
             return
 
@@ -2185,27 +2265,69 @@ class CollectorWindow(QMainWindow):
         connected = frozenset(self._preview_connected_modalities)
         request = request.model_copy(update={"enabled_modalities": connected})
 
-        # Stop all preview workers asynchronously to release exclusive device
-        # handles. The GUI timer launches the recording worker only after every
-        # preview process has exited.
-        self._preview_restore_modalities = set(self._preview_connected_modalities)
-        self._pending_trial_request = request
+        # The already-running preview processes own the hardware Adapters.
+        # Recording attaches to their raw IPC endpoints without stopping or
+        # reconnecting a single device.
         self._set_configuration_locked(True)
-        self._set_trial_state("SWITCHING_TO_RECORD")
-        self._stop_all_preview_workers_for_trial()
-        self.statusBar().showMessage("正在从预览切换到记录…")
-        self._append_alert("正在停止所有预览 Worker；设备释放后将启动 Trial 记录。")
-        LOG.info("正在停止预览 workers 并启动 Trial")
-        self._preview_timer.start()
-        self._maybe_launch_pending_trial()
+        self._launch_trial_worker(request)
 
     def _launch_trial_worker(self, request: TrialRunRequest) -> None:
-        """Start the recording worker after preview devices are fully released."""
+        """Start a disk consumer and then open each preview recording gate."""
         worker: WorkerHandle | None = None
         try:
-            worker = self._worker_factory(request)
+            handles: dict[str, ModalityPreviewHandle] = {}
+            endpoints: dict[str, RecordingStreamEndpoint] = {}
+            for modality in sorted(request.enabled_modalities or ()):
+                handle = self._preview_workers.get(modality)
+                if handle is None or modality not in self._preview_connected_modalities:
+                    raise RuntimeError(f"{modality} preview is not READY")
+                discard_backlog = getattr(
+                    handle, "discard_recording_backlog", None
+                )
+                if callable(discard_backlog):
+                    discarded = int(discard_backlog() or 0)
+                    if discarded:
+                        LOG.warning(
+                            "discarded %d stale %s recording queue items "
+                            "before Trial %s",
+                            discarded,
+                            modality,
+                            request.trial_uuid,
+                        )
+                endpoint = getattr(handle, "recording_endpoint", None)
+                if endpoint is None:
+                    raise RuntimeError(
+                        f"{modality} preview has no recording endpoint"
+                    )
+                handles[modality] = handle
+                endpoints[modality] = endpoint
+
+            worker = self._create_recording_worker(request, endpoints)
             worker.start()
+            trial_uuid = str(request.trial_uuid)
+            self._worker = worker
+            self._active_trial_uuid = trial_uuid
+            self._recording_preview_handles = {}
+            self._recording_streams_ended = False
+            for modality, handle in handles.items():
+                handle.begin_recording(trial_uuid)
+                self._recording_preview_handles[modality] = handle
         except Exception as exc:
+            if self._recording_preview_handles:
+                self._end_recording_streams()
+            if worker is not None and self._worker_is_alive(worker):
+                try:
+                    worker.request_stop()
+                except Exception:
+                    pass
+                try:
+                    worker.terminate_for_recovery(timeout=0.5)
+                except Exception as cleanup_exc:
+                    LOG.error(
+                        "terminating Collector after recording attach failure "
+                        "failed: %s",
+                        cleanup_exc,
+                    )
             if worker is not None:
                 try:
                     if not self._worker_is_alive(worker):
@@ -2213,16 +2335,27 @@ class CollectorWindow(QMainWindow):
                         worker.close()
                 except Exception:
                     pass
+            worker_still_alive = (
+                worker is not None and self._worker_is_alive(worker)
+            )
+            self._worker = worker if worker_still_alive else None
+            if not worker_still_alive:
+                self._active_trial_uuid = None
+            self._recording_preview_handles.clear()
+            self._recording_streams_ended = False
+            if worker_still_alive:
+                self._stop_requested = True
+                self._stop_requested_at = time.monotonic()
+                self._poll_timer.start()
+            else:
+                self._poll_timer.stop()
             self._set_trial_state("FAILED")
             self._append_alert(f"无法启动 Trial：{type(exc).__name__}: {exc}")
             self.statusBar().showMessage("Trial 启动失败。")
             LOG.error("Trial 启动失败: %s", exc)
-            self._set_configuration_locked(False)
-            self._restore_preview_workers()
+            self._set_configuration_locked(worker_still_alive)
             return
 
-        self._worker = worker
-        self._active_trial_uuid = str(request.trial_uuid)
         self._terminal_event_received = False
         self._dead_poll_count = 0
         self._stop_requested = False
@@ -2230,7 +2363,8 @@ class CollectorWindow(QMainWindow):
         self._forced_stop_alerted = False
         self._close_when_finished = False
         self._trial_succeeded = False
-        self._reset_trial_display()
+        self._recording_branch_fault = None
+        self._reset_trial_telemetry()
         self._set_trial_state("PREPARING")
         self._update_start_button()
         self._poll_timer.start()
@@ -2239,48 +2373,28 @@ class CollectorWindow(QMainWindow):
         self.statusBar().showMessage(f"Trial {request.trial_uuid} 已交给独立 Collector Worker。")
         LOG.info("Trial 已启动: %s", request.trial_uuid)
 
-    def _stop_all_preview_workers_for_trial(self) -> None:
-        """Request all preview workers to stop without blocking the GUI thread."""
-        for modality, handle in list(self._preview_workers.items()):
-            self._preview_connected_modalities.discard(modality)
-            self._preview_disconnect_deadlines[modality] = time.monotonic() + 5.0
-            self._preview_connection_status[modality] = "断开中"
-            self._set_preview_status(
-                modality, "切换至记录中", handle.device_id, handle.simulated
-            )
-            try:
-                handle.request_stop()
-            except Exception as exc:
-                LOG.warning("停止 %s 预览时出错: %s", modality, exc)
-        self._update_connect_button_state()
+    def _create_recording_worker(
+        self,
+        request: TrialRunRequest,
+        endpoints: Mapping[str, RecordingStreamEndpoint],
+    ) -> WorkerHandle:
+        """Call the endpoint-aware factory, retaining old test integrations."""
 
-    def _maybe_launch_pending_trial(self) -> None:
-        request = self._pending_trial_request
-        if request is None:
-            return
-        if self._preview_workers:
-            return
-        self._pending_trial_request = None
-        self._append_alert("所有预览设备已释放；现在开始 Trial 原始写盘。")
-        self._launch_trial_worker(request)
+        try:
+            signature = inspect.signature(self._worker_factory)
+            signature.bind(request, endpoints)
+        except TypeError:
+            return self._worker_factory(request)  # type: ignore[call-arg]
+        except (ValueError, AttributeError):
+            pass
+        return self._worker_factory(request, endpoints)
 
-    def _restore_preview_workers(self) -> None:
-        """Attempt to reconnect preview workers for previously connected modalities."""
-        prev_connected = [m for m in MODALITIES if m in self._preview_restore_modalities]
-        self._preview_restore_modalities.clear()
-        if not prev_connected:
-            return
-        self._append_alert("正在恢复预览连接…")
-        LOG.info("正在恢复 %d 个模态的预览连接", len(prev_connected))
-        for modality in prev_connected:
-            try:
-                self._connect_modality(modality)
-            except Exception as exc:
-                self._append_alert(f"恢复 {modality} 预览失败：{type(exc).__name__}: {exc}")
-                LOG.error("恢复 %s 预览失败: %s", modality, exc)
+    def _reset_trial_telemetry(self) -> None:
+        """Reset Trial-scoped counters without touching live signal curves."""
 
-    def _reset_trial_display(self) -> None:
-        # Do NOT clear alerts — keep the log history
+        # Do NOT clear alerts or real-time preview buffers.  Starting disk
+        # recording is not a device-stream boundary and must be visually
+        # imperceptible apart from the Trial state controls.
         self._last_health_status.clear()
         self._missing_trigger_alerted = False
         self._set_sync_indicator("WAITING_SYNC", "WAITING", 0, "—")
@@ -2289,6 +2403,15 @@ class CollectorWindow(QMainWindow):
             self.health_table.item(row, HEALTH_COLUMN_SAMPLE_COUNT).setText("0")
             self.health_table.item(row, HEALTH_COLUMN_RATE).setText("-")
             self.health_table.item(row, HEALTH_COLUMN_DROPPED).setText("-")
+        self._timeline_started_at = time.monotonic()
+        self._timeline_x.clear()
+        self._timeline_y.clear()
+        self._timeline_text.clear()
+        self._add_timeline_event(0, "PREPARING")
+
+    def _reset_realtime_preview_curves(self) -> None:
+        """Explicitly clear signal displays at a true preview-stream boundary."""
+
         empty_ultrasound = np.full(ULTRASOUND_PREVIEW_SAMPLES, np.nan, dtype=np.float64)
         for curve in self._us_curves:
             curve.setData(self._us_x, empty_ultrasound)
@@ -2297,16 +2420,14 @@ class CollectorWindow(QMainWindow):
             trace.reset()
         for trace in self._enc_traces.values():
             trace.reset()
-        self._timeline_started_at = time.monotonic()
-        self._timeline_x.clear()
-        self._timeline_y.clear()
-        self._timeline_text.clear()
-        self._add_timeline_event(0, "PREPARING")
 
     @Slot()
     def request_controlled_stop(self) -> None:
         if self._worker is None or self._stop_requested:
             return
+        # Close only the recording gates.  The preview workers and hardware
+        # Adapter instances remain alive and continue publishing UI previews.
+        self._end_recording_streams()
         try:
             self._worker.request_stop()
         except Exception as exc:
@@ -2316,8 +2437,27 @@ class CollectorWindow(QMainWindow):
         self._stop_requested_at = time.monotonic()
         self.start_button.setEnabled(False)
         self._set_trial_state("STOPPING")
-        self._append_alert("已发送受控停止请求；正在等待 Writer flush 与 Trial 最终化。")
-        LOG.info("Trial 受控停止请求已发送")
+        self._append_alert("已发送受控停止请求；正在等待 Writer flush 与 Trial 最终化。预览持续运行。")
+        LOG.info("Trial 受控停止请求已发送，记录流转发已停止")
+
+    def _end_recording_streams(self) -> None:
+        """Idempotently close Trial forwarding without stopping previews."""
+
+        if self._recording_streams_ended:
+            return
+        trial_uuid = self._active_trial_uuid
+        if trial_uuid is None:
+            return
+        self._recording_streams_ended = True
+        for modality, handle in self._recording_preview_handles.items():
+            try:
+                handle.end_recording(trial_uuid)
+            except Exception as exc:
+                self._append_alert(
+                    f"停止 {modality} 写盘转发失败："
+                    f"{type(exc).__name__}: {exc}"
+                )
+                LOG.error("end_recording failed for %s: %s", modality, exc)
 
     @Slot()
     def poll_worker_events(self) -> None:
@@ -2689,7 +2829,14 @@ class CollectorWindow(QMainWindow):
         return normalized
 
     def _handle_completed(self, event: WorkerEvent) -> None:
+        self._end_recording_streams()
         self._terminal_event_received = True
+        if self._recording_branch_fault is not None:
+            self._mark_failed(
+                "记录支路已故障，即使 Collector 发布 COMPLETED "
+                f"也不能将本 Trial 判为成功：{self._recording_branch_fault}"
+            )
+            return
         self._trial_succeeded = True
         state = str(event.payload.get("state") or "FINALIZED")
         self._set_trial_state(state)
@@ -2704,6 +2851,7 @@ class CollectorWindow(QMainWindow):
         self.statusBar().showMessage(event.message or "Trial 数据包已最终化。")
 
     def _mark_failed(self, message: str) -> None:
+        self._end_recording_streams()
         self._trial_succeeded = False
         self._set_trial_state("FAILED")
         self.start_button.setEnabled(False)
@@ -2713,6 +2861,7 @@ class CollectorWindow(QMainWindow):
         LOG.error("Trial FAILED: %s", message)
 
     def _release_worker(self, worker: WorkerHandle) -> None:
+        self._end_recording_streams()
         try:
             worker.join(timeout=0)
             worker.close()
@@ -2720,31 +2869,34 @@ class CollectorWindow(QMainWindow):
             self._append_alert(f"释放 Worker 资源时出错：{type(exc).__name__}: {exc}")
         self._worker = None
         self._active_trial_uuid = None
+        self._recording_preview_handles.clear()
+        self._recording_streams_ended = False
         self._stop_requested_at = None
         self._forced_stop_alerted = False
         self._poll_timer.stop()
         self._preflight_ready = False
         for row in self._health_rows.values():
             self.health_table.item(row, HEALTH_COLUMN_MODALITY).setToolTip("")
-        # Clear preview connected state — must explicitly reconnect
-        self._preview_connected_modalities.clear()
+        # DO NOT clear _preview_connected_modalities — preview workers
+        # remain alive and connected across Trials.
         self._set_configuration_locked(False)
         self.start_button.setEnabled(False)
         self._clear_one_trial_metadata()
         self._update_connect_button_state()
         self._update_start_button()
         if self._trial_succeeded:
-            self._set_trial_state("IDLE")
+            self._set_trial_state(
+                "PREFLIGHT_READY"
+                if self._preview_connected_modalities
+                else "IDLE"
+            )
             self.statusBar().showMessage(
-                "Trial 已最终化；设备 Worker 已关闭，一次性元数据已清空；"
-                "下一个 Trial 前请重新确认记录。",
+                "Trial 已最终化；预览连接保持，可立即开始下一个 Trial。",
                 8000,
             )
-            LOG.info("Trial 成功完成: 尝试恢复预览连接")
+            LOG.info("Trial 成功完成: 预览连接保持中")
         else:
-            LOG.warning("Trial 失败: 在记录 Worker 释放后恢复预览")
-        if not self._close_when_finished:
-            self._restore_preview_workers()
+            LOG.warning("Trial 失败: 预览连接保持中，不重连设备")
         self.trial_finished.emit(self._trial_succeeded)
         if self._close_when_finished:
             self._close_when_finished = False
@@ -2809,8 +2961,6 @@ class CollectorWindow(QMainWindow):
                 blockers.append("设备预检进行中")
             if self._worker is not None:
                 blockers.append("Worker 仍在运行")
-            if self._pending_trial_request is not None:
-                blockers.append("已有待处理的 Trial 请求")
             can_start = not blockers
             self.start_button.setEnabled(can_start)
             self.start_button.setToolTip(
@@ -2825,7 +2975,6 @@ class CollectorWindow(QMainWindow):
             "DISCONNECTED": "未连接",
             "PREFLIGHT_READY": "可采集",
             "PREFLIGHT": "设备预检",
-            "SWITCHING_TO_RECORD": "切换至记录",
             "PREPARING": "等待同步",
             "READY": "等待同步",
             "WAITING_SYNC": "等待同步",
@@ -2902,10 +3051,6 @@ class CollectorWindow(QMainWindow):
             self._position_toast()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API
-        # Closing cancels a pending preview-to-record transition.  A timer tick
-        # during teardown must never launch a new Trial worker.
-        self._pending_trial_request = None
-        self._preview_restore_modalities.clear()
         preflight_worker = self._preflight_worker
         if preflight_worker is not None:
             self._preflight_timer.stop()
@@ -2930,7 +3075,19 @@ class CollectorWindow(QMainWindow):
             self._preflight_root = None
             self._set_preflight_busy(False)
 
-        # Stop all preview workers
+        # ── Handle recording worker first ──
+        worker = self._worker
+        if worker is not None and self._worker_is_alive(worker):
+            # Recording is active: request controlled stop and defer close
+            self._close_when_finished = True
+            self.request_controlled_stop()
+            self.statusBar().showMessage("正在受控停止并最终化 Trial；完成后将自动关闭。")
+            event.ignore()
+            return
+        if worker is not None:
+            self._release_worker(worker)
+
+        # ── Stop all preview workers AFTER recording worker is done ──
         self._preview_timer.stop()
         for modality, handle in list(self._preview_workers.items()):
             try:
@@ -2947,15 +3104,6 @@ class CollectorWindow(QMainWindow):
         self._preview_connected_modalities.clear()
         LOG.info("关闭窗口：所有预览 worker 已回收")
 
-        worker = self._worker
-        if worker is not None and self._worker_is_alive(worker):
-            self._close_when_finished = True
-            self.request_controlled_stop()
-            self.statusBar().showMessage("正在受控停止并最终化 Trial；完成后将自动关闭。")
-            event.ignore()
-            return
-        if worker is not None:
-            self._release_worker(worker)
         self._poll_timer.stop()
         self._close_started_at = None
         LOG.info("CollectorWindow 已关闭")

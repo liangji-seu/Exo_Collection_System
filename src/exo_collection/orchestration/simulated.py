@@ -23,6 +23,8 @@ import numpy as np
 from exo_collection import __version__
 from exo_collection.acquisition.messages import WorkerEvent, WorkerEventType
 from exo_collection.acquisition.preview import build_preview_event
+from exo_collection.acquisition.recording_stream import RecordingStreamEndpoint
+from exo_collection.acquisition.stream_proxy import StreamProxyAdapter
 from exo_collection.adapters.base import (
     AdapterError,
     ModalityAdapter,
@@ -505,9 +507,19 @@ def run_trial(
     ]
     | None = None,
     enabled_modalities: frozenset[str] | None = None,
+    recording_streams: Mapping[str, RecordingStreamEndpoint] | None = None,
+    recording_stream_end_timeout_s: float = 10.0,
 ) -> TrialRunResult:
-    """Collect the selected four-modality profile and publish one Trial."""
+    """Collect the selected four-modality profile and publish one Trial.
 
+    When ``recording_streams`` are provided, each endpoint is used to build a
+    ``StreamProxyAdapter`` that drains raw events from the persistent preview
+    worker's recording queue.  These proxy adapters never touch real hardware,
+    preserving the one-connect-per-session invariant.
+    """
+
+    if recording_stream_end_timeout_s <= 0:
+        raise ValueError("recording_stream_end_timeout_s must be positive")
     stop_signal = stop_requested or _NeverStop()
     root = request.data_root.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -529,13 +541,40 @@ def run_trial(
     machine = TrialStateMachine()
     device_profile = load_device_profile(request.device_profile_key)
     profiles_by_modality = device_profile.by_modality()
-    adapters = (adapter_factory or _make_adapters)(request, device_profile)
-    if enabled_modalities:
+
+    external_stream_mode = recording_streams is not None
+    if external_stream_mode:
+        if adapter_factory is not None:
+            raise ValueError(
+                "adapter_factory cannot be combined with external recording streams"
+            )
+        endpoints = dict(recording_streams or {})
+        selected_modalities = set(enabled_modalities or endpoints)
+        missing = selected_modalities - set(endpoints)
+        unexpected = set(endpoints) - selected_modalities
+        if missing or unexpected or not selected_modalities:
+            details = []
+            if missing:
+                details.append("missing=" + ",".join(sorted(missing)))
+            if unexpected:
+                details.append("unexpected=" + ",".join(sorted(unexpected)))
+            if not selected_modalities:
+                details.append("no enabled recording streams")
+            raise ValueError(
+                "invalid external recording streams: " + "; ".join(details)
+            )
         adapters = {
-            name: adapter
-            for name, adapter in adapters.items()
-            if name in enabled_modalities
+            modality: StreamProxyAdapter(endpoints[modality])
+            for modality in sorted(selected_modalities)
         }
+    else:
+        adapters = (adapter_factory or _make_adapters)(request, device_profile)
+        if enabled_modalities:
+            adapters = {
+                name: adapter
+                for name, adapter in adapters.items()
+                if name in enabled_modalities
+            }
     descriptors = {name: adapter.descriptor() for name, adapter in adapters.items()}
     simulated_by_modality = {
         modality: bool(
@@ -905,41 +944,103 @@ def run_trial(
                     # for UI telemetry.  Expensive PNG rendering is deferred
                     # until every adapter and Writer has stopped.
                     preview_history.capture(event)
-                    _publish(
-                        publish,
-                        _preview_event(
-                            event,
-                            request.trial_uuid,
-                            descriptors[modality],
-                        ),
-                    )
+                    if not external_stream_mode:
+                        _publish(
+                            publish,
+                            _preview_event(
+                                event,
+                                request.trial_uuid,
+                                descriptors[modality],
+                            ),
+                        )
 
             # Emit an initial health snapshot immediately, then at 2 Hz.
             last_health_ns = start_token.host_monotonic_ns - 500_000_000
             last_heartbeat_ns = start_token.host_monotonic_ns
             stop_reason = "controlled stop requested"
+            external_end_wait_started_ns: int | None = None
             while True:
                 processed = False
                 now_ns = time.perf_counter_ns()
-                if stop_signal.is_set():
-                    stop_reason = "manual stop requested"
-                    formal_stop_monotonic_ns = max(
-                        now_ns,
-                        first_trigger_host_monotonic_ns or now_ns,
+                if external_stream_mode:
+                    proxy_adapters = tuple(
+                        adapter
+                        for adapter in adapters.values()
+                        if isinstance(adapter, StreamProxyAdapter)
                     )
-                    break
-                if recording_deadline_ns is not None and now_ns >= recording_deadline_ns:
-                    stop_reason = "configured post-trigger duration elapsed"
-                    formal_stop_monotonic_ns = recording_deadline_ns
-                    break
-                if (
-                    first_trigger_host_monotonic_ns is None
-                    and sync_wait_deadline_ns is not None
-                    and now_ns >= sync_wait_deadline_ns
-                ):
-                    stop_reason = "synchronization wait timeout elapsed"
-                    formal_stop_monotonic_ns = sync_wait_deadline_ns
-                    break
+                    if len(proxy_adapters) != len(adapters):
+                        raise RuntimeError(
+                            "external recording mode contains a non-proxy adapter"
+                        )
+                    if proxy_adapters and all(
+                        adapter.stream_ended for adapter in proxy_adapters
+                    ):
+                        boundary_times = [
+                            adapter.end_host_monotonic_ns
+                            for adapter in proxy_adapters
+                            if adapter.end_host_monotonic_ns is not None
+                        ]
+                        formal_stop_monotonic_ns = max(
+                            boundary_times or [now_ns],
+                            default=now_ns,
+                        )
+                        if first_trigger_host_monotonic_ns is not None:
+                            formal_stop_monotonic_ns = max(
+                                formal_stop_monotonic_ns,
+                                first_trigger_host_monotonic_ns,
+                            )
+                        if external_end_wait_started_ns is None:
+                            stop_reason = "all persistent recording streams ended"
+                        break
+
+                    # Persistent preview workers own the real devices and the
+                    # recording gates.  Only their END boundaries may stop an
+                    # external-stream Trial.  Acting on the local stop event,
+                    # duration, or sync timeout here would wait for END without
+                    # giving the UI process any way to close those gates.
+                    requested_reason: str | None = None
+                    if any(adapter.stream_ended for adapter in proxy_adapters):
+                        requested_reason = "one persistent recording stream ended"
+
+                    if requested_reason is not None:
+                        if external_end_wait_started_ns is None:
+                            external_end_wait_started_ns = now_ns
+                            stop_reason = requested_reason
+                        elif now_ns - external_end_wait_started_ns >= int(
+                            recording_stream_end_timeout_s * 1_000_000_000
+                        ):
+                            pending = [
+                                adapter.descriptor().modality
+                                for adapter in proxy_adapters
+                                if not adapter.stream_ended
+                            ]
+                            raise AdapterError(
+                                "timed out waiting for END boundary from: "
+                                + ", ".join(sorted(pending))
+                            )
+                else:
+                    if stop_signal.is_set():
+                        stop_reason = "manual stop requested"
+                        formal_stop_monotonic_ns = max(
+                            now_ns,
+                            first_trigger_host_monotonic_ns or now_ns,
+                        )
+                        break
+                    if (
+                        recording_deadline_ns is not None
+                        and now_ns >= recording_deadline_ns
+                    ):
+                        stop_reason = "configured post-trigger duration elapsed"
+                        formal_stop_monotonic_ns = recording_deadline_ns
+                        break
+                    if (
+                        first_trigger_host_monotonic_ns is None
+                        and sync_wait_deadline_ns is not None
+                        and now_ns >= sync_wait_deadline_ns
+                    ):
+                        stop_reason = "synchronization wait timeout elapsed"
+                        formal_stop_monotonic_ns = sync_wait_deadline_ns
+                        break
                 for modality, adapter in adapters.items():
                     for _ in range(32):
                         event = adapter.get_event(timeout=0)
@@ -1141,6 +1242,8 @@ def run_trial(
                 layout,
                 preview_history,
                 formal_t0_host_monotonic_ns=first_trigger_host_monotonic_ns,
+                include_ultrasound="ultrasound" in adapters,
+                include_signals=bool({"imu", "encoder"} & set(adapters)),
             )
             mappings = _clock_mappings(descriptors, anchors)
             formal_item_counts: dict[str, int] = {}
@@ -1590,75 +1693,73 @@ def run_trial(
             activity.heartbeat()
             journal.close_and_publish()
 
-            ultrasound_artifact_uuid = uuid4()
-            imu_artifact_uuid = uuid4()
-            encoder_artifact_uuid = uuid4()
-            sync_pulse_artifact_uuid = uuid4()
+            raw_artifact_uuid_by_modality = {
+                modality: uuid4() for modality in adapters
+            }
             statistics_artifact_uuid = uuid4()
             quality_artifact_uuid = uuid4()
             quality_rules_artifact_uuid = uuid4()
             sync_manifest_artifact_uuid = uuid4()
-            raw_artifact_uuids = (
-                ultrasound_artifact_uuid,
-                imu_artifact_uuid,
-                encoder_artifact_uuid,
-                sync_pulse_artifact_uuid,
+            raw_artifact_uuids = tuple(
+                raw_artifact_uuid_by_modality[modality]
+                for modality in adapters
             )
-            draft_by_key: dict[str, ArtifactDraft] = {
-                "ultrasound": ArtifactDraft(
+            draft_by_key: dict[str, ArtifactDraft] = {}
+            if "ultrasound" in adapters:
+                ultrasound_artifact_uuid = raw_artifact_uuid_by_modality["ultrasound"]
+                draft_by_key.update(
+                    {
+                        "ultrasound": ArtifactDraft(
+                            request.trial_uuid,
+                            "ultrasound",
+                            ArtifactKind.RAW,
+                            "application/x-exo-ultrasound-blocks",
+                            "raw/ultrasound.bin",
+                            artifact_uuid=ultrasound_artifact_uuid,
+                            created_at_utc=started_at_utc,
+                        ),
+                        "ultrasound_meta": ArtifactDraft(
+                            request.trial_uuid,
+                            "ultrasound",
+                            ArtifactKind.RAW,
+                            "application/json",
+                            "raw/ultrasound.meta.json",
+                            created_at_utc=started_at_utc,
+                        ),
+                        "ultrasound_index": ArtifactDraft(
+                            request.trial_uuid,
+                            "ultrasound",
+                            ArtifactKind.DERIVED,
+                            "application/x-exo-ultrasound-index",
+                            "raw/ultrasound.idx",
+                            created_at_utc=started_at_utc,
+                        ),
+                    }
+                )
+            for modality in adapters:
+                if modality == "ultrasound":
+                    continue
+                metadata = (
+                    {
+                        "contains_raw_waveform": True,
+                        "contains_detected_events": True,
+                    }
+                    if modality == "sync_pulse"
+                    else {}
+                )
+                draft_by_key[modality] = ArtifactDraft(
                     request.trial_uuid,
-                    "ultrasound",
-                    ArtifactKind.RAW,
-                    "application/x-exo-ultrasound-blocks",
-                    "raw/ultrasound.bin",
-                    artifact_uuid=ultrasound_artifact_uuid,
-                    created_at_utc=started_at_utc,
-                ),
-                "ultrasound_meta": ArtifactDraft(
-                    request.trial_uuid,
-                    "ultrasound",
-                    ArtifactKind.RAW,
-                    "application/json",
-                    "raw/ultrasound.meta.json",
-                    created_at_utc=started_at_utc,
-                ),
-                "ultrasound_index": ArtifactDraft(
-                    request.trial_uuid,
-                    "ultrasound",
-                    ArtifactKind.DERIVED,
-                    "application/x-exo-ultrasound-index",
-                    "raw/ultrasound.idx",
-                    created_at_utc=started_at_utc,
-                ),
-                "imu": ArtifactDraft(
-                    request.trial_uuid,
-                    "imu",
+                    modality,
                     ArtifactKind.RAW,
                     "application/x-hdf5",
-                    "raw/imu.h5",
-                    artifact_uuid=imu_artifact_uuid,
+                    f"raw/{modality}.h5",
+                    artifact_uuid=raw_artifact_uuid_by_modality[modality],
                     created_at_utc=started_at_utc,
-                ),
-                "encoder": ArtifactDraft(
-                    request.trial_uuid,
-                    "encoder",
-                    ArtifactKind.RAW,
-                    "application/x-hdf5",
-                    "raw/encoder.h5",
-                    artifact_uuid=encoder_artifact_uuid,
-                    created_at_utc=started_at_utc,
-                ),
-                "sync_pulse": ArtifactDraft(
-                    request.trial_uuid,
-                    "sync_pulse",
-                    ArtifactKind.RAW,
-                    "application/x-hdf5",
-                    "raw/sync_pulse.h5",
-                    artifact_uuid=sync_pulse_artifact_uuid,
-                    created_at_utc=started_at_utc,
-                    metadata={"contains_raw_waveform": True, "contains_detected_events": True},
-                ),
-                "statistics": ArtifactDraft(
+                    metadata=metadata,
+                )
+            draft_by_key.update(
+                {
+                    "statistics": ArtifactDraft(
                     request.trial_uuid,
                     "trial",
                     ArtifactKind.DERIVED,
@@ -1724,7 +1825,7 @@ def run_trial(
                     "reports/sync_check.csv",
                     created_at_utc=finalized_at_utc,
                     source_artifact_uuids=(
-                        sync_pulse_artifact_uuid,
+                        raw_artifact_uuid_by_modality["sync_pulse"],
                         statistics_artifact_uuid,
                     ),
                     metadata={
@@ -1767,38 +1868,48 @@ def run_trial(
                         "issue_count": len(issues),
                     },
                 ),
-                "us_quality_preview": ArtifactDraft(
-                    request.trial_uuid,
-                    "ultrasound",
-                    ArtifactKind.REPORT,
-                    "image/png",
-                    US_PREVIEW_PATH,
-                    created_at_utc=finalized_at_utc,
-                    source_artifact_uuids=(ultrasound_artifact_uuid,),
-                    metadata=preview_bundle.ultrasound_metadata,
-                ),
-                "imu_encoder_preview": ArtifactDraft(
-                    request.trial_uuid,
-                    "trial",
-                    ArtifactKind.REPORT,
-                    "image/png",
-                    SIGNAL_PREVIEW_PATH,
-                    created_at_utc=finalized_at_utc,
-                    source_artifact_uuids=(
-                        imu_artifact_uuid,
-                        encoder_artifact_uuid,
-                    ),
-                    metadata=preview_bundle.signal_metadata,
-                ),
-                "journal": ArtifactDraft(
+                    "journal": ArtifactDraft(
                     request.trial_uuid,
                     "trial",
                     ArtifactKind.LOG,
                     "application/x-ndjson",
                     "logs/trial.jsonl",
                     created_at_utc=started_at_utc,
-                ),
-            }
+                    ),
+                }
+            )
+            if "ultrasound" in adapters:
+                draft_by_key["us_quality_preview"] = ArtifactDraft(
+                    request.trial_uuid,
+                    "ultrasound",
+                    ArtifactKind.REPORT,
+                    "image/png",
+                    US_PREVIEW_PATH,
+                    created_at_utc=finalized_at_utc,
+                    source_artifact_uuids=(
+                        raw_artifact_uuid_by_modality["ultrasound"],
+                    ),
+                    metadata=preview_bundle.ultrasound_metadata,
+                )
+            signal_modalities = tuple(
+                modality
+                for modality in ("imu", "encoder")
+                if modality in adapters
+            )
+            if signal_modalities:
+                draft_by_key["imu_encoder_preview"] = ArtifactDraft(
+                    request.trial_uuid,
+                    "trial",
+                    ArtifactKind.REPORT,
+                    "image/png",
+                    SIGNAL_PREVIEW_PATH,
+                    created_at_utc=finalized_at_utc,
+                    source_artifact_uuids=tuple(
+                        raw_artifact_uuid_by_modality[modality]
+                        for modality in signal_modalities
+                    ),
+                    metadata=preview_bundle.signal_metadata,
+                )
             artifacts: list[ManifestArtifact] = []
             for key, draft in draft_by_key.items():
                 artifacts.append(publish_artifact(layout, draft, finalized_at_utc))

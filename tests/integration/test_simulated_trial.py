@@ -393,7 +393,7 @@ def test_collector_worker_runs_acquisition_outside_ui_process(tmp_path) -> None:
         assert shared_marker["observed_generation"] == shared_marker["generation"]
         assert len(ultrasound_previews[-1].payload["channels"]) == 4
         assert all(
-            len(channel) <= 512
+            len(channel) == 1000
             for channel in ultrasound_previews[-1].payload["channels"]
         )
         signal_previews = [
@@ -420,9 +420,15 @@ def test_collector_worker_runs_acquisition_outside_ui_process(tmp_path) -> None:
             event for event in reversed(signal_previews) if event.modality == "encoder"
         )
         assert latest_imu.payload["labels"] == [
-            "imu_trunk",
-            "imu_left",
-            "imu_right",
+            "imu_trunk_acc_x",
+            "imu_trunk_acc_y",
+            "imu_trunk_acc_z",
+            "imu_left_acc_x",
+            "imu_left_acc_y",
+            "imu_left_acc_z",
+            "imu_right_acc_x",
+            "imu_right_acc_y",
+            "imu_right_acc_z",
         ]
         assert latest_encoder.payload["labels"] == [
             "left_position",

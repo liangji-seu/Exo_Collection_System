@@ -648,8 +648,15 @@ def publish_quality_preview_pngs(
     history: BoundedPreviewHistory,
     *,
     formal_t0_host_monotonic_ns: int,
+    include_ultrasound: bool = True,
+    include_signals: bool = True,
 ) -> PreviewReportBundle:
-    """Render and publish both PNGs after callers have stopped all Writers."""
+    """Render enabled PNGs after callers have stopped all Writers.
+
+    The default preserves the original two-report contract.  Acquisition
+    profiles that intentionally omit a modality can suppress its unrelated
+    preview so every published file remains represented by the Manifest.
+    """
 
     ultrasound_metrics = history.ultrasound_soft_metrics(
         formal_t0_host_monotonic_ns=formal_t0_host_monotonic_ns
@@ -672,20 +679,22 @@ def publish_quality_preview_pngs(
         "height": SIGNAL_PREVIEW_SIZE[1],
         "soft_metrics": signal_metrics,
     }
-    us_partial = layout.partial_path(US_PREVIEW_PATH)
-    _write_rgb_png(
-        us_partial,
-        _render_ultrasound(history),
-        description=ultrasound_metadata,
-    )
-    layout.publish_partial(US_PREVIEW_PATH)
-    signal_partial = layout.partial_path(SIGNAL_PREVIEW_PATH)
-    _write_rgb_png(
-        signal_partial,
-        _render_signals(history),
-        description=signal_metadata,
-    )
-    layout.publish_partial(SIGNAL_PREVIEW_PATH)
+    if include_ultrasound:
+        us_partial = layout.partial_path(US_PREVIEW_PATH)
+        _write_rgb_png(
+            us_partial,
+            _render_ultrasound(history),
+            description=ultrasound_metadata,
+        )
+        layout.publish_partial(US_PREVIEW_PATH)
+    if include_signals:
+        signal_partial = layout.partial_path(SIGNAL_PREVIEW_PATH)
+        _write_rgb_png(
+            signal_partial,
+            _render_signals(history),
+            description=signal_metadata,
+        )
+        layout.publish_partial(SIGNAL_PREVIEW_PATH)
     return PreviewReportBundle(
         ultrasound_metadata=ultrasound_metadata,
         signal_metadata=signal_metadata,

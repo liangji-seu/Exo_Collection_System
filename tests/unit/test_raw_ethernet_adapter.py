@@ -542,8 +542,10 @@ def test_raw_frame_payload_passes_preview_constraints() -> None:
     assert result.payload["channel_index"] == 2
     raw = np.frombuffer(data, dtype=np.uint8)[2:-1]
     expected = (raw.astype(np.int16) - 127).astype(float)
-    indices = np.linspace(0, raw.size - 1, 512, dtype=np.int64)
-    assert result.payload["values"] == pytest.approx(expected[indices].tolist())
+    # One A-line fits inside the fixed 1000-point display, so preview must
+    # preserve every ADC depth sample instead of applying the legacy 512-point
+    # decimation.
+    assert result.payload["values"] == pytest.approx(expected.tolist())
 
 
 # ── end-to-end: four channels produce four independent blocks ────────────────

@@ -5,6 +5,11 @@ manages exactly **one** adapter.  It publishes ``WorkerEvent``-format messages
 to the parent process so the GUI can display live signal previews and health
 without ever instantiating a Writer, Catalog, TrialPackageBuilder, or creating
 any Session/Trial/Manifest/H5/bin files on disk.
+
+When the UI issues a recording command, the preview worker forwards raw domain
+events into a bounded recording queue.  The CollectorWorker drains that queue
+through a ``StreamProxyAdapter`` so recording never stops or reconnects the
+real hardware Adapter.
 """
 
 from __future__ import annotations
@@ -15,12 +20,21 @@ import traceback
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from queue import Empty, Full
+from queue import Empty, Full, Queue
 from time import perf_counter
 from typing import Any
 
 from exo_collection.acquisition.messages import WorkerEvent, WorkerEventType
 from exo_collection.acquisition.preview import build_preview_event
+from exo_collection.acquisition.recording_stream import (
+    RecordingCommand,
+    RecordingCommandKind,
+    RecordingStreamEndpoint,
+    RecordingStreamError,
+    RecordingStreamOverflow,
+    RecordingStreamProducer,
+    normalize_trial_uuid,
+)
 from exo_collection.adapters.base import (
     AdapterState,
     ModalityAdapter,
@@ -119,6 +133,27 @@ class ModalityPreviewHandle(ABC):
     def request_stop(self) -> None: ...
 
     @abstractmethod
+    def begin_recording(self, trial_uuid: str) -> None: ...
+
+    @abstractmethod
+    def end_recording(self, trial_uuid: str) -> None: ...
+
+    @abstractmethod
+    def discard_recording_backlog(self) -> int:
+        """Discard stale queued recording messages while no Trial is active."""
+        ...
+
+    @property
+    @abstractmethod
+    def recording_endpoint(self) -> RecordingStreamEndpoint | None: ...
+
+    def request_start_recording(self, trial_uuid: str) -> None:
+        self.begin_recording(trial_uuid)
+
+    def request_stop_recording(self, trial_uuid: str) -> None:
+        self.end_recording(trial_uuid)
+
+    @abstractmethod
     def poll_events(self, limit: int = 100) -> list[WorkerEvent]: ...
 
     @abstractmethod
@@ -178,6 +213,8 @@ def _preview_runner_target(
     modality: str,
     simulated: bool,
     health_poll_interval_s: float = DEFAULT_HEALTH_POLL_INTERVAL_S,
+    raw_recording_queue: multiprocessing.Queue | None = None,
+    control_pipe: multiprocessing.connection.Connection | None = None,
 ) -> None:
     """Entry point executed in the spawned subprocess.
 
@@ -187,115 +224,219 @@ def _preview_runner_target(
 
     This function NEVER instantiates Writer, Catalog, TrialPackageBuilder,
     Session, Trial, Manifest, H5, or bin files.
+
+    If ``raw_recording_queue`` and ``control_pipe`` are provided, the worker
+    supports recording commands:
+    - START_RECORDING(trial_uuid):  write START boundary, forward raw events
+    - STOP_RECORDING(trial_uuid):   stop forwarding, write END boundary
+    - SHUTDOWN:                     exit the preview loop
+
+    START, END, and raw events are written by the same producer process on
+    the same queue, guaranteeing ordering.
     """
-    # Suppress __del__-based ResourceWarning inside the subprocess.
     adapter: ModalityAdapter | None = None
     try:
         from exo_collection.logging_setup import configure_subprocess_logging
-        configure_subprocess_logging()
 
+        configure_subprocess_logging()
         adapter = adapter_factory()
-        # ---- connect ----
         _send_event(
             event_queue,
             WorkerEventType.STATE,
             modality=modality,
             device_id=device_id,
-            payload={"state": "CONNECTING", "modality": modality, "device_id": device_id, "simulated": simulated},
+            payload={
+                "state": "CONNECTING",
+                "modality": modality,
+                "device_id": device_id,
+                "simulated": simulated,
+            },
             message=f"Preview worker connecting {modality} ({device_id})",
         )
         adapter.connect()
-
         descriptor = adapter.descriptor()
+        descriptor_payload = _descriptor_dict(descriptor)
+        config_snapshot = dict(adapter.configuration_snapshot())
         get_event = getattr(adapter, "get_event", None)
         if not callable(get_event):
             raise TypeError(
                 f"{type(adapter).__name__} does not expose the raw get_event API"
             )
 
-        # ---- prepare/start with an in-memory preview-only context ----
         _send_event(
             event_queue,
             WorkerEventType.STATE,
             modality=modality,
             device_id=device_id,
-            payload={"state": "PREVIEW_STARTING", "modality": modality, "device_id": device_id, "simulated": simulated},
+            payload={
+                "state": "PREVIEW_STARTING",
+                "modality": modality,
+                "device_id": device_id,
+                "simulated": simulated,
+            },
             message=f"Preview worker starting {modality} ({device_id})",
         )
-        dummy_context = TrialContext(
-            trial_uuid="00000000-0000-0000-0000-000000000000",
-            session_uuid="00000000-0000-0000-0000-000000000000",
-            condition={"purpose": "preview_only"},
-            recording_dir=None,
+        adapter.prepare(
+            TrialContext(
+                trial_uuid="00000000-0000-0000-0000-000000000000",
+                session_uuid="00000000-0000-0000-0000-000000000000",
+                condition={"purpose": "preview_only"},
+                recording_dir=None,
+            )
         )
-        adapter.prepare(dummy_context)
         adapter.start(StartToken())
 
-        # ---- preview loop ----
+        producer = (
+            RecordingStreamProducer(
+                raw_recording_queue,
+                device_id=descriptor.device_id,
+                modality=modality,
+                descriptor=descriptor_payload,
+                configuration_snapshot=config_snapshot,
+            )
+            if raw_recording_queue is not None
+            else None
+        )
         last_health = perf_counter()
         last_preview_send_by_stream: dict[tuple[str, int | None], float] = {}
+        preview_round_robin_cursor = 0
         ready_sent = False
-        while not stop_pipe.poll():
-            # Drain raw events but only keep the *latest* preview per independent
-            # UI stream (ultrasound channel, IMU modality, …).  This prevents stale
-            # frames from accumulating across the three internal queues and ensures
-            # the display always reflects the freshest data.
+        shutdown_requested = False
+
+        def send_ack(status: str, trial_uuid: str | None, message: str = "") -> None:
+            if control_pipe is None:
+                return
+            try:
+                control_pipe.send(
+                    {
+                        "status": status,
+                        "trial_uuid": trial_uuid,
+                        "modality": modality,
+                        "message": message,
+                    }
+                )
+            except (BrokenPipeError, OSError):
+                pass
+
+        def fail_recording(trial_uuid: str | None, message: str) -> None:
+            if producer is not None:
+                producer.abort(message)
+            _send_event(
+                event_queue,
+                WorkerEventType.FAILED,
+                modality=modality,
+                device_id=descriptor.device_id,
+                trial_uuid=trial_uuid,
+                payload={
+                    "state": "FAULT",
+                    "modality": modality,
+                    "device_id": descriptor.device_id,
+                    "simulated": simulated,
+                    "fault": message,
+                    "trial_uuid": trial_uuid,
+                },
+                message=message,
+            )
+            send_ack("FAULT", trial_uuid, message)
+
+        while not shutdown_requested and not stop_pipe.poll():
+            while control_pipe is not None and control_pipe.poll():
+                try:
+                    command = control_pipe.recv()
+                except (EOFError, OSError):
+                    shutdown_requested = True
+                    break
+                if not isinstance(command, RecordingCommand):
+                    fail_recording(None, "invalid recording control command")
+                    continue
+                try:
+                    if command.kind is RecordingCommandKind.START_RECORDING:
+                        if producer is None:
+                            raise RecordingStreamError("recording stream unavailable")
+                        producer.begin(command.trial_uuid or "")
+                        send_ack("STARTED", command.trial_uuid)
+                    elif command.kind is RecordingCommandKind.STOP_RECORDING:
+                        if producer is None:
+                            raise RecordingStreamError("recording stream unavailable")
+                        producer.end(command.trial_uuid or "")
+                        send_ack("STOPPED", command.trial_uuid)
+                    elif command.kind is RecordingCommandKind.SHUTDOWN:
+                        if producer is not None and producer.recording:
+                            producer.abort("preview worker shutdown during recording")
+                        send_ack("SHUTDOWN", command.trial_uuid)
+                        shutdown_requested = True
+                        break
+                except (RecordingStreamError, ValueError) as exc:
+                    fail_recording(command.trial_uuid, str(exc))
+
+            if shutdown_requested:
+                break
+
             latest_by_key: dict[tuple[str, int | None], WorkerEvent] = {}
             for _ in range(32):
-                if stop_pipe.poll():
+                if stop_pipe.poll() or (
+                    control_pipe is not None and control_pipe.poll()
+                ):
                     break
                 raw = get_event(timeout=0.01 if not ready_sent else 0.0)
                 if raw is None:
                     break
+
+                if producer is not None and producer.recording:
+                    try:
+                        producer.forward(raw)
+                    except RecordingStreamOverflow as exc:
+                        failed_trial_uuid = producer.active_trial_uuid
+                        fail_recording(failed_trial_uuid, str(exc))
+
                 preview = _build_preview_event(
                     raw, modality, descriptor.device_id, descriptor, simulated
                 )
-                if preview is not None:
-                    observed_raw_data = isinstance(
-                        raw, (FrameBatch, SampleBatch, SyncPulseEvent)
+                if preview is None:
+                    continue
+                observed_raw_data = isinstance(
+                    raw, (FrameBatch, SampleBatch, SyncPulseEvent)
+                )
+                if observed_raw_data and not ready_sent:
+                    ready_sent = True
+                    _send_event(
+                        event_queue,
+                        WorkerEventType.STATE,
+                        modality=modality,
+                        device_id=descriptor.device_id,
+                        payload={
+                            "state": "READY",
+                            "modality": modality,
+                            "device_id": descriptor.device_id,
+                            "simulated": simulated,
+                            "descriptor": descriptor_payload,
+                            "configuration_snapshot": config_snapshot,
+                            "observed_raw_data": True,
+                        },
+                        message=(
+                            f"Preview {modality} ({descriptor.device_id}) READY"
+                        ),
                     )
-                    if observed_raw_data and not ready_sent:
-                        ready_sent = True
-                        _send_event(
-                            event_queue,
-                            WorkerEventType.STATE,
-                            modality=modality,
-                            device_id=descriptor.device_id,
-                            payload={
-                                "state": "READY",
-                                "modality": modality,
-                                "device_id": descriptor.device_id,
-                                "simulated": simulated,
-                                "descriptor": _descriptor_dict(descriptor),
-                                "observed_raw_data": True,
-                            },
-                            message=(
-                                f"Preview {modality} ({descriptor.device_id}) READY"
-                            ),
-                        )
-                    adapter_ready_event = (
-                        preview.event_type is WorkerEventType.STATE
-                        and preview.payload.get("state") == "READY"
-                    )
-                    if adapter_ready_event:
-                        continue
-                    if preview.event_type is not WorkerEventType.PREVIEW:
-                        _send_event_raw(event_queue, preview)
-                    else:
-                        key = _preview_rate_limit_key(preview)
-                        latest_by_key[key] = preview
-
-            # Send only the latest preview per stream, subject to the rate cap.
-            now = perf_counter()
-            for preview in latest_by_key.values():
-                if _preview_is_due(
-                    preview,
-                    now=now,
-                    last_sent_by_stream=last_preview_send_by_stream,
-                ):
+                adapter_ready_event = (
+                    preview.event_type is WorkerEventType.STATE
+                    and preview.payload.get("state") == "READY"
+                )
+                if adapter_ready_event:
+                    continue
+                if preview.event_type is not WorkerEventType.PREVIEW:
                     _send_event_raw(event_queue, preview)
+                else:
+                    latest_by_key[_preview_rate_limit_key(preview)] = preview
 
-            # Health telemetry
+            now = perf_counter()
+            preview_round_robin_cursor = _send_latest_previews_fairly(
+                event_queue,
+                latest_by_key,
+                now=now,
+                last_sent_by_stream=last_preview_send_by_stream,
+                cursor=preview_round_robin_cursor,
+            )
+
             now = perf_counter()
             if now - last_health >= health_poll_interval_s:
                 last_health = now
@@ -325,8 +466,8 @@ def _preview_runner_target(
                     },
                 )
 
-            # Brief sleep to prevent tight-loop CPU burn
             import time as _time
+
             _time.sleep(0.002)
 
         # ---- stop + close ----
@@ -387,10 +528,14 @@ def _descriptor_dict(descriptor: ModalityDescriptor) -> dict[str, Any]:
     return {
         "device_id": descriptor.device_id,
         "modality": descriptor.modality,
+        "display_name": descriptor.display_name,
         "clock_domain": descriptor.clock_domain,
+        "event_kind": descriptor.event_kind,
         "nominal_rate_hz": descriptor.nominal_rate_hz,
-        "channels": descriptor.channels,
-        "units": descriptor.units,
+        "channels": list(descriptor.channels),
+        "units": list(descriptor.units),
+        "sample_shape": list(descriptor.sample_shape),
+        "dtype": descriptor.dtype,
         "metadata": dict(descriptor.metadata),
     }
 
@@ -454,39 +599,94 @@ def _send_event(
     device_id: str,
     payload: dict[str, Any],
     message: str = "",
+    trial_uuid: str | None = None,
 ) -> None:
     _send_event_raw(
         queue,
         WorkerEvent(
             event_type=event_type,
             modality=modality,
-            trial_uuid=None,
+            trial_uuid=trial_uuid,
             payload=payload,
             message=message,
         ),
     )
 
 
-def _send_event_raw(queue: multiprocessing.Queue, event: WorkerEvent) -> None:
+def _send_event_raw(queue: multiprocessing.Queue, event: WorkerEvent) -> bool:
+    """Best-effort enqueue and report whether the event was accepted.
+
+    Preview delivery must never block acquisition.  Returning the result lets
+    the fair scheduler advance only after a stream actually obtained queue
+    capacity, instead of treating a dropped attempt as a delivered frame.
+    """
     if event.event_type is WorkerEventType.PREVIEW:
         try:
             queue.put_nowait(event)
         except Full:
             # Live preview is intentionally best-effort; raw acquisition stays
             # inside the adapter queue and is never represented by this queue.
-            return
-        return
+            return False
+        return True
     try:
         queue.put(event, timeout=0.5)
     except Full:
         _log.error("preview control event queue is full: %s", event.event_type.value)
+        return False
+    return True
+
+
+def _send_latest_previews_fairly(
+    queue: multiprocessing.Queue,
+    latest_by_key: dict[tuple[str, int | None], WorkerEvent],
+    *,
+    now: float,
+    last_sent_by_stream: dict[tuple[str, int | None], float],
+    cursor: int,
+    interval_s: float = DEFAULT_PREVIEW_DOWNSAMPLE_MAX_S,
+) -> int:
+    """Non-blocking round-robin delivery of the latest independent streams.
+
+    A bounded queue may have only one free slot per acquisition-loop pass.  A
+    fixed ch0..ch3 iteration order would let channel 0 repeatedly claim that
+    slot and starve later channels.  This routine starts after the last stream
+    that *successfully* enqueued, so recurring pressure still gives every
+    channel a turn.  Failed enqueue attempts do not consume the rate limit.
+    """
+
+    keys = sorted(
+        latest_by_key,
+        key=lambda item: (item[0], -1 if item[1] is None else item[1]),
+    )
+    if not keys:
+        return cursor
+
+    start = cursor % len(keys)
+    next_cursor = start
+    for offset in range(len(keys)):
+        index = (start + offset) % len(keys)
+        key = keys[index]
+        last_sent = last_sent_by_stream.get(key)
+        if last_sent is not None and now - last_sent < interval_s:
+            continue
+        if _send_event_raw(queue, latest_by_key[key]):
+            last_sent_by_stream[key] = now
+            next_cursor = (index + 1) % len(keys)
+    return next_cursor
 
 
 # ── Production handle ──────────────────────────────────────────────────────
 
 
+DEFAULT_RECORDING_QUEUE_SIZE = 2048
+
+
 class ModalityPreviewProcessHandle(ModalityPreviewHandle):
-    """Production handle that wraps a multiprocessing.Process."""
+    """Production handle that wraps a multiprocessing.Process.
+
+    Owns a bounded raw recording queue and duplex control pipe so the
+    CollectorWorker can drain raw events without stopping the adapter.
+    """
 
     def __init__(
         self,
@@ -496,6 +696,7 @@ class ModalityPreviewProcessHandle(ModalityPreviewHandle):
         modality: str = "",
         simulated: bool = True,
         health_poll_interval_s: float = DEFAULT_HEALTH_POLL_INTERVAL_S,
+        recording_queue_size: int = DEFAULT_RECORDING_QUEUE_SIZE,
     ) -> None:
         self._adapter_factory = adapter_factory
         self._device_id = device_id
@@ -508,6 +709,17 @@ class ModalityPreviewProcessHandle(ModalityPreviewHandle):
             maxsize=DEFAULT_PREVIEW_QUEUE_SIZE
         )
         self._stop_pipe_recv, self._stop_pipe_send = ctx.Pipe(duplex=False)
+
+        # Duplex control pipe: UI sends commands, worker sends ACK
+        self._control_pipe_local, self._control_pipe_remote = ctx.Pipe(duplex=True)
+
+        # Bounded raw recording queue for forwarding domain events
+        self._raw_recording_queue: multiprocessing.Queue = ctx.Queue(
+            maxsize=recording_queue_size
+        )
+
+        # Pass the receiving end of stop_pipe (recv) and the remote end of
+        # control_pipe to the subprocess.
         self._process = ctx.Process(
             target=_preview_runner_target,
             args=(
@@ -518,6 +730,8 @@ class ModalityPreviewProcessHandle(ModalityPreviewHandle):
                 self._modality,
                 self._simulated,
                 self._health_poll_interval_s,
+                self._raw_recording_queue,
+                self._control_pipe_remote,
             ),
             name=f"preview-{self._modality}-{self._device_id}",
             daemon=True,
@@ -525,15 +739,28 @@ class ModalityPreviewProcessHandle(ModalityPreviewHandle):
         self._started = False
         self._stopped = False
         self._closed = False
+        self._process_closed = False
+        self._final_exitcode: int | None = None
+
+        # Recording state tracking
+        self._recording_active = False
+        self._active_trial_uuid: str | None = None
+        self._recording_ack_received = False
+
+        # Descriptor saved after preview worker reports READY
+        self._cached_descriptor: dict[str, Any] | None = None
+        self._cached_config_snapshot: dict[str, Any] | None = None
 
     @property
     def is_alive(self) -> bool:
-        if not self._started:
+        if not self._started or self._process_closed:
             return False
         return self._process.is_alive()
 
     @property
     def exitcode(self) -> int | None:
+        if self._process_closed:
+            return self._final_exitcode
         return self._process.exitcode
 
     def start(self) -> None:
@@ -541,8 +768,20 @@ class ModalityPreviewProcessHandle(ModalityPreviewHandle):
             raise RuntimeError("preview worker can only be started once")
         if self._closed:
             raise RuntimeError("preview worker is closed")
-        self._process.start()
+        try:
+            self._process.start()
+        except BaseException:
+            # A rare late spawn failure can occur after ``_popen`` is
+            # installed.  Remember that partial start so close() can still
+            # terminate/join the child instead of leaking it.
+            self._started = self._process.pid is not None
+            raise
         self._started = True
+        # The spawned child has duplicated these endpoints.  Keeping the
+        # child-only copies open in the parent prevents EOF detection and
+        # leaks Windows kernel handles across repeated connect/disconnects.
+        self._stop_pipe_recv.close()
+        self._control_pipe_remote.close()
 
     def request_stop(self) -> None:
         if self._stopped:
@@ -551,10 +790,119 @@ class ModalityPreviewProcessHandle(ModalityPreviewHandle):
             self._stopped = True
             return
         try:
-            self._stop_pipe_send.send("stop")
+            self._control_pipe_local.send(
+                RecordingCommand(
+                    RecordingCommandKind.SHUTDOWN,
+                    self._active_trial_uuid,
+                )
+            )
         except (BrokenPipeError, OSError):
             pass
         self._stopped = True
+
+    def begin_recording(self, trial_uuid: str) -> None:
+        """Begin one UUID-isolated raw stream without reconnecting hardware."""
+        if not self._started:
+            raise RuntimeError("preview worker is not started")
+        if self._closed or self._stopped or not self.is_alive:
+            raise RuntimeError("preview worker is not available")
+        if self._cached_descriptor is None:
+            raise RuntimeError("preview worker is not READY")
+        normalized = normalize_trial_uuid(trial_uuid)
+        if self._active_trial_uuid is not None:
+            raise RuntimeError(
+                f"recording already active for {self._active_trial_uuid}"
+            )
+        try:
+            self._control_pipe_local.send(
+                RecordingCommand(RecordingCommandKind.START_RECORDING, normalized)
+            )
+        except (BrokenPipeError, OSError) as exc:
+            raise RuntimeError("failed to send START_RECORDING") from exc
+        self._recording_active = True
+        self._active_trial_uuid = normalized
+
+    def end_recording(self, trial_uuid: str) -> None:
+        """End the active raw stream and enqueue its ordered END boundary."""
+        if not self._started:
+            raise RuntimeError("preview worker is not started")
+        normalized = normalize_trial_uuid(trial_uuid)
+        if self._active_trial_uuid != normalized:
+            raise RuntimeError(
+                f"cannot stop trial {normalized}; active trial is "
+                f"{self._active_trial_uuid or 'none'}"
+            )
+        try:
+            self._control_pipe_local.send(
+                RecordingCommand(RecordingCommandKind.STOP_RECORDING, normalized)
+            )
+        except (BrokenPipeError, OSError) as exc:
+            raise RuntimeError("failed to send STOP_RECORDING") from exc
+        # Pipe ordering guarantees a later START cannot overtake this STOP.
+        # Clear the parent-side gate immediately so callers need not drain ACKs
+        # before starting the next Trial.
+        self._recording_active = False
+        self._active_trial_uuid = None
+
+    def discard_recording_backlog(self) -> int:
+        """Non-blockingly remove messages left by a completed/failed Trial.
+
+        The method is deliberately forbidden during recording: dropping even
+        one active raw event would violate the loss-intolerant recording
+        contract.  It is intended as a defensive cleanup immediately before a
+        new Trial is armed, after the previous consumer has exited.
+        """
+        if self._recording_active or self._active_trial_uuid is not None:
+            raise RuntimeError("cannot discard backlog while recording is active")
+        discarded = 0
+        while True:
+            try:
+                self._raw_recording_queue.get_nowait()
+            except Empty:
+                break
+            discarded += 1
+        return discarded
+
+    def drain_control_ack(self) -> list[dict[str, Any]]:
+        """Non-blocking drain of control pipe ACK messages from the worker."""
+        acks: list[dict[str, Any]] = []
+        while self._control_pipe_local.poll():
+            try:
+                msg = self._control_pipe_local.recv()
+            except (EOFError, OSError):
+                break
+            if isinstance(msg, dict):
+                acks.append(msg)
+                status = str(msg.get("status") or "")
+                trial_uuid = msg.get("trial_uuid")
+                if status in ("STOPPED", "FAULT", "SHUTDOWN"):
+                    if trial_uuid is None or trial_uuid == self._active_trial_uuid:
+                        self._recording_active = False
+                        self._active_trial_uuid = None
+        return acks
+
+    @property
+    def recording_endpoint(self) -> RecordingStreamEndpoint | None:
+        """Return the loss-intolerant raw queue after the worker is READY."""
+        if self._cached_descriptor is None:
+            return None
+        return RecordingStreamEndpoint(
+            queue=self._raw_recording_queue,
+            device_id=str(
+                self._cached_descriptor.get("device_id") or self._device_id
+            ),
+            modality=self._modality,
+            descriptor=dict(self._cached_descriptor),
+            configuration_snapshot=dict(self._cached_config_snapshot or {}),
+        )
+
+    # Compatibility aliases for code migrated incrementally to the public API.
+    request_start_recording = begin_recording
+    request_stop_recording = end_recording
+
+    @property
+    def recording_active(self) -> bool:
+        return self._recording_active
 
     def poll_events(self, limit: int = 100) -> list[WorkerEvent]:
         events: list[WorkerEvent] = []
@@ -566,16 +914,26 @@ class ModalityPreviewProcessHandle(ModalityPreviewHandle):
             except Exception:
                 break
             events.append(event)
+            if event.event_type is WorkerEventType.STATE:
+                state = str(event.payload.get("state") or "")
+                if state == "READY":
+                    desc = event.payload.get("descriptor")
+                    if isinstance(desc, dict):
+                        self._cached_descriptor = dict(desc)
+                        snapshot = event.payload.get("configuration_snapshot")
+                        self._cached_config_snapshot = (
+                            dict(snapshot) if isinstance(snapshot, dict) else {}
+                        )
         return events
 
     def join(self, timeout: float | None = None) -> int | None:
-        if not self._started:
+        if not self._started or self._process_closed:
             return None
         self._process.join(timeout=timeout)
         return self._process.exitcode
 
     def terminate(self, timeout: float = 5.0) -> int | None:
-        if not self._started:
+        if not self._started or self._process_closed:
             return None
         if not self._process.is_alive():
             return self._process.exitcode
@@ -589,11 +947,12 @@ class ModalityPreviewProcessHandle(ModalityPreviewHandle):
     def close(self) -> None:
         if self._closed:
             return
-        if self._started:
+        if self._started and not self._process_closed:
             self.request_stop()
             self.join(timeout=0.25)
             if self._process.is_alive():
                 raise RuntimeError("cannot close a running preview worker")
+            self._final_exitcode = self._process.exitcode
         try:
             self._event_queue.close()
         except Exception:
@@ -606,6 +965,22 @@ class ModalityPreviewProcessHandle(ModalityPreviewHandle):
             self._stop_pipe_recv.close()
         except Exception:
             pass
+        try:
+            self._control_pipe_local.close()
+        except Exception:
+            pass
+        try:
+            self._control_pipe_remote.close()
+        except Exception:
+            pass
+        try:
+            self._raw_recording_queue.close()
+            self._raw_recording_queue.join_thread()
+        except Exception:
+            pass
+        if not self._process_closed:
+            self._process.close()
+            self._process_closed = True
         self._closed = True
 
     @property
@@ -639,6 +1014,7 @@ class InProcessPreviewRunner:
         modality: str = "imu",
         simulated: bool = True,
         health_poll_interval_s: float = DEFAULT_HEALTH_POLL_INTERVAL_S,
+        recording_queue_size: int = DEFAULT_RECORDING_QUEUE_SIZE,
     ) -> None:
         self._adapter_factory = adapter_factory
         self._device_id = device_id
@@ -650,6 +1026,11 @@ class InProcessPreviewRunner:
         self._alive = False
         self._stopped = False
         self._ready = False
+        self._finalized = False
+        self._raw_recording_queue: Queue[Any] = Queue(maxsize=recording_queue_size)
+        self._recording_producer: RecordingStreamProducer | None = None
+        self._descriptor_payload: dict[str, Any] | None = None
+        self._configuration_snapshot: dict[str, Any] = {}
 
     @property
     def is_alive(self) -> bool:
@@ -678,6 +1059,18 @@ class InProcessPreviewRunner:
         )
         try:
             self._adapter.connect()
+            descriptor = self._adapter.descriptor()
+            self._descriptor_payload = _descriptor_dict(descriptor)
+            self._configuration_snapshot = dict(
+                self._adapter.configuration_snapshot()
+            )
+            self._recording_producer = RecordingStreamProducer(
+                self._raw_recording_queue,
+                device_id=descriptor.device_id,
+                modality=self._modality,
+                descriptor=self._descriptor_payload,
+                configuration_snapshot=self._configuration_snapshot,
+            )
             self._adapter.prepare(
                 TrialContext(
                     trial_uuid="00000000-0000-0000-0000-000000000000",
@@ -696,7 +1089,59 @@ class InProcessPreviewRunner:
             raise
 
     def request_stop(self) -> None:
+        if self._recording_producer is not None:
+            self._recording_producer.abort(
+                "preview worker shutdown during recording"
+            )
         self._stopped = True
+
+    def begin_recording(self, trial_uuid: str) -> None:
+        if not self._alive or self._stopped:
+            raise RuntimeError("preview worker is not available")
+        if not self._ready or self._recording_producer is None:
+            raise RuntimeError("preview worker is not READY")
+        self._recording_producer.begin(trial_uuid)
+
+    def end_recording(self, trial_uuid: str) -> None:
+        if self._recording_producer is None:
+            raise RuntimeError("recording stream unavailable")
+        self._recording_producer.end(trial_uuid)
+
+    def discard_recording_backlog(self) -> int:
+        if self.recording_active:
+            raise RuntimeError("cannot discard backlog while recording is active")
+        discarded = 0
+        while True:
+            try:
+                self._raw_recording_queue.get_nowait()
+            except Empty:
+                break
+            discarded += 1
+        return discarded
+
+    @property
+    def recording_endpoint(self) -> RecordingStreamEndpoint | None:
+        if not self._ready or self._descriptor_payload is None:
+            return None
+        return RecordingStreamEndpoint(
+            queue=self._raw_recording_queue,
+            device_id=str(
+                self._descriptor_payload.get("device_id") or self._device_id
+            ),
+            modality=self._modality,
+            descriptor=dict(self._descriptor_payload),
+            configuration_snapshot=dict(self._configuration_snapshot),
+        )
+
+    request_start_recording = begin_recording
+    request_stop_recording = end_recording
+
+    @property
+    def recording_active(self) -> bool:
+        return bool(
+            self._recording_producer is not None
+            and self._recording_producer.recording
+        )
 
     def poll_events(self, limit: int = 100) -> list[WorkerEvent]:
         if self._adapter is None:
@@ -705,6 +1150,33 @@ class InProcessPreviewRunner:
             raw = self._adapter.get_event(timeout=0.01)
             if raw is not None:
                 descriptor = self._adapter.descriptor()
+                if (
+                    self._recording_producer is not None
+                    and self._recording_producer.recording
+                ):
+                    try:
+                        self._recording_producer.forward(raw)
+                    except RecordingStreamOverflow as exc:
+                        failed_trial_uuid = (
+                            self._recording_producer.active_trial_uuid
+                        )
+                        self._recording_producer.abort(str(exc))
+                        self._events.append(
+                            WorkerEvent(
+                                event_type=WorkerEventType.FAILED,
+                                modality=self._modality,
+                                trial_uuid=failed_trial_uuid,
+                                payload={
+                                    "state": "FAULT",
+                                    "modality": self._modality,
+                                    "device_id": self._device_id,
+                                    "simulated": self._simulated,
+                                    "fault": str(exc),
+                                    "trial_uuid": failed_trial_uuid,
+                                },
+                                message=str(exc),
+                            )
+                        )
                 event = _build_preview_event(
                     raw, self._modality, self._device_id, descriptor, self._simulated
                 )
@@ -723,6 +1195,12 @@ class InProcessPreviewRunner:
                                     "modality": self._modality,
                                     "device_id": self._device_id,
                                     "simulated": self._simulated,
+                                    "descriptor": dict(
+                                        self._descriptor_payload or {}
+                                    ),
+                                    "configuration_snapshot": dict(
+                                        self._configuration_snapshot
+                                    ),
                                     "observed_raw_data": True,
                                 },
                                 message=(
@@ -742,7 +1220,7 @@ class InProcessPreviewRunner:
         return result
 
     def join(self, timeout: float | None = None) -> int | None:
-        if self._adapter is not None:
+        if self._adapter is not None and not self._finalized:
             try:
                 self._adapter.stop()
             except Exception:
@@ -751,6 +1229,7 @@ class InProcessPreviewRunner:
                 self._adapter.close()
             except Exception:
                 pass
+            self._finalized = True
         self._alive = False
         return 0
 
@@ -784,4 +1263,5 @@ __all__ = [
     "AdapterFactory",
     "ProfileModalityAdapterFactory",
     "DEFAULT_PREVIEW_QUEUE_SIZE",
+    "DEFAULT_RECORDING_QUEUE_SIZE",
 ]

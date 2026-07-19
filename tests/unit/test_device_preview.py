@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass, field
 import os
 import pickle
 from pathlib import Path
-from queue import Queue
+from queue import Empty, Queue
 import time
 from typing import Any
 from uuid import UUID, uuid4
@@ -16,6 +16,11 @@ import pytest
 
 from exo_collection.acquisition.messages import WorkerEvent, WorkerEventType
 from exo_collection.acquisition.preview import build_preview_event
+from exo_collection.acquisition.recording_stream import (
+    RecordedRawEvent,
+    RecordingBoundary,
+    RecordingBoundaryKind,
+)
 from exo_collection.adapters.base import (
     AdapterState,
     ModalityAdapter,
@@ -33,6 +38,7 @@ from exo_collection.apps.collector.device_preview import (
     _build_preview_event,
     _preview_is_due,
     _preview_rate_limit_key,
+    _send_latest_previews_fairly,
 )
 from exo_collection.domain.events import (
     DeviceStatusEvent,
@@ -395,6 +401,131 @@ def test_preview_runner_disconnects_cleanly() -> None:
     runner.close()
 
 
+def test_inprocess_recording_stream_reuses_one_adapter_lifecycle() -> None:
+    adapter = FakeSampleBatchAdapter()
+    runner = InProcessPreviewRunner(
+        adapter_factory=lambda: adapter,
+        device_id="fake_imu",
+        modality="imu",
+        simulated=True,
+    )
+    first_uuid = str(uuid4())
+    second_uuid = str(uuid4())
+
+    runner.start()
+    runner.poll_events(limit=20)  # observe first raw batch and become READY
+    endpoint = runner.recording_endpoint
+    assert endpoint is not None
+    assert endpoint.descriptor == {
+        "device_id": "fake_imu",
+        "modality": "imu",
+        "display_name": "Fake IMU",
+        "clock_domain": "host",
+        "event_kind": "sample",
+        "nominal_rate_hz": 200.0,
+        "channels": ["acc_x"],
+        "units": ["m/s^2"],
+        "sample_shape": [1],
+        "dtype": "float64",
+        "metadata": {},
+    }
+    assert endpoint.configuration_snapshot == {}
+
+    runner.begin_recording(first_uuid)
+    runner.poll_events(limit=20)
+    runner.end_recording(first_uuid)
+    runner.begin_recording(second_uuid)
+    runner.poll_events(limit=20)
+    runner.end_recording(second_uuid)
+
+    messages = [endpoint.queue.get_nowait() for _ in range(6)]
+    assert [message.trial_uuid for message in messages] == [
+        first_uuid,
+        first_uuid,
+        first_uuid,
+        second_uuid,
+        second_uuid,
+        second_uuid,
+    ]
+    assert isinstance(messages[0], RecordingBoundary)
+    assert messages[0].kind is RecordingBoundaryKind.START
+    assert isinstance(messages[1], RecordedRawEvent)
+    assert isinstance(messages[2], RecordingBoundary)
+    assert messages[2].kind is RecordingBoundaryKind.END
+    assert isinstance(messages[4], RecordedRawEvent)
+
+    runner.request_stop()
+    runner.join()
+    runner.close()
+    assert adapter._connected is True
+    assert adapter._prepared is True
+    assert adapter._started is True
+    assert adapter._stopped is True
+    assert adapter._closed is True
+
+
+def test_inprocess_recording_overflow_reports_failed_without_eviction() -> None:
+    runner = InProcessPreviewRunner(
+        adapter_factory=FakeSampleBatchAdapter,
+        device_id="fake_imu",
+        modality="imu",
+        simulated=True,
+        recording_queue_size=1,
+    )
+    trial_uuid = str(uuid4())
+
+    runner.start()
+    runner.poll_events(limit=20)
+    endpoint = runner.recording_endpoint
+    assert endpoint is not None
+    runner.begin_recording(trial_uuid)  # START occupies the only queue slot
+    observed = runner.poll_events(limit=20)
+
+    failed = [
+        event for event in observed
+        if event.event_type is WorkerEventType.FAILED
+    ]
+    assert len(failed) == 1
+    assert failed[0].trial_uuid == trial_uuid
+    assert failed[0].payload["state"] == "FAULT"
+    assert "recording queue full" in failed[0].payload["fault"]
+    retained = endpoint.queue.get_nowait()
+    assert isinstance(retained, RecordingBoundary)
+    assert retained.kind is RecordingBoundaryKind.START
+    assert retained.trial_uuid == trial_uuid
+    assert runner.recording_active is False
+    runner.request_stop()
+    runner.join()
+    runner.close()
+
+
+def test_inprocess_discard_recording_backlog_is_nonblocking_and_trial_safe() -> None:
+    runner = InProcessPreviewRunner(
+        adapter_factory=FakeSampleBatchAdapter,
+        device_id="fake_imu",
+        modality="imu",
+        simulated=True,
+        recording_queue_size=16,
+    )
+    trial_uuid = str(uuid4())
+
+    runner.start()
+    runner.poll_events(limit=20)
+    runner.begin_recording(trial_uuid)
+    with pytest.raises(RuntimeError, match="while recording is active"):
+        runner.discard_recording_backlog()
+    runner.poll_events(limit=20)
+    runner.end_recording(trial_uuid)
+
+    # START + one raw event + END are all stale if the Trial consumer has
+    # already failed/exited without draining its endpoint.
+    assert runner.discard_recording_backlog() == 3
+    assert runner.discard_recording_backlog() == 0
+    runner.request_stop()
+    runner.join()
+    runner.close()
+
+
 # ── _build_preview_event tests ──
 
 
@@ -417,11 +548,16 @@ def test_build_preview_event_sample_batch_imu() -> None:
     assert event.modality == "imu"
     channels = event.payload.get("channels", [])
     assert isinstance(channels, list)
-    assert len(channels) == 3
+    assert len(channels) == 9
+    assert event.payload["labels"] == [
+        f"{sensor}_{axis}"
+        for sensor in ("imu_trunk", "imu_left", "imu_right")
+        for axis in ("acc_x", "acc_y", "acc_z")
+    ]
 
 
 def test_build_preview_event_imu_slot_1_3_labels_not_mapped_to_left() -> None:
-    """Slot 1+3 config produces labels (imu_trunk, imu_right), never imu_left."""
+    """Slot 1+3 produces three axes for trunk/right, never imu_left."""
     desc = ModalityDescriptor(
         device_id="test_imu", modality="imu", display_name="Test IMU",
         clock_domain="host", event_kind="sample",
@@ -439,7 +575,15 @@ def test_build_preview_event_imu_slot_1_3_labels_not_mapped_to_left() -> None:
     assert event is not None
     assert event.event_type == WorkerEventType.PREVIEW
     labels = event.payload.get("labels", [])
-    assert labels == ["imu_trunk", "imu_right"]
+    assert labels == [
+        "imu_trunk_acc_x",
+        "imu_trunk_acc_y",
+        "imu_trunk_acc_z",
+        "imu_right_acc_x",
+        "imu_right_acc_y",
+        "imu_right_acc_z",
+    ]
+    assert all("imu_left" not in label for label in labels)
 
 
 def test_build_preview_event_ultrasound() -> None:
@@ -493,10 +637,9 @@ def test_build_preview_event_raw_ultrasound_uses_only_in_frame_adc_bytes() -> No
     assert event is not None
     assert event.payload["channel_index"] == 2
     assert event.payload["shape"] == [997]
-    assert event.payload["preview_sample_count"] == 512
+    assert event.payload["preview_sample_count"] == 997
     centered_adc = (adc.astype(np.int16) - 127).astype(np.float32)
-    indices = np.linspace(0, adc.size - 1, 512, dtype=np.int64)
-    assert event.payload["values"] == pytest.approx(centered_adc[indices].tolist())
+    assert event.payload["values"] == pytest.approx(centered_adc.tolist())
     assert np.array_equal(complete_frame, original)
     assert np.array_equal(np.asarray(batch.data), original[None, :])
 
@@ -521,9 +664,7 @@ def test_build_preview_event_encoder() -> None:
 
 
 def test_build_preview_public_api_respects_preview_labels_from_extra_payload() -> None:
-    """build_preview_event (public) with extra_payload preview_labels
-    for shape (1,2,12) IMU batch → labels are exactly (imu_trunk, imu_right),
-    channels=2, and imu_left never appears."""
+    """Configured sensor slots expand to their three acceleration axes."""
     batch = SampleBatch(
         device_id="test_imu", modality="imu", clock_domain="host",
         data=np.arange(24, dtype=np.float64).reshape(1, 2, 12),
@@ -538,11 +679,18 @@ def test_build_preview_public_api_respects_preview_labels_from_extra_payload() -
     assert event.event_type == WorkerEventType.PREVIEW
     assert event.modality == "imu"
     labels = event.payload.get("labels", [])
-    assert labels == ["imu_trunk", "imu_right"]
-    assert "imu_left" not in labels
+    assert labels == [
+        "imu_trunk_acc_x",
+        "imu_trunk_acc_y",
+        "imu_trunk_acc_z",
+        "imu_right_acc_x",
+        "imu_right_acc_y",
+        "imu_right_acc_z",
+    ]
+    assert all("imu_left" not in label for label in labels)
     channels = event.payload.get("channels", [])
-    assert len(channels) == 2
-    assert event.payload.get("channel_count") == 2
+    assert len(channels) == 6
+    assert event.payload.get("channel_count") == 6
 
 
 def test_build_preview_event_none_for_unknown_type() -> None:
@@ -626,6 +774,37 @@ def test_preview_rate_limit_different_ultrasound_channels_do_not_interfere() -> 
         last_sent_by_stream=last_sent,
         interval_s=0.1,
     )
+
+
+def test_bounded_preview_queue_round_robin_prevents_channel_starvation() -> None:
+    """One recurring free slot must rotate across all four raw-US channels."""
+
+    event_queue: Queue[WorkerEvent] = Queue(maxsize=1)
+    latest = {
+        ("ultrasound", channel): _raw_ultrasound_preview_event(channel)
+        for channel in range(4)
+    }
+    last_sent: dict[tuple[str, int | None], float] = {}
+    cursor = 0
+    observed_channels: list[int] = []
+
+    # This models a UI that consumes exactly one event between producer-loop
+    # passes, leaving the bounded queue almost permanently full.  The old
+    # fixed ch0..ch3 order yielded channel 0 forever under this pressure.
+    for cycle in range(8):
+        cursor = _send_latest_previews_fairly(
+            event_queue,  # type: ignore[arg-type]
+            latest,
+            now=float(cycle),
+            last_sent_by_stream=last_sent,
+            cursor=cursor,
+            interval_s=0.0,
+        )
+        delivered = event_queue.get_nowait()
+        observed_channels.append(int(delivered.payload["channel_index"]))
+
+    assert observed_channels == [0, 1, 2, 3, 0, 1, 2, 3]
+    assert set(last_sent) == set(latest)
 
 
 # ── Queue pressure / downsample tests ──
@@ -737,6 +916,50 @@ def test_profile_modality_factory_is_spawn_pickle_safe() -> None:
     adapter.close()
 
 
+def test_process_handle_discards_stale_backlog_and_closes_before_start() -> None:
+    handle = ModalityPreviewProcessHandle(
+        FakeSampleBatchAdapter,
+        device_id="fake_imu",
+        modality="imu",
+        simulated=True,
+        recording_queue_size=4,
+    )
+    handle._raw_recording_queue.put("stale-trial-message")
+    assert handle._raw_recording_queue._reader.poll(1.0)
+    assert handle.discard_recording_backlog() == 1
+    assert handle.discard_recording_backlog() == 0
+
+    handle.close()
+    handle.close()  # idempotent
+    assert handle.is_alive is False
+    assert handle.exitcode is None
+    assert handle._process_closed is True
+    with pytest.raises(ValueError, match="process object is closed"):
+        handle._process.is_alive()
+
+
+def test_process_handle_close_releases_resources_after_start_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handle = ModalityPreviewProcessHandle(
+        FakeSampleBatchAdapter,
+        device_id="fake_imu",
+        modality="imu",
+        simulated=True,
+    )
+
+    def fail_start() -> None:
+        raise OSError("spawn failed")
+
+    monkeypatch.setattr(handle._process, "start", fail_start)
+    with pytest.raises(OSError, match="spawn failed"):
+        handle.start()
+    handle.close()
+    handle.close()
+    assert handle.is_alive is False
+    assert handle._process_closed is True
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows spawn contract")
 def test_spawn_preview_emits_ready_and_preview_without_writing_files(
     tmp_path: Path,
@@ -779,3 +1002,77 @@ def test_spawn_preview_emits_ready_and_preview_without_writing_files(
 
     after = {path.relative_to(tmp_path) for path in tmp_path.rglob("*")}
     assert after == before
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows spawn contract")
+def test_spawn_preview_stream_orders_start_raw_end_and_stays_connected() -> None:
+    handle = ModalityPreviewProcessHandle(
+        FakeSampleBatchAdapter,
+        device_id="fake_imu",
+        modality="imu",
+        simulated=True,
+        health_poll_interval_s=0.05,
+        recording_queue_size=64,
+    )
+    trial_uuid = str(uuid4())
+    try:
+        handle.start()
+        assert handle._stop_pipe_recv.closed
+        assert handle._control_pipe_remote.closed
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and handle.recording_endpoint is None:
+            handle.poll_events(limit=100)
+            assert handle.is_alive
+            time.sleep(0.01)
+        endpoint = handle.recording_endpoint
+        assert endpoint is not None
+        assert endpoint.descriptor["sample_shape"] == [1]
+        assert endpoint.configuration_snapshot == {}
+
+        handle.begin_recording(trial_uuid)
+        messages: list[RecordingBoundary | RecordedRawEvent] = []
+        saw_raw = False
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not saw_raw:
+            try:
+                message = endpoint.queue.get(timeout=0.1)
+            except Empty:
+                continue
+            messages.append(message)
+            saw_raw = isinstance(message, RecordedRawEvent)
+        assert saw_raw
+        handle.end_recording(trial_uuid)
+
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            try:
+                message = endpoint.queue.get(timeout=0.1)
+            except Empty:
+                handle.drain_control_ack()
+                continue
+            messages.append(message)
+            if (
+                isinstance(message, RecordingBoundary)
+                and message.kind is RecordingBoundaryKind.END
+            ):
+                break
+
+        assert isinstance(messages[0], RecordingBoundary)
+        assert messages[0].kind is RecordingBoundaryKind.START
+        assert isinstance(messages[-1], RecordingBoundary)
+        assert messages[-1].kind is RecordingBoundaryKind.END
+        assert all(message.trial_uuid == trial_uuid for message in messages)
+        assert all(
+            isinstance(message.event, SampleBatch)
+            for message in messages
+            if isinstance(message, RecordedRawEvent)
+        )
+        handle.drain_control_ack()
+        assert handle.recording_active is False
+        assert handle.is_alive  # END closes only the Trial, not the device.
+        handle.request_stop()
+        assert handle.join(timeout=5.0) == 0
+    finally:
+        if handle.is_alive:
+            handle.terminate(timeout=1.0)
+        handle.close()
