@@ -873,7 +873,7 @@ def load_quality_audit(
     _require_idle(dataset_root)
 
     report_document: dict[str, Any] = {}
-    quality_relative = _artifact_named(manifest, "reports/quality_report.json")
+    quality_relative = _artifact_named(manifest, ".exo/quality_report.json")
     if quality_relative is not None:
         quality_path = _artifact_path(trial_root, quality_relative)
         if quality_path.is_file():
@@ -893,11 +893,11 @@ def load_quality_audit(
         rows = csv.DictReader(_read_small_text(report_path).splitlines())
         return tuple(dict(row) for row in rows)
 
-    devices = csv_rows("reports/device_status.csv")
+    devices = csv_rows(".exo/device_status.csv")
     _require_idle(dataset_root)
-    sync_checks = csv_rows("reports/sync_check.csv")
+    sync_checks = csv_rows(".exo/sync_check.csv")
     _require_idle(dataset_root)
-    warnings_relative = _artifact_named(manifest, "reports/warnings.txt")
+    warnings_relative = _artifact_named(manifest, ".exo/warnings.txt")
     warnings_text = ""
     if warnings_relative is not None:
         warnings_path = _artifact_path(trial_root, warnings_relative)

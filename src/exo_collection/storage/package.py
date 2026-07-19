@@ -91,7 +91,7 @@ def finalize_trial_package(layout: TrialLayout, manifest: TrialManifest) -> Path
     if manifest.trial_uuid != layout.trial_uuid:
         raise ValueError("Manifest Trial UUID does not match TrialLayout")
     validate_artifact_integrity(layout, manifest.artifacts)
-    manifest_path = layout.path("manifest.json")
+    manifest_path = layout.exo_path("manifest.json")
     if manifest_path.exists():
         # A crash can occur after Manifest publication but before the atomic
         # directory rename. Retrying is safe only for byte-equivalent content.
@@ -101,7 +101,7 @@ def finalize_trial_package(layout: TrialLayout, manifest: TrialManifest) -> Path
     else:
         save_manifest(manifest_path, manifest)
     relative_paths = [artifact.relative_path for artifact in manifest.artifacts]
-    relative_paths.append("manifest.json")
+    relative_paths.append(".exo/manifest.json")
     checksums = write_checksum_manifest(layout.recording_directory, relative_paths)
     results = verify_checksum_manifest(checksums)
     if not results or not all(results.values()):

@@ -622,7 +622,7 @@ def _evidence_snapshot(directory: Path) -> tuple[dict[str, Any], ...]:
                 "size_bytes": stat.st_size,
                 "sha256": sha256_file(path),
                 "modified_utc_ns": stat.st_mtime_ns,
-                "raw_artifact": relative.startswith("raw/"),
+                "raw_artifact": not relative.startswith(".exo/"),
             }
         )
     return tuple(evidence)

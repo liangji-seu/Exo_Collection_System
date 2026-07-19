@@ -126,7 +126,7 @@ class _NeverStop:
 class _JsonlJournal:
     def __init__(self, layout: TrialLayout) -> None:
         self.layout = layout
-        self.relative_path = "logs/trial.jsonl"
+        self.relative_path = ".exo/trial.jsonl"
         self.path = layout.partial_path(self.relative_path)
         self._stream = self.path.open("x", encoding="utf-8", newline="\n")
         self._closed = False
@@ -245,7 +245,7 @@ def _git_commit() -> str:
 
 
 def _write_session_file(layout: TrialLayout, session: Session) -> None:
-    destination = layout.session_directory / "session.json"
+    destination = layout.exo_path("session.json")
     if destination.exists():
         existing = Session.model_validate_json(destination.read_text(encoding="utf-8"))
         if (
@@ -654,6 +654,10 @@ def run_trial(
             ),
         )
 
+    # Create the hidden bookkeeping directory before acquiring the exclusive
+    # collector lease so the inter-process guard file has a home.
+    layout.exo_root.mkdir(parents=True, exist_ok=True)
+
     activity_lock = AcquisitionLock(
         root,
         request.trial_uuid,
@@ -664,12 +668,12 @@ def run_trial(
             # The dataset-root lease is acquired before Catalog, Session or
             # Trial-directory side effects, so a losing Collector leaves no
             # orphan `.recording` package.
-            catalog = Catalog(root / "catalog.sqlite3")
+            catalog = Catalog(layout.exo_root / "catalog.sqlite3")
             catalog.migrate()
             repository = CatalogRepository(catalog)
             repository.register_hierarchy(project, subject, visit)
-            _write_session_file(layout, visit)
             layout.create_recording()
+            _write_session_file(layout, visit)
             journal = _JsonlJournal(layout)
             transition(
                 TrialState.PREPARING,
@@ -694,7 +698,7 @@ def run_trial(
 
             if "ultrasound" in adapters:
                 writers["ultrasound"] = BlockBinaryWriterProcess(
-                    layout.partial_path("raw/ultrasound.bin"),
+                    layout.partial_path("ultrasound.bin"),
                     dtype=descriptors["ultrasound"].dtype,
                     sample_shape=descriptors["ultrasound"].sample_shape,
                     metadata={
@@ -753,7 +757,7 @@ def run_trial(
                 if modality == "ultrasound":
                     continue
                 writers[modality] = _create_hdf5_writer(
-                    layout.partial_path(f"raw/{modality}.h5"),
+                    layout.partial_path(f"{modality}.h5"),
                     adapters[modality],
                     trial_metadata=hdf5_trial_metadata,
                 )
@@ -1213,7 +1217,7 @@ def run_trial(
             # Verify source formats before any temporary name is published.
             ultrasound_scan = None
             if "ultrasound" in writers:
-                ultrasound_scan = scan_binary_file(layout.partial_path("raw/ultrasound.bin"))
+                ultrasound_scan = scan_binary_file(layout.partial_path("ultrasound.bin"))
                 if ultrasound_scan.error is not None or ultrasound_scan.complete_block_count == 0:
                     raise RuntimeError(f"ultrasound integrity check failed: {ultrasound_scan.error}")
                 ultrasound_writer = writers["ultrasound"]
@@ -1227,7 +1231,7 @@ def run_trial(
             for modality in adapters:
                 if modality == "ultrasound":
                     continue
-                _verify_hdf5(layout.partial_path(f"raw/{modality}.h5"), counts.get(modality, 0))
+                _verify_hdf5(layout.partial_path(f"{modality}.h5"), counts.get(modality, 0))
 
             preview_bundle = publish_quality_preview_pngs(
                 layout,
@@ -1251,7 +1255,7 @@ def run_trial(
                 if modality == "ultrasound":
                     continue
                 scanned_signal = scan_hdf5_signal_evidence(
-                    layout.partial_path(f"raw/{modality}.h5"),
+                    layout.partial_path(f"{modality}.h5"),
                     formal_start_ns=formal_start_host_monotonic_ns,
                     formal_stop_ns=stopped_reading_ns,
                 )
@@ -1338,7 +1342,7 @@ def run_trial(
             }
             quality_configuration_path = publish_json(
                 layout,
-                "derived/quality_rules_snapshot.json",
+                ".exo/quality_rules_snapshot.json",
                 quality_configuration_document,
             )
             quality_configuration_hash = sha256_file(quality_configuration_path)
@@ -1378,7 +1382,7 @@ def run_trial(
                 "soft_quality_metrics": preview_bundle.soft_metrics,
                 "quality_assessment": {
                     "algorithm_version": quality_evaluation.algorithm_version,
-                    "rules_snapshot_relative_path": "derived/quality_rules_snapshot.json",
+                    "rules_snapshot_relative_path": ".exo/quality_rules_snapshot.json",
                     "rules_snapshot_sha256": quality_configuration_hash,
                     "computed_grade": grade.value,
                     "rule_count": len(quality_evaluation.results),
@@ -1397,7 +1401,7 @@ def run_trial(
                 "integrity_checks_passed": True,
                 "issues": [issue.model_dump(mode="json") for issue in issues],
                 "algorithm_version": quality_evaluation.algorithm_version,
-                "rules_snapshot_relative_path": "derived/quality_rules_snapshot.json",
+                "rules_snapshot_relative_path": ".exo/quality_rules_snapshot.json",
                 "rules_snapshot_sha256": quality_configuration_hash,
                 "rule_count": len(quality_evaluation.results),
                 "unassessed_rule_count": quality_evaluation.unassessed_count,
@@ -1666,7 +1670,7 @@ def run_trial(
                 "protocol": condition.model_dump(mode="json"),
                 "quality_assessment_configuration": {
                     "algorithm_version": quality_evaluation.algorithm_version,
-                    "rules_snapshot_relative_path": "derived/quality_rules_snapshot.json",
+                    "rules_snapshot_relative_path": ".exo/quality_rules_snapshot.json",
                     "rules_snapshot_sha256": quality_configuration_hash,
                     "quality_rules": quality_rules.model_dump(mode="json"),
                     "storage_policy": storage_policy.model_dump(mode="json"),
@@ -1690,30 +1694,30 @@ def run_trial(
                     },
                 },
             }
-            publish_json(layout, "derived/statistics.json", statistics)
+            publish_json(layout, ".exo/statistics.json", statistics)
             configuration_path = publish_json(
                 layout,
-                "derived/configuration_snapshot.json",
+                ".exo/configuration_snapshot.json",
                 configuration_document,
             )
             config_hash = sha256_file(configuration_path)
-            publish_json(layout, "reports/quality_report.json", quality_report)
+            publish_json(layout, ".exo/quality_report.json", quality_report)
             if "sync_pulse" in adapters:
-                publish_json(layout, "reports/sync_manifest.json", sync_manifest_document)
+                publish_json(layout, ".exo/sync_manifest.json", sync_manifest_document)
             _publish_csv(
                 layout,
-                "reports/device_status.csv",
+                ".exo/device_status.csv",
                 device_status_fieldnames,
                 device_status_rows,
             )
             if "sync_pulse" in adapters:
                 _publish_csv(
                     layout,
-                    "reports/sync_check.csv",
+                    ".exo/sync_check.csv",
                     sync_check_fieldnames,
                     sync_check_rows,
                 )
-            _publish_text(layout, "reports/warnings.txt", warnings_document)
+            _publish_text(layout, ".exo/warnings.txt", warnings_document)
             assert journal is not None
             journal.write(
                 "trial_publication_intent",
@@ -1748,7 +1752,7 @@ def run_trial(
                             "ultrasound",
                             ArtifactKind.RAW,
                             "application/x-exo-ultrasound-blocks",
-                            "raw/ultrasound.bin",
+                            "ultrasound.bin",
                             artifact_uuid=ultrasound_artifact_uuid,
                             created_at_utc=started_at_utc,
                         ),
@@ -1757,7 +1761,7 @@ def run_trial(
                             "ultrasound",
                             ArtifactKind.RAW,
                             "application/json",
-                            "raw/ultrasound.meta.json",
+                            "ultrasound.meta.json",
                             created_at_utc=started_at_utc,
                         ),
                         "ultrasound_index": ArtifactDraft(
@@ -1765,7 +1769,7 @@ def run_trial(
                             "ultrasound",
                             ArtifactKind.DERIVED,
                             "application/x-exo-ultrasound-index",
-                            "raw/ultrasound.idx",
+                            "ultrasound.idx",
                             created_at_utc=started_at_utc,
                         ),
                     }
@@ -1786,7 +1790,7 @@ def run_trial(
                     modality,
                     ArtifactKind.RAW,
                     "application/x-hdf5",
-                    f"raw/{modality}.h5",
+                    f"{modality}.h5",
                     artifact_uuid=raw_artifact_uuid_by_modality[modality],
                     created_at_utc=started_at_utc,
                     metadata=metadata,
@@ -1798,7 +1802,7 @@ def run_trial(
                     "trial",
                     ArtifactKind.DERIVED,
                     "application/json",
-                    "derived/statistics.json",
+                    ".exo/statistics.json",
                     artifact_uuid=statistics_artifact_uuid,
                     created_at_utc=finalized_at_utc,
                     source_artifact_uuids=raw_artifact_uuids,
@@ -1808,7 +1812,7 @@ def run_trial(
                     "trial",
                     ArtifactKind.DERIVED,
                     "application/json",
-                    "derived/quality_rules_snapshot.json",
+                    ".exo/quality_rules_snapshot.json",
                     artifact_uuid=quality_rules_artifact_uuid,
                     created_at_utc=finalized_at_utc,
                     metadata={
@@ -1822,7 +1826,7 @@ def run_trial(
                     "trial",
                     ArtifactKind.DERIVED,
                     "application/json",
-                    "derived/configuration_snapshot.json",
+                    ".exo/configuration_snapshot.json",
                     created_at_utc=finalized_at_utc,
                 ),
                 "quality": ArtifactDraft(
@@ -1830,7 +1834,7 @@ def run_trial(
                     "trial",
                     ArtifactKind.REPORT,
                     "application/json",
-                    "reports/quality_report.json",
+                    ".exo/quality_report.json",
                     artifact_uuid=quality_artifact_uuid,
                     created_at_utc=finalized_at_utc,
                     source_artifact_uuids=(
@@ -1843,7 +1847,7 @@ def run_trial(
                     "trial",
                     ArtifactKind.REPORT,
                     "text/csv; charset=utf-8",
-                    "reports/device_status.csv",
+                    ".exo/device_status.csv",
                     created_at_utc=finalized_at_utc,
                     source_artifact_uuids=(statistics_artifact_uuid,),
                     metadata={
@@ -1858,7 +1862,7 @@ def run_trial(
                             "sync_pulse",
                             ArtifactKind.REPORT,
                             "text/csv; charset=utf-8",
-                            "reports/sync_check.csv",
+                            ".exo/sync_check.csv",
                             created_at_utc=finalized_at_utc,
                             source_artifact_uuids=(
                                 raw_artifact_uuid_by_modality["sync_pulse"],
@@ -1875,7 +1879,7 @@ def run_trial(
                             "sync_pulse",
                             ArtifactKind.REPORT,
                             "application/json",
-                            "reports/sync_manifest.json",
+                            ".exo/sync_manifest.json",
                             artifact_uuid=sync_manifest_artifact_uuid,
                             created_at_utc=finalized_at_utc,
                             source_artifact_uuids=(
@@ -1900,7 +1904,7 @@ def run_trial(
                     "trial",
                     ArtifactKind.REPORT,
                     "text/plain; charset=utf-8",
-                    "reports/warnings.txt",
+                    ".exo/warnings.txt",
                     created_at_utc=finalized_at_utc,
                     source_artifact_uuids=(quality_artifact_uuid,),
                     metadata={
@@ -1913,7 +1917,7 @@ def run_trial(
                     "trial",
                     ArtifactKind.LOG,
                     "application/x-ndjson",
-                    "logs/trial.jsonl",
+                    ".exo/trial.jsonl",
                     created_at_utc=started_at_utc,
                     ),
                 }
@@ -2044,7 +2048,7 @@ def run_trial(
                     protocol_version=request.protocol_version,
                     condition_definition_version=request.protocol_version,
                     content_sha256=config_hash,
-                    snapshot_relative_path="derived/configuration_snapshot.json",
+                    snapshot_relative_path=".exo/configuration_snapshot.json",
                 ),
                 devices=[
                     DeviceProvenance(
@@ -2111,7 +2115,7 @@ def run_trial(
             )
             activity.heartbeat()
             final_directory = finalize_trial_package(layout, manifest)
-            final_manifest_path = final_directory / "manifest.json"
+            final_manifest_path = final_directory / ".exo" / "manifest.json"
             transition(TrialState.FINALIZED, "Trial directory atomically published")
             assert repository is not None
             try:
@@ -2175,7 +2179,7 @@ def run_trial(
             try:
                 publish_json(
                     layout,
-                    f"reports/finalization-failure-{uuid4()}.json",
+                    f".exo/finalization-failure-{uuid4()}.json",
                     {
                         "schema_version": "1.0.0",
                         **failure_payload,

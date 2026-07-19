@@ -16,7 +16,7 @@ from exo_collection.catalog.repositories import CatalogRepository, ScanReport
 from exo_collection.storage.activity import AcquisitionActivity, read_activity
 
 
-CATALOG_FILENAME = "catalog.sqlite3"
+CATALOG_FILENAME = ".exo/catalog.sqlite3"
 
 
 @dataclass(frozen=True, slots=True)

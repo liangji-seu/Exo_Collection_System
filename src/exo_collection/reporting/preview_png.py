@@ -23,8 +23,8 @@ from exo_collection.domain.events import FrameBatch, SampleBatch
 from exo_collection.storage.layout import TrialLayout
 
 
-US_PREVIEW_PATH = "reports/us_quality_preview.png"
-SIGNAL_PREVIEW_PATH = "reports/imu_encoder_preview.png"
+US_PREVIEW_PATH = "us_quality_preview.png"
+SIGNAL_PREVIEW_PATH = "imu_encoder_preview.png"
 US_PREVIEW_SIZE = (1000, 720)
 SIGNAL_PREVIEW_SIZE = (1000, 600)
 

@@ -14,8 +14,8 @@ from typing import Iterator
 from uuid import UUID, uuid4
 
 
-LOCK_NAME = ".collector-active.json"
-_GUARD_NAME = ".collector-active.guard"
+LOCK_NAME = ".exo/.collector-active.json"
+_GUARD_NAME = ".exo/.collector-active.guard"
 
 
 @dataclass(frozen=True, slots=True)

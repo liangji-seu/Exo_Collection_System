@@ -470,7 +470,7 @@ def _sync_artifact(manifest: TrialManifest) -> ManifestArtifact:
         if artifact.modality == "sync_pulse"
         and artifact.relative_path.casefold().endswith(".h5")
     ]
-    exact = [item for item in candidates if item.relative_path == "raw/sync_pulse.h5"]
+    exact = [item for item in candidates if item.relative_path == "sync_pulse.h5"]
     selected = exact or candidates
     if len(selected) != 1:
         raise ExternalImportError(
