@@ -394,7 +394,11 @@ class _SweepWaterfallPlot(pg.PlotWidget):
         self.setXRange(0.0, self._window_s, padding=0.0)
         self.setYRange(0.0, 999.0, padding=0.0)
         self.getViewBox().setMouseEnabled(x=False, y=False)
-        self.image = pg.ImageItem()
+        # ``_canvas`` is indexed as [depth, time-column].  PyQtGraph defaults
+        # to column-major image coordinates, which interprets the first axis
+        # as X and turns each A-scan into a horizontal stripe.  Row-major makes
+        # columns advance left-to-right in time while rows remain depth 0..999.
+        self.image = pg.ImageItem(axisOrder="row-major")
         lookup = _safe_colormap()
         if lookup is not None:
             self.image.setLookupTable(lookup)

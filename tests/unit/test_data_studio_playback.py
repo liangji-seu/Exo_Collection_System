@@ -86,6 +86,11 @@ def test_playback_has_requested_modality_layout_and_fixed_sweep_axes() -> None:
     y_range = waterfalls[0].getViewBox().viewRange()[1]
     assert y_range[0] == 0.0
     assert y_range[1] == 999.0
+    # Ultrasound samples are [depth, time].  Row-major image coordinates keep
+    # one A-scan vertical and advance successive frames from left to right.
+    assert waterfalls[0].image.axisOrder == "row-major"
+    assert waterfalls[0].image.height() == 1000
+    assert waterfalls[0].image.width() == waterfalls[0]._columns
 
     # Exercise the actual show/timer path that previously terminated the app.
     dialog.set_playback_time(0.0)
