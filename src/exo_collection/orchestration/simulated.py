@@ -508,7 +508,6 @@ def run_trial(
         project_partition=request.project_code,
         subject_code=request.subject_code,
         condition_code=request.condition_code,
-        condition_level=request.condition_level,
         repeat_index=request.repeat_index,
     )
     machine = TrialStateMachine()
