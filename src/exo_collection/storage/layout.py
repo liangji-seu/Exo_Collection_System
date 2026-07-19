@@ -64,7 +64,7 @@ class TrialLayout:
 
     The operator-visible hierarchy is::
 
-        {data_root}/{project}/{subject}/{condition}/{repeat}/
+        {data_root}/{project}/{subject}/{condition}/session{repeat}_{timestamp}/
 
     All internal bookkeeping (manifest, checksums, logs, quality reports,
     session metadata) lives under a single ``.exo/`` subdirectory inside the
@@ -146,7 +146,7 @@ class TrialLayout:
 
     @property
     def _trial_leaf_name(self) -> str:
-        """Human-readable leaf name: ``{condition}/{repeat}_{timestamp}``.
+        """Human-readable leaf name: ``{condition}/session{repeat}_{timestamp}``.
 
         The timestamp suffix (``YYYYmmdd_HHMMSS``) makes every trial directory
         unique without resorting to UUIDs.  Falls back to the trial UUID when
@@ -156,7 +156,7 @@ class TrialLayout:
             ts = (
                 self.started_at_utc or datetime.now(timezone.utc)
             ).strftime("%Y%m%d_%H%M%S")
-            return f"{self.condition_code}/{self.repeat_index}_{ts}"
+            return f"{self.condition_code}/session{self.repeat_index}_{ts}"
         return str(self.trial_uuid)
 
     @property
