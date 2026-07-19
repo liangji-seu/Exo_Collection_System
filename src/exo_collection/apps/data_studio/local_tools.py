@@ -654,7 +654,7 @@ def load_trial_playback(
     *,
     data_root: str | Path | None = None,
     max_signal_points: int = 4000,
-    max_ultrasound_frames: int = 300,
+    max_ultrasound_frames: int = 4000,
     max_ultrasound_depth_points: int = 1000,
 ) -> TrialPlayback:
     """Load a bounded, plot-ready view of one finalized Trial."""

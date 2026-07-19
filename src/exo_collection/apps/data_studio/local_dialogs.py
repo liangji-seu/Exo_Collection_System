@@ -438,16 +438,48 @@ class _SweepWaterfallPlot(pg.PlotWidget):
         lower_bound = self._last_current if continuing else cycle_start_s
         image_changed = not continuing
         if depth and self._times.size:
-            indices = np.flatnonzero(
+            new_indices = np.flatnonzero(
                 (self._times > lower_bound if continuing else self._times >= lower_bound)
                 & (self._times <= current_s)
             )
-            if indices.size:
-                columns = np.floor(
-                    (self._times[indices] - cycle_start_s)
-                    / self._window_s * (self._columns - 1)
-                ).astype(np.int64)
-                self._canvas[:, np.clip(columns, 0, self._columns - 1)] = self._data[:, indices]
+            # Also repaint the sample held at ``lower_bound``.  A sampled
+            # waterfall represents each A-scan until the next A-scan arrives;
+            # writing only one pixel column per frame creates comb-like black
+            # gaps, especially after bounded/downsampled loading.
+            held_index = int(np.searchsorted(self._times, lower_bound, side="right") - 1)
+            indices = new_indices.tolist()
+            if held_index >= 0:
+                indices.insert(0, held_index)
+            for source_index in dict.fromkeys(indices):
+                sample_time = float(self._times[source_index])
+                paint_start = max(float(lower_bound), float(cycle_start_s), sample_time)
+                if paint_start > current_s:
+                    continue
+                next_time = (
+                    float(self._times[source_index + 1])
+                    if source_index + 1 < self._times.size
+                    else float(current_s)
+                )
+                paint_end = min(float(current_s), max(paint_start, next_time))
+                start_column = int(
+                    np.floor(
+                        (paint_start - cycle_start_s)
+                        / self._window_s
+                        * (self._columns - 1)
+                    )
+                )
+                end_column = int(
+                    np.floor(
+                        (paint_end - cycle_start_s)
+                        / self._window_s
+                        * (self._columns - 1)
+                    )
+                )
+                start_column = int(np.clip(start_column, 0, self._columns - 1))
+                end_column = int(np.clip(end_column, start_column, self._columns - 1))
+                self._canvas[:, start_column : end_column + 1] = self._data[
+                    :, source_index : source_index + 1
+                ]
                 image_changed = True
         if image_changed:
             self.image.setImage(self._canvas, autoLevels=False, levels=self._levels)

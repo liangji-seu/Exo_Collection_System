@@ -91,6 +91,8 @@ def test_playback_has_requested_modality_layout_and_fixed_sweep_axes() -> None:
     assert waterfalls[0].image.axisOrder == "row-major"
     assert waterfalls[0].image.height() == 1000
     assert waterfalls[0].image.width() == waterfalls[0]._columns
+    cursor_column = int(0.5 / dialog._window_s * (waterfalls[0]._columns - 1))
+    assert np.isfinite(waterfalls[0]._canvas[:, : cursor_column + 1]).all()
 
     # Exercise the actual show/timer path that previously terminated the app.
     dialog.set_playback_time(0.0)
