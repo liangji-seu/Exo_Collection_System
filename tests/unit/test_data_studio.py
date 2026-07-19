@@ -19,6 +19,7 @@ from exo_collection.apps.data_studio.local_tools import load_quality_audit
 from exo_collection.apps.data_studio.quality_reviews import list_quality_reviews
 from exo_collection.apps.data_studio.recovery_dialog import RecoveryDialog
 from exo_collection.apps.data_studio import window as window_module
+from exo_collection.apps.data_studio.upload import RemoteTrialStatus
 from exo_collection.domain.models import ArtifactKind, Condition, QualityGrade
 from exo_collection.domain.states import TrialState
 from exo_collection.external import (
@@ -122,6 +123,63 @@ def _wait_until(app: QApplication, predicate: object, timeout_s: float = 5.0) ->
         time.sleep(0.005)
     app.processEvents()
     assert predicate()  # type: ignore[operator]
+
+
+def test_upload_scope_accepts_parent_levels_and_remote_status_colors_trials(
+    tmp_path: Path,
+) -> None:
+    app = QApplication.instance() or QApplication(["test-data-studio-upload-scope"])
+    first = (tmp_path / "T/001/WALK/session1/.exo/manifest.json").resolve()
+    second = (tmp_path / "T/001/WALK/session2/.exo/manifest.json").resolve()
+    window = DataStudioWindow(tmp_path, autostart_refresh=False)
+    project = window._make_tree_item(
+        {
+            "type": "project",
+            "label": "T",
+            "uuid": "project",
+            "children": [
+                {
+                    "type": "trial",
+                    "label": "session1",
+                    "uuid": "trial-1",
+                    "manifest_path": str(first),
+                    "state": "FINALIZED",
+                    "children": [],
+                },
+                {
+                    "type": "trial",
+                    "label": "session2",
+                    "uuid": "trial-2",
+                    "manifest_path": str(second),
+                    "state": "FINALIZED",
+                    "children": [],
+                },
+            ],
+        }
+    )
+    window.tree_widget.addTopLevelItem(project)
+    window.tree_widget.setCurrentItem(project)
+
+    assert window._selected_finalized_manifest_paths() == (first, second)
+
+    window._remote_status_by_manifest[str(first)] = (
+        RemoteTrialStatus.UPLOADED,
+        "SHA-256 一致",
+    )
+    colored = window._make_tree_item(
+        {
+            "type": "trial",
+            "label": "session1",
+            "uuid": "trial-1",
+            "manifest_path": str(first),
+            "state": "FINALIZED",
+            "children": [],
+        }
+    )
+    assert colored.foreground(0).color().name() == "#16803c"
+    assert "已上传" in colored.text(2)
+    window.close()
+    app.processEvents()
 
 
 def test_snapshot_scans_only_published_manifests_and_never_artifacts(

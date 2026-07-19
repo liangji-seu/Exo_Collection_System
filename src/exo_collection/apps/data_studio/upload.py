@@ -92,6 +92,18 @@ class UploadPhase(StrEnum):
     COMPLETED = "COMPLETED"
 
 
+class UploadOperation(StrEnum):
+    UPLOAD = "UPLOAD"
+    SYNC_REMOTE_STATUS = "SYNC_REMOTE_STATUS"
+
+
+class RemoteTrialStatus(StrEnum):
+    UPLOADED = "UPLOADED"
+    NOT_UPLOADED = "NOT_UPLOADED"
+    PARTIAL = "PARTIAL"
+    CONFLICT = "CONFLICT"
+
+
 class AuthenticationMethod(StrEnum):
     PASSWORD = "PASSWORD"
     PRIVATE_KEY = "PRIVATE_KEY"
@@ -111,6 +123,8 @@ class OfflineUploadRequest:
     port: int
     username: str
     remote_workdir: str
+    additional_manifest_paths: tuple[Path, ...] = ()
+    operation: UploadOperation = UploadOperation.UPLOAD
     password: str | None = field(default=None, repr=False, compare=False)
     private_key_path: Path | None = field(
         default=None, repr=False, compare=False
@@ -126,8 +140,15 @@ class OfflineUploadRequest:
     def __post_init__(self) -> None:
         root = Path(self.dataset_root).expanduser().resolve()
         manifest = Path(self.manifest_path).expanduser().resolve()
-        if not manifest.is_relative_to(root):
+        additional = tuple(
+            Path(value).expanduser().resolve()
+            for value in self.additional_manifest_paths
+        )
+        manifests = (manifest, *additional)
+        if any(not value.is_relative_to(root) for value in manifests):
             raise ValueError("Manifest 必须位于当前数据根目录内。")
+        if len(set(manifests)) != len(manifests):
+            raise ValueError("批量操作不能包含重复 Manifest。")
         host = _require_text("host", self.host)
         username = _require_text("username", self.username)
         remote_workdir = validate_remote_directory(self.remote_workdir)
@@ -161,6 +182,8 @@ class OfflineUploadRequest:
         object.__setattr__(self, "port", int(self.port))
         object.__setattr__(self, "username", username)
         object.__setattr__(self, "remote_workdir", remote_workdir)
+        object.__setattr__(self, "additional_manifest_paths", additional)
+        object.__setattr__(self, "operation", UploadOperation(self.operation))
         object.__setattr__(self, "password", password)
         object.__setattr__(self, "private_key_path", private_key_path)
         object.__setattr__(self, "private_key_passphrase", passphrase)
@@ -181,6 +204,10 @@ class OfflineUploadRequest:
             if secret
         )
 
+    @property
+    def manifest_paths(self) -> tuple[Path, ...]:
+        return (self.manifest_path, *self.additional_manifest_paths)
+
 
 @dataclass(frozen=True, slots=True)
 class UploadProgress:
@@ -199,6 +226,37 @@ class OfflineUploadResult:
     verified_at_utc_ns: int
     transfer_batch_uuid: UUID
     audit_record_path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class BatchOfflineUploadResult:
+    results: tuple[OfflineUploadResult, ...]
+
+    @property
+    def trial_count(self) -> int:
+        return len(self.results)
+
+    @property
+    def file_count(self) -> int:
+        return sum(item.file_count for item in self.results)
+
+    @property
+    def total_bytes(self) -> int:
+        return sum(item.total_bytes for item in self.results)
+
+
+@dataclass(frozen=True, slots=True)
+class RemoteTrialStatusRecord:
+    manifest_path: Path
+    trial_uuid: UUID
+    remote_trial_directory: str
+    status: RemoteTrialStatus
+    detail: str
+
+
+@dataclass(frozen=True, slots=True)
+class RemoteStatusSyncResult:
+    records: tuple[RemoteTrialStatusRecord, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1237,6 +1295,82 @@ class SshScpTrialUploader:
             )
 
 
+class RemoteDatasetStatusScanner:
+    """Compare finalized local Trial packages with their exact remote mirrors."""
+
+    def __init__(self, session_factory: RemoteSessionFactory | None = None) -> None:
+        self._session_factory = session_factory or _default_remote_session
+
+    def scan(
+        self,
+        request: OfflineUploadRequest,
+        *,
+        progress: ProgressCallback | None = None,
+        cancelled: CancelCheck | None = None,
+    ) -> RemoteStatusSyncResult:
+        report = progress or (lambda _update: None)
+        is_cancelled = cancelled or (lambda: False)
+        if read_activity(request.dataset_root) is not None:
+            raise UploadError("COLLECTOR_ACTIVE", "采集期间不能同步云端状态。")
+        report(UploadProgress(UploadPhase.CONNECTING, "正在连接服务器并读取云端 data/ 状态…"))
+        session = self._session_factory(request)
+        records: list[RemoteTrialStatusRecord] = []
+        try:
+            total = len(request.manifest_paths)
+            for index, manifest_path in enumerate(request.manifest_paths, start=1):
+                if is_cancelled():
+                    raise UploadCancelled()
+                plan = build_upload_plan(manifest_path)
+                remote_dir = build_remote_trial_directory(
+                    request.remote_workdir, plan, request.dataset_root
+                )
+                report(
+                    UploadProgress(
+                        UploadPhase.VERIFYING,
+                        f"正在核对云端 Trial {index}/{total}：{plan.trial_uuid}",
+                        index - 1,
+                        total,
+                    )
+                )
+                if not session.exists(remote_dir):
+                    status = RemoteTrialStatus.NOT_UPLOADED
+                    detail = "云端不存在该 Trial 目录"
+                else:
+                    missing: list[str] = []
+                    conflicts: list[str] = []
+                    for item in plan.files:
+                        if is_cancelled():
+                            raise UploadCancelled()
+                        remote_file = _remote_join(remote_dir, *item.relative_path.parts)
+                        if not session.exists(remote_file):
+                            missing.append(item.relative_path.as_posix())
+                            continue
+                        if session.remote_sha256(remote_file) != item.sha256:
+                            conflicts.append(item.relative_path.as_posix())
+                    if conflicts:
+                        status = RemoteTrialStatus.CONFLICT
+                        detail = f"{len(conflicts)} 个同路径文件内容冲突"
+                    elif missing:
+                        status = RemoteTrialStatus.PARTIAL
+                        detail = f"云端缺少 {len(missing)} 个文件"
+                    else:
+                        status = RemoteTrialStatus.UPLOADED
+                        detail = "本地全部文件已在云端且 SHA-256 一致"
+                records.append(
+                    RemoteTrialStatusRecord(
+                        manifest_path=manifest_path,
+                        trial_uuid=plan.trial_uuid,
+                        remote_trial_directory=remote_dir,
+                        status=status,
+                        detail=detail,
+                    )
+                )
+            report(UploadProgress(UploadPhase.COMPLETED, "云端状态同步完成。", total, total))
+            return RemoteStatusSyncResult(tuple(records))
+        finally:
+            session.close()
+
+
 def _remote_join(base: str, *parts: str) -> str:
     path = PurePosixPath(validate_remote_directory(base))
     for part in parts:
@@ -1267,7 +1401,7 @@ class UploadWorkerEventType(StrEnum):
 class UploadWorkerEvent:
     event_type: UploadWorkerEventType
     progress: UploadProgress | None = None
-    result: OfflineUploadResult | None = None
+    result: OfflineUploadResult | BatchOfflineUploadResult | RemoteStatusSyncResult | None = None
     host_key: HostKeyInfo | None = None
     error_code: str | None = None
     message: str | None = None
@@ -1292,18 +1426,47 @@ def _upload_worker_main(command: Connection, events: Connection) -> None:
         if not isinstance(incoming, OfflineUploadRequest):
             raise UploadError("INVALID_REQUEST", "上传 Worker 收到了无效请求。")
         request = incoming
-        uploader = SshScpTrialUploader()
         while True:
             try:
-                result = uploader.upload(
-                    request,
-                    progress=lambda update: events.send(
-                        UploadWorkerEvent(
-                            UploadWorkerEventType.PROGRESS, progress=update
+                def send_progress(update: UploadProgress) -> None:
+                    events.send(UploadWorkerEvent(UploadWorkerEventType.PROGRESS, progress=update))
+
+                if request.operation is UploadOperation.SYNC_REMOTE_STATUS:
+                    result = RemoteDatasetStatusScanner().scan(
+                        request, progress=send_progress, cancelled=cancelled
+                    )
+                else:
+                    uploader = SshScpTrialUploader()
+                    uploaded: list[OfflineUploadResult] = []
+                    total_trials = len(request.manifest_paths)
+                    for trial_index, manifest_path in enumerate(request.manifest_paths, start=1):
+                        subrequest = replace(
+                            request,
+                            manifest_path=manifest_path,
+                            additional_manifest_paths=(),
                         )
-                    ),
-                    cancelled=cancelled,
-                )
+                        def batch_progress(
+                            update: UploadProgress,
+                            current: int = trial_index,
+                        ) -> None:
+                            send_progress(
+                                replace(
+                                    update,
+                                    message=f"[Trial {current}/{total_trials}] {update.message}",
+                                )
+                            )
+                        uploaded.append(
+                            uploader.upload(
+                                subrequest,
+                                progress=batch_progress,
+                                cancelled=cancelled,
+                            )
+                        )
+                    result = (
+                        uploaded[0]
+                        if len(uploaded) == 1
+                        else BatchOfflineUploadResult(tuple(uploaded))
+                    )
                 break
             except UnknownHostKeyError as exc:
                 events.send(

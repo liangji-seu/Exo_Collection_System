@@ -16,6 +16,8 @@ import pytest
 from exo_collection.apps.data_studio.upload import (
     OfflineUploadRequest,
     ParamikoScpSession,
+    RemoteDatasetStatusScanner,
+    RemoteTrialStatus,
     SshScpTrialUploader,
     UnknownHostKeyError,
     UploadError,
@@ -284,6 +286,50 @@ def test_existing_same_path_with_different_bytes_is_never_overwritten(
     assert captured.value.code == "REMOTE_CONTENT_CONFLICT"
     assert session.files[conflicting_path] == b"remote-different-and-must-survive"
     assert all(".partial-" not in path for path in session.files)
+
+
+def test_remote_status_scan_distinguishes_uploaded_missing_partial_and_conflict(
+    tmp_path: Path,
+) -> None:
+    manifests = tuple(_publish_trial(tmp_path) for _ in range(4))
+    request = replace(
+        _password_request(tmp_path, manifests[0]),
+        additional_manifest_paths=manifests[1:],
+    )
+    session = _FakeRemoteSession()
+    plans = [build_upload_plan(path) for path in manifests]
+    remote_dirs = [
+        build_remote_trial_directory(request.remote_workdir, plan, tmp_path)
+        for plan in plans
+    ]
+
+    # Trial 1 is an exact mirror.
+    session.ensure_directory(remote_dirs[0])
+    for item in plans[0].files:
+        session.files[f"{remote_dirs[0]}/{item.relative_path.as_posix()}"] = (
+            item.local_path.read_bytes()
+        )
+    # Trial 2 is absent. Trial 3 has only one file. Trial 4 has conflicting bytes.
+    session.ensure_directory(remote_dirs[2])
+    partial_item = plans[2].files[0]
+    session.files[f"{remote_dirs[2]}/{partial_item.relative_path.as_posix()}"] = (
+        partial_item.local_path.read_bytes()
+    )
+    session.ensure_directory(remote_dirs[3])
+    for item in plans[3].files:
+        session.files[f"{remote_dirs[3]}/{item.relative_path.as_posix()}"] = (
+            b"different" if item is plans[3].files[0] else item.local_path.read_bytes()
+        )
+
+    result = RemoteDatasetStatusScanner(lambda _request: session).scan(request)
+
+    assert [record.status for record in result.records] == [
+        RemoteTrialStatus.UPLOADED,
+        RemoteTrialStatus.NOT_UPLOADED,
+        RemoteTrialStatus.PARTIAL,
+        RemoteTrialStatus.CONFLICT,
+    ]
+    assert session.closed
 
 
 @pytest.mark.parametrize(

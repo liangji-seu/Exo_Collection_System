@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 from PySide6.QtCore import Signal
@@ -22,37 +23,47 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .upload import OfflineUploadRequest, UploadProgress
+from .upload import OfflineUploadRequest, UploadOperation, UploadProgress
 
 
 class OfflineUploadDialog(QDialog):
     """Collect one transfer endpoint without loading or saving profiles."""
 
-    def __init__(self, manifest_path: Path, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        manifest_path: Path | Sequence[Path],
+        parent: QWidget | None = None,
+        *,
+        status_only: bool = False,
+    ) -> None:
         super().__init__(parent)
-        self._manifest_path = Path(manifest_path).expanduser().resolve()
-        self.setWindowTitle("人工离线 SSH/SCP 上传")
+        raw_paths = (manifest_path,) if isinstance(manifest_path, Path) else tuple(manifest_path)
+        if not raw_paths:
+            raise ValueError("至少需要一个 FINALIZED Trial。")
+        self._manifest_paths = tuple(Path(path).expanduser().resolve() for path in raw_paths)
+        self._status_only = status_only
+        self.setWindowTitle("同步云端状态" if status_only else "人工离线 SSH/SCP 上传")
         self.setModal(True)
         self.resize(560, 380)
 
         outer = QVBoxLayout(self)
         explanation = QLabel(
-            "仅同步已最终化 Trial，并完整保留它在本地 data/ 下的相对目录。"
-            "云端已有同内容文件会跳过，缺少文件会补传，云端额外文件不会删除；"
-            "同路径内容冲突时停止且不覆盖。密码仅在内存中传递，不会保存。"
+            ("只读核对本地与云端 data/ 的同路径文件及 SHA-256；不会上传、下载、覆盖或删除文件。"
+             if status_only else
+             "同步所选层级下全部已最终化 Trial，并完整保留它们在本地 data/ 下的相对目录。"
+             "云端已有同内容文件会跳过，缺少文件会补传，云端额外文件不会删除；"
+             "同路径内容冲突时停止且不覆盖。")
+            + "密码仅在内存中传递，不会保存。"
         )
         explanation.setWordWrap(True)
         outer.addWidget(explanation)
 
-        trial_group = QGroupBox("Trial")
+        trial_group = QGroupBox("同步范围")
         trial_form = QFormLayout(trial_group)
-        trial_dir = self._manifest_path.parent
-        if trial_dir.name == ".exo":
-            trial_dir = trial_dir.parent
-        trial_path = QLineEdit(str(trial_dir))
+        trial_path = QLineEdit(f"{len(self._manifest_paths)} 个 FINALIZED Trial")
         trial_path.setReadOnly(True)
         trial_path.setObjectName("upload_trial_path")
-        trial_form.addRow("本地数据包：", trial_path)
+        trial_form.addRow("本地范围：", trial_path)
         outer.addWidget(trial_group)
 
         endpoint_group = QGroupBox("SSH/SCP 目标（每次手工输入）")
@@ -128,7 +139,7 @@ class OfflineUploadDialog(QDialog):
             | QDialogButtonBox.StandardButton.Ok
         )
         self.start_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
-        self.start_button.setText("开始上传")
+        self.start_button.setText("开始同步状态" if status_only else "开始上传")
         self.start_button.setObjectName("start_offline_upload")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -145,7 +156,13 @@ class OfflineUploadDialog(QDialog):
         try:
             return OfflineUploadRequest(
                 dataset_root=dataset_root,
-                manifest_path=self._manifest_path,
+                manifest_path=self._manifest_paths[0],
+                additional_manifest_paths=self._manifest_paths[1:],
+                operation=(
+                    UploadOperation.SYNC_REMOTE_STATUS
+                    if self._status_only
+                    else UploadOperation.UPLOAD
+                ),
                 host=self.host_edit.text(),
                 port=self.port_spin.value(),
                 username=self.username_edit.text(),

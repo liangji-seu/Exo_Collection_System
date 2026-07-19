@@ -15,7 +15,7 @@ from typing import Any
 _log = logging.getLogger(__name__)
 
 from PySide6.QtCore import QDate, QObject, QRunnable, QThreadPool, QTimer, Qt, Signal, Slot
-from PySide6.QtGui import QAction, QCloseEvent
+from PySide6.QtGui import QAction, QBrush, QCloseEvent, QColor
 from PySide6.QtWidgets import (
     QFileDialog,
     QCheckBox,
@@ -77,8 +77,11 @@ from .quality_reviews import append_quality_review
 from .recovery_dialog import RecoveryDialog
 from .service import DataStudioSnapshot
 from .upload import (
+    BatchOfflineUploadResult,
     HostKeyInfo,
     OfflineUploadResult,
+    RemoteStatusSyncResult,
+    RemoteTrialStatus,
     UploadWorkerEventType,
     UploadWorkerHandle,
 )
@@ -194,6 +197,7 @@ class DataStudioWindow(QMainWindow):
         self._statistics: dict[str, Any] = {}
         self._lightweight_mode = False
         self._catalog_tree: list[dict[str, Any]] = []
+        self._remote_status_by_manifest: dict[str, tuple[RemoteTrialStatus, str]] = {}
         self._management_index: ManagementIndex | None = None
         self._annex_scan: AnnexScanResult | None = None
         self._filtered_records: tuple[TrialManagementRecord, ...] = ()
@@ -293,7 +297,18 @@ class DataStudioWindow(QMainWindow):
         self.refresh_button = QPushButton("刷新 Catalog")
         self.refresh_button.clicked.connect(self.refresh_catalog)
         root_row.addWidget(self.refresh_button)
+        self.remote_sync_button = QPushButton("同步云端状态")
+        self.remote_sync_button.setObjectName("sync_remote_status")
+        self.remote_sync_button.clicked.connect(self.sync_remote_status)
+        root_row.addWidget(self.remote_sync_button)
         outer.addLayout(root_row)
+
+        self.remote_status_legend = QLabel(
+            "云端状态：● 绿色 已上传   ● 红色 未上传   ● 橙色 部分缺失   "
+            "● 紫色 内容冲突   ● 灰色 尚未同步"
+        )
+        self.remote_status_legend.setStyleSheet("QLabel { color: #46566b; }")
+        outer.addWidget(self.remote_status_legend)
 
         self.activity_banner = QLabel()
         self.activity_banner.setObjectName("activity_banner")
@@ -459,6 +474,7 @@ class DataStudioWindow(QMainWindow):
         self.data_root_edit.setText(str(self._data_root))
         self.tree_widget.clear()
         self._catalog_tree = []
+        self._remote_status_by_manifest.clear()
         self._management_index = None
         self._annex_scan = None
         self._filtered_records = ()
@@ -875,6 +891,53 @@ class DataStudioWindow(QMainWindow):
             return None
         return path
 
+    def _manifest_paths_below_item(self, root: QTreeWidgetItem) -> tuple[Path, ...]:
+        paths: list[Path] = []
+
+        def visit(item: QTreeWidgetItem) -> None:
+            node_type = str(item.data(1, Qt.ItemDataRole.UserRole) or "")
+            if node_type == "trial":
+                state = str(item.data(0, Qt.ItemDataRole.UserRole + 2) or "")
+                raw_path = item.data(0, Qt.ItemDataRole.UserRole + 1)
+                if state == "FINALIZED" and raw_path:
+                    path = Path(str(raw_path)).expanduser().resolve()
+                    if not any(
+                        part.endswith(".recording") or part.endswith(".partial")
+                        for part in path.parts
+                    ):
+                        paths.append(path)
+                return
+            for index in range(item.childCount()):
+                visit(item.child(index))
+
+        visit(root)
+        return tuple(dict.fromkeys(paths))
+
+    def _selected_finalized_manifest_paths(self) -> tuple[Path, ...]:
+        item = self.tree_widget.currentItem()
+        if item is None:
+            QMessageBox.information(
+                self, "请选择上传范围", "请在数据树中选择项目、受试者、工况、Session 或 Trial。"
+            )
+            return ()
+        node_type = str(item.data(1, Qt.ItemDataRole.UserRole) or "")
+        if node_type not in {"project", "subject", "session", "trial"}:
+            QMessageBox.information(
+                self, "请选择目录层级", "文件或模态节点不能作为上传范围，请选择其所属 Session 或上级目录。"
+            )
+            return ()
+        paths = self._manifest_paths_below_item(item)
+        if not paths:
+            QMessageBox.warning(self, "没有可上传数据", "所选层级下没有 FINALIZED Trial。")
+        return paths
+
+    def _all_finalized_manifest_paths(self) -> tuple[Path, ...]:
+        paths: list[Path] = []
+        root = self.tree_widget.invisibleRootItem()
+        for index in range(root.childCount()):
+            paths.extend(self._manifest_paths_below_item(root.child(index)))
+        return tuple(dict.fromkeys(paths))
+
     def _start_local_tool(
         self,
         name: str,
@@ -1058,12 +1121,14 @@ class DataStudioWindow(QMainWindow):
                     context.terminal_handled = True
                     context.progress_dialog.mark_finished()
                     context.progress_dialog.close()
-                    if not isinstance(event.result, OfflineUploadResult):
-                        self._upload_failed(
-                            "INVALID_RESULT", "上传 Worker 返回了无效结果。"
-                        )
-                    else:
+                    if isinstance(event.result, RemoteStatusSyncResult):
+                        self._remote_sync_succeeded(event.result)
+                    elif isinstance(event.result, (OfflineUploadResult, BatchOfflineUploadResult)):
                         self._upload_succeeded(event.result)
+                    else:
+                        self._upload_failed(
+                            "INVALID_RESULT", "远程 Worker 返回了无效结果。"
+                        )
                 elif event.event_type is UploadWorkerEventType.FAILED:
                     context.terminal_handled = True
                     context.progress_dialog.mark_finished()
@@ -1320,7 +1385,7 @@ class DataStudioWindow(QMainWindow):
 
     @Slot()
     def upload_selected_trial(self) -> None:
-        """Collect ephemeral credentials and start the isolated transfer worker."""
+        """Upload every finalized Trial below the selected tree level."""
 
         self._apply_activity(read_activity(self._data_root))
         if self._lightweight_mode:
@@ -1333,16 +1398,39 @@ class DataStudioWindow(QMainWindow):
         if self._active_upload is not None:
             QMessageBox.information(self, "上传进行中", "当前已有一个 Trial 正在上传。")
             return
-        manifest_path = self._selected_finalized_manifest_path()
-        if manifest_path is None:
+        manifest_paths = self._selected_finalized_manifest_paths()
+        if not manifest_paths:
             return
+        self._start_remote_operation(manifest_paths, status_only=False)
 
-        dialog = OfflineUploadDialog(manifest_path, self)
+    @Slot()
+    def sync_remote_status(self) -> None:
+        """Read-only compare every local finalized Trial with remote data/."""
+
+        self._apply_activity(read_activity(self._data_root))
+        if self._lightweight_mode:
+            QMessageBox.warning(self, "采集期间禁止同步", "Collector 正在采集，云端状态同步未启动。")
+            return
+        if self._active_upload is not None:
+            QMessageBox.information(self, "远程任务进行中", "请等待当前远程任务结束。")
+            return
+        manifest_paths = self._all_finalized_manifest_paths()
+        if not manifest_paths:
+            QMessageBox.warning(self, "没有可同步数据", "请先刷新 Catalog；当前没有 FINALIZED Trial。")
+            return
+        self._start_remote_operation(manifest_paths, status_only=True)
+
+    def _start_remote_operation(
+        self, manifest_paths: tuple[Path, ...], *, status_only: bool
+    ) -> None:
+        """Collect ephemeral credentials and start one isolated remote worker."""
+
+        dialog = OfflineUploadDialog(manifest_paths, self, status_only=status_only)
         while dialog.exec() == QDialog.DialogCode.Accepted:
             try:
                 request = dialog.take_request(self._data_root)
             except (TypeError, ValueError) as exc:
-                QMessageBox.warning(self, "上传参数无效", str(exc))
+                QMessageBox.warning(self, "远程连接参数无效", str(exc))
                 continue
             break
         else:
@@ -1362,6 +1450,9 @@ class DataStudioWindow(QMainWindow):
 
         worker = self._upload_worker_factory()
         progress_dialog = UploadProgressDialog(self)
+        if status_only:
+            progress_dialog.setWindowTitle("同步云端状态")
+            progress_dialog.cancel_button.setText("取消状态同步")
         context = _UploadTaskContext(
             worker=worker,
             progress_dialog=progress_dialog,
@@ -1383,14 +1474,17 @@ class DataStudioWindow(QMainWindow):
                     worker.close()
                 except Exception:
                     pass
-            QMessageBox.critical(self, "上传启动失败", str(exc))
+            QMessageBox.critical(self, "远程任务启动失败", str(exc))
             self._apply_activity(read_activity(self._data_root))
             self.upload_finished.emit(False)
             return
         # The request (and credentials) is intentionally not stored by the
         # window. UploadWorkerHandle has already sent it through its memory pipe.
         request = None
-        self.statusBar().showMessage("已启动独立 SSH/SCP 上传进程。")
+        self.statusBar().showMessage(
+            "已启动只读云端状态同步进程。" if status_only else
+            f"已启动批量 SSH/SCP 上传进程（{len(manifest_paths)} 个 Trial）。"
+        )
 
     @Slot()
     def _cancel_active_upload(self) -> None:
@@ -1426,7 +1520,21 @@ class DataStudioWindow(QMainWindow):
         else:
             self._cancel_active_upload()
 
-    def _upload_succeeded(self, result: OfflineUploadResult) -> None:
+    def _upload_succeeded(
+        self, result: OfflineUploadResult | BatchOfflineUploadResult
+    ) -> None:
+        if isinstance(result, BatchOfflineUploadResult):
+            QMessageBox.information(
+                self,
+                "批量上传与校验完成",
+                f"Trial：{result.trial_count} 个\n"
+                f"文件：{result.file_count} 个，{result.total_bytes:,} B\n\n"
+                "本地 data/ 相对目录已完整保留；云端额外内容未删除。",
+            )
+            self.statusBar().showMessage("批量 SSH/SCP 上传并逐文件校验完成。", 8000)
+            self.upload_finished.emit(True)
+            self._schedule_catalog_refresh()
+            return
         QMessageBox.information(
             self,
             "上传与校验完成",
@@ -1438,6 +1546,33 @@ class DataStudioWindow(QMainWindow):
         self.statusBar().showMessage("人工 SSH/SCP 上传并逐文件校验完成。", 8000)
         self.upload_finished.emit(True)
         self._schedule_catalog_refresh()
+
+    def _remote_sync_succeeded(self, result: RemoteStatusSyncResult) -> None:
+        self._remote_status_by_manifest = {
+            str(record.manifest_path.expanduser().resolve()): (record.status, record.detail)
+            for record in result.records
+        }
+        visible_tree = self._catalog_tree
+        if self._management_index is not None:
+            visible_tree = self._filter_catalog_tree(
+                self._catalog_tree,
+                {record.trial_uuid for record in self._filtered_records},
+            )
+        self._render_tree(visible_tree)
+        counts = {status: 0 for status in RemoteTrialStatus}
+        for record in result.records:
+            counts[record.status] += 1
+        QMessageBox.information(
+            self,
+            "云端状态同步完成",
+            f"已核对 {len(result.records)} 个 Trial。\n"
+            f"已上传：{counts[RemoteTrialStatus.UPLOADED]}\n"
+            f"未上传：{counts[RemoteTrialStatus.NOT_UPLOADED]}\n"
+            f"部分缺失：{counts[RemoteTrialStatus.PARTIAL]}\n"
+            f"内容冲突：{counts[RemoteTrialStatus.CONFLICT]}",
+        )
+        self.statusBar().showMessage("云端 data/ 状态同步完成。", 8000)
+        self.upload_finished.emit(True)
 
     def _upload_failed(self, error_code: str | None, message: str | None) -> None:
         safe_message = message or "上传 Worker 未返回错误详情。"
@@ -1690,7 +1825,7 @@ class DataStudioWindow(QMainWindow):
                     self.recovery_action: (
                         "只读扫描 .recording，并执行证据约束的恢复/中止"
                     ),
-                    self.upload_action: "将选中的 FINALIZED Trial 人工离线上传并校验",
+                    self.upload_action: "上传所选层级下的全部 FINALIZED Trial，并保留 data/ 目录结构",
                 }
                 action.setToolTip(tooltips[action])
         management_ready = self._management_index is not None
@@ -1735,6 +1870,9 @@ class DataStudioWindow(QMainWindow):
         )
         self.browse_button.setEnabled(root_controls_enabled)
         self.refresh_button.setEnabled(root_controls_enabled)
+        self.remote_sync_button.setEnabled(
+            root_controls_enabled and not self._lightweight_mode and bool(self._catalog_tree)
+        )
 
     @Slot()
     def _poll_activity(self) -> None:
@@ -1768,6 +1906,33 @@ class DataStudioWindow(QMainWindow):
                 node.get("manifest_path"),
             )
             item.setData(0, Qt.ItemDataRole.UserRole + 2, node.get("state"))
+            raw_manifest = node.get("manifest_path")
+            remote_state = (
+                self._remote_status_by_manifest.get(
+                    str(Path(str(raw_manifest)).expanduser().resolve())
+                )
+                if raw_manifest
+                else None
+            )
+            if remote_state is not None:
+                status, remote_detail = remote_state
+                colors = {
+                    RemoteTrialStatus.UPLOADED: "#16803c",
+                    RemoteTrialStatus.NOT_UPLOADED: "#c62828",
+                    RemoteTrialStatus.PARTIAL: "#c26a00",
+                    RemoteTrialStatus.CONFLICT: "#8e245d",
+                }
+                labels = {
+                    RemoteTrialStatus.UPLOADED: "已上传",
+                    RemoteTrialStatus.NOT_UPLOADED: "未上传",
+                    RemoteTrialStatus.PARTIAL: "部分缺失",
+                    RemoteTrialStatus.CONFLICT: "内容冲突",
+                }
+                brush = QBrush(QColor(colors[status]))
+                for column in range(3):
+                    item.setForeground(column, brush)
+                    item.setToolTip(column, f"云端：{labels[status]}\n{remote_detail}")
+                item.setText(2, f"{details} · 云端：{labels[status]}")
         elif node_type == "external_annex":
             item.setData(
                 0,
