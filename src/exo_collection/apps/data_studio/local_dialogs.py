@@ -517,14 +517,18 @@ class _UltrasoundCurrentFramePlot(pg.PlotWidget):
         self.setTitle(f"{channel_label} · 当前帧 A-scan")
         self.setLabel("bottom", "深度点")
         self.setLabel("left", "信号幅值")
-        self.setMinimumHeight(55)
-        self.setMaximumHeight(140)
+        # A plot around 50 px high is effectively invisible once its title,
+        # axes and labels are laid out. Reserve enough actual drawing area for
+        # the A-scan while keeping it clearly smaller than the waterfall.
+        self.setMinimumHeight(115)
+        self.setMaximumHeight(180)
         self.setMouseEnabled(x=False, y=False)
         self.setMenuEnabled(False)
         self.getViewBox().setMouseEnabled(x=False, y=False)
+        self.showGrid(x=True, y=True, alpha=0.18)
         depth_count = int(self._frames.shape[1]) if self._frames.ndim == 2 else 0
         self.setXRange(0.0, float(max(1, min(1000, depth_count) - 1)), padding=0.0)
-        self._curve = self.plot([], [], pen=pg.mkPen(_PLOT_COLORS[0], width=1.1))
+        self._curve = self.plot([], [], pen=pg.mkPen("#FFD43B", width=2.0))
 
         flattened = self._frames.reshape(-1) if self._frames.size else np.empty(0)
         stride = max(1, flattened.size // 200_000) if flattened.size else 1
@@ -534,8 +538,8 @@ class _UltrasoundCurrentFramePlot(pg.PlotWidget):
             low, high = np.percentile(finite, (0.5, 99.5))
             span = max(float(high - low), 1.0)
             self.setYRange(
-                float(low - 0.05 * span),
-                float(high + 0.05 * span),
+                float(low - 0.15 * span),
+                float(high + 0.15 * span),
                 padding=0.0,
             )
         else:
@@ -825,7 +829,7 @@ class PlaybackDialog(QDialog):
                 channel_layout.setContentsMargins(0, 0, 0, 0)
                 channel_layout.setSpacing(2)
                 self._sweep_plots.append(plot)
-                channel_layout.addWidget(plot, 3)
+                channel_layout.addWidget(plot, 2)
                 current_frame = _UltrasoundCurrentFramePlot(
                     us.time_s,
                     us.waterfall[channel],
@@ -939,7 +943,7 @@ class PlaybackDialog(QDialog):
                     channel_layout.setContentsMargins(0, 0, 0, 0)
                     channel_layout.setSpacing(2)
                     self._sweep_plots.append(plot)
-                    channel_layout.addWidget(plot, 3)
+                    channel_layout.addWidget(plot, 2)
                     current_frame = _UltrasoundCurrentFramePlot(
                         us.time_s,
                         us.waterfall[channel],
