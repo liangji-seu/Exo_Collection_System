@@ -498,6 +498,86 @@ class _SweepWaterfallPlot(pg.PlotWidget):
         self.cursor.setPos(phase)
 
 
+class _UltrasoundCurrentFramePlot(pg.PlotWidget):
+    """Narrow depth-oriented A-scan view synchronized to playback time."""
+
+    def __init__(
+        self,
+        time_s: np.ndarray,
+        waterfall: np.ndarray,
+        channels: tuple[str, ...],
+        *,
+        object_name: str,
+    ) -> None:
+        super().__init__()
+        self.setObjectName(object_name)
+        self._times = np.asarray(time_s, dtype=np.float64)
+        self._frames = np.asarray(waterfall)
+        self._curves: list[pg.PlotDataItem] = []
+        self._last_source_index: int | None = None
+        self.setTitle("当前帧 A-scan")
+        self.setLabel("bottom", "信号幅值")
+        self.setLabel("left", "深度点")
+        self.setMinimumWidth(180)
+        self.setMaximumWidth(320)
+        self.setMouseEnabled(x=False, y=False)
+        self.setMenuEnabled(False)
+        self.getViewBox().setMouseEnabled(x=False, y=False)
+        self.setYRange(0.0, 999.0, padding=0.0)
+        self.invertY(True)
+        legend = self.addLegend(offset=(4, 4))
+        legend.setBrush(pg.mkBrush(0, 0, 0, 150))
+
+        channel_count = (
+            min(4, int(self._frames.shape[0])) if self._frames.ndim == 3 else 0
+        )
+        for channel in range(channel_count):
+            label = channels[channel] if channel < len(channels) else f"ch_{channel + 1}"
+            self._curves.append(
+                self.plot(
+                    [],
+                    [],
+                    name=label,
+                    pen=pg.mkPen(
+                        _PLOT_COLORS[channel % len(_PLOT_COLORS)], width=1.2
+                    ),
+                )
+            )
+
+        flattened = self._frames.reshape(-1) if self._frames.size else np.empty(0)
+        stride = max(1, flattened.size // 200_000) if flattened.size else 1
+        sample = flattened[::stride]
+        finite = sample[np.isfinite(sample)]
+        if finite.size:
+            low, high = np.percentile(finite, (0.5, 99.5))
+            span = max(float(high - low), 1.0)
+            self.setXRange(
+                float(low - 0.05 * span),
+                float(high + 0.05 * span),
+                padding=0.0,
+            )
+        else:
+            self.setXRange(0.0, 1.0, padding=0.0)
+
+    def update_time(self, current_s: float, _cycle_start_s: float) -> None:
+        if not self._times.size or not self._curves:
+            return
+        source_index = int(np.searchsorted(self._times, current_s, side="right") - 1)
+        if source_index < 0:
+            for curve in self._curves:
+                curve.setData([], [])
+            self._last_source_index = None
+            return
+        source_index = min(source_index, int(self._times.size - 1))
+        if source_index == self._last_source_index:
+            return
+        depth_count = min(1000, int(self._frames.shape[2]))
+        depth = np.arange(depth_count, dtype=np.float32)
+        for channel, curve in enumerate(self._curves):
+            curve.setData(self._frames[channel, source_index, :depth_count], depth)
+        self._last_source_index = source_index
+
+
 class _SweepSignalPlot(pg.PlotWidget):
     """Line plot that clears at each fixed-window sweep boundary."""
 
@@ -738,7 +818,11 @@ class PlaybackDialog(QDialog):
 
         ultrasound_box = QGroupBox("超声 · 4 通道瀑布图")
         ultrasound_box.setObjectName("playback_all_ultrasound")
-        ultrasound_grid = QGridLayout(ultrasound_box)
+        ultrasound_layout = QHBoxLayout(ultrasound_box)
+        ultrasound_layout.setContentsMargins(3, 3, 3, 3)
+        ultrasound_layout.setSpacing(3)
+        waterfall_panel = QWidget(ultrasound_box)
+        ultrasound_grid = QGridLayout(waterfall_panel)
         ultrasound_grid.setContentsMargins(3, 3, 3, 3)
         ultrasound_grid.setSpacing(3)
         us = playback.ultrasound
@@ -768,6 +852,20 @@ class PlaybackDialog(QDialog):
                     channel // 2,
                     channel % 2,
                 )
+        ultrasound_layout.addWidget(waterfall_panel, 1)
+        if us is not None and channel_count:
+            current_frame = _UltrasoundCurrentFramePlot(
+                us.time_s,
+                us.waterfall,
+                us.channels,
+                object_name="playback_all_current_ultrasound",
+            )
+            self._sweep_plots.append(current_frame)
+            ultrasound_layout.addWidget(current_frame)
+        else:
+            current_missing = _empty_tab("当前帧超声数据缺失")
+            current_missing.setMaximumWidth(240)
+            ultrasound_layout.addWidget(current_missing)
         outer.addWidget(ultrasound_box, 4)
 
         imu_box = QGroupBox("IMU · 3 设备 × 3 传感器")
@@ -835,7 +933,12 @@ class PlaybackDialog(QDialog):
 
     def _build_ultrasound_tab(self, playback: TrialPlayback) -> None:
         tab = QWidget()
-        grid = QGridLayout(tab)
+        tab_layout = QHBoxLayout(tab)
+        waterfall_panel = QWidget(tab)
+        grid = QGridLayout(waterfall_panel)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(3)
+        tab_layout.addWidget(waterfall_panel, 1)
         us = playback.ultrasound
         # Compatibility object for automation written for the old selector;
         # all four channels are now visible at once, so it remains hidden.
@@ -871,6 +974,14 @@ class PlaybackDialog(QDialog):
                 notice.setObjectName("playback_ultrasound_alignment_notice")
                 notice.setStyleSheet("color: #9a3412; background: #fff7ed; padding: 4px;")
                 grid.addWidget(notice, 2, 0, 1, 2)
+            current_frame = _UltrasoundCurrentFramePlot(
+                us.time_s,
+                us.waterfall,
+                us.channels,
+                object_name="playback_ultrasound_current_frame",
+            )
+            self._sweep_plots.append(current_frame)
+            tab_layout.addWidget(current_frame)
         self.tabs.addTab(tab, "超声 · 4 通道瀑布图")
 
     def _build_imu_tab(self, playback: TrialPlayback) -> None:

@@ -14,6 +14,7 @@ from exo_collection.apps.data_studio.local_dialogs import (
     PlaybackDialog,
     _SweepSignalPlot,
     _SweepWaterfallPlot,
+    _UltrasoundCurrentFramePlot,
 )
 from exo_collection.apps.data_studio.local_tools import (
     SignalPlayback,
@@ -80,8 +81,13 @@ def test_playback_has_requested_modality_layout_and_fixed_sweep_axes() -> None:
     assert dialog.findChild(QWidget, "playback_all_imu") is not None
     assert dialog.findChild(QWidget, "playback_all_encoder") is not None
     waterfalls = dialog.findChildren(_SweepWaterfallPlot)
+    current_frames = dialog.findChildren(_UltrasoundCurrentFramePlot)
     signals = dialog.findChildren(_SweepSignalPlot)
     assert len(waterfalls) == 8  # combined tab + ultrasound-only tab
+    assert len(current_frames) == 2  # combined tab + ultrasound-only tab
+    assert {
+        widget.objectName() for widget in current_frames
+    } == {"playback_all_current_ultrasound", "playback_ultrasound_current_frame"}
     assert len(signals) == 22  # combined tab + (3 IMUs x 3 + 2 encoders)
     assert [len(plot._curves) for plot in signals[9:11]] == [3, 3]
     assert [len(plot._curves) for plot in signals[-2:]] == [3, 3]
@@ -89,6 +95,14 @@ def test_playback_has_requested_modality_layout_and_fixed_sweep_axes() -> None:
     dialog.set_playback_time(10.5)
     assert all(abs(float(plot.cursor.value()) - 0.5) < 1e-6 for plot in waterfalls)
     assert all(abs(float(plot.cursor.value()) - 0.5) < 1e-6 for plot in signals)
+    assert all(plot._last_source_index == 105 for plot in current_frames)
+    for frame_plot in current_frames:
+        assert len(frame_plot._curves) == 4
+        x_values, depth_values = frame_plot._curves[0].getData()
+        assert x_values is not None and x_values.size == 1000
+        assert depth_values is not None
+        assert depth_values[0] == 0.0 and depth_values[-1] == 999.0
+        assert frame_plot.getViewBox().viewRange()[1] == [0.0, 999.0]
     y_range = waterfalls[0].getViewBox().viewRange()[1]
     assert y_range[0] == 0.0
     assert y_range[1] == 999.0
