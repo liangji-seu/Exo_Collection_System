@@ -19,6 +19,7 @@ import multiprocessing
 import os
 import re
 import stat
+import sys
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
@@ -581,8 +582,13 @@ class ParamikoScpSession:
             import paramiko
             from scp import SCPClient
         except ImportError as exc:  # pragma: no cover - dependency installation failure
+            missing = exc.name or "paramiko/scp"
             raise UploadError(
-                "DEPENDENCY_MISSING", "缺少 Paramiko/scp，请重新执行首次构建脚本。"
+                "DEPENDENCY_MISSING",
+                f"当前 Python 缺少 {missing}。\n"
+                f"解释器：{sys.executable}\n"
+                "请重新启动 Data Studio；新版 run_data_studio.py 会自动选择依赖完整的 "
+                "CPython 3.11。若仍失败，请执行首次构建脚本。",
             ) from exc
 
         client = paramiko.SSHClient()

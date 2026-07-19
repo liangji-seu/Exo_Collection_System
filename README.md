@@ -21,6 +21,8 @@ python run_collector.py
 python run_data_studio.py
 ```
 
+如果 Windows 中同时安装了 Conda 和系统 CPython，`run_data_studio.py` 会检查当前解释器是否具备 SSH/SCP 依赖；当前 `python` 缺包而 `py -3.11` 环境完整时，脚本会自动切换到该 CPython 3.11，无需手工修改 PATH。
+
 完成打包后也可直接双击 `dist\ExoCollector.exe` 或 `dist\ExoDataStudio.exe`。设备、路径和上传参数都在 UI 中配置并按当前 Windows 用户持久化，无需为正常使用添加命令行参数。
 
 首次启动后，在 UI 的“数据根目录”处点击“选择…”指定数据目录。该选择会保存在当前 Windows 用户的应用设置中，后续启动自动作为默认目录；需要更换时仍在 UI 中重新选择。Collector 与 Data Studio 应使用同一个数据根目录。

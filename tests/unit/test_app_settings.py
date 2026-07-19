@@ -5,6 +5,7 @@ from importlib import import_module
 from pathlib import Path
 
 import pytest
+import run_data_studio as data_studio_launcher
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -76,6 +77,26 @@ def test_upload_endpoint_persists_only_non_secret_fields(tmp_path: Path) -> None
         "remember_password": True,
     }
     assert "must-never-be-written" not in settings_path.read_text(encoding="utf-8")
+
+
+def test_data_studio_launcher_switches_from_incomplete_python(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+    candidate = r"C:\Python311\python.exe"
+    monkeypatch.setattr(
+        data_studio_launcher, "_network_runtime_available", lambda _exe: False
+    )
+    monkeypatch.setattr(data_studio_launcher, "_system_python311", lambda: candidate)
+    monkeypatch.setattr(
+        data_studio_launcher.subprocess,
+        "call",
+        lambda arguments: calls.append(list(arguments)) or 17,
+    )
+
+    assert data_studio_launcher._relaunch_with_complete_runtime() == 17
+    assert calls and calls[0][0] == candidate
+    assert Path(calls[0][1]).name == "run_data_studio.py"
 
 
 class _TrackingSettings:
