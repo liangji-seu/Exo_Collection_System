@@ -383,7 +383,11 @@ class _SweepWaterfallPlot(pg.PlotWidget):
     ) -> None:
         super().__init__()
         self._times = np.asarray(time_s, dtype=np.float64)
-        self._data = np.asarray(depth_by_time, dtype=np.float32)
+        # Keep a view of the bounded playback array.  The same source is used
+        # by both the combined and modality-specific tabs, so converting every
+        # plot to a private float32 array would unnecessarily duplicate tens of
+        # megabytes of ultrasound data.
+        self._data = np.asarray(depth_by_time)
         self._window_s = float(window_s)
         self._columns = max(96, min(800, int(self._times.size or 96)))
         self.setTitle(title)
@@ -404,7 +408,10 @@ class _SweepWaterfallPlot(pg.PlotWidget):
             self.image.setLookupTable(lookup)
         self.addItem(self.image)
         self.invertY(True)
-        finite = self._data[np.isfinite(self._data)]
+        flattened = self._data.reshape(-1)
+        level_stride = max(1, flattened.size // 200_000)
+        level_sample = flattened[::level_stride]
+        finite = level_sample[np.isfinite(level_sample)]
         if finite.size:
             low, high = np.percentile(finite, (1.0, 99.0))
             self._levels = (float(low), float(high if high > low else low + 1.0))
@@ -708,6 +715,7 @@ class PlaybackDialog(QDialog):
         self.tabs = QTabWidget()
         self.tabs.setObjectName("playback_tabs")
         layout.addWidget(self.tabs, 1)
+        self._build_all_tab(playback)
         self._build_ultrasound_tab(playback)
         self._build_imu_tab(playback)
         self._build_encoder_tab(playback)
@@ -718,6 +726,112 @@ class PlaybackDialog(QDialog):
         self._timer.timeout.connect(self._advance_playback)
         self.finished.connect(lambda _result: self._timer.stop())
         self.set_playback_time(self._time_min)
+
+    def _build_all_tab(self, playback: TrialPlayback) -> None:
+        """Build one compact dashboard containing every recorded modality."""
+
+        tab = QWidget()
+        tab.setObjectName("playback_all_tab")
+        outer = QVBoxLayout(tab)
+        outer.setContentsMargins(4, 4, 4, 4)
+        outer.setSpacing(4)
+
+        ultrasound_box = QGroupBox("超声 · 4 通道瀑布图")
+        ultrasound_box.setObjectName("playback_all_ultrasound")
+        ultrasound_grid = QGridLayout(ultrasound_box)
+        ultrasound_grid.setContentsMargins(3, 3, 3, 3)
+        ultrasound_grid.setSpacing(3)
+        us = playback.ultrasound
+        channel_count = (
+            min(4, int(us.waterfall.shape[0]))
+            if us is not None and us.waterfall.size
+            else 0
+        )
+        for channel in range(4):
+            if us is not None and channel < channel_count:
+                label = (
+                    us.channels[channel]
+                    if channel < len(us.channels)
+                    else f"ch_{channel + 1}"
+                )
+                plot = _SweepWaterfallPlot(
+                    f"通道 {channel + 1} · {label}",
+                    us.time_s,
+                    np.asarray(us.waterfall[channel]).T,
+                    self._window_s,
+                )
+                self._sweep_plots.append(plot)
+                ultrasound_grid.addWidget(plot, channel // 2, channel % 2)
+            else:
+                ultrasound_grid.addWidget(
+                    _empty_tab(f"超声通道 {channel + 1}：数据缺失"),
+                    channel // 2,
+                    channel % 2,
+                )
+        outer.addWidget(ultrasound_box, 4)
+
+        imu_box = QGroupBox("IMU · 3 设备 × 3 传感器")
+        imu_box.setObjectName("playback_all_imu")
+        imu_grid = QGridLayout(imu_box)
+        imu_grid.setContentsMargins(3, 3, 3, 3)
+        imu_grid.setSpacing(3)
+        imu = playback.imu
+        imu_groups = (
+            _imu_sensor_groups(imu) if imu is not None and imu.time_s.size else []
+        )
+        sensor_labels = list(imu.sensor_labels[:3]) if imu is not None else []
+        for sensor_slot in range(3):
+            if sensor_slot < len(imu_groups):
+                sensor, kinds = imu_groups[sensor_slot]
+            else:
+                sensor = (
+                    sensor_labels[sensor_slot]
+                    if sensor_slot < len(sensor_labels)
+                    else f"IMU {sensor_slot + 1}"
+                )
+                kinds = {}
+            for row, (kind, title) in enumerate(
+                (("acc", "加速度计"), ("mag", "磁力计"), ("gyr", "陀螺仪"))
+            ):
+                indices = kinds.get(kind, ())
+                if imu is not None and indices:
+                    plot = _SweepSignalPlot(
+                        f"{sensor} · {title}", imu, indices, self._window_s
+                    )
+                    self._sweep_plots.append(plot)
+                    imu_grid.addWidget(plot, row, sensor_slot)
+                else:
+                    imu_grid.addWidget(
+                        _empty_tab(f"{sensor} · {title}：数据缺失"),
+                        row,
+                        sensor_slot,
+                    )
+        outer.addWidget(imu_box, 3)
+
+        encoder_box = QGroupBox("电机编码器 · 左右通道")
+        encoder_box.setObjectName("playback_all_encoder")
+        encoder_layout = QHBoxLayout(encoder_box)
+        encoder_layout.setContentsMargins(3, 3, 3, 3)
+        encoder_layout.setSpacing(3)
+        encoder = playback.encoder
+        encoder_groups = (
+            _encoder_side_groups(encoder)
+            if encoder is not None and encoder.time_s.size
+            else []
+        )
+        for side_slot in range(2):
+            if encoder is not None and side_slot < len(encoder_groups):
+                title, indices = encoder_groups[side_slot]
+                plot = _SweepSignalPlot(title, encoder, indices, self._window_s)
+                self._sweep_plots.append(plot)
+                encoder_layout.addWidget(plot, 1)
+            else:
+                encoder_layout.addWidget(
+                    _empty_tab(f"电机编码器 {side_slot + 1}：数据缺失"), 1
+                )
+        outer.addWidget(encoder_box, 2)
+
+        self.tabs.addTab(tab, "全部")
 
     def _build_ultrasound_tab(self, playback: TrialPlayback) -> None:
         tab = QWidget()

@@ -73,11 +73,17 @@ def test_playback_has_requested_modality_layout_and_fixed_sweep_axes() -> None:
     dialog = PlaybackDialog(_complete_playback())
 
     tabs = dialog.findChild(QTabWidget, "playback_tabs")
-    assert tabs is not None and tabs.count() == 3
+    assert tabs is not None and tabs.count() == 4
+    assert tabs.tabText(0) == "全部"
+    assert tabs.currentIndex() == 0
+    assert dialog.findChild(QWidget, "playback_all_ultrasound") is not None
+    assert dialog.findChild(QWidget, "playback_all_imu") is not None
+    assert dialog.findChild(QWidget, "playback_all_encoder") is not None
     waterfalls = dialog.findChildren(_SweepWaterfallPlot)
     signals = dialog.findChildren(_SweepSignalPlot)
-    assert len(waterfalls) == 4
-    assert len(signals) == 11  # 3 IMUs x 3 sensor types + 2 encoders
+    assert len(waterfalls) == 8  # combined tab + ultrasound-only tab
+    assert len(signals) == 22  # combined tab + (3 IMUs x 3 + 2 encoders)
+    assert [len(plot._curves) for plot in signals[9:11]] == [3, 3]
     assert [len(plot._curves) for plot in signals[-2:]] == [3, 3]
 
     dialog.set_playback_time(10.5)
