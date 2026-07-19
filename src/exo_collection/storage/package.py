@@ -102,7 +102,10 @@ def finalize_trial_package(layout: TrialLayout, manifest: TrialManifest) -> Path
         save_manifest(manifest_path, manifest)
     relative_paths = [artifact.relative_path for artifact in manifest.artifacts]
     relative_paths.append(".exo/manifest.json")
-    checksums = write_checksum_manifest(layout.recording_directory, relative_paths)
+    checksums = write_checksum_manifest(
+        layout.recording_directory, relative_paths,
+        destination=layout.exo_path("checksums.sha256"),
+    )
     results = verify_checksum_manifest(checksums)
     if not results or not all(results.values()):
         raise RuntimeError("Trial checksum validation failed before publication")
