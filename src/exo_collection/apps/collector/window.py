@@ -1273,6 +1273,7 @@ class CollectorWindow(QMainWindow):
         # ── Toast overlay for alerts ──
         self._toast_label = QLabel(self)
         self._toast_label.setObjectName("toast")
+        self._toast_label.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self._toast_label.setWordWrap(True)
         self._toast_label.setMaximumWidth(480)
         self._toast_label.setMinimumHeight(36)
@@ -3016,12 +3017,12 @@ class CollectorWindow(QMainWindow):
 
     def _show_toast(self, message: str, *, level: str = "INFO") -> None:
         if level == "ERROR":
-            bg = "#dc3545"; fg = "#ffffff"; icon = "⚠ "
+            bg = "rgba(220, 53, 69, 200)"; fg = "#ffffff"; icon = "⚠ "
         else:
-            bg = "#0d6efd"; fg = "#ffffff"; icon = "ℹ "
+            bg = "rgba(13, 110, 253, 200)"; fg = "#ffffff"; icon = "ℹ "
         self._toast_label.setText(f"{icon}{message}")
         self._toast_label.setStyleSheet(
-            f"QLabel {{ background:{bg}; color:{fg}; border-radius:6px; "
+            f"QLabel {{ background-color:{bg}; color:{fg}; border-radius:6px; "
             f"font-size:13px; padding:8px 16px; }}"
         )
         self._toast_label.adjustSize()
