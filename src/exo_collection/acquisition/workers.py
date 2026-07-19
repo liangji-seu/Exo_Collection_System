@@ -130,7 +130,12 @@ def _trial_worker_entry(
     try:
         from exo_collection.orchestration.simulated import run_trial
 
-        result = run_trial(request, stop_requested=stop_event, publish=publish)
+        result = run_trial(
+            request,
+            stop_requested=stop_event,
+            publish=publish,
+            enabled_modalities=request.enabled_modalities,
+        )
         publish(
             WorkerEvent(
                 event_type=WorkerEventType.COMPLETED,

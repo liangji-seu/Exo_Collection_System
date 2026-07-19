@@ -504,6 +504,7 @@ def run_trial(
         [TrialRunRequest, DeviceProfileDocument], dict[str, ModalityAdapter]
     ]
     | None = None,
+    enabled_modalities: frozenset[str] | None = None,
 ) -> TrialRunResult:
     """Collect the selected four-modality profile and publish one Trial."""
 
@@ -529,6 +530,12 @@ def run_trial(
     device_profile = load_device_profile(request.device_profile_key)
     profiles_by_modality = device_profile.by_modality()
     adapters = (adapter_factory or _make_adapters)(request, device_profile)
+    if enabled_modalities:
+        adapters = {
+            name: adapter
+            for name, adapter in adapters.items()
+            if name in enabled_modalities
+        }
     descriptors = {name: adapter.descriptor() for name, adapter in adapters.items()}
     simulated_by_modality = {
         modality: bool(
@@ -673,21 +680,22 @@ def run_trial(
                 name: adapter.descriptor() for name, adapter in adapters.items()
             }
 
-            writers["ultrasound"] = BlockBinaryWriterProcess(
-                layout.partial_path("raw/ultrasound.bin"),
-                dtype=descriptors["ultrasound"].dtype,
-                sample_shape=descriptors["ultrasound"].sample_shape,
-                metadata={
-                    **dict(descriptors["ultrasound"].metadata),
-                    "clock_domain": descriptors["ultrasound"].clock_domain,
-                    "nominal_frame_rate_hz": descriptors["ultrasound"].nominal_rate_hz,
-                    "unit": "a.u.",
-                    "device": {
-                        "device_id": descriptors["ultrasound"].device_id,
-                        "simulated": simulated_by_modality["ultrasound"],
+            if "ultrasound" in adapters:
+                writers["ultrasound"] = BlockBinaryWriterProcess(
+                    layout.partial_path("raw/ultrasound.bin"),
+                    dtype=descriptors["ultrasound"].dtype,
+                    sample_shape=descriptors["ultrasound"].sample_shape,
+                    metadata={
+                        **dict(descriptors["ultrasound"].metadata),
+                        "clock_domain": descriptors["ultrasound"].clock_domain,
+                        "nominal_frame_rate_hz": descriptors["ultrasound"].nominal_rate_hz,
+                        "unit": "a.u.",
+                        "device": {
+                            "device_id": descriptors["ultrasound"].device_id,
+                            "simulated": simulated_by_modality["ultrasound"],
+                        },
                     },
-                },
-            )
+                )
             hdf5_trial_metadata = {
                 # This immutable metadata is written when the raw file is
                 # created.  No post-finalization patching is required or
@@ -727,7 +735,9 @@ def run_trial(
                     ),
                 },
             }
-            for modality in ("imu", "encoder", "sync_pulse"):
+            for modality in adapters:
+                if modality == "ultrasound":
+                    continue
                 writers[modality] = _create_hdf5_writer(
                     layout.partial_path(f"raw/{modality}.h5"),
                     adapters[modality],
@@ -820,7 +830,7 @@ def run_trial(
                         anchors[modality].append(
                             (float(event.device_timestamp), event.host_monotonic_ns)
                         )
-                elif isinstance(event, SyncPulseEvent):
+                elif isinstance(event, SyncPulseEvent) and "sync_pulse" in writers:
                     writers["sync_pulse"].append_event(event)
                     pulse_event_count += 1
                     sync_edge_events.append(event)
@@ -1109,19 +1119,23 @@ def run_trial(
                 adapter.close()
 
             # Verify source formats before any temporary name is published.
-            ultrasound_scan = scan_binary_file(layout.partial_path("raw/ultrasound.bin"))
-            if ultrasound_scan.error is not None or ultrasound_scan.complete_block_count == 0:
-                raise RuntimeError(f"ultrasound integrity check failed: {ultrasound_scan.error}")
-            ultrasound_writer = writers["ultrasound"]
-            if (
-                not isinstance(ultrasound_writer, BlockBinaryWriterProcess)
-                or ultrasound_scan.complete_block_count != ultrasound_writer.written_count
-                or sum(header.sample_count for header in ultrasound_scan.headers)
-                != counts["ultrasound"]
-            ):
-                raise RuntimeError("ultrasound Writer count differs from the verified binary file")
-            for modality in ("imu", "encoder", "sync_pulse"):
-                _verify_hdf5(layout.partial_path(f"raw/{modality}.h5"), counts[modality])
+            ultrasound_scan = None
+            if "ultrasound" in writers:
+                ultrasound_scan = scan_binary_file(layout.partial_path("raw/ultrasound.bin"))
+                if ultrasound_scan.error is not None or ultrasound_scan.complete_block_count == 0:
+                    raise RuntimeError(f"ultrasound integrity check failed: {ultrasound_scan.error}")
+                ultrasound_writer = writers["ultrasound"]
+                if (
+                    not isinstance(ultrasound_writer, BlockBinaryWriterProcess)
+                    or ultrasound_scan.complete_block_count != ultrasound_writer.written_count
+                    or sum(header.sample_count for header in ultrasound_scan.headers)
+                    != counts.get("ultrasound", 0)
+                ):
+                    raise RuntimeError("ultrasound Writer count differs from the verified binary file")
+            for modality in adapters:
+                if modality == "ultrasound":
+                    continue
+                _verify_hdf5(layout.partial_path(f"raw/{modality}.h5"), counts.get(modality, 0))
 
             preview_bundle = publish_quality_preview_pngs(
                 layout,
@@ -1129,17 +1143,19 @@ def run_trial(
                 formal_t0_host_monotonic_ns=first_trigger_host_monotonic_ns,
             )
             mappings = _clock_mappings(descriptors, anchors)
-            formal_item_counts: dict[str, int] = {
-                "ultrasound": _ultrasound_formal_frame_count(
+            formal_item_counts: dict[str, int] = {}
+            if "ultrasound" in adapters:
+                formal_item_counts["ultrasound"] = _ultrasound_formal_frame_count(
                     ultrasound_scan.headers,
                     frame_rate_hz=descriptors["ultrasound"].nominal_rate_hz,
                     formal_start_ns=first_trigger_host_monotonic_ns,
                     formal_stop_ns=stopped_reading_ns,
                 )
-            }
             signal_evidence: dict[str, SignalEvidence] = {}
             hdf5_signal_evidence: dict[str, SignalEvidence] = {}
-            for modality in ("imu", "encoder", "sync_pulse"):
+            for modality in adapters:
+                if modality == "ultrasound":
+                    continue
                 scanned_signal = scan_hdf5_signal_evidence(
                     layout.partial_path(f"raw/{modality}.h5"),
                     formal_start_ns=first_trigger_host_monotonic_ns,
@@ -1191,7 +1207,7 @@ def run_trial(
                 for mapping in mappings
                 if mapping.source_clock_domain in modality_by_clock_domain
             )
-            ultrasound_soft_metrics = preview_bundle.soft_metrics["ultrasound"]
+            ultrasound_soft_metrics = preview_bundle.soft_metrics.get("ultrasound", {})
             quality_evidence = TrialQualityEvidence(
                 formal_duration_s=formal_duration_s,
                 formal_item_counts=formal_item_counts,
@@ -1201,7 +1217,7 @@ def run_trial(
                 first_trigger_host_monotonic_ns=first_trigger_host_monotonic_ns,
                 clock_mappings=mapping_evidence,
                 ultrasound=UltrasoundEvidence(
-                    formal_frame_count=formal_item_counts["ultrasound"],
+                    formal_frame_count=formal_item_counts.get("ultrasound", 0),
                     zero_fraction=ultrasound_soft_metrics.get("zero_fraction"),
                     saturation_fraction=ultrasound_soft_metrics.get(
                         "saturation_fraction"
@@ -1253,7 +1269,7 @@ def run_trial(
                 "trigger_count": trigger_count,
                 "first_trigger_host_monotonic_ns": first_trigger_host_monotonic_ns,
                 "first_trigger_utc_ns": first_trigger_utc_ns,
-                "ultrasound_block_count": ultrasound_scan.complete_block_count,
+                "ultrasound_block_count": ultrasound_scan.complete_block_count if ultrasound_scan is not None else 0,
                 "stop_reports": {name: asdict(report) for name, report in stop_reports.items()},
                 "soft_quality_metrics": preview_bundle.soft_metrics,
                 "quality_assessment": {

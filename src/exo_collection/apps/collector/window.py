@@ -2174,27 +2174,16 @@ class CollectorWindow(QMainWindow):
             self.statusBar().showMessage("Trial 请求构建失败。")
             return
 
-        # Log modality details before starting
-        for modality in MODALITIES:
-            device_id, simulated = self._get_modality_info(modality)
-            LOG.info(
-                "Trial 请求模态: %s adapter=%s device_id=%s simulated=%s",
-                modality, "<profile>", device_id, simulated,
-            )
-
-        # Check that required modalities are READY (connected via preview)
-        required_connected = True
-        for modality in CRITICAL_MODALITIES:
-            if modality not in self._preview_connected_modalities:
-                required_connected = False
-                self._append_alert(
-                    f"{modality} 尚未连接/就绪。请先点击对应模态的'连接'按钮。"
-                )
-
-        if not required_connected:
-            self.statusBar().showMessage("请先连接所有必需模态的设备预览。")
+        # Only require at least one connected modality.
+        if not self._preview_connected_modalities:
+            self.statusBar().showMessage("请先连接至少一个模态的设备预览。")
             self._update_start_button()
             return
+
+        # Pass enabled modalities to the trial worker so only connected
+        # devices are recorded.
+        connected = frozenset(self._preview_connected_modalities)
+        request = request.model_copy(update={"enabled_modalities": connected})
 
         # Stop all preview workers asynchronously to release exclusive device
         # handles. The GUI timer launches the recording worker only after every
@@ -2246,6 +2235,7 @@ class CollectorWindow(QMainWindow):
         self._update_start_button()
         self._poll_timer.start()
         self.trial_started.emit(request)
+        self._show_toast("● 开始记录数据", level="INFO")
         self.statusBar().showMessage(f"Trial {request.trial_uuid} 已交给独立 Collector Worker。")
         LOG.info("Trial 已启动: %s", request.trial_uuid)
 
@@ -2710,6 +2700,7 @@ class CollectorWindow(QMainWindow):
         else:
             LOG.warning("Collector Worker 已完成，但未返回 Manifest 路径")
         self.start_button.setEnabled(False)
+        self._show_toast("✓ Trial 记录完成", level="INFO")
         self.statusBar().showMessage(event.message or "Trial 数据包已最终化。")
 
     def _mark_failed(self, message: str) -> None:
@@ -2797,6 +2788,7 @@ class CollectorWindow(QMainWindow):
                 "QPushButton { font-weight: 600; padding: 8px; color: #ffffff; background: #dc3545; border: 1px solid #dc3545; border-radius: 4px; }"
             )
             self.start_button.setEnabled(True)
+            self.start_button.setToolTip("")
         else:
             self.start_button.setText("开始写盘")
             self.start_button.setStyleSheet(
@@ -2805,19 +2797,24 @@ class CollectorWindow(QMainWindow):
             subject_valid = bool(
                 QRegularExpression(r"^\d{3}$").match(self.subject_code_edit.text().strip()).hasMatch()
             )
-            all_ready = all(
-                m in self._preview_connected_modalities for m in CRITICAL_MODALITIES
-            )
-            self.start_button.setEnabled(
-                all_ready
-                and subject_valid
-                and not self._configuration_locked
-                and not self._preflight_busy
-                and self._worker is None
-                and self._pending_trial_request is None
-            )
+            any_connected = bool(self._preview_connected_modalities)
+            blockers: list[str] = []
+            if not any_connected:
+                blockers.append("请先连接至少一个模态的设备预览")
+            if not subject_valid:
+                blockers.append("受试者编码须为 3 位数字")
+            if self._configuration_locked:
+                blockers.append("配置已锁定（Trial 进行中）")
+            if self._preflight_busy:
+                blockers.append("设备预检进行中")
+            if self._worker is not None:
+                blockers.append("Worker 仍在运行")
+            if self._pending_trial_request is not None:
+                blockers.append("已有待处理的 Trial 请求")
+            can_start = not blockers
+            self.start_button.setEnabled(can_start)
             self.start_button.setToolTip(
-                "" if all_ready else "请先连接所有必需模态的设备预览（超声、IMU、编码器、同步脉冲）"
+                "" if can_start else "无法开始写盘：\n" + "\n".join(f"• {b}" for b in blockers)
             )
 
     def _set_trial_state(self, state: str) -> None:
@@ -2832,7 +2829,7 @@ class CollectorWindow(QMainWindow):
             "PREPARING": "等待同步",
             "READY": "等待同步",
             "WAITING_SYNC": "等待同步",
-            "RECORDING": "采集中",
+            "RECORDING": "● 采集中",
             "STOPPING": "保存中",
             "FINALIZING": "保存中",
             "FINALIZED": "可采集",
@@ -2845,7 +2842,9 @@ class CollectorWindow(QMainWindow):
         self.state_label.setToolTip(f"Worker state: {normalized}")
         if display == "失败":
             colors = "background:#f8d7da;color:#842029;border:1px solid #f5c2c7;"
-        elif display in {"可采集", "采集中"}:
+        elif "采集中" in display:
+            colors = "background:#dc3545;color:#ffffff;border:1px solid #b02a37;font-size:15px;"
+        elif display in {"可采集"}:
             colors = "background:#d1e7dd;color:#0f5132;border:1px solid #badbcc;"
         elif display in {"设备预检", "切换至记录", "等待同步", "保存中"}:
             colors = "background:#fff3cd;color:#664d03;border:1px solid #ffecb5;"

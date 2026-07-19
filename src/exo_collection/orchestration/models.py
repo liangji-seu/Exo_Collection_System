@@ -143,6 +143,10 @@ class TrialRunRequest(OrchestrationModel):
         default_factory=TrialExperimentMetadata
     )
     simulation: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    # Subset of modalities enabled for this trial.  When None or empty the
+    # worker preserves backward behaviour and connects everything in the
+    # profile.  The collector UI sets this from the currently-previewed set.
+    enabled_modalities: frozenset[str] | None = None
 
     @field_validator("device_overrides")
     @classmethod
