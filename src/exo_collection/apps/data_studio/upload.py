@@ -1,9 +1,9 @@
 """Manual, offline SSH/SCP upload for finalized Trial packages.
 
-Passwords and private-key passphrases exist only in the UI process and the
-spawned upload worker. They are sent over a multiprocessing pipe *after* the
-process starts; they are never put in a command line, configuration file, log,
-Catalog, or Manifest. Remote shell commands are deliberately not used. SCP transfers
+Passwords may be loaded by the UI from Windows Credential Manager; private-key
+passphrases remain session-only. Both are sent over a multiprocessing pipe
+*after* the worker starts and are never put in a command line, configuration
+file, log, Catalog, or Manifest. Remote shell commands are deliberately not used. SCP transfers
 files while SFTP creates directories and reads remote files for SHA-256
 verification. The remote dataset is an append-only mirror of the local data
 root: local relative paths are preserved, matching files are reused, missing
@@ -1512,7 +1512,7 @@ def _upload_worker_main(command: Connection, events: Connection) -> None:
         )
     finally:
         # Dropping references is the strongest portable guarantee available
-        # for immutable Python strings; the credential was never persisted.
+        # for immutable Python strings; no credential is persisted by the worker.
         request = None
         command.close()
         events.close()

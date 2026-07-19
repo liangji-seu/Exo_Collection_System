@@ -18,6 +18,7 @@ SETTINGS_APPLICATION_NAME = "Shared Settings"
 DATA_ROOT_KEY = "storage/data_root"
 DEVICE_PROFILE_KEY = "collector/device_profile"
 HARDWARE_OVERRIDES_KEY = "collector/hardware_device_overrides_json"
+UPLOAD_ENDPOINT_KEY = "data_studio/upload_endpoint_json"
 ELONXI_RUNTIME_RELATIVE_PATH = (
     Path("SDK_Transfer")
     / "Exo_Hardware_Runtime_Windows_Python311_x64"
@@ -184,6 +185,54 @@ class SharedAppSettings:
         merged[normalized_modality] = dict(values)
         persisted = self.set_hardware_device_overrides(merged)
         return dict(persisted[normalized_modality])
+
+    @property
+    def upload_endpoint(self) -> dict[str, Any]:
+        """Return non-secret SSH endpoint preferences for Data Studio."""
+
+        stored = self._backend.value(UPLOAD_ENDPOINT_KEY, "{}")
+        try:
+            payload = json.loads(str(stored))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        return {
+            "host": str(payload.get("host", "")).strip(),
+            "port": int(payload.get("port", 22)),
+            "username": str(payload.get("username", "")).strip(),
+            "remote_workdir": str(payload.get("remote_workdir", "")).strip(),
+            "authentication": (
+                "PRIVATE_KEY"
+                if payload.get("authentication") == "PRIVATE_KEY"
+                else "PASSWORD"
+            ),
+            "private_key_path": str(payload.get("private_key_path", "")).strip(),
+            "remember_password": bool(payload.get("remember_password", True)),
+        }
+
+    def set_upload_endpoint(self, values: Mapping[str, Any]) -> dict[str, Any]:
+        """Persist SSH endpoint fields, explicitly excluding all secrets."""
+
+        payload = {
+            "host": str(values.get("host", "")).strip(),
+            "port": int(values.get("port", 22)),
+            "username": str(values.get("username", "")).strip(),
+            "remote_workdir": str(values.get("remote_workdir", "")).strip(),
+            "authentication": (
+                "PRIVATE_KEY"
+                if values.get("authentication") == "PRIVATE_KEY"
+                else "PASSWORD"
+            ),
+            "private_key_path": str(values.get("private_key_path", "")).strip(),
+            "remember_password": bool(values.get("remember_password", True)),
+        }
+        self._backend.setValue(
+            UPLOAD_ENDPOINT_KEY,
+            json.dumps(payload, ensure_ascii=False, sort_keys=True),
+        )
+        self._sync_checked("Data Studio upload endpoint")
+        return payload
 
     def _sync_checked(self, subject: str) -> None:
         self._backend.sync()

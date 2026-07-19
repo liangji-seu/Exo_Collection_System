@@ -7,6 +7,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -23,6 +24,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from exo_collection.configuration import SharedAppSettings
+
+from .credential_store import delete_password, load_password, save_password
 from .upload import OfflineUploadRequest, UploadOperation, UploadProgress
 
 
@@ -35,6 +39,7 @@ class OfflineUploadDialog(QDialog):
         parent: QWidget | None = None,
         *,
         status_only: bool = False,
+        settings: SharedAppSettings | None = None,
     ) -> None:
         super().__init__(parent)
         raw_paths = (manifest_path,) if isinstance(manifest_path, Path) else tuple(manifest_path)
@@ -42,6 +47,7 @@ class OfflineUploadDialog(QDialog):
             raise ValueError("至少需要一个 FINALIZED Trial。")
         self._manifest_paths = tuple(Path(path).expanduser().resolve() for path in raw_paths)
         self._status_only = status_only
+        self._settings = settings if settings is not None else SharedAppSettings()
         self.setWindowTitle("同步云端状态" if status_only else "人工离线 SSH/SCP 上传")
         self.setModal(True)
         self.resize(560, 380)
@@ -53,7 +59,7 @@ class OfflineUploadDialog(QDialog):
              "同步所选层级下全部已最终化 Trial，并完整保留它们在本地 data/ 下的相对目录。"
              "云端已有同内容文件会跳过，缺少文件会补传，云端额外文件不会删除；"
              "同路径内容冲突时停止且不覆盖。")
-            + "密码仅在内存中传递，不会保存。"
+            + "勾选记住密码时只保存到 Windows 凭据管理器，不写入配置或日志。"
         )
         explanation.setWordWrap(True)
         outer.addWidget(explanation)
@@ -101,8 +107,13 @@ class OfflineUploadDialog(QDialog):
         self.password_edit = QLineEdit()
         self.password_edit.setObjectName("upload_password")
         self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.password_edit.setPlaceholderText("仅本次使用，关闭或开始后立即清空")
+        self.password_edit.setPlaceholderText("可安全保存到当前 Windows 用户的凭据管理器")
         endpoint_form.addRow("密码：", self.password_edit)
+
+        self.remember_password_check = QCheckBox("记住密码（保存到 Windows 凭据管理器）")
+        self.remember_password_check.setObjectName("remember_upload_password")
+        self.remember_password_check.setChecked(True)
+        endpoint_form.addRow("", self.remember_password_check)
 
         key_row = QWidget()
         key_layout = QHBoxLayout(key_row)
@@ -124,7 +135,11 @@ class OfflineUploadDialog(QDialog):
         self.passphrase_edit.setPlaceholderText("可选；仅本次使用并立即清空")
         endpoint_form.addRow("私钥口令：", self.passphrase_edit)
         outer.addWidget(endpoint_group)
+        self._restore_endpoint()
         self._apply_authentication_mode()
+        self.host_edit.editingFinished.connect(self._load_saved_password)
+        self.username_edit.editingFinished.connect(self._load_saved_password)
+        self.port_spin.valueChanged.connect(self._load_saved_password)
 
         safety = QLabel(
             "首次连接时系统会显示 SSH SHA-256 主机指纹。"
@@ -147,34 +162,47 @@ class OfflineUploadDialog(QDialog):
         self.host_edit.setFocus()
 
     def take_request(self, dataset_root: Path) -> OfflineUploadRequest:
-        """Build the ephemeral request and immediately clear the UI password."""
+        """Build a request and persist only the operator-approved credentials."""
 
         password = self.password_edit.text()
         passphrase = self.passphrase_edit.text()
         private_key_path = self.private_key_edit.text().strip()
         use_private_key = self.authentication_combo.currentData() == "PRIVATE_KEY"
-        try:
-            return OfflineUploadRequest(
-                dataset_root=dataset_root,
-                manifest_path=self._manifest_paths[0],
-                additional_manifest_paths=self._manifest_paths[1:],
-                operation=(
-                    UploadOperation.SYNC_REMOTE_STATUS
-                    if self._status_only
-                    else UploadOperation.UPLOAD
-                ),
-                host=self.host_edit.text(),
-                port=self.port_spin.value(),
-                username=self.username_edit.text(),
-                remote_workdir=self.remote_workdir_edit.text(),
-                password=(None if use_private_key else password),
-                private_key_path=(Path(private_key_path) if use_private_key else None),
-                private_key_passphrase=(
-                    passphrase or None if use_private_key else None
-                ),
-            )
-        finally:
+        request = OfflineUploadRequest(
+            dataset_root=dataset_root,
+            manifest_path=self._manifest_paths[0],
+            additional_manifest_paths=self._manifest_paths[1:],
+            operation=(
+                UploadOperation.SYNC_REMOTE_STATUS
+                if self._status_only
+                else UploadOperation.UPLOAD
+            ),
+            host=self.host_edit.text(),
+            port=self.port_spin.value(),
+            username=self.username_edit.text(),
+            remote_workdir=self.remote_workdir_edit.text(),
+            password=(None if use_private_key else password),
+            private_key_path=(Path(private_key_path) if use_private_key else None),
+            private_key_passphrase=(passphrase or None if use_private_key else None),
+        )
+        self._settings.set_upload_endpoint(
+            {
+                "host": request.host,
+                "port": request.port,
+                "username": request.username,
+                "remote_workdir": request.remote_workdir,
+                "authentication": self.authentication_combo.currentData(),
+                "private_key_path": private_key_path,
+                "remember_password": self.remember_password_check.isChecked(),
+            }
+        )
+        if not use_private_key and self.remember_password_check.isChecked():
+            save_password(request.host, request.port, request.username, password)
+        elif not use_private_key:
+            delete_password(request.host, request.port, request.username)
+        if not self.remember_password_check.isChecked():
             self._clear_secrets()
+        return request
 
     def _apply_authentication_mode(self) -> None:
         use_private_key = self.authentication_combo.currentData() == "PRIVATE_KEY"
@@ -182,7 +210,44 @@ class OfflineUploadDialog(QDialog):
         self.private_key_edit.setEnabled(use_private_key)
         self.private_key_button.setEnabled(use_private_key)
         self.passphrase_edit.setEnabled(use_private_key)
-        self._clear_secrets()
+        self.remember_password_check.setEnabled(not use_private_key)
+        if not use_private_key:
+            self._load_saved_password()
+
+    def _restore_endpoint(self) -> None:
+        endpoint = self._settings.upload_endpoint
+        self.host_edit.setText(str(endpoint.get("host", "")))
+        self.port_spin.setValue(int(endpoint.get("port", 22)))
+        self.username_edit.setText(str(endpoint.get("username", "")))
+        self.remote_workdir_edit.setText(str(endpoint.get("remote_workdir", "")))
+        self.private_key_edit.setText(str(endpoint.get("private_key_path", "")))
+        authentication = str(endpoint.get("authentication", "PASSWORD"))
+        index = self.authentication_combo.findData(authentication)
+        self.authentication_combo.setCurrentIndex(max(0, index))
+        self.remember_password_check.setChecked(
+            bool(endpoint.get("remember_password", True))
+        )
+        if authentication == "PASSWORD":
+            self._load_saved_password()
+
+    def _load_saved_password(self, *_args: object) -> None:
+        if (
+            self.authentication_combo.currentData() != "PASSWORD"
+            or not self.remember_password_check.isChecked()
+        ):
+            return
+        try:
+            password = load_password(
+                self.host_edit.text(),
+                self.port_spin.value(),
+                self.username_edit.text(),
+            )
+        except RuntimeError as exc:
+            self.remember_password_check.setToolTip(str(exc))
+            return
+        if password is not None:
+            self.password_edit.setText(password)
+            self.remember_password_check.setToolTip("已从 Windows 凭据管理器加载密码。")
 
     def _choose_private_key(self) -> None:
         selected, _selected_filter = QFileDialog.getOpenFileName(

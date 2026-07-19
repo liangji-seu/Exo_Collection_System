@@ -50,6 +50,34 @@ def test_fixed_elonxi_sdk_directory_uses_sibling_runtime_layout() -> None:
     assert fixed_elonxi_sdk_directory() == expected
 
 
+def test_upload_endpoint_persists_only_non_secret_fields(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.ini"
+    settings = _file_settings(settings_path)
+
+    settings.set_upload_endpoint(
+        {
+            "host": "10.192.26.253",
+            "port": 22,
+            "username": "liangji",
+            "remote_workdir": "/home/liangji/data",
+            "authentication": "PASSWORD",
+            "remember_password": True,
+            "password": "must-never-be-written",
+        }
+    )
+
+    assert settings.upload_endpoint == {
+        "host": "10.192.26.253",
+        "port": 22,
+        "username": "liangji",
+        "remote_workdir": "/home/liangji/data",
+        "authentication": "PASSWORD",
+        "private_key_path": "",
+        "remember_password": True,
+    }
+    assert "must-never-be-written" not in settings_path.read_text(encoding="utf-8")
+
+
 class _TrackingSettings:
     def __init__(self, data_root: Path) -> None:
         self._data_root = data_root

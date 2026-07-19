@@ -1425,7 +1425,12 @@ class DataStudioWindow(QMainWindow):
     ) -> None:
         """Collect ephemeral credentials and start one isolated remote worker."""
 
-        dialog = OfflineUploadDialog(manifest_paths, self, status_only=status_only)
+        dialog = OfflineUploadDialog(
+            manifest_paths,
+            self,
+            status_only=status_only,
+            settings=self._settings,
+        )
         while dialog.exec() == QDialog.DialogCode.Accepted:
             try:
                 request = dialog.take_request(self._data_root)

@@ -845,17 +845,33 @@ def test_worker_start_failure_closes_every_pipe_and_process_handle(
     assert handle._events is None  # noqa: SLF001 - lifecycle contract test
 
 
-def test_upload_dialog_has_no_server_defaults_and_clears_all_secrets(
+def test_upload_dialog_persists_endpoint_and_saves_password_in_os_vault(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication, QLineEdit
 
+    from exo_collection.apps.data_studio import upload_dialog as dialog_module
     from exo_collection.apps.data_studio.upload_dialog import OfflineUploadDialog
+    from exo_collection.configuration import SharedAppSettings
+    from PySide6.QtCore import QSettings
 
     manifest_path = _publish_trial(tmp_path)
     _app = QApplication.instance() or QApplication(["test-upload-dialog"])
-    dialog = OfflineUploadDialog(manifest_path)
+    settings = SharedAppSettings(
+        QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    )
+    saved: list[tuple[str, int, str, str]] = []
+    monkeypatch.setattr(dialog_module, "load_password", lambda *_args: None)
+    monkeypatch.setattr(
+        dialog_module,
+        "save_password",
+        lambda host, port, username, password: saved.append(
+            (host, port, username, password)
+        ),
+    )
+    dialog = OfflineUploadDialog(manifest_path, settings=settings)
 
     assert dialog.host_edit.text() == ""
     assert dialog.username_edit.text() == ""
@@ -870,8 +886,10 @@ def test_upload_dialog_has_no_server_defaults_and_clears_all_secrets(
     dialog.password_edit.setText("dialog-secret")
     request = dialog.take_request(tmp_path)
     assert request.password == "dialog-secret"
-    assert dialog.password_edit.text() == ""
+    assert dialog.password_edit.text() == "dialog-secret"
     assert dialog.passphrase_edit.text() == ""
+    assert saved == [("example.internal", 22, "researcher", "dialog-secret")]
+    assert settings.upload_endpoint["host"] == "example.internal"
     assert "dialog-secret" not in repr(request)
     dialog.close()
 
