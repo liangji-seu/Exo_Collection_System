@@ -72,6 +72,57 @@ def _empty_tab(message: str) -> QWidget:
     return widget
 
 
+def _ultrasound_amplitude_range(values: np.ndarray) -> tuple[float, float]:
+    """Choose a stable acquisition-scale range instead of zooming into noise."""
+
+    array = np.asarray(values)
+    if array.dtype == np.dtype(np.uint8):
+        return 0.0, 255.0
+    if array.dtype == np.dtype(np.int8):
+        return -128.0, 127.0
+    flattened = array.reshape(-1)
+    if not flattened.size:
+        return 0.0, 1.0
+    stride = max(1, flattened.size // 200_000)
+    sample = flattened[::stride]
+    finite = sample[np.isfinite(sample)]
+    if not finite.size:
+        return 0.0, 1.0
+    low = float(np.min(finite))
+    high = float(np.max(finite))
+    if low >= 0.0:
+        # Common ADC full scales. Raw-Ethernet frames in this system are
+        # uint8 (0..255); simulated/vendor sources may publish wider ADCs.
+        for ceiling in (
+            1.0,
+            255.0,
+            1023.0,
+            2047.0,
+            4095.0,
+            8191.0,
+            16383.0,
+            32767.0,
+            65535.0,
+        ):
+            if high <= ceiling:
+                return 0.0, ceiling
+    magnitude = max(abs(low), abs(high))
+    for ceiling in (
+        1.0,
+        127.0,
+        511.0,
+        1023.0,
+        2047.0,
+        4095.0,
+        8191.0,
+        32767.0,
+    ):
+        if magnitude <= ceiling:
+            return -ceiling - (1.0 if ceiling >= 127.0 else 0.0), ceiling
+    span = max(high - low, 1.0)
+    return low - 0.05 * span, high + 0.05 * span
+
+
 # Playback widgets and dialog are defined below the result-only dialogs.
 
 class FullStatisticsDialog(QDialog):
@@ -535,20 +586,8 @@ class _UltrasoundCurrentFramePlot(pg.PlotWidget):
             antialias=True,
         )
 
-        flattened = self._frames.reshape(-1) if self._frames.size else np.empty(0)
-        stride = max(1, flattened.size // 200_000) if flattened.size else 1
-        sample = flattened[::stride]
-        finite = sample[np.isfinite(sample)]
-        if finite.size:
-            low, high = np.percentile(finite, (0.5, 99.5))
-            span = max(float(high - low), 1.0)
-            self.setYRange(
-                float(low - 0.15 * span),
-                float(high + 0.15 * span),
-                padding=0.0,
-            )
-        else:
-            self.setYRange(0.0, 1.0, padding=0.0)
+        amplitude_low, amplitude_high = _ultrasound_amplitude_range(self._frames)
+        self.setYRange(amplitude_low, amplitude_high, padding=0.0)
 
     def update_time(self, current_s: float, _cycle_start_s: float) -> None:
         if not self._times.size or self._frames.ndim != 2:
