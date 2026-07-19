@@ -2113,6 +2113,13 @@ class DataStudioWindow(QMainWindow):
                 RemoteTrialStatus.CONFLICT: "#8e44ad",
                 None: "#9aa3ad",
             }
+            row_backgrounds = {
+                RemoteTrialStatus.UPLOADED: "#e3f5e9",
+                RemoteTrialStatus.NOT_UPLOADED: "#f1f3f5",
+                RemoteTrialStatus.PARTIAL: "#fff0d6",
+                RemoteTrialStatus.CONFLICT: "#f3e5f5",
+                None: "#f1f3f5",
+            }
             labels = {
                 RemoteTrialStatus.UPLOADED: "已上传",
                 RemoteTrialStatus.NOT_UPLOADED: "未上传",
@@ -2129,6 +2136,7 @@ class DataStudioWindow(QMainWindow):
             )
             for column in range(4):
                 item.setToolTip(column, tooltip)
+                item.setBackground(column, QBrush(QColor(row_backgrounds[status])))
             item.setText(3, f"{details} · 云端：{labels[status]}")
         elif node_type == "external_annex":
             item.setData(

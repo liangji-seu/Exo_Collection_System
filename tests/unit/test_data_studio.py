@@ -187,6 +187,10 @@ def test_upload_scope_accepts_parent_levels_and_remote_status_colors_trials(
     assert colored.text(2) == "2 个"
     assert "当前状态：已上传" in colored.toolTip(0)
     assert "颜色说明" in colored.toolTip(2)
+    assert all(
+        colored.background(column).color().name() == "#e3f5e9"
+        for column in range(4)
+    )
     assert window.tree_widget.itemDelegateForColumn(2) is not None
     window.close()
     app.processEvents()
