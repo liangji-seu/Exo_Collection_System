@@ -106,7 +106,7 @@ def finalize_trial_package(layout: TrialLayout, manifest: TrialManifest) -> Path
         layout.recording_directory, relative_paths,
         destination=layout.exo_path("checksums.sha256"),
     )
-    results = verify_checksum_manifest(checksums)
+    results = verify_checksum_manifest(checksums, trial_root=layout.recording_directory)
     if not results or not all(results.values()):
         raise RuntimeError("Trial checksum validation failed before publication")
     return layout.finalize_directory()

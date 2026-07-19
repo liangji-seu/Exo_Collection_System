@@ -43,9 +43,17 @@ def write_checksum_manifest(
     return output
 
 
-def verify_checksum_manifest(path: str | Path) -> dict[str, bool]:
+def verify_checksum_manifest(
+    path: str | Path,
+    *,
+    trial_root: str | Path | None = None,
+) -> dict[str, bool]:
     checksum_path = Path(path)
-    root = checksum_path.parent.resolve()
+    root = (
+        Path(trial_root).resolve()
+        if trial_root is not None
+        else checksum_path.parent.resolve()
+    )
     results: dict[str, bool] = {}
     for line in checksum_path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
