@@ -576,6 +576,16 @@ class RawEthernetUltrasoundAdapter(QueuedHardwareAdapter):
             except BaseException as exc:
                 self._set_fault(exc)
 
+    def _compute_actual_rate(self, elapsed: float) -> float:
+        """Per-A-line frame rate (not per-channel event rate).
+
+        Each 4-channel A-line arrives as four separate Ethernet frames.
+        Dividing by the channel count gives the true ultrasound frame rate.
+        """
+        base = super()._compute_actual_rate(elapsed)
+        channel_count = len(self._config.channels)
+        return base / channel_count if channel_count else base
+
     def _health_metrics(self) -> dict[str, int | float | str | bool | None]:
         return {
             "invalid_length_packets": self._invalid_length_packets,

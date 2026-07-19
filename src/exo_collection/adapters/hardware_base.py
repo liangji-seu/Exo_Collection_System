@@ -282,7 +282,7 @@ class QueuedHardwareAdapter(ABC):
         state = self.state
         depth = self._raw_queue.qsize()
         elapsed = perf_counter() - self._rate_started_at if self._rate_started_at else 0.0
-        actual_rate = self._samples_emitted / elapsed if elapsed > 0 else 0.0
+        actual_rate = self._compute_actual_rate(elapsed)
         connected = state in {
             AdapterState.CONNECTED,
             AdapterState.PREPARED,
@@ -317,6 +317,14 @@ class QueuedHardwareAdapter(ABC):
                 **self._health_metrics(),
             },
         )
+
+    def _compute_actual_rate(self, elapsed: float) -> float:
+        """Per-modality actual sample rate in Hz.
+
+        Subclasses may override this to account for multi-channel
+        transports where one logical frame produces several raw events.
+        """
+        return self._samples_emitted / elapsed if elapsed > 0 else 0.0
 
     def _dropped_packets(self) -> int:
         return 0
