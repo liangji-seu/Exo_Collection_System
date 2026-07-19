@@ -629,14 +629,24 @@ class PlaybackDialog(QDialog):
         )
         banner.setObjectName("playback_banner")
         layout.addWidget(banner)
-        self.tabs = QTabWidget()
-        self.tabs.setObjectName("playback_tabs")
-        layout.addWidget(self.tabs, 1)
-        self._build_ultrasound_tab(playback)
-        self._build_imu_tab(playback)
-        self._build_encoder_tab(playback)
 
-        controls = QHBoxLayout()
+        # Keep playback controls above the plot area.  When a smaller display
+        # cannot satisfy every plot's size hint, Qt may clip the bottom of a
+        # dialog; a bottom toolbar then becomes unreachable even though the
+        # playback window itself opened successfully.
+        control_bar = QWidget(self)
+        control_bar.setObjectName("playback_control_bar")
+        control_bar.setStyleSheet(
+            "QWidget#playback_control_bar {"
+            " background: #e8f1ff; border: 1px solid #9bb8df;"
+            " border-radius: 6px; }"
+            "QPushButton#playback_play_pause {"
+            " background: #2563d9; color: white; font-weight: 700;"
+            " min-width: 108px; min-height: 32px; border-radius: 5px; }"
+            "QPushButton#playback_play_pause:hover { background: #1d4fb3; }"
+        )
+        controls = QHBoxLayout(control_bar)
+        controls.setContentsMargins(8, 6, 8, 6)
         self.play_button = QPushButton("▶ 播放")
         self.play_button.setObjectName("playback_play_pause")
         self.play_button.clicked.connect(self.toggle_playback)
@@ -657,7 +667,14 @@ class PlaybackDialog(QDialog):
             self.speed_combo.addItem(f"{speed:g}×", speed)
         self.speed_combo.setCurrentIndex(2)
         controls.addWidget(self.speed_combo)
-        layout.addLayout(controls)
+        layout.addWidget(control_bar)
+
+        self.tabs = QTabWidget()
+        self.tabs.setObjectName("playback_tabs")
+        layout.addWidget(self.tabs, 1)
+        self._build_ultrasound_tab(playback)
+        self._build_imu_tab(playback)
+        self._build_encoder_tab(playback)
         self._timer = QTimer(self)
         # 20 FPS is ample for visual review and leaves the GUI thread enough
         # time to paint four images plus eleven signal plots reliably.

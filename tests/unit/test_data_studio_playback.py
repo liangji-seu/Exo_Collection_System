@@ -7,7 +7,7 @@ import numpy as np
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QTabWidget
+from PySide6.QtWidgets import QApplication, QTabWidget, QWidget
 from PySide6.QtTest import QTest
 
 from exo_collection.apps.data_studio.local_dialogs import (
@@ -89,7 +89,13 @@ def test_playback_has_requested_modality_layout_and_fixed_sweep_axes() -> None:
 
     # Exercise the actual show/timer path that previously terminated the app.
     dialog.set_playback_time(0.0)
+    dialog.resize(1100, 650)
     dialog.show()
+    app.processEvents()
+    control_bar = dialog.findChild(QWidget, "playback_control_bar")
+    assert control_bar is not None and control_bar.isVisible()
+    assert dialog.play_button.isVisible()
+    assert control_bar.geometry().bottom() < tabs.geometry().bottom()
     dialog.play_button.click()
     QTest.qWait(80)
     app.processEvents()
