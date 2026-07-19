@@ -158,6 +158,10 @@ class _FakeRemoteSession:
         return hashlib.sha256(payload).hexdigest()
 
     def rename(self, source: str, destination: str) -> None:
+        if source in self.files:
+            assert destination not in self.files
+            self.files[destination] = self.files.pop(source)
+            return
         assert source in self.directories
         moved_files = {
             destination + path[len(source) :]: payload
@@ -215,12 +219,12 @@ def test_upload_uses_manifest_hierarchy_verifies_every_file_and_writes_safe_audi
 
     result = uploader.upload(request)
     plan = build_upload_plan(manifest_path)
-    expected = build_remote_trial_directory("/srv/exo-data", plan)
+    expected = build_remote_trial_directory("/srv/exo-data", plan, tmp_path)
 
     assert result.remote_trial_directory == expected
-    assert expected == (
-        f"/srv/exo-data/F/001/{plan.session_uuid}/trials/{plan.trial_uuid}"
-    )
+    assert expected == "/srv/exo-data/" + plan.trial_directory.relative_to(
+        tmp_path
+    ).as_posix()
     assert result.file_count == 2
     assert session.closed
     assert all(".partial-" not in path for path in session.directories)
@@ -235,6 +239,51 @@ def test_upload_uses_manifest_hierarchy_verifies_every_file_and_writes_safe_audi
     assert all(item["local_sha256"] == item["remote_sha256"] for item in audit["files"])
     assert secret not in audit_text
     assert '"password":' not in audit_text.casefold()
+
+
+def test_existing_remote_trial_is_merged_additively_without_deleting_extras(
+    tmp_path: Path,
+) -> None:
+    manifest_path = _publish_trial(tmp_path)
+    request = _password_request(tmp_path, manifest_path)
+    plan = build_upload_plan(manifest_path)
+    remote = build_remote_trial_directory(request.remote_workdir, plan, tmp_path)
+    session = _FakeRemoteSession()
+    session.ensure_directory(remote)
+    manifest_item = next(
+        item for item in plan.files if item.relative_path.as_posix() == "manifest.json"
+    )
+    session.files[f"{remote}/manifest.json"] = manifest_item.local_path.read_bytes()
+    session.files[f"{remote}/server-only-note.txt"] = b"keep-me"
+
+    result = SshScpTrialUploader(lambda _request: session).upload(request)
+
+    assert result.remote_trial_directory == remote
+    assert session.files[f"{remote}/server-only-note.txt"] == b"keep-me"
+    assert session.files[f"{remote}/raw/imu.h5"] == b"immutable-imu-payload"
+    assert session.files[f"{remote}/manifest.json"] == manifest_item.local_path.read_bytes()
+    assert all(".partial-" not in path for path in session.files)
+
+
+def test_existing_same_path_with_different_bytes_is_never_overwritten(
+    tmp_path: Path,
+) -> None:
+    manifest_path = _publish_trial(tmp_path)
+    request = _password_request(tmp_path, manifest_path)
+    plan = build_upload_plan(manifest_path)
+    remote = build_remote_trial_directory(request.remote_workdir, plan, tmp_path)
+    session = _FakeRemoteSession()
+    session.ensure_directory(remote)
+    conflicting_path = f"{remote}/raw/imu.h5"
+    session.ensure_directory(str(PurePosixPath(conflicting_path).parent))
+    session.files[conflicting_path] = b"remote-different-and-must-survive"
+
+    with pytest.raises(UploadError) as captured:
+        SshScpTrialUploader(lambda _request: session).upload(request)
+
+    assert captured.value.code == "REMOTE_CONTENT_CONFLICT"
+    assert session.files[conflicting_path] == b"remote-different-and-must-survive"
+    assert all(".partial-" not in path for path in session.files)
 
 
 @pytest.mark.parametrize(
@@ -316,28 +365,49 @@ def test_remote_workdir_rejects_paths_that_are_not_scp_safe(remote_path: str) ->
         validate_remote_directory(remote_path)
 
 
-def test_manifest_project_parent_segment_falls_back_to_uuid(tmp_path: Path) -> None:
-    plan = replace(build_upload_plan(_publish_trial(tmp_path)), project_code="..")
+def test_remote_directory_is_exact_trial_path_relative_to_data_root(
+    tmp_path: Path,
+) -> None:
+    plan = build_upload_plan(_publish_trial(tmp_path))
 
-    remote = build_remote_trial_directory("/srv/exo-data", plan)
+    remote = build_remote_trial_directory("/srv/data", plan, tmp_path)
+
+    assert PurePosixPath(remote).relative_to("/srv/data").parts == (
+        "F",
+        str(plan.subject_uuid),
+        str(plan.session_uuid),
+        "trials",
+        str(plan.trial_uuid),
+    )
+
+
+def test_readable_project_subject_condition_session_path_is_preserved(
+    tmp_path: Path,
+) -> None:
+    data_root = tmp_path / "data"
+    plan = build_upload_plan(_publish_trial(tmp_path / "fixture"))
+    readable_trial = (
+        data_root / "T" / "001" / "WALK_LEVEL" / "session1_20260719_070112"
+    )
+    readable_trial.mkdir(parents=True)
+    plan = replace(plan, trial_directory=readable_trial)
+
+    remote = build_remote_trial_directory("/srv/archive/data", plan, data_root)
 
     assert remote == (
-        f"/srv/exo-data/{plan.project_uuid}/001/"
-        f"{plan.session_uuid}/trials/{plan.trial_uuid}"
+        "/srv/archive/data/T/001/WALK_LEVEL/session1_20260719_070112"
     )
-    assert ".." not in PurePosixPath(remote).parts
 
 
-def test_manifest_subject_current_segment_falls_back_to_uuid(tmp_path: Path) -> None:
-    plan = replace(build_upload_plan(_publish_trial(tmp_path)), subject_code=".")
+def test_remote_directory_rejects_trial_outside_selected_data_root(
+    tmp_path: Path,
+) -> None:
+    plan = build_upload_plan(_publish_trial(tmp_path / "actual-data"))
 
-    remote = build_remote_trial_directory("/srv/exo-data", plan)
+    with pytest.raises(UploadError) as captured:
+        build_remote_trial_directory("/srv/data", plan, tmp_path / "other-data")
 
-    assert remote == (
-        f"/srv/exo-data/F/{plan.subject_uuid}/"
-        f"{plan.session_uuid}/trials/{plan.trial_uuid}"
-    )
-    assert "." not in PurePosixPath(remote).parts
+    assert captured.value.code == "TRIAL_OUTSIDE_DATA_ROOT"
 
 
 @pytest.mark.parametrize("unsafe_segment", ["", ".", ".."])

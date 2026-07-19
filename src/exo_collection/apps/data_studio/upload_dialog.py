@@ -37,8 +37,9 @@ class OfflineUploadDialog(QDialog):
 
         outer = QVBoxLayout(self)
         explanation = QLabel(
-            "仅上传已最终化 Trial。上传在独立进程中执行，远程逐文件 "
-            "SHA-256 通过后才发布。密码仅在内存中传递，不会保存。"
+            "仅同步已最终化 Trial，并完整保留它在本地 data/ 下的相对目录。"
+            "云端已有同内容文件会跳过，缺少文件会补传，云端额外文件不会删除；"
+            "同路径内容冲突时停止且不覆盖。密码仅在内存中传递，不会保存。"
         )
         explanation.setWordWrap(True)
         outer.addWidget(explanation)
@@ -74,8 +75,8 @@ class OfflineUploadDialog(QDialog):
 
         self.remote_workdir_edit = QLineEdit()
         self.remote_workdir_edit.setObjectName("upload_remote_workdir")
-        self.remote_workdir_edit.setPlaceholderText("/absolute/remote/workdir")
-        endpoint_form.addRow("远程工作目录：", self.remote_workdir_edit)
+        self.remote_workdir_edit.setPlaceholderText("/absolute/path/to/data")
+        endpoint_form.addRow("远程 data 根目录：", self.remote_workdir_edit)
 
         self.authentication_combo = QComboBox()
         self.authentication_combo.setObjectName("upload_authentication")

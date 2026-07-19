@@ -4,8 +4,10 @@ Passwords and private-key passphrases exist only in the UI process and the
 spawned upload worker. They are sent over a multiprocessing pipe *after* the
 process starts; they are never put in a command line, configuration file, log,
 Catalog, or Manifest. Remote shell commands are deliberately not used. SCP transfers
-files while SFTP creates directories, reads remote files for SHA-256
-verification, and atomically publishes the verified staging directory.
+files while SFTP creates directories and reads remote files for SHA-256
+verification. The remote dataset is an append-only mirror of the local data
+root: local relative paths are preserved, matching files are reused, missing
+files are added atomically, and conflicting existing bytes are never replaced.
 """
 
 from __future__ import annotations
@@ -406,29 +408,31 @@ def build_upload_plan(manifest_path: str | Path) -> TrialUploadPlan:
 
 
 def build_remote_trial_directory(
-    remote_workdir: str, plan: TrialUploadPlan
+    remote_workdir: str,
+    plan: TrialUploadPlan,
+    dataset_root: str | Path,
 ) -> str:
-    """Build the architecture-defined remote hierarchy from Manifest IDs."""
+    """Mirror the Trial's exact path relative to the selected local data root."""
 
-    project_segment = _safe_identity(plan.project_code, str(plan.project_uuid))
-    subject_segment = _safe_identity(plan.subject_code, str(plan.subject_uuid))
+    root = Path(dataset_root).expanduser().resolve()
+    try:
+        relative = plan.trial_directory.relative_to(root)
+    except ValueError as exc:
+        raise UploadError(
+            "TRIAL_OUTSIDE_DATA_ROOT",
+            "所选 Trial 不在当前本地 data 根目录内。",
+        ) from exc
+    if not relative.parts:
+        raise UploadError("INVALID_TRIAL_PATH", "Trial 目录不能等于 data 根目录。")
+    if any(not _is_safe_remote_segment(part) for part in relative.parts):
+        raise UploadError(
+            "UNSAFE_REMOTE_PATH",
+            "本地 data 相对路径包含服务器不支持的字符。",
+        )
     return _remote_join(
         validate_remote_directory(remote_workdir),
-        project_segment,
-        subject_segment,
-        str(plan.session_uuid),
-        "trials",
-        str(plan.trial_uuid),
+        *relative.parts,
     )
-
-
-def _safe_identity(preferred: str | None, fallback: str) -> str:
-    candidate = str(preferred).strip() if preferred is not None else ""
-    if _is_safe_remote_segment(candidate):
-        return candidate
-    if not _is_safe_remote_segment(fallback):
-        raise UploadError("UNSAFE_REMOTE_PATH", "远程路径包含不安全标识。")
-    return fallback
 
 
 def _write_upload_audit(
@@ -774,7 +778,11 @@ class SshScpTrialUploader:
         self._guard(request, is_cancelled)
 
         trial_name = str(plan.trial_uuid)
-        remote_final = build_remote_trial_directory(request.remote_workdir, plan)
+        remote_final = build_remote_trial_directory(
+            request.remote_workdir,
+            plan,
+            request.dataset_root,
+        )
         remote_trials_directory = str(PurePosixPath(remote_final).parent)
         staging_name = f".{trial_name}.partial-{uuid4().hex}"
         remote_staging = _remote_join(remote_trials_directory, staging_name)
@@ -791,9 +799,46 @@ class SshScpTrialUploader:
             self._guard(request, is_cancelled)
             session.ensure_directory(remote_trials_directory)
             if session.exists(remote_final):
-                raise UploadError(
-                    "REMOTE_EXISTS", f"远程 Trial 目录已存在，为防止覆盖已取消：{remote_final}"
+                # An earlier sync may already have created all or part of this
+                # exact local-relative Trial path. Merge additively: reuse
+                # matching bytes, add absent files, retain remote-only files,
+                # and refuse any same-path content conflict.
+                cleanup_files.clear()
+                self._merge_existing_trial(
+                    session,
+                    request,
+                    plan,
+                    remote_final,
+                    report=report,
+                    cancelled=is_cancelled,
                 )
+                verified_at_utc_ns = time.time_ns()
+                audit_record_path = _write_upload_audit(
+                    request,
+                    plan,
+                    status="VERIFIED",
+                    started_at_utc_ns=started_at_utc_ns,
+                    completed_at_utc_ns=verified_at_utc_ns,
+                    remote_trial_directory=remote_final,
+                )
+                result = OfflineUploadResult(
+                    trial_uuid=plan.trial_uuid,
+                    remote_trial_directory=remote_final,
+                    file_count=len(plan.files),
+                    total_bytes=plan.total_bytes,
+                    verified_at_utc_ns=verified_at_utc_ns,
+                    transfer_batch_uuid=request.transfer_batch_uuid,
+                    audit_record_path=audit_record_path,
+                )
+                report(
+                    UploadProgress(
+                        UploadPhase.COMPLETED,
+                        f"追加同步并校验完成，共 {result.file_count} 个文件。",
+                        result.file_count,
+                        result.file_count,
+                    )
+                )
+                return result
             created_directories.add(remote_staging)
             session.ensure_directory(remote_staging)
 
@@ -1023,6 +1068,161 @@ class SshScpTrialUploader:
                             pass
                 try:
                     session.close()
+                except Exception:
+                    pass
+
+    def _merge_existing_trial(
+        self,
+        session: RemoteUploadSession,
+        request: OfflineUploadRequest,
+        plan: TrialUploadPlan,
+        remote_trial_directory: str,
+        *,
+        report: ProgressCallback,
+        cancelled: CancelCheck,
+    ) -> None:
+        """Add missing files without deleting or replacing any remote bytes."""
+
+        session.ensure_directory(remote_trial_directory)
+        missing: list[TrialUploadFile] = []
+        total_files = len(plan.files)
+
+        def guarded_progress(
+            message: str,
+            phase: UploadPhase = UploadPhase.VERIFYING,
+        ) -> UploadByteProgress:
+            last_guard_ns = 0
+            last_report_ns = 0
+
+            def callback(processed_bytes: int, total_bytes: int) -> None:
+                nonlocal last_guard_ns, last_report_ns
+                now_ns = time.perf_counter_ns()
+                if (
+                    last_guard_ns == 0
+                    or now_ns - last_guard_ns >= 50_000_000
+                    or processed_bytes >= total_bytes
+                ):
+                    self._guard(request, cancelled)
+                    last_guard_ns = now_ns
+                if (
+                    last_report_ns == 0
+                    or now_ns - last_report_ns >= 250_000_000
+                    or processed_bytes >= total_bytes
+                ):
+                    percentage = (
+                        100.0
+                        if total_bytes <= 0
+                        else min(
+                            100.0,
+                            max(0.0, processed_bytes * 100.0 / total_bytes),
+                        )
+                    )
+                    report(
+                        UploadProgress(
+                            phase,
+                            f"{message} · {percentage:.1f}%",
+                            0,
+                            total_files,
+                        )
+                    )
+                    last_report_ns = now_ns
+
+            return callback
+
+        # Preflight every same-path remote file before adding anything. This
+        # prevents a conflict near the end from leaving an avoidable partial
+        # merge, while remote-only files are intentionally ignored and kept.
+        for index, item in enumerate(plan.files, start=1):
+            self._guard(request, cancelled)
+            remote_file = _remote_join(
+                remote_trial_directory, *item.relative_path.parts
+            )
+            if not session.exists(remote_file):
+                missing.append(item)
+                continue
+            message = (
+                f"正在核对云端已有文件 {index}/{total_files}："
+                f"{item.relative_path.as_posix()}"
+            )
+            remote_digest = session.remote_sha256(
+                remote_file,
+                progress=guarded_progress(message),
+            )
+            if remote_digest != item.sha256:
+                raise UploadError(
+                    "REMOTE_CONTENT_CONFLICT",
+                    "云端同路径文件与本地内容不同，已停止且不会覆盖："
+                    f"{item.relative_path.as_posix()}",
+                )
+
+        temporary_files: list[str] = []
+        try:
+            for index, item in enumerate(missing, start=1):
+                self._guard(request, cancelled)
+                remote_file = _remote_join(
+                    remote_trial_directory, *item.relative_path.parts
+                )
+                parent = str(PurePosixPath(remote_file).parent)
+                session.ensure_directory(parent)
+                temporary_name = (
+                    f".{PurePosixPath(remote_file).name}.partial-"
+                    f"{request.transfer_batch_uuid.hex}"
+                )
+                temporary_file = _remote_join(parent, temporary_name)
+                if session.exists(temporary_file):
+                    raise UploadError(
+                        "REMOTE_TEMP_CONFLICT",
+                        f"云端临时文件已存在：{temporary_file}",
+                    )
+                temporary_files.append(temporary_file)
+                upload_message = (
+                    f"正在补传缺少文件 {index}/{len(missing)}："
+                    f"{item.relative_path.as_posix()}"
+                )
+                session.upload_file(
+                    item.local_path,
+                    temporary_file,
+                    progress=guarded_progress(
+                        upload_message,
+                        UploadPhase.UPLOADING,
+                    ),
+                )
+                verify_message = (
+                    f"正在校验补传文件 {index}/{len(missing)}："
+                    f"{item.relative_path.as_posix()}"
+                )
+                remote_digest = session.remote_sha256(
+                    temporary_file,
+                    progress=guarded_progress(verify_message),
+                )
+                if remote_digest != item.sha256:
+                    raise UploadError(
+                        "REMOTE_INTEGRITY_FAILED",
+                        f"远程 SHA-256 校验失败：{item.relative_path.as_posix()}",
+                    )
+                # Re-check after upload to avoid overwriting a file created by
+                # another synchronization process during this transfer.
+                if session.exists(remote_file):
+                    existing_digest = session.remote_sha256(
+                        remote_file,
+                        progress=guarded_progress(
+                            f"正在核对并发写入：{item.relative_path.as_posix()}"
+                        ),
+                    )
+                    if existing_digest != item.sha256:
+                        raise UploadError(
+                            "REMOTE_CONTENT_CONFLICT",
+                            "云端同路径文件在同步期间出现不同内容，已停止且不会覆盖："
+                            f"{item.relative_path.as_posix()}",
+                        )
+                    session.remove_file(temporary_file)
+                else:
+                    session.rename(temporary_file, remote_file)
+                temporary_files.remove(temporary_file)
+        finally:
+            for temporary_file in reversed(temporary_files):
+                try:
+                    session.remove_file(temporary_file)
                 except Exception:
                     pass
 
