@@ -52,6 +52,11 @@ class SignalPlayback:
     values: NDArray[np.generic]
     channels: tuple[str, ...]
     units: tuple[str, ...]
+    # Physical sensor labels in the leading sample-shape order.  Empty means
+    # that the source file did not publish enough information to identify
+    # individual devices; the UI must display this honestly rather than
+    # inventing device IDs.
+    sensor_labels: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,6 +226,27 @@ def _artifact_named(manifest: TrialManifest, relative_path: str) -> str | None:
     )
 
 
+def _internal_relative(manifest_path: Path, filename: str) -> str:
+    """Return the metadata path for both current and legacy Trial layouts."""
+
+    return f".exo/{filename}" if manifest_path.parent.name == ".exo" else filename
+
+
+def _internal_artifact_named(
+    manifest: TrialManifest, manifest_path: Path, filename: str
+) -> str | None:
+    preferred = _internal_relative(manifest_path, filename)
+    candidates = (preferred, f"reports/{filename}", filename, f".exo/{filename}")
+    return next(
+        (
+            listed
+            for candidate in dict.fromkeys(candidates)
+            if (listed := _artifact_named(manifest, candidate)) is not None
+        ),
+        None,
+    )
+
+
 def _even_indices(count: int, limit: int) -> NDArray[np.int64] | slice:
     if count <= limit:
         return slice(None)
@@ -290,6 +316,23 @@ def _read_hdf5_signal(
             if "metadata/units" in handle
             else ()
         )
+        sensor_labels: tuple[str, ...] = ()
+        if "metadata/device" in handle:
+            raw_device = handle["metadata/device"][()]
+            if isinstance(raw_device, bytes):
+                raw_device = raw_device.decode("utf-8", errors="replace")
+            try:
+                device_metadata = json.loads(str(raw_device))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                _log.warning("HDF5 device metadata is not valid JSON: %s", path)
+            else:
+                candidates = (
+                    device_metadata.get("preview_labels")
+                    or device_metadata.get("device_ids")
+                    or ()
+                )
+                if isinstance(candidates, (list, tuple)):
+                    sensor_labels = tuple(str(value) for value in candidates)
         trigger_times: list[float] = []
         if "events/records" in handle:
             records = handle["events/records"]
@@ -323,6 +366,7 @@ def _read_hdf5_signal(
             values=values,
             channels=labels,
             units=expanded_units,
+            sensor_labels=sensor_labels,
         ),
         np.asarray(trigger_times, dtype=np.float64),
     )
@@ -611,7 +655,7 @@ def load_trial_playback(
     data_root: str | Path | None = None,
     max_signal_points: int = 4000,
     max_ultrasound_frames: int = 300,
-    max_ultrasound_depth_points: int = 512,
+    max_ultrasound_depth_points: int = 1000,
 ) -> TrialPlayback:
     """Load a bounded, plot-ready view of one finalized Trial."""
 
@@ -783,7 +827,8 @@ def verify_trial_checksums(
     )
     _require_trial_under_data_root(path, dataset_root)
     _require_idle(dataset_root)
-    checksum_path = _artifact_path(trial_root, ".exo/checksums.sha256")
+    checksum_relative = _internal_relative(path, "checksums.sha256")
+    checksum_path = _artifact_path(trial_root, checksum_relative)
     if not checksum_path.is_file() or _has_active_component(checksum_path):
         raise DataStudioToolError("Trial 缺少已发布的 checksums.sha256")
 
@@ -846,7 +891,7 @@ def verify_trial_checksums(
             )
         )
 
-    required = set(expected_from_manifest) | {"manifest.json"}
+    required = set(expected_from_manifest) | {_internal_relative(path, "manifest.json")}
     for missing in sorted(required - seen):
         items.append(
             ChecksumItem(
@@ -895,7 +940,7 @@ def load_quality_audit(
     _require_idle(dataset_root)
 
     report_document: dict[str, Any] = {}
-    quality_relative = _artifact_named(manifest, ".exo/quality_report.json")
+    quality_relative = _internal_artifact_named(manifest, path, "quality_report.json")
     if quality_relative is not None:
         quality_path = _artifact_path(trial_root, quality_relative)
         if quality_path.is_file():
@@ -905,8 +950,8 @@ def load_quality_audit(
             report_document = loaded
     _require_idle(dataset_root)
 
-    def csv_rows(relative_path: str) -> tuple[dict[str, str], ...]:
-        listed = _artifact_named(manifest, relative_path)
+    def csv_rows(filename: str) -> tuple[dict[str, str], ...]:
+        listed = _internal_artifact_named(manifest, path, filename)
         if listed is None:
             return ()
         report_path = _artifact_path(trial_root, listed)
@@ -915,11 +960,11 @@ def load_quality_audit(
         rows = csv.DictReader(_read_small_text(report_path).splitlines())
         return tuple(dict(row) for row in rows)
 
-    devices = csv_rows(".exo/device_status.csv")
+    devices = csv_rows("device_status.csv")
     _require_idle(dataset_root)
-    sync_checks = csv_rows(".exo/sync_check.csv")
+    sync_checks = csv_rows("sync_check.csv")
     _require_idle(dataset_root)
-    warnings_relative = _artifact_named(manifest, ".exo/warnings.txt")
+    warnings_relative = _internal_artifact_named(manifest, path, "warnings.txt")
     warnings_text = ""
     if warnings_relative is not None:
         warnings_path = _artifact_path(trial_root, warnings_relative)

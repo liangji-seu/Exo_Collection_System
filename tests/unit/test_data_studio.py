@@ -181,6 +181,57 @@ def test_snapshot_scans_only_published_manifests_and_never_artifacts(
     ][0]["label"] == "raw/imu.h5"
 
 
+def test_trial_artifacts_are_grouped_by_modality_only_for_display() -> None:
+    artifacts = [
+        {
+            "type": "artifact",
+            "uuid": "us-data",
+            "label": "raw/ultrasound.bin",
+            "modality": "ultrasound",
+            "size_bytes": 100,
+            "children": [],
+        },
+        {
+            "type": "artifact",
+            "uuid": "us-index",
+            "label": "raw/ultrasound.idx",
+            "modality": "ultrasound",
+            "size_bytes": 20,
+            "children": [],
+        },
+        {
+            "type": "artifact",
+            "uuid": "imu-data",
+            "label": "raw/imu.h5",
+            "modality": "imu",
+            "size_bytes": 80,
+            "children": [],
+        },
+        {
+            "type": "artifact",
+            "uuid": "quality",
+            "label": ".exo/quality_report.json",
+            "modality": "trial",
+            "size_bytes": 10,
+            "children": [],
+        },
+    ]
+
+    grouped = DataStudioWindow._group_trial_artifacts(artifacts)
+
+    assert [(node["type"], node["label"]) for node in grouped] == [
+        ("modality", "IMU"),
+        ("modality", "超声"),
+        ("supporting_files", "系统资料"),
+    ]
+    assert grouped[1]["artifact_count"] == 2
+    assert grouped[1]["size_bytes"] == 120
+    assert [item["uuid"] for item in grouped[1]["children"]] == [
+        "us-data",
+        "us-index",
+    ]
+
+
 def test_window_refreshes_in_background_and_enforces_lightweight_mode(
     tmp_path: Path,
 ) -> None:

@@ -227,6 +227,44 @@ def test_manifest_scan_rebuilds_tree_and_statistics(tmp_path) -> None:
     assert statistics["by_condition"]["WALK_LEVEL"]["trial_count"] == 1
 
 
+def test_tree_groups_session_directories_under_one_condition(tmp_path: Path) -> None:
+    first = make_manifest()
+    second_payload = first.model_dump(mode="python")
+    second_trial_uuid = uuid4()
+    second_payload["session_uuid"] = uuid4()
+    second_payload["trial_uuid"] = second_trial_uuid
+    second_payload["condition"]["repeat_index"] = 2
+    for artifact in second_payload["artifacts"]:
+        artifact["artifact_uuid"] = uuid4()
+        artifact["trial_uuid"] = second_trial_uuid
+    second = TrialManifest.model_validate(second_payload)
+
+    first_path = (
+        tmp_path / "F" / "001" / "WALK_LEVEL" /
+        "session1_20260715_120000" / ".exo" / "manifest.json"
+    )
+    second_path = (
+        tmp_path / "F" / "001" / "WALK_LEVEL" /
+        "session2_20260715_120500" / ".exo" / "manifest.json"
+    )
+    with Catalog(tmp_path / "catalog.sqlite3") as catalog:
+        repository = CatalogRepository(catalog)
+        repository.index_manifest(first, first_path)
+        repository.index_manifest(second, second_path)
+        tree = repository.tree()
+
+    subject_node = tree[0]["children"][0]
+    assert subject_node["label"] == "001"
+    assert len(subject_node["children"]) == 1
+    condition_node = subject_node["children"][0]
+    assert condition_node["label"] == "WALK_LEVEL"
+    assert [node["label"] for node in condition_node["children"]] == [
+        "session1_20260715_120000",
+        "session2_20260715_120500",
+    ]
+    assert [node["modality_count"] for node in condition_node["children"]] == [1, 1]
+
+
 @pytest.mark.parametrize(
     "package_suffix",
     [".RECORDING", ".PaRtIaL", ".AbOrTeD", ".BUILDING"],

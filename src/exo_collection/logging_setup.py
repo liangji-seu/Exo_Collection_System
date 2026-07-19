@@ -45,6 +45,7 @@ def current_collector_log_path() -> Path | None:
 
 def configure_subprocess_logging(
     *,
+    log_path: str | Path | None = None,
     level: int = logging.DEBUG,
     max_bytes: int = DEFAULT_MAX_BYTES,
     backup_count: int = DEFAULT_BACKUP_COUNT,
@@ -57,7 +58,11 @@ def configure_subprocess_logging(
     Must be called after the parent has called ``setup_collector_logging``
     (which stores the shared path).
     """
-    resolved_path = current_collector_log_path()
+    resolved_path = (
+        Path(log_path).expanduser().resolve()
+        if log_path is not None
+        else current_collector_log_path()
+    )
     if resolved_path is None:
         return
     root = logging.getLogger()

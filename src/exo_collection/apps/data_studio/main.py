@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import logging
 import multiprocessing
 import os
@@ -11,6 +12,7 @@ import traceback
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Sequence
+from typing import TextIO
 
 from PySide6.QtCore import QSettings, QTimer, QtMsgType, qInstallMessageHandler
 from PySide6.QtWidgets import QApplication
@@ -23,6 +25,33 @@ from exo_collection.logging_setup import (
 )
 
 _log = logging.getLogger(__name__)
+_FAULT_LOG_STREAM: TextIO | None = None
+
+
+def _enable_native_fault_logging(logger: logging.Logger) -> None:
+    """Capture Python/native fatal faults that bypass ``sys.excepthook``."""
+
+    global _FAULT_LOG_STREAM
+    try:
+        path = data_studio_log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _FAULT_LOG_STREAM = path.open("a", encoding="utf-8", buffering=1)
+        faulthandler.enable(file=_FAULT_LOG_STREAM, all_threads=True)
+        logger.debug("Native fault handler enabled: log_file=%s", path)
+    except Exception:
+        logger.exception("Could not enable native fault logging")
+
+
+def _disable_native_fault_logging() -> None:
+    global _FAULT_LOG_STREAM
+    if _FAULT_LOG_STREAM is None:
+        return
+    try:
+        if faulthandler.is_enabled():
+            faulthandler.disable()
+    finally:
+        _FAULT_LOG_STREAM.close()
+        _FAULT_LOG_STREAM = None
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -126,6 +155,7 @@ def main(
         "Exo Data Studio application starting; log_file=%s",
         data_studio_log_path(),
     )
+    _enable_native_fault_logging(logger)
 
     # ------------------------------------------------------------------
     # Global crash capture: log EVERY unhandled exception before exit
@@ -189,6 +219,7 @@ def main(
         raise
     finally:
         logger.info("Exo Data Studio application exiting")
+        _disable_native_fault_logging()
 
 
 if __name__ == "__main__":

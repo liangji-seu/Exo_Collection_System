@@ -105,6 +105,11 @@ def _interprocess_guard(root: Path) -> Iterator[None]:
     """Serialize lock-file replacement without relying on conditional rename."""
 
     guard_path = root / _GUARD_NAME
+    # A brand-new dataset root has no internal metadata directory yet.  The
+    # guard itself is the first file we create there, so ensure its parent
+    # exists before opening it (``AcquisitionLock.acquire`` only created the
+    # dataset root previously).
+    guard_path.parent.mkdir(parents=True, exist_ok=True)
     with guard_path.open("a+b") as stream:
         stream.seek(0, os.SEEK_END)
         if stream.tell() == 0:

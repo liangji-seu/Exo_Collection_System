@@ -447,14 +447,11 @@ class CatalogRepository:
         return p.parent.name[:8]
 
     @staticmethod
-    def _session_label(trials: list[TrialRow]) -> str:
-        """Derive a short human-readable session label from constituent trials."""
+    def _condition_label(trials: list[TrialRow]) -> str:
+        """Return the on-disk condition directory represented by ``trials``."""
         if not trials:
-            return "Session ?"
-        first = trials[0]
-        condition = first.condition_code or "?"
-        repeat = first.repeat_index if first.repeat_index is not None else "?"
-        return f"{condition} · session {repeat}"
+            return "?"
+        return trials[0].condition_code or "?"
 
     def tree(self) -> list[dict[str, object]]:
         """Return a deterministic Project→Subject→Session→Trial→Artifact tree.
@@ -467,18 +464,16 @@ class CatalogRepository:
         with self.catalog.session() as db:
             projects = db.scalars(select(ProjectRow).order_by(ProjectRow.name)).all()
             subjects = db.scalars(select(SubjectRow).order_by(SubjectRow.subject_code)).all()
-            sessions = db.scalars(select(SessionRow).order_by(SessionRow.started_utc)).all()
             trials = db.scalars(select(TrialRow).order_by(TrialRow.started_utc)).all()
             artifacts = db.scalars(select(ArtifactRow).order_by(ArtifactRow.relative_path)).all()
         artifacts_by_trial: dict[str, list[ArtifactRow]] = {}
         for item in artifacts:
             artifacts_by_trial.setdefault(item.trial_uuid, []).append(item)
-        trials_by_session: dict[str, list[TrialRow]] = {}
+        trials_by_subject_condition: dict[tuple[str, str], list[TrialRow]] = {}
         for item in trials:
-            trials_by_session.setdefault(item.session_uuid, []).append(item)
-        sessions_by_subject: dict[str, list[SessionRow]] = {}
-        for item in sessions:
-            sessions_by_subject.setdefault(item.subject_uuid, []).append(item)
+            trials_by_subject_condition.setdefault(
+                (item.subject_uuid, item.condition_code), []
+            ).append(item)
         subjects_by_project: dict[str, list[SubjectRow]] = {}
         for item in subjects:
             subjects_by_project.setdefault(item.project_uuid, []).append(item)
@@ -495,22 +490,26 @@ class CatalogRepository:
                         "children": [
                             {
                                 "type": "session",
-                                "uuid": visit.session_uuid,
-                                "label": self._session_label(
-                                    trials_by_session.get(visit.session_uuid, [])
-                                ),
+                                "uuid": condition_trials[0].condition_uuid,
+                                "label": self._condition_label(condition_trials),
                                 "children": [
                                     {
                                         "type": "trial",
                                         "uuid": trial.trial_uuid,
-                                        "label": (
-                                            f"{self._trial_leaf_label(trial.manifest_path)}"
-                                            f" · {trial.state}"
-                                        ),
+                                        "label": self._trial_leaf_label(trial.manifest_path),
                                         "state": trial.state,
                                         "quality_grade": trial.quality_grade,
                                         "duration_s": trial.duration_s,
                                         "manifest_path": trial.manifest_path,
+                                        "modality_count": len(
+                                            {
+                                                artifact.modality
+                                                for artifact in artifacts_by_trial.get(
+                                                    trial.trial_uuid, []
+                                                )
+                                                if artifact.modality != "trial"
+                                            }
+                                        ),
                                         "children": [
                                             {
                                                 "type": "artifact",
@@ -524,10 +523,14 @@ class CatalogRepository:
                                             for artifact in artifacts_by_trial.get(trial.trial_uuid, [])
                                         ],
                                     }
-                                    for trial in trials_by_session.get(visit.session_uuid, [])
+                                    for trial in condition_trials
                                 ],
                             }
-                            for visit in sessions_by_subject.get(subject.subject_uuid, [])
+                            for (_subject_uuid, _condition), condition_trials in sorted(
+                                trials_by_subject_condition.items(),
+                                key=lambda item: item[0][1],
+                            )
+                            if _subject_uuid == subject.subject_uuid and condition_trials
                         ],
                     }
                     for subject in subjects_by_project.get(project.project_uuid, [])

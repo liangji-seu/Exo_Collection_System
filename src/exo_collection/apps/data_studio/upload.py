@@ -376,8 +376,12 @@ def build_upload_plan(manifest_path: str | Path) -> TrialUploadPlan:
         files.append(item)
         by_relative_path[relative.as_posix()] = item
 
-    if not files or ".exo/manifest.json" not in by_relative_path:
-        raise UploadError("INCOMPLETE_PACKAGE", "Trial 包缺少 .exo/manifest.json。")
+    manifest_relative_path = path.relative_to(trial_directory).as_posix()
+    if not files or manifest_relative_path not in by_relative_path:
+        raise UploadError(
+            "INCOMPLETE_PACKAGE",
+            f"Trial 包缺少 Manifest：{manifest_relative_path}",
+        )
     for artifact in manifest.artifacts:
         local = by_relative_path.get(artifact.relative_path)
         if local is None:

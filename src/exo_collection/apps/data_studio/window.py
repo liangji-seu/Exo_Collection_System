@@ -86,13 +86,24 @@ from .upload_dialog import OfflineUploadDialog, UploadProgressDialog
 
 
 _TYPE_LABELS = {
-    "project": "Project",
-    "subject": "Subject",
-    "session": "Session",
-    "trial": "Trial",
-    "artifact": "Artifact",
+    "project": "项目",
+    "subject": "受试者",
+    # Catalog keeps these compatibility type names, while the visible tree
+    # mirrors the current on-disk project/subject/condition/session layout.
+    "session": "工况",
+    "trial": "Session",
+    "modality": "模态数据集",
+    "supporting_files": "辅助资料",
+    "artifact": "文件",
     "external_annex": "External Annex",
     "external_artifact": "External File",
+}
+
+_MODALITY_LABELS = {
+    "ultrasound": "超声",
+    "imu": "IMU",
+    "encoder": "电机编码器",
+    "sync_pulse": "同步脉冲",
 }
 
 
@@ -1766,17 +1777,73 @@ class DataStudioWindow(QMainWindow):
         errors = node.get("errors")
         if isinstance(errors, list) and errors:
             item.setToolTip(2, "\n".join(str(error) for error in errors))
-        for child in node.get("children", []):
+        children = node.get("children", [])
+        if node_type == "trial":
+            children = self._group_trial_artifacts(children)
+        for child in children:
             if isinstance(child, dict):
                 item.addChild(self._make_tree_item(child))
         return item
+
+    @staticmethod
+    def _group_trial_artifacts(children: object) -> list[dict[str, Any]]:
+        """Group Manifest artifacts for display without changing their identity.
+
+        The Catalog remains a flat UUID-linked artifact index.  Group nodes are
+        presentation-only and therefore cannot accidentally become a source of
+        truth for playback, upload, recovery, or integrity checks.
+        """
+
+        if not isinstance(children, list):
+            return []
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        passthrough: list[dict[str, Any]] = []
+        for child in children:
+            if not isinstance(child, dict):
+                continue
+            if child.get("type") != "artifact":
+                passthrough.append(child)
+                continue
+            modality = str(child.get("modality") or "unknown")
+            grouped.setdefault(modality, []).append(child)
+
+        result: list[dict[str, Any]] = []
+        for modality, artifacts in sorted(
+            grouped.items(), key=lambda item: (item[0] == "trial", item[0])
+        ):
+            supporting = modality == "trial"
+            result.append(
+                {
+                    "type": "supporting_files" if supporting else "modality",
+                    "uuid": None,
+                    "label": (
+                        "系统资料"
+                        if supporting
+                        else _MODALITY_LABELS.get(modality, modality)
+                    ),
+                    "modality": modality,
+                    "artifact_count": len(artifacts),
+                    "size_bytes": sum(
+                        int(artifact.get("size_bytes") or 0)
+                        for artifact in artifacts
+                    ),
+                    "children": artifacts,
+                }
+            )
+        result.extend(passthrough)
+        return result
 
     @staticmethod
     def _node_details(node_type: str, node: dict[str, Any]) -> str:
         if node_type == "trial":
             duration = float(node.get("duration_s") or 0.0)
             quality = node.get("quality_grade") or "-"
-            return f"{duration:.2f} s | 质量 {quality}"
+            modality_count = int(node.get("modality_count") or 0)
+            return f"{modality_count} 个模态 | {duration:.2f} s | 质量 {quality}"
+        if node_type in {"modality", "supporting_files"}:
+            count = int(node.get("artifact_count") or 0)
+            size = int(node.get("size_bytes") or 0)
+            return f"{count} 个文件 | {size:,} B"
         if node_type == "artifact":
             size = int(node.get("size_bytes") or 0)
             modality = node.get("modality") or "-"

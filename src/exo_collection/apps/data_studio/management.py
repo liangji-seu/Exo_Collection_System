@@ -471,14 +471,16 @@ def _expected_upload_files(
         artifact.relative_path: (artifact.size_bytes, artifact.sha256)
         for artifact in manifest.artifacts
     }
-    expected[".exo/manifest.json"] = (
+    manifest_relative = manifest_path.relative_to(trial_root).as_posix()
+    expected[manifest_relative] = (
         manifest_path.stat().st_size,
         sha256_file(manifest_path),
     )
-    checksum_path = trial_root / ".exo" / "checksums.sha256"
+    checksum_path = manifest_path.parent / "checksums.sha256"
     if not checksum_path.is_file():
-        raise ValueError("finalized Trial has no .exo/checksums.sha256 for upload audit")
-    expected[".exo/checksums.sha256"] = (
+        raise ValueError("finalized Trial has no checksums.sha256 for upload audit")
+    checksum_relative = checksum_path.relative_to(trial_root).as_posix()
+    expected[checksum_relative] = (
         checksum_path.stat().st_size,
         sha256_file(checksum_path),
     )

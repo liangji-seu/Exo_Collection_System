@@ -72,421 +72,7 @@ def _empty_tab(message: str) -> QWidget:
     return widget
 
 
-# ---------------------------------------------------------------------------
-# Shared waterfall plot (one ultrasound channel)
-# ---------------------------------------------------------------------------
-
-class _WaterfallPlotWidget(pg.PlotWidget):
-    """Single-channel A-mode waterfall with a movable time cursor."""
-
-    def __init__(
-        self,
-        title: str,
-        time_s: np.ndarray,
-        data_2d: np.ndarray,  # (frames, depth)
-    ) -> None:
-        super().__init__()
-        self._times = np.asarray(time_s, dtype=np.float64)
-        self._data = np.asarray(data_2d, dtype=np.float32)
-
-        self.setTitle(title)
-        self.setLabel("bottom", "时间", units="s")
-        self.setLabel("left", "深度点")
-        self.setMouseEnabled(x=False, y=False)
-        self.setMenuEnabled(False)
-        self.getViewBox().setMouseEnabled(x=False, y=False)
-
-        _t0 = float(self._times[0]) if self._times.size else 0.0
-        _t1 = float(self._times[-1]) if self._times.size else 1.0
-
-        self.image = pg.ImageItem()
-        lut = _safe_colormap()
-        if lut is not None:
-            self.image.setLookupTable(lut)
-        self.addItem(self.image)
-        self.invertY(True)
-
-        self.cursor = pg.InfiniteLine(
-            pos=_t0, angle=90, movable=False,
-            pen=pg.mkPen("#E04040", width=2.0),
-        )
-        self.cursor.setZValue(100)
-        self.addItem(self.cursor)
-
-        if self._times.size and self._data.size:
-            # self._data is (depth, frames): axis 0 = Y (depth), axis 1 = X (time)
-            self.image.setImage(
-                self._data,
-                autoLevels=True,
-                rect=QRectF(
-                    _t0, 0.0,
-                    max(_t1 - _t0, 1e-9),
-                    float(max(1, self._data.shape[0])),
-                ),
-            )
-
-
-# ---------------------------------------------------------------------------
-# Shared signal plot (one IMU / encoder group)
-# ---------------------------------------------------------------------------
-
-class _SignalPlotWidget(pg.PlotWidget):
-    """Multi-channel line plot with a movable time cursor."""
-
-    def __init__(
-        self,
-        title: str,
-        series: SignalPlayback,
-        channel_indices: tuple[int, ...],
-    ) -> None:
-        super().__init__()
-        self._times = np.asarray(series.time_s, dtype=np.float64)
-        self._values = np.asarray(series.values)
-
-        self.setTitle(title)
-        self.setLabel("bottom", "时间", units="s")
-        self.setMouseEnabled(x=False, y=False)
-        self.setMenuEnabled(False)
-        self.getViewBox().setMouseEnabled(x=False, y=False)
-
-        for idx in channel_indices:
-            if idx >= self._values.shape[1]:
-                continue
-            label = (
-                series.channels[idx]
-                if idx < len(series.channels)
-                else f"ch_{idx + 1}"
-            )
-            unit = series.units[idx] if idx < len(series.units) else ""
-            legend = f"{label} [{unit}]" if unit else label
-            pen = pg.mkPen(
-                _PLOT_COLORS[idx % len(_PLOT_COLORS)], width=1.0
-            )
-            self.plot(
-                self._times,
-                self._values[:, idx],
-                pen=pen,
-                name=legend,
-            )
-
-        t0 = float(self._times[0]) if self._times.size else 0.0
-        self.cursor = pg.InfiniteLine(
-            pos=t0, angle=90, movable=False,
-            pen=pg.mkPen("#E04040", width=2.0),
-        )
-        self.cursor.setZValue(100)
-        self.addItem(self.cursor)
-
-
-# ---------------------------------------------------------------------------
-# Channel grouping helpers
-# ---------------------------------------------------------------------------
-
-def _partition_indices(
-    total: int, groups: int
-) -> list[tuple[int, ...]]:
-    """Split *total* channel indices evenly into *groups* tuples."""
-    if total <= 0 or groups <= 0:
-        return [()]
-    base = total // groups
-    remainder = total % groups
-    result: list[tuple[int, ...]] = []
-    start = 0
-    for g in range(groups):
-        size = base + (1 if g < remainder else 0)
-        result.append(tuple(range(start, start + size)))
-        start += size
-    return result
-
-
-def _imu_groups(series: SignalPlayback) -> list[tuple[str, tuple[int, ...]]]:
-    """Heuristic: group IMU channels by sensor type prefix, max 3 groups."""
-    labels = [str(c).casefold() for c in series.channels]
-    col_count = int(series.values.shape[1])
-    # Try to split into accel / gyro / other
-    accel = tuple(i for i, n in enumerate(labels) if "accel" in n or "acc" in n)
-    gyro = tuple(i for i, n in enumerate(labels) if "gyro" in n or "gyr" in n)
-    mag = tuple(i for i, n in enumerate(labels) if "mag" in n)
-    used = set(accel + gyro + mag)
-    other = tuple(i for i in range(col_count) if i not in used)
-    groups: list[tuple[str, tuple[int, ...]]] = []
-    if accel:
-        groups.append(("IMU Accel", accel))
-    if gyro:
-        groups.append(("IMU Gyro", gyro))
-    if mag:
-        groups.append(("IMU Mag", mag))
-    if other:
-        groups.append(("IMU Other", other))
-    # Collapse to at most 3 groups
-    while len(groups) > 3:
-        # merge the two smallest groups
-        groups.sort(key=lambda g: len(g[1]))
-        name_a, idx_a = groups[0]
-        name_b, idx_b = groups[1]
-        groups = groups[2:]
-        groups.append((f"{name_a} + {name_b}", idx_a + idx_b))
-    if not groups:
-        for label, idx in _partition_indices(col_count, min(3, col_count)):
-            groups.append(("IMU", idx))
-    return groups
-
-
-def _encoder_groups(series: SignalPlayback) -> list[tuple[str, tuple[int, ...]]]:
-    """Split encoder channels into 2 windows."""
-    col_count = int(series.values.shape[1])
-    result: list[tuple[str, tuple[int, ...]]] = []
-    for idx_tuple in _partition_indices(col_count, min(2, max(1, col_count))):
-        labels = [
-            series.channels[i] if i < len(series.channels) else f"ch_{i + 1}"
-            for i in idx_tuple
-        ]
-        result.append(("Encoder " + " / ".join(labels), idx_tuple))
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Interactive playback dialog (fixed axes, sweeping cursor)
-# ---------------------------------------------------------------------------
-
-class PlaybackDialog(QDialog):
-    """Collector-style offline playback with shared sweeping cursor.
-
-    Layout::
-
-        ┌──────────────┬──────────────┐
-        │  US Ch 1     │  US Ch 2     │
-        │  (waterfall) │  (waterfall) │
-        ├──────────────┼──────────────┤
-        │  US Ch 3     │  US Ch 4     │
-        │  (waterfall) │  (waterfall) │
-        ├──────────────┼──────────────┼──────────────┐
-        │  IMU group 1 │  IMU group 2 │  IMU group 3 │
-        ├──────────────┼──────────────┼──────────────┤
-        │  Encoder 1   │  Encoder 2   │              │
-        ├──────────────┴──────────────┴──────────────┤
-        │  [▶/⏸] ═══════timeline═══════ 1×  t=X/Xs  │
-        └─────────────────────────────────────────────┘
-    """
-
-    def __init__(self, playback: TrialPlayback, parent: QWidget | None = None) -> None:
-        _log.info("=== PlaybackDialog.__init__ 开始 ===")
-        _log.info("Trial: %s, t0=%d ns", playback.trial_uuid, playback.formal_t0_host_monotonic_ns)
-        super().__init__(parent)
-        self.playback = playback
-        self.setObjectName("trial_playback_dialog")
-        self.setWindowTitle(
-            f"离线回放 · {playback.condition_code} · {playback.trial_uuid[:8]}"
-        )
-        self.resize(1480, 980)
-        self._playing = False
-        self._last_tick = perf_counter()
-        _log.info("计算时间边界…")
-        self._time_min, self._time_max = self._playback_bounds(playback)
-        _log.info("时间范围: %.3f – %.3f s", self._time_min, self._time_max)
-        self._current_time = self._time_min
-
-        # One cursor per plot — synced in set_playback_time
-        self._cursors: list[pg.InfiniteLine] = []
-
-        layout = QVBoxLayout(self)
-
-        # --- info banner ---
-        _log.info("构建信息横幅…")
-        banner = QLabel(
-            f"Trial {playback.trial_uuid}  ·  t0 = "
-            f"{playback.formal_t0_host_monotonic_ns} ns  ·  降采样回放"
-        )
-        banner.setObjectName("playback_banner")
-        banner.setStyleSheet(
-            "QLabel { padding: 4px 8px; background: #eef4fb; color: #16324f;"
-            " border: 1px solid #bdd3ea; font-weight: 600; }"
-        )
-        layout.addWidget(banner)
-
-        # --- plot grid ---
-        _log.info("构建绘图网格…")
-        grid = QGridLayout()
-        row = 0
-
-        # ---- Ultrasound row ----
-        us = playback.ultrasound
-        if us is not None and us.waterfall.size:
-            n_channels = min(int(us.waterfall.shape[0]), 4)
-            _log.info("超声瀑布图: %d 通道, waterfall shape=%s, times=%d",
-                      n_channels, us.waterfall.shape, us.time_s.size)
-            for ch in range(n_channels):
-                title = (
-                    f"US {us.channels[ch]}"
-                    if ch < len(us.channels)
-                    else f"US ch_{ch + 1}"
-                )
-                _log.info("创建 US 通道 %d 瀑布图…", ch)
-                wf = _WaterfallPlotWidget(
-                    title=title,
-                    time_s=us.time_s,
-                    data_2d=np.asarray(us.waterfall[ch]).T,
-                )
-                self._cursors.append(wf.cursor)
-                grid.addWidget(wf, row + ch // 2, ch % 2)
-            row += 2
-        else:
-            _log.info("无超声数据")
-            no_us = QLabel("无超声数据")
-            no_us.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            no_us.setStyleSheet("color: #888; padding: 40px;")
-            grid.addWidget(no_us, row, 0, 2, 2)
-            row += 2
-
-        # ---- IMU row ----
-        imu = playback.imu
-        if imu is not None and imu.time_s.size:
-            groups = _imu_groups(imu)
-            _log.info("IMU: %d 组, %d 个时间点", len(groups), imu.time_s.size)
-            for col, (title, indices) in enumerate(groups[:3]):
-                _log.info("创建 IMU 组 '%s' indices=%s…", title, indices)
-                sp = _SignalPlotWidget(title, imu, indices)
-                self._cursors.append(sp.cursor)
-                grid.addWidget(sp, row, col)
-            row += 1
-        else:
-            _log.info("无 IMU 数据")
-            no_imu = QLabel("无 IMU 数据")
-            no_imu.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            no_imu.setStyleSheet("color: #888; padding: 20px;")
-            grid.addWidget(no_imu, row, 0, 1, 3)
-            row += 1
-
-        # ---- Encoder row ----
-        enc = playback.encoder
-        if enc is not None and enc.time_s.size:
-            groups = _encoder_groups(enc)
-            _log.info("Encoder: %d 组, %d 个时间点", len(groups), enc.time_s.size)
-            for col, (title, indices) in enumerate(groups[:2]):
-                _log.info("创建 Encoder 组 '%s' indices=%s…", title, indices)
-                sp = _SignalPlotWidget(title, enc, indices)
-                self._cursors.append(sp.cursor)
-                grid.addWidget(sp, row, col)
-            row += 1
-        else:
-            _log.info("无 Encoder 数据")
-            no_enc = QLabel("无编码器数据")
-            no_enc.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            no_enc.setStyleSheet("color: #888; padding: 20px;")
-            grid.addWidget(no_enc, row, 0, 1, 2)
-            row += 1
-
-        _log.info("绘图网格完成，共 %d 个 cursor", len(self._cursors))
-        layout.addLayout(grid, 1)
-
-        # --- controls ---
-        _log.info("构建播放控件…")
-        controls = QHBoxLayout()
-        self.play_button = QPushButton("▶ 播放")
-        self.play_button.setObjectName("playback_play_pause")
-        self.play_button.clicked.connect(self.toggle_playback)
-        controls.addWidget(self.play_button)
-
-        self.timeline_slider = QSlider(Qt.Orientation.Horizontal)
-        self.timeline_slider.setObjectName("playback_timeline")
-        self.timeline_slider.setRange(0, 10_000)
-        self.timeline_slider.valueChanged.connect(self._slider_changed)
-        controls.addWidget(self.timeline_slider, 1)
-
-        self.time_label = QLabel()
-        self.time_label.setObjectName("playback_time")
-        self.time_label.setMinimumWidth(200)
-        controls.addWidget(self.time_label)
-
-        controls.addWidget(QLabel("速度："))
-        self.speed_combo = QComboBox()
-        self.speed_combo.setObjectName("playback_speed")
-        for speed in (0.25, 0.5, 1.0, 2.0, 4.0):
-            self.speed_combo.addItem(f"{speed:g}×", speed)
-        self.speed_combo.setCurrentIndex(2)
-        controls.addWidget(self.speed_combo)
-        layout.addLayout(controls)
-
-        _log.info("启动回放定时器…")
-        self._timer = QTimer(self)
-        self._timer.setInterval(33)
-        self._timer.timeout.connect(self._advance_playback)
-        self.finished.connect(lambda _result: self._timer.stop())
-        self.set_playback_time(self._time_min)
-        _log.info("=== PlaybackDialog.__init__ 完成 ===")
-
-    # ------------------------------------------------------------------
-    # Time helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _playback_bounds(playback: TrialPlayback) -> tuple[float, float]:
-        arrays: list[np.ndarray] = []
-        if playback.ultrasound is not None:
-            arrays.append(np.asarray(playback.ultrasound.time_s, dtype=float))
-        for series in (playback.imu, playback.encoder, playback.sync):
-            if series is not None:
-                arrays.append(np.asarray(series.time_s, dtype=float))
-        arrays.append(np.asarray(playback.sync_trigger_times_s, dtype=float))
-        finite = [array[np.isfinite(array)] for array in arrays if array.size]
-        if not finite:
-            return 0.0, 1.0
-        minimum = min(float(array.min()) for array in finite)
-        maximum = max(float(array.max()) for array in finite)
-        if maximum <= minimum:
-            maximum = minimum + 1.0
-        return minimum, maximum
-
-    def set_playback_time(self, value: float) -> None:
-        bounded = min(max(float(value), self._time_min), self._time_max)
-        self._current_time = bounded
-        span = self._time_max - self._time_min
-        slider_value = int(round((bounded - self._time_min) / span * 10_000))
-        with QSignalBlocker(self.timeline_slider):
-            self.timeline_slider.setValue(slider_value)
-        self.time_label.setText(
-            f"t={bounded:.3f} s / {self._time_max:.3f} s"
-        )
-        for cursor in self._cursors:
-            cursor.setPos(bounded)
-
-    def _slider_changed(self, slider_value: int) -> None:
-        fraction = float(slider_value) / 10_000.0
-        self.set_playback_time(
-            self._time_min + fraction * (self._time_max - self._time_min)
-        )
-        self._last_tick = perf_counter()
-
-    # ------------------------------------------------------------------
-    # Playback
-    # ------------------------------------------------------------------
-
-    def toggle_playback(self) -> None:
-        self._playing = not self._playing
-        if self._playing:
-            if self._current_time >= self._time_max:
-                self.set_playback_time(self._time_min)
-            self._last_tick = perf_counter()
-            self._timer.start()
-            self.play_button.setText("⏸ 暂停")
-        else:
-            self._timer.stop()
-            self.play_button.setText("▶ 播放")
-
-    def _advance_playback(self) -> None:
-        now = perf_counter()
-        elapsed = max(0.0, now - self._last_tick)
-        self._last_tick = now
-        speed = float(self.speed_combo.currentData() or 1.0)
-        target = self._current_time + elapsed * speed
-        if target >= self._time_max:
-            self.set_playback_time(self._time_max)
-            self._playing = False
-            self._timer.stop()
-            self.play_button.setText("▶ 播放")
-            return
-        self.set_playback_time(target)
-
+# Playback widgets and dialog are defined below the result-only dialogs.
 
 class FullStatisticsDialog(QDialog):
     def __init__(
@@ -783,6 +369,458 @@ class QualityAuditDialog(QDialog):
             "审核记录已追加",
             "记录已写入 Manifest SHA-256 锚定的追加式审计链；原 Trial 未被改写。",
         )
+
+
+class _SweepWaterfallPlot(pg.PlotWidget):
+    """One ultrasound channel rendered as a fixed cyclic time/depth image."""
+
+    def __init__(
+        self,
+        title: str,
+        time_s: np.ndarray,
+        depth_by_time: np.ndarray,
+        window_s: float,
+    ) -> None:
+        super().__init__()
+        self._times = np.asarray(time_s, dtype=np.float64)
+        self._data = np.asarray(depth_by_time, dtype=np.float32)
+        self._window_s = float(window_s)
+        self._columns = max(96, min(800, int(self._times.size or 96)))
+        self.setTitle(title)
+        self.setLabel("bottom", "循环时间", units="s")
+        self.setLabel("left", "深度点")
+        self.setMouseEnabled(x=False, y=False)
+        self.setMenuEnabled(False)
+        self.setXRange(0.0, self._window_s, padding=0.0)
+        self.setYRange(0.0, 999.0, padding=0.0)
+        self.getViewBox().setMouseEnabled(x=False, y=False)
+        self.image = pg.ImageItem()
+        lookup = _safe_colormap()
+        if lookup is not None:
+            self.image.setLookupTable(lookup)
+        self.addItem(self.image)
+        self.invertY(True)
+        finite = self._data[np.isfinite(self._data)]
+        if finite.size:
+            low, high = np.percentile(finite, (1.0, 99.0))
+            self._levels = (float(low), float(high if high > low else low + 1.0))
+        else:
+            self._levels = (0.0, 1.0)
+        self.cursor = pg.InfiniteLine(
+            pos=0.0,
+            angle=90,
+            movable=False,
+            pen=pg.mkPen("#e11d48", width=2.0),
+        )
+        self.cursor.setZValue(100)
+        self.addItem(self.cursor)
+        depth = self._data.shape[0] if self._data.ndim == 2 else 0
+        self._canvas = np.full(
+            (max(1, depth), self._columns), np.nan, dtype=np.float32
+        )
+        self._last_cycle_start: float | None = None
+        self._last_current: float | None = None
+
+    def update_time(self, current_s: float, cycle_start_s: float) -> None:
+        phase = min(max(float(current_s - cycle_start_s), 0.0), self._window_s)
+        depth = self._data.shape[0] if self._data.ndim == 2 else 0
+        continuing = (
+            self._last_cycle_start == cycle_start_s
+            and self._last_current is not None
+            and current_s >= self._last_current
+        )
+        if not continuing:
+            self._canvas.fill(np.nan)
+        lower_bound = self._last_current if continuing else cycle_start_s
+        image_changed = not continuing
+        if depth and self._times.size:
+            indices = np.flatnonzero(
+                (self._times > lower_bound if continuing else self._times >= lower_bound)
+                & (self._times <= current_s)
+            )
+            if indices.size:
+                columns = np.floor(
+                    (self._times[indices] - cycle_start_s)
+                    / self._window_s * (self._columns - 1)
+                ).astype(np.int64)
+                self._canvas[:, np.clip(columns, 0, self._columns - 1)] = self._data[:, indices]
+                image_changed = True
+        if image_changed:
+            self.image.setImage(self._canvas, autoLevels=False, levels=self._levels)
+            self.image.setRect(
+                QRectF(0.0, 0.0, self._window_s, float(max(1, depth)))
+            )
+        self._last_cycle_start = cycle_start_s
+        self._last_current = current_s
+        self.cursor.setPos(phase)
+
+
+class _SweepSignalPlot(pg.PlotWidget):
+    """Line plot that clears at each fixed-window sweep boundary."""
+
+    def __init__(
+        self,
+        title: str,
+        series: SignalPlayback,
+        indices: tuple[int, ...],
+        window_s: float,
+    ) -> None:
+        super().__init__()
+        self._times = np.asarray(series.time_s, dtype=np.float64)
+        self._values = np.asarray(series.values)
+        self._window_s = float(window_s)
+        self._curves: list[tuple[int, pg.PlotDataItem]] = []
+        self.setTitle(title)
+        self.setLabel("bottom", "循环时间", units="s")
+        self.setMouseEnabled(x=False, y=False)
+        self.setMenuEnabled(False)
+        self.setXRange(0.0, self._window_s, padding=0.0)
+        self.getViewBox().setMouseEnabled(x=False, y=False)
+        finite_parts: list[np.ndarray] = []
+        for color_index, index in enumerate(indices):
+            if index >= self._values.shape[1]:
+                continue
+            label = series.channels[index] if index < len(series.channels) else f"ch_{index + 1}"
+            curve = self.plot(
+                [],
+                [],
+                name=label,
+                pen=pg.mkPen(_PLOT_COLORS[color_index % len(_PLOT_COLORS)], width=1.1),
+            )
+            self._curves.append((index, curve))
+            values = np.asarray(self._values[:, index], dtype=float)
+            finite_parts.append(values[np.isfinite(values)])
+        finite_parts = [part for part in finite_parts if part.size]
+        finite = np.concatenate(finite_parts) if finite_parts else np.empty(0)
+        if finite.size:
+            low, high = np.percentile(finite, (0.5, 99.5))
+            span = max(float(high - low), 1e-6)
+            self.setYRange(float(low - 0.08 * span), float(high + 0.08 * span), padding=0.0)
+        else:
+            self.setYRange(-1.0, 1.0, padding=0.0)
+        self.cursor = pg.InfiniteLine(
+            pos=0.0,
+            angle=90,
+            movable=False,
+            pen=pg.mkPen("#e11d48", width=2.0),
+        )
+        self.cursor.setZValue(100)
+        self.addItem(self.cursor)
+
+    def update_time(self, current_s: float, cycle_start_s: float) -> None:
+        phase = min(max(float(current_s - cycle_start_s), 0.0), self._window_s)
+        mask = (self._times >= cycle_start_s) & (self._times <= current_s)
+        x_values = self._times[mask] - cycle_start_s
+        for index, curve in self._curves:
+            curve.setData(x_values, self._values[mask, index])
+        self.cursor.setPos(phase)
+
+
+def _measurement_kind(label: str) -> str | None:
+    lowered = label.casefold()
+    if "acc" in lowered:
+        return "acc"
+    if "gyr" in lowered or "gyro" in lowered:
+        return "gyr"
+    if "mag" in lowered:
+        return "mag"
+    return None
+
+
+def _imu_sensor_groups(
+    series: SignalPlayback,
+) -> list[tuple[str, dict[str, tuple[int, ...]]]]:
+    """Recover physical-IMU and measurement groups without inventing IDs."""
+
+    grouped: dict[str, dict[str, list[int]]] = {}
+    order: list[str] = []
+    for index, raw_label in enumerate(series.channels):
+        label = str(raw_label)
+        if ":" in label:
+            raw_sensor, measurement_label = label.split(":", 1)
+            try:
+                ordinal = int(raw_sensor) - 1
+            except ValueError:
+                ordinal = -1
+            sensor = (
+                series.sensor_labels[ordinal]
+                if 0 <= ordinal < len(series.sensor_labels)
+                else f"IMU {raw_sensor}"
+            )
+        else:
+            measurement_label = label
+            sensor = series.sensor_labels[0] if len(series.sensor_labels) == 1 else "IMU 1"
+            for candidate in series.sensor_labels:
+                prefix = f"{candidate}_"
+                if label.casefold().startswith(prefix.casefold()):
+                    sensor = candidate
+                    measurement_label = label[len(prefix):]
+                    break
+        kind = _measurement_kind(measurement_label)
+        if kind is None:
+            continue
+        if sensor not in grouped:
+            grouped[sensor] = {"acc": [], "mag": [], "gyr": []}
+            order.append(sensor)
+        grouped[sensor][kind].append(index)
+    return [
+        (sensor, {kind: tuple(indices) for kind, indices in grouped[sensor].items()})
+        for sensor in order[:3]
+    ]
+
+
+def _encoder_side_groups(series: SignalPlayback) -> list[tuple[str, tuple[int, ...]]]:
+    """Group published encoder channels by explicit left/right prefixes."""
+
+    result: list[tuple[str, tuple[int, ...]]] = []
+    used: set[int] = set()
+    for side, title in (("left", "左侧电机编码器"), ("right", "右侧电机编码器")):
+        indices = tuple(
+            index
+            for index, channel in enumerate(series.channels)
+            if str(channel).casefold().startswith(f"{side}_")
+        )
+        if indices:
+            result.append((title, indices))
+            used.update(indices)
+    # Older two-channel files may not publish a side prefix.  Preserve their
+    # actual channel labels as independent windows rather than assigning a
+    # fabricated left/right identity.
+    for index, channel in enumerate(series.channels):
+        if index not in used and len(result) < 2:
+            result.append((f"电机编码器 · {channel}", (index,)))
+    return result[:2]
+
+
+class PlaybackDialog(QDialog):
+    """Non-blocking, fixed-window cyclic playback for every recorded modality."""
+
+    _WINDOW_SECONDS = 10.0
+
+    def __init__(self, playback: TrialPlayback, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.playback = playback
+        self.setObjectName("trial_playback_dialog")
+        self.setWindowTitle(f"离线回放 · {playback.condition_code} · {playback.trial_uuid[:8]}")
+        self.resize(1500, 940)
+        self._playing = False
+        self._last_tick = perf_counter()
+        self._time_min, self._time_max = self._playback_bounds(playback)
+        self._current_time = self._time_min
+        total_span = max(self._time_max - self._time_min, 1e-6)
+        self._window_s = min(self._WINDOW_SECONDS, max(1.0, total_span))
+        self._sweep_plots: list[object] = []
+        _log.info(
+            "创建离线回放: trial=%s, time=[%.3f, %.3f]s, window=%.3fs, "
+            "ultrasound=%s, imu=%s, encoder=%s",
+            playback.trial_uuid,
+            self._time_min,
+            self._time_max,
+            self._window_s,
+            playback.ultrasound is not None,
+            playback.imu is not None,
+            playback.encoder is not None,
+        )
+
+        layout = QVBoxLayout(self)
+        banner = QLabel(
+            f"Trial {playback.trial_uuid} · 固定 {self._window_s:g} s 循环窗口 · "
+            "红线表示当前回放位置"
+        )
+        banner.setObjectName("playback_banner")
+        layout.addWidget(banner)
+        self.tabs = QTabWidget()
+        self.tabs.setObjectName("playback_tabs")
+        layout.addWidget(self.tabs, 1)
+        self._build_ultrasound_tab(playback)
+        self._build_imu_tab(playback)
+        self._build_encoder_tab(playback)
+
+        controls = QHBoxLayout()
+        self.play_button = QPushButton("▶ 播放")
+        self.play_button.setObjectName("playback_play_pause")
+        self.play_button.clicked.connect(self.toggle_playback)
+        controls.addWidget(self.play_button)
+        self.timeline_slider = QSlider(Qt.Orientation.Horizontal)
+        self.timeline_slider.setObjectName("playback_timeline")
+        self.timeline_slider.setRange(0, 10_000)
+        self.timeline_slider.valueChanged.connect(self._slider_changed)
+        controls.addWidget(self.timeline_slider, 1)
+        self.time_label = QLabel()
+        self.time_label.setObjectName("playback_time")
+        self.time_label.setMinimumWidth(210)
+        controls.addWidget(self.time_label)
+        controls.addWidget(QLabel("速度："))
+        self.speed_combo = QComboBox()
+        self.speed_combo.setObjectName("playback_speed")
+        for speed in (0.25, 0.5, 1.0, 2.0, 4.0):
+            self.speed_combo.addItem(f"{speed:g}×", speed)
+        self.speed_combo.setCurrentIndex(2)
+        controls.addWidget(self.speed_combo)
+        layout.addLayout(controls)
+        self._timer = QTimer(self)
+        # 20 FPS is ample for visual review and leaves the GUI thread enough
+        # time to paint four images plus eleven signal plots reliably.
+        self._timer.setInterval(50)
+        self._timer.timeout.connect(self._advance_playback)
+        self.finished.connect(lambda _result: self._timer.stop())
+        self.set_playback_time(self._time_min)
+
+    def _build_ultrasound_tab(self, playback: TrialPlayback) -> None:
+        tab = QWidget()
+        grid = QGridLayout(tab)
+        us = playback.ultrasound
+        # Compatibility object for automation written for the old selector;
+        # all four channels are now visible at once, so it remains hidden.
+        selector = QComboBox(tab)
+        selector.setObjectName("playback_ultrasound_channel")
+        selector.setVisible(False)
+        if us is None or not us.waterfall.size:
+            grid.addWidget(_empty_tab("该 Trial 没有可回放的超声数据。"), 0, 0, 2, 2)
+            _log.warning("Trial %s 没有超声回放数据", playback.trial_uuid)
+        else:
+            channel_count = min(4, int(us.waterfall.shape[0]))
+            for channel in range(4):
+                if channel < channel_count:
+                    label = us.channels[channel] if channel < len(us.channels) else f"ch_{channel + 1}"
+                    selector.addItem(label)
+                    plot = _SweepWaterfallPlot(
+                        f"超声通道 {channel + 1} · {label}",
+                        us.time_s,
+                        np.asarray(us.waterfall[channel]).T,
+                        self._window_s,
+                    )
+                    self._sweep_plots.append(plot)
+                    grid.addWidget(plot, channel // 2, channel % 2)
+                else:
+                    missing = _empty_tab(f"超声通道 {channel + 1}：数据缺失")
+                    grid.addWidget(missing, channel // 2, channel % 2)
+                    _log.warning("Trial %s 缺少超声通道 %d", playback.trial_uuid, channel + 1)
+            if not us.device_synchronized:
+                notice = QLabel(
+                    f"独立通道包按到达序号组合，不代表设备同步；原始包数 "
+                    f"{us.source_packet_count}。"
+                )
+                notice.setObjectName("playback_ultrasound_alignment_notice")
+                notice.setStyleSheet("color: #9a3412; background: #fff7ed; padding: 4px;")
+                grid.addWidget(notice, 2, 0, 1, 2)
+        self.tabs.addTab(tab, "超声 · 4 通道瀑布图")
+
+    def _build_imu_tab(self, playback: TrialPlayback) -> None:
+        tab = QWidget()
+        outer = QHBoxLayout(tab)
+        imu = playback.imu
+        groups = _imu_sensor_groups(imu) if imu is not None and imu.time_s.size else []
+        _log.info("IMU 回放分组: %s", [(name, kinds) for name, kinds in groups])
+        labels = list(imu.sensor_labels[:3]) if imu is not None else []
+        for slot in range(3):
+            if slot < len(groups):
+                sensor, kinds = groups[slot]
+            else:
+                sensor = labels[slot] if slot < len(labels) else f"IMU {slot + 1}"
+                kinds = {}
+            group_box = QGroupBox(sensor)
+            group_layout = QVBoxLayout(group_box)
+            for kind, title in (("acc", "加速度计"), ("mag", "磁力计"), ("gyr", "陀螺仪")):
+                indices = kinds.get(kind, ())
+                if imu is not None and indices:
+                    plot = _SweepSignalPlot(title, imu, indices, self._window_s)
+                    self._sweep_plots.append(plot)
+                    group_layout.addWidget(plot)
+                else:
+                    group_layout.addWidget(_empty_tab(f"{title}：数据缺失"))
+                    _log.warning("Trial %s %s 缺少%s数据", playback.trial_uuid, sensor, title)
+            outer.addWidget(group_box, 1)
+        self.tabs.addTab(tab, "IMU · 3 设备 × 3 传感器")
+
+    def _build_encoder_tab(self, playback: TrialPlayback) -> None:
+        tab = QWidget()
+        layout = QHBoxLayout(tab)
+        encoder = playback.encoder
+        groups = (
+            _encoder_side_groups(encoder)
+            if encoder is not None and encoder.time_s.size
+            else []
+        )
+        _log.info("编码器回放分组: %s", groups)
+        for channel in range(2):
+            if encoder is not None and channel < len(groups):
+                title, indices = groups[channel]
+                plot = _SweepSignalPlot(
+                    title,
+                    encoder,
+                    indices,
+                    self._window_s,
+                )
+                self._sweep_plots.append(plot)
+                layout.addWidget(plot, 1)
+            else:
+                layout.addWidget(_empty_tab(f"电机编码器 {channel + 1}：数据缺失"), 1)
+                _log.warning("Trial %s 缺少电机编码器 %d", playback.trial_uuid, channel + 1)
+        self.tabs.addTab(tab, "电机编码器 · 2 通道")
+
+    @staticmethod
+    def _playback_bounds(playback: TrialPlayback) -> tuple[float, float]:
+        arrays: list[np.ndarray] = []
+        if playback.ultrasound is not None:
+            arrays.append(np.asarray(playback.ultrasound.time_s, dtype=float))
+        for series in (playback.imu, playback.encoder, playback.sync):
+            if series is not None:
+                arrays.append(np.asarray(series.time_s, dtype=float))
+        finite = [array[np.isfinite(array)] for array in arrays if array.size]
+        if not finite:
+            return 0.0, 1.0
+        minimum = min(float(array.min()) for array in finite)
+        maximum = max(float(array.max()) for array in finite)
+        return (minimum, maximum if maximum > minimum else minimum + 1.0)
+
+    def set_playback_time(self, value: float) -> None:
+        bounded = min(max(float(value), self._time_min), self._time_max)
+        self._current_time = bounded
+        total_span = self._time_max - self._time_min
+        slider_value = int(round((bounded - self._time_min) / total_span * 10_000))
+        with QSignalBlocker(self.timeline_slider):
+            self.timeline_slider.setValue(slider_value)
+        cycle_index = int((bounded - self._time_min) // self._window_s)
+        cycle_start = self._time_min + cycle_index * self._window_s
+        if bounded >= self._time_max and bounded == cycle_start:
+            cycle_start = max(self._time_min, cycle_start - self._window_s)
+        for plot in self._sweep_plots:
+            plot.update_time(bounded, cycle_start)
+        self.time_label.setText(f"t={bounded:.3f} s / {self._time_max:.3f} s")
+
+    def _slider_changed(self, slider_value: int) -> None:
+        fraction = float(slider_value) / 10_000.0
+        self.set_playback_time(self._time_min + fraction * (self._time_max - self._time_min))
+        self._last_tick = perf_counter()
+
+    def toggle_playback(self) -> None:
+        self._playing = not self._playing
+        if self._playing:
+            if self._current_time >= self._time_max:
+                self.set_playback_time(self._time_min)
+            self._last_tick = perf_counter()
+            self._timer.start()
+            self.play_button.setText("⏸ 暂停")
+            _log.info("开始离线回放: trial=%s, t=%.3fs", self.playback.trial_uuid, self._current_time)
+        else:
+            self._timer.stop()
+            self.play_button.setText("▶ 播放")
+            _log.info("暂停离线回放: trial=%s, t=%.3fs", self.playback.trial_uuid, self._current_time)
+
+    def _advance_playback(self) -> None:
+        now = perf_counter()
+        elapsed = max(0.0, now - self._last_tick)
+        self._last_tick = now
+        target = self._current_time + elapsed * float(self.speed_combo.currentData() or 1.0)
+        if target >= self._time_max:
+            self.set_playback_time(self._time_max)
+            self._playing = False
+            self._timer.stop()
+            self.play_button.setText("▶ 播放")
+            _log.info("离线回放结束: trial=%s", self.playback.trial_uuid)
+            return
+        self.set_playback_time(target)
 
 
 __all__ = [
