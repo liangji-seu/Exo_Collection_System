@@ -490,6 +490,10 @@ def run_trial(
     root = request.data_root.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     quality_rules = load_quality_rules()
+    if enabled_modalities:
+        quality_rules = quality_rules.model_copy(
+            update={"required_modalities": tuple(sorted(enabled_modalities))}
+        )
     storage_policy = load_storage_policy()
     # A failed disk-space preflight occurs before Catalog, Session, acquisition
     # lock, or Trial-directory side effects.  It cannot create a misleading
@@ -1691,19 +1695,21 @@ def run_trial(
             )
             config_hash = sha256_file(configuration_path)
             publish_json(layout, "reports/quality_report.json", quality_report)
-            publish_json(layout, "reports/sync_manifest.json", sync_manifest_document)
+            if "sync_pulse" in adapters:
+                publish_json(layout, "reports/sync_manifest.json", sync_manifest_document)
             _publish_csv(
                 layout,
                 "reports/device_status.csv",
                 device_status_fieldnames,
                 device_status_rows,
             )
-            _publish_csv(
-                layout,
-                "reports/sync_check.csv",
-                sync_check_fieldnames,
-                sync_check_rows,
-            )
+            if "sync_pulse" in adapters:
+                _publish_csv(
+                    layout,
+                    "reports/sync_check.csv",
+                    sync_check_fieldnames,
+                    sync_check_rows,
+                )
             _publish_text(layout, "reports/warnings.txt", warnings_document)
             assert journal is not None
             journal.write(
@@ -1842,43 +1848,49 @@ def run_trial(
                         "row_count": len(device_status_rows),
                     },
                 ),
-                "sync_check": ArtifactDraft(
-                    request.trial_uuid,
-                    "sync_pulse",
-                    ArtifactKind.REPORT,
-                    "text/csv; charset=utf-8",
-                    "reports/sync_check.csv",
-                    created_at_utc=finalized_at_utc,
-                    source_artifact_uuids=(
-                        raw_artifact_uuid_by_modality["sync_pulse"],
-                        statistics_artifact_uuid,
-                    ),
-                    metadata={
-                        "format_version": "1.0.0",
-                        "quality": "PASS",
-                        "trigger_count": trigger_count,
-                    },
-                ),
-                "sync_manifest": ArtifactDraft(
-                    request.trial_uuid,
-                    "sync_pulse",
-                    ArtifactKind.REPORT,
-                    "application/json",
-                    "reports/sync_manifest.json",
-                    artifact_uuid=sync_manifest_artifact_uuid,
-                    created_at_utc=finalized_at_utc,
-                    source_artifact_uuids=(
-                        *raw_artifact_uuids,
-                        quality_rules_artifact_uuid,
-                    ),
-                    metadata={
-                        "format_version": "1.0.0",
-                        "edge_count": len(edge_audit),
-                        "complete_pulse_count": sync_manifest_document[
-                            "complete_pulse_count"
-                        ],
-                        "clock_mapping_count": len(mappings),
-                    },
+                **(
+                    {
+                        "sync_check": ArtifactDraft(
+                            request.trial_uuid,
+                            "sync_pulse",
+                            ArtifactKind.REPORT,
+                            "text/csv; charset=utf-8",
+                            "reports/sync_check.csv",
+                            created_at_utc=finalized_at_utc,
+                            source_artifact_uuids=(
+                                raw_artifact_uuid_by_modality["sync_pulse"],
+                                statistics_artifact_uuid,
+                            ),
+                            metadata={
+                                "format_version": "1.0.0",
+                                "quality": "PASS",
+                                "trigger_count": trigger_count,
+                            },
+                        ),
+                        "sync_manifest": ArtifactDraft(
+                            request.trial_uuid,
+                            "sync_pulse",
+                            ArtifactKind.REPORT,
+                            "application/json",
+                            "reports/sync_manifest.json",
+                            artifact_uuid=sync_manifest_artifact_uuid,
+                            created_at_utc=finalized_at_utc,
+                            source_artifact_uuids=(
+                                *raw_artifact_uuids,
+                                quality_rules_artifact_uuid,
+                            ),
+                            metadata={
+                                "format_version": "1.0.0",
+                                "edge_count": len(edge_audit),
+                                "complete_pulse_count": sync_manifest_document[
+                                    "complete_pulse_count"
+                                ],
+                                "clock_mapping_count": len(mappings),
+                            },
+                        ),
+                    }
+                    if "sync_pulse" in adapters
+                    else {}
                 ),
                 "warnings": ArtifactDraft(
                     request.trial_uuid,
@@ -2069,11 +2081,19 @@ def run_trial(
                 clock_and_alignment=ClockAndAlignment(
                     clock_domains=clock_domains,
                     mappings=mappings,
-                    raw_sync_pulse_artifact_uuids=[artifact_map["sync_pulse"].artifact_uuid],
-                    sync_event_artifact_uuids=[
-                        artifact_map["sync_pulse"].artifact_uuid,
-                        artifact_map["sync_manifest"].artifact_uuid,
-                    ],
+                    raw_sync_pulse_artifact_uuids=(
+                        [artifact_map["sync_pulse"].artifact_uuid]
+                        if "sync_pulse" in adapters
+                        else []
+                    ),
+                    sync_event_artifact_uuids=(
+                        [
+                            artifact_map["sync_pulse"].artifact_uuid,
+                            artifact_map["sync_manifest"].artifact_uuid,
+                        ]
+                        if "sync_pulse" in adapters
+                        else []
+                    ),
                 ),
                 quality=QualitySummary(
                     computed_grade=grade,
