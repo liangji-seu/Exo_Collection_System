@@ -127,10 +127,11 @@ ENCODER_PREVIEW_LABELS = (
     "right_torque",
 )
 _ENCODER_METRICS = (
-    ("position", "位置", "rad", (-65.0, 65.0), "#d97706"),
-    ("velocity", "速度", "rad/s", (-65.0, 65.0), "#0d6efd"),
-    ("torque", "估算扭矩", "N·m", (-18.0, 18.0), "#198754"),
+    ("position", "位置", "rad", "#d97706"),
+    ("velocity", "速度", "rad/s", "#0d6efd"),
+    ("torque", "估算扭矩", "N·m", "#198754"),
 )
+_ENCODER_SHARED_Y_RANGE = (-65.0, 65.0)
 DEFAULT_OPERATOR = "not_recorded"
 DEFAULT_CONTROLLED_STOP_TIMEOUT_S = 30.0
 
@@ -1354,42 +1355,44 @@ class CollectorWindow(QMainWindow):
         self._preview_y_ranges["imu"] = (-10.0, 10.0)
         preview_layout.addWidget(imu_grid, 2)
 
-        enc_grid = QGroupBox("电机编码器 · 左右位置 / 速度 / 估算扭矩循环帧")
+        enc_grid = QGroupBox("电机编码器 · 每侧同图显示位置 / 速度 / 估算扭矩")
         enc_grid.setObjectName("encoder_ring_grid")
         enc_layout = QHBoxLayout(enc_grid)
         enc_layout.setContentsMargins(0, 0, 0, 0)
         for side_key, side_name in (("left", "左侧"), ("right", "右侧")):
-            side_box = QGroupBox(f"{side_name}电机")
-            side_box.setObjectName(f"encoder_{side_key}_group")
-            side_layout = QVBoxLayout(side_box)
-            side_layout.setContentsMargins(0, 0, 0, 0)
-            side_layout.setSpacing(1)
-            for metric, metric_name, unit, y_range, color in _ENCODER_METRICS:
+            plot = pg.PlotWidget()
+            plot.setObjectName(f"encoder_ring_{side_key}")
+            legend = plot.addLegend(offset=(5, 5))
+            shared_cursor = None
+            for metric, metric_name, unit, color in _ENCODER_METRICS:
                 label = f"{side_key}_{metric}"
-                plot = pg.PlotWidget()
-                plot.setObjectName(f"encoder_ring_{label}")
                 trace = RingTrace(
                     plot,
                     color,
-                    f"{side_name}电机 · {metric_name} ({unit})",
+                    f"{side_name}电机",
                     capacity=500,
                 )
-                lower, upper = y_range
-                span = upper - lower
-                plot.setYRange(lower, upper, padding=0)
-                plot.setLimits(
-                    yMin=lower,
-                    yMax=upper,
-                    minYRange=span,
-                    maxYRange=span,
-                )
-                plot.setLabel("left", unit)
-                plot.setMouseEnabled(x=False, y=False)
+                if shared_cursor is None:
+                    shared_cursor = trace.cursor_line
+                else:
+                    plot.removeItem(trace.cursor_line)
+                    trace.cursor_line = shared_cursor
+                legend.addItem(trace.curve, f"{metric_name} ({unit})")
                 self._enc_traces[label] = trace
-                side_layout.addWidget(plot, 1)
-            enc_layout.addWidget(side_box, 1)
-        for metric, _name, _unit, y_range, _color in _ENCODER_METRICS:
-            self._preview_y_ranges[f"encoder_{metric}"] = y_range
+            lower, upper = _ENCODER_SHARED_Y_RANGE
+            span = upper - lower
+            plot.setTitle(f"{side_name}电机编码器")
+            plot.setYRange(lower, upper, padding=0)
+            plot.setLimits(
+                yMin=lower,
+                yMax=upper,
+                minYRange=span,
+                maxYRange=span,
+            )
+            plot.setLabel("left", "数值")
+            plot.setMouseEnabled(x=False, y=False)
+            enc_layout.addWidget(plot, 1)
+        self._preview_y_ranges["encoder"] = _ENCODER_SHARED_Y_RANGE
         preview_layout.addWidget(enc_grid, 2)
 
         body.addWidget(preview_box)

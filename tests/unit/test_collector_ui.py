@@ -551,6 +551,10 @@ def test_imu_three_sensor_plots_expose_nine_axis_traces(tmp_path: Path) -> None:
 def test_encoder_two_sides_expose_position_velocity_and_torque(tmp_path: Path) -> None:
     _app, window, _created = _window_with_fake(tmp_path)
     assert len(window._enc_traces) == 6
+    left_plot = window.findChild(QWidget, "encoder_ring_left")
+    right_plot = window.findChild(QWidget, "encoder_ring_right")
+    assert left_plot is not None
+    assert right_plot is not None
     for label in (
         "left_position",
         "left_velocity",
@@ -559,9 +563,9 @@ def test_encoder_two_sides_expose_position_velocity_and_torque(tmp_path: Path) -
         "right_velocity",
         "right_torque",
     ):
-        plot = window.findChild(QWidget, f"encoder_ring_{label}")
-        assert plot is not None, f"encoder_ring_{label} not found"
         assert isinstance(window._enc_traces[label], RingTrace)
+        expected_plot = left_plot if label.startswith("left_") else right_plot
+        assert window._enc_traces[label].plot is expected_plot
     window.close()
 
 
@@ -842,28 +846,12 @@ def test_preview_y_axes_lock_once_and_are_shared_per_modality(tmp_path: Path) ->
         "encoder": [trace.plot for trace in window._enc_traces.values()],
     }
     locked = dict(window._preview_y_ranges)
-    assert set(locked) == {
-        "ultrasound",
-        "imu",
-        "encoder_position",
-        "encoder_velocity",
-        "encoder_torque",
-    }
-    for modality, plots in {
-        "ultrasound": plot_groups["ultrasound"],
-        "imu": plot_groups["imu"],
-    }.items():
+    assert set(locked) == {"ultrasound", "imu", "encoder"}
+    for modality, plots in plot_groups.items():
         expected = locked[modality]
         for plot in plots:
             assert np.allclose(plot.getViewBox().viewRange()[1], expected)
             assert plot.getViewBox().state["mouseEnabled"] == [False, False]
-    for label, trace in window._enc_traces.items():
-        metric = label.split("_", 1)[1]
-        assert np.allclose(
-            trace.plot.getViewBox().viewRange()[1],
-            locked[f"encoder_{metric}"],
-        )
-        assert trace.plot.getViewBox().state["mouseEnabled"] == [False, False]
 
     # Later out-of-range samples must not silently rescale any vertical axis.
     window._handle_worker_event(
