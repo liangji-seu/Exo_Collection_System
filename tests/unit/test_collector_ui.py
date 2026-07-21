@@ -566,9 +566,9 @@ def test_encoder_two_sides_expose_position_velocity_and_torque(tmp_path: Path) -
         assert isinstance(window._enc_traces[label], RingTrace)
         expected_plot = left_plot if label.startswith("left_") else right_plot
         assert window._enc_traces[label].plot is expected_plot
-    assert np.allclose(window._preview_y_ranges["encoder"], (-np.pi, np.pi))
-    assert np.allclose(left_plot.getViewBox().viewRange()[1], (-np.pi, np.pi))
-    assert np.allclose(right_plot.getViewBox().viewRange()[1], (-np.pi, np.pi))
+    assert np.allclose(window._preview_y_ranges["encoder"], (-13.0, 13.0))
+    assert np.allclose(left_plot.getViewBox().viewRange()[1], (-13.0, 13.0))
+    assert np.allclose(right_plot.getViewBox().viewRange()[1], (-13.0, 13.0))
     window.close()
 
 

@@ -131,10 +131,8 @@ _ENCODER_METRICS = (
     ("velocity", "速度", "rad/s", "#0d6efd"),
     ("torque", "估算扭矩", "N·m", "#198754"),
 )
-# The exoskeleton joint stays within +/-180 degrees in normal use.  Keeping
-# the overlay at +/-pi makes a complete revolution occupy the full plot height
-# instead of disappearing inside the motor's much wider protocol limits.
-_ENCODER_SHARED_Y_RANGE = (-float(np.pi), float(np.pi))
+# Five-times magnification relative to the original +/-65 rad preview range.
+_ENCODER_SHARED_Y_RANGE = (-13.0, 13.0)
 DEFAULT_OPERATOR = "not_recorded"
 DEFAULT_CONTROLLED_STOP_TIMEOUT_S = 30.0
 
