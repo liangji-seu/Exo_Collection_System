@@ -600,7 +600,7 @@ def test_data_six_columns_left_right_mapping() -> None:
     adapter.close()
 
 
-def test_preview_left_col0_right_col3() -> None:
+def test_preview_exposes_all_six_encoder_channels() -> None:
     serial_port = FakeSerial(
         [
             make_raw_frame(
@@ -625,13 +625,20 @@ def test_preview_left_col0_right_col3() -> None:
     event = adapter.get_event(timeout=0.1)
     preview = build_preview_event(event, trial_uuid=uuid4())
     payload = preview.payload
-    # Left position = col 0 of data.
-    assert payload["channels"][0] == pytest.approx([0.1])
-    # Right position = col 3 of data.
-    assert payload["channels"][1] == pytest.approx([0.4])
-    assert payload["labels"] == ["left_position", "right_position"]
-    assert payload["channel"] == "position"
-    assert payload["channel_count"] == 2
+    np.testing.assert_allclose(
+        np.asarray(payload["channels"]),
+        np.asarray([[0.1], [0.2], [0.3], [0.4], [0.5], [0.6]]),
+    )
+    assert payload["labels"] == [
+        "left_position",
+        "left_velocity",
+        "left_torque",
+        "right_position",
+        "right_velocity",
+        "right_torque",
+    ]
+    assert payload["channel"] == "position_velocity_torque"
+    assert payload["channel_count"] == 6
     adapter.stop()
     adapter.close()
 

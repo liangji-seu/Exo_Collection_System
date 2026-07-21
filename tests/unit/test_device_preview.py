@@ -659,8 +659,17 @@ def test_build_preview_event_encoder() -> None:
     )
     event = _build_preview_event(batch, "encoder", "test_enc", desc, True)
     assert event is not None
-    assert event.payload["labels"] == ["left_position", "right_position"]
-    assert event.payload["channels"] == [[10.5], [20.3]]
+    assert event.payload["labels"] == [
+        "left_position",
+        "left_velocity",
+        "left_torque",
+        "right_position",
+        "right_velocity",
+        "right_torque",
+    ]
+    assert event.payload["channels"] == [
+        [10.5], [1.0], [2.0], [20.3], [3.0], [4.0]
+    ]
 
 
 def test_build_preview_public_api_respects_preview_labels_from_extra_payload() -> None:

@@ -162,19 +162,23 @@ def build_preview_event(
                 "channel_count": len(channels),
             }
         elif event.modality == "encoder":
-            if values.ndim != 2 or values.shape[1] < 4:
+            if values.ndim != 2 or values.shape[1] < 6:
                 raise ValueError(f"invalid encoder batch shape: {values.shape}")
-            labels = ("left_position", "right_position")
-            channels = [
-                values[:, 0].astype(float).tolist(),
-                values[:, 3].astype(float).tolist(),
-            ]
+            labels = (
+                "left_position",
+                "left_velocity",
+                "left_torque",
+                "right_position",
+                "right_velocity",
+                "right_torque",
+            )
+            channels = [values[:, index].astype(float).tolist() for index in range(6)]
             payload = {
                 "host_monotonic_ns": event.host_monotonic_ns,
                 "values": channels[0],
                 "channels": channels,
                 "labels": list(labels),
-                "channel": "position",
+                "channel": "position_velocity_torque",
                 "channel_count": len(channels),
             }
         else:

@@ -431,7 +431,11 @@ def test_collector_worker_runs_acquisition_outside_ui_process(tmp_path) -> None:
         ]
         assert latest_encoder.payload["labels"] == [
             "left_position",
+            "left_velocity",
+            "left_torque",
             "right_position",
+            "right_velocity",
+            "right_torque",
         ]
     finally:
         worker.close()

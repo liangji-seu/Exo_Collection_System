@@ -548,12 +548,17 @@ def test_imu_three_sensor_plots_expose_nine_axis_traces(tmp_path: Path) -> None:
 
 # ── Encoder ring trace tests ──
 
-def test_encoder_two_ring_traces(tmp_path: Path) -> None:
+def test_encoder_two_sides_expose_position_velocity_and_torque(tmp_path: Path) -> None:
     _app, window, _created = _window_with_fake(tmp_path)
-    assert len(window._enc_traces) == 2
-    assert "left_position" in window._enc_traces
-    assert "right_position" in window._enc_traces
-    for label in ("left_position", "right_position"):
+    assert len(window._enc_traces) == 6
+    for label in (
+        "left_position",
+        "left_velocity",
+        "left_torque",
+        "right_position",
+        "right_velocity",
+        "right_torque",
+    ):
         plot = window.findChild(QWidget, f"encoder_ring_{label}")
         assert plot is not None, f"encoder_ring_{label} not found"
         assert isinstance(window._enc_traces[label], RingTrace)
@@ -758,7 +763,11 @@ def test_preview_encoder_channels_payload(tmp_path: Path) -> None:
                 "host_monotonic_ns": 3_000,
                 "channels": {
                     "left_position": [10.0, 11.0, 12.0],
+                    "left_velocity": [1.0, 2.0, 3.0],
+                    "left_torque": [0.1, 0.2, 0.3],
                     "right_position": [20.0, 21.0, 22.0],
+                    "right_velocity": [4.0, 5.0, 6.0],
+                    "right_torque": [0.4, 0.5, 0.6],
                 },
             },
         )
@@ -769,6 +778,14 @@ def test_preview_encoder_channels_payload(tmp_path: Path) -> None:
     assert y_left[2] == 12.0
     assert y_right[0] == 20.0
     assert y_right[2] == 22.0
+    _, y_left_velocity = window._enc_traces["left_velocity"].curve.getData()
+    _, y_left_torque = window._enc_traces["left_torque"].curve.getData()
+    _, y_right_velocity = window._enc_traces["right_velocity"].curve.getData()
+    _, y_right_torque = window._enc_traces["right_torque"].curve.getData()
+    assert y_left_velocity[2] == 3.0
+    assert np.isclose(y_left_torque[2], 0.3)
+    assert y_right_velocity[2] == 6.0
+    assert np.isclose(y_right_torque[2], 0.6)
     window.close()
 
 
@@ -825,12 +842,28 @@ def test_preview_y_axes_lock_once_and_are_shared_per_modality(tmp_path: Path) ->
         "encoder": [trace.plot for trace in window._enc_traces.values()],
     }
     locked = dict(window._preview_y_ranges)
-    assert set(locked) == {"ultrasound", "imu", "encoder"}
-    for modality, plots in plot_groups.items():
+    assert set(locked) == {
+        "ultrasound",
+        "imu",
+        "encoder_position",
+        "encoder_velocity",
+        "encoder_torque",
+    }
+    for modality, plots in {
+        "ultrasound": plot_groups["ultrasound"],
+        "imu": plot_groups["imu"],
+    }.items():
         expected = locked[modality]
         for plot in plots:
             assert np.allclose(plot.getViewBox().viewRange()[1], expected)
             assert plot.getViewBox().state["mouseEnabled"] == [False, False]
+    for label, trace in window._enc_traces.items():
+        metric = label.split("_", 1)[1]
+        assert np.allclose(
+            trace.plot.getViewBox().viewRange()[1],
+            locked[f"encoder_{metric}"],
+        )
+        assert trace.plot.getViewBox().state["mouseEnabled"] == [False, False]
 
     # Later out-of-range samples must not silently rescale any vertical axis.
     window._handle_worker_event(

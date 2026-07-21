@@ -118,7 +118,19 @@ IMU_PREVIEW_LABELS: tuple[str, ...] = tuple(
     for sensor in _IMU_SENSOR_LABELS
     for axis in _IMU_AXIS_NAMES
 )
-ENCODER_PREVIEW_LABELS = ("left_position", "right_position")
+ENCODER_PREVIEW_LABELS = (
+    "left_position",
+    "left_velocity",
+    "left_torque",
+    "right_position",
+    "right_velocity",
+    "right_torque",
+)
+_ENCODER_METRICS = (
+    ("position", "位置", "rad", (-65.0, 65.0), "#d97706"),
+    ("velocity", "速度", "rad/s", (-65.0, 65.0), "#0d6efd"),
+    ("torque", "估算扭矩", "N·m", (-18.0, 18.0), "#198754"),
+)
 DEFAULT_OPERATOR = "not_recorded"
 DEFAULT_CONTROLLED_STOP_TIMEOUT_S = 30.0
 
@@ -1342,17 +1354,42 @@ class CollectorWindow(QMainWindow):
         self._preview_y_ranges["imu"] = (-10.0, 10.0)
         preview_layout.addWidget(imu_grid, 2)
 
-        enc_grid = QGroupBox("电机编码器 · 左右位置循环帧")
+        enc_grid = QGroupBox("电机编码器 · 左右位置 / 速度 / 估算扭矩循环帧")
         enc_grid.setObjectName("encoder_ring_grid")
         enc_layout = QHBoxLayout(enc_grid)
         enc_layout.setContentsMargins(0, 0, 0, 0)
-        for label in ENCODER_PREVIEW_LABELS:
-            plot = pg.PlotWidget()
-            plot.setObjectName(f"encoder_ring_{label}")
-            side = "左侧" if label.startswith("left") else "右侧"
-            trace = RingTrace(plot, "#d97706", f"{side}电机编码器 · position")
-            self._enc_traces[label] = trace
-            enc_layout.addWidget(plot, 1)
+        for side_key, side_name in (("left", "左侧"), ("right", "右侧")):
+            side_box = QGroupBox(f"{side_name}电机")
+            side_box.setObjectName(f"encoder_{side_key}_group")
+            side_layout = QVBoxLayout(side_box)
+            side_layout.setContentsMargins(0, 0, 0, 0)
+            side_layout.setSpacing(1)
+            for metric, metric_name, unit, y_range, color in _ENCODER_METRICS:
+                label = f"{side_key}_{metric}"
+                plot = pg.PlotWidget()
+                plot.setObjectName(f"encoder_ring_{label}")
+                trace = RingTrace(
+                    plot,
+                    color,
+                    f"{side_name}电机 · {metric_name} ({unit})",
+                    capacity=500,
+                )
+                lower, upper = y_range
+                span = upper - lower
+                plot.setYRange(lower, upper, padding=0)
+                plot.setLimits(
+                    yMin=lower,
+                    yMax=upper,
+                    minYRange=span,
+                    maxYRange=span,
+                )
+                plot.setLabel("left", unit)
+                plot.setMouseEnabled(x=False, y=False)
+                self._enc_traces[label] = trace
+                side_layout.addWidget(plot, 1)
+            enc_layout.addWidget(side_box, 1)
+        for metric, _name, _unit, y_range, _color in _ENCODER_METRICS:
+            self._preview_y_ranges[f"encoder_{metric}"] = y_range
         preview_layout.addWidget(enc_grid, 2)
 
         body.addWidget(preview_box)
@@ -2729,8 +2766,6 @@ class CollectorWindow(QMainWindow):
                 numeric = self._numeric_values(values)
                 if label in self._enc_traces and numeric:
                     prepared_series.append((label, numeric))
-            self._lock_preview_y_axis("encoder", [values for _, values in prepared_series],
-                                       [trace.plot for trace in self._enc_traces.values()])
             for label, values in prepared_series:
                 self._enc_traces[label].append(values)
             return
