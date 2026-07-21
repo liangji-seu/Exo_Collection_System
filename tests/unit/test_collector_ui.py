@@ -5,6 +5,7 @@ import os
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -23,6 +24,7 @@ from exo_collection.apps.collector.device_settings import (
     ImuDeviceSettingsDialog,
     SyncPulseDeviceSettingsDialog,
     UltrasoundDeviceSettingsDialog,
+    enumerate_serial_ports,
 )
 from exo_collection.apps.collector.window import (
     ExperimentMetadataDialog,
@@ -1930,10 +1932,34 @@ def test_close_finalizes_recording_before_shutting_down_preview_workers(
     worker.finish(0)
     window.poll_worker_events()
     app.processEvents()
-
     assert window.worker is None
     assert all(handle.stop_requests == 1 for handle in handles.values())
     assert not window._preview_workers
+
+
+def test_encoder_port_list_excludes_bluetooth_virtual_ports(
+    monkeypatch: object,
+) -> None:
+    import serial.tools.list_ports
+
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        serial.tools.list_ports,
+        "comports",
+        lambda: [
+            SimpleNamespace(
+                device="COM7",
+                description="蓝牙链接上的标准串行",
+                hwid="BTHENUM\\fake",
+            ),
+            SimpleNamespace(
+                device="COM12",
+                description="USB Serial Device",
+                hwid="USB VID:PID=16C0:0483",
+            ),
+        ],
+    )
+
+    assert enumerate_serial_ports() == [("COM12", "USB Serial Device")]
 
 
 def test_recording_branch_fault_fails_trial_but_keeps_preview_alive(

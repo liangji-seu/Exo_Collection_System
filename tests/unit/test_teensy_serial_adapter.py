@@ -1,4 +1,4 @@
-"""Tests for the 36‑byte dual‑header Teensy encoder protocol adapter."""
+"""Tests for the 35‑byte single‑header Teensy encoder protocol adapter."""
 
 from __future__ import annotations
 
@@ -21,7 +21,6 @@ from exo_collection.adapters.base import (
 from exo_collection.adapters.encoder.teensy_serial import (
     FRAME_TAIL,
     HEAD_STATUS1,
-    HEAD_STATUS2,
     STATUS_FORMAT,
     STATUS_SIZE,
     _GAP_THRESHOLD_US,
@@ -102,12 +101,11 @@ def make_frame(
     right_velocity: float = 5.0,
     right_torque: float = 6.0,
 ) -> bytearray:
-    """Build a valid 36‑byte StatusFrame (raw bytearray)."""
+    """Build a valid 35‑byte StatusFrame (raw bytearray)."""
     frame = bytearray(
         struct.pack(
             STATUS_FORMAT,
             HEAD_STATUS1,
-            HEAD_STATUS2,
             sequence,
             state,
             error,
@@ -122,8 +120,8 @@ def make_frame(
             FRAME_TAIL,
         )
     )
-    # CRC covers bytes [2:34]
-    frame[34] = calc_crc8(bytes(frame[2:34]))
+    # CRC covers bytes [1:33]
+    frame[33] = calc_crc8(bytes(frame[1:33]))
     return frame
 
 
@@ -137,9 +135,9 @@ def make_raw_frame(**overrides: int | float) -> bytes:
 # ------------------------------------------------------------------
 
 
-def test_status_size_is_36_bytes() -> None:
-    assert STATUS_SIZE == 36
-    assert struct.calcsize(STATUS_FORMAT) == 36
+def test_status_size_is_35_bytes() -> None:
+    assert STATUS_SIZE == 35
+    assert struct.calcsize(STATUS_FORMAT) == 35
 
 
 def test_golden_fixture_all_offsets() -> None:
@@ -149,38 +147,37 @@ def test_golden_fixture_all_offsets() -> None:
         state=2,
         error=0,
     )
-    assert len(raw) == 36
+    assert len(raw) == 35
 
-    # Headers.
+    # Single header.
     assert raw[0] == 0xCC
-    assert raw[1] == 0xAA
     # seq LE.
-    assert raw[2] == 0x02
-    assert raw[3] == 0x01
+    assert raw[1] == 0x02
+    assert raw[2] == 0x01
     # state, error.
-    assert raw[4] == 2
-    assert raw[5] == 0
+    assert raw[3] == 2
+    assert raw[4] == 0
     # Left position (1.0f).
     pos_bytes = struct.pack("<f", 1.0)
-    assert raw[6:10] == pos_bytes
+    assert raw[5:9] == pos_bytes
     # Right position (4.0f).
     rpos_bytes = struct.pack("<f", 4.0)
-    assert raw[18:22] == rpos_bytes
+    assert raw[17:21] == rpos_bytes
     # teensy_time_us LE.
     time_bytes = struct.pack("<I", 0xDEAD_BEEF)
-    assert raw[30:34] == time_bytes
-    # CRC at offset 34.
-    expected_crc = calc_crc8(raw[2:34])
-    assert raw[34] == expected_crc
+    assert raw[29:33] == time_bytes
+    # CRC at offset 33.
+    expected_crc = calc_crc8(raw[1:33])
+    assert raw[33] == expected_crc
     # Tail.
-    assert raw[35] == 0x55
+    assert raw[34] == 0x55
 
 
-def test_crc_covers_bytes_2_to_34_exclusive() -> None:
+def test_crc_covers_bytes_1_to_33_exclusive() -> None:
     raw = make_raw_frame()
-    # CRC byte is at offset 34, tail at 35.
-    calc = calc_crc8(raw[2:34])
-    assert raw[34] == calc
+    # CRC byte is at offset 33, tail at 34.
+    calc = calc_crc8(raw[1:33])
+    assert raw[33] == calc
 
 
 def test_parsed_frame_fields() -> None:
@@ -215,30 +212,23 @@ def test_motor_status_frame_field_names_use_teensy_time_us() -> None:
 # ------------------------------------------------------------------
 
 
-def test_reject_wrong_second_header() -> None:
-    raw = make_raw_frame()
-    bad = bytearray(raw)
-    bad[1] = 0xBB  # Not 0xAA
-    assert parse_status_frame(bytes(bad)) is None
-
-
 def test_reject_bad_crc() -> None:
     raw = make_raw_frame()
     bad = bytearray(raw)
-    bad[34] ^= 0xFF
+    bad[33] ^= 0xFF
     assert parse_status_frame(bytes(bad)) is None
 
 
 def test_reject_bad_tail() -> None:
     raw = make_raw_frame()
     bad = bytearray(raw)
-    bad[35] = 0x00
+    bad[34] = 0x00
     assert parse_status_frame(bytes(bad)) is None
 
 
 def test_reject_wrong_length() -> None:
     raw = make_raw_frame()
-    assert parse_status_frame(raw[:35]) is None
+    assert parse_status_frame(raw[:34]) is None
     assert parse_status_frame(raw + b"\x00") is None
     assert parse_status_frame(b"") is None
 
@@ -294,7 +284,7 @@ def test_stream_parser_consecutive_frames() -> None:
 def test_stream_parser_bad_frame_then_re_sync() -> None:
     good1 = make_raw_frame(teensy_time_us=5000)
     bad = bytearray(make_raw_frame(teensy_time_us=99999))
-    bad[34] ^= 0xFF  # corrupt CRC
+    bad[33] ^= 0xFF  # corrupt CRC
     good2 = make_raw_frame(teensy_time_us=15000)
     parser = MotorStatusStreamParser()
     stream = b"".join([bytes(f) for f in (good1, bad, good2)])
@@ -305,13 +295,13 @@ def test_stream_parser_bad_frame_then_re_sync() -> None:
     assert parser.crc_or_format_errors >= 1
 
 
-def test_stream_parser_cc_aa_in_payload_no_false_sync() -> None:
-    """Payload bytes that happen to be 0xCC/0xAA must not trigger false sync."""
+def test_stream_parser_cc_in_payload_no_false_sync() -> None:
+    """A payload byte equal to the single 0xCC head must not split a frame."""
     frame = make_raw_frame(
         left_position=struct.unpack("<f", b"\xCC\xAA\x00\x00")[0],
         teensy_time_us=5000,
     )
-    # Append a second valid frame that starts with real CC AA.
+    # Append a second valid frame that starts with a real CC.
     second = make_raw_frame(teensy_time_us=10000)
     parser = MotorStatusStreamParser()
     output = parser.feed(bytes(frame) + bytes(second))
@@ -320,13 +310,14 @@ def test_stream_parser_cc_aa_in_payload_no_false_sync() -> None:
     assert output[1].teensy_time_us == 10000
 
 
-def test_stream_parser_cc_without_aa_is_discarded() -> None:
-    """A lone 0xCC not followed by 0xAA should be skipped."""
+def test_stream_parser_false_cc_candidate_is_discarded_and_resynchronised() -> None:
+    """A false single-byte head is rejected after a complete bad candidate."""
     parser = MotorStatusStreamParser()
-    output = parser.feed(b"\xCC\xFF")
-    assert len(output) == 0
+    output = parser.feed(b"\xCC\xFF" + make_raw_frame(teensy_time_us=10_000))
+    assert len(output) == 1
+    assert output[0].teensy_time_us == 10_000
     assert parser.crc_or_format_errors == 1
-    # Both 0xCC (skipped false start) and 0xFF (trailing junk) are discarded.
+    # Both the false 0xCC and the following junk byte are discarded.
     assert parser.discarded_bytes == 2
 
 
@@ -402,6 +393,26 @@ def test_find_port_explicit_vid_pid() -> None:
     ]
     assert find_teensy_port(ports, vid=0xABCD, pid=0x1234) == "COM7"
     assert find_teensy_port(ports) is None
+
+
+def test_find_port_rejects_bluetooth_even_if_vid_pid_are_misreported() -> None:
+    ports = [
+        SimpleNamespace(
+            device="COM7",
+            vid=0x16C0,
+            pid=0x0483,
+            description="蓝牙链接上的标准串行",
+            hwid="BTHENUM\\fake",
+        ),
+        SimpleNamespace(
+            device="COM12",
+            vid=0x16C0,
+            pid=0x0483,
+            description="USB Serial Device",
+            hwid="USB VID:PID=16C0:0483",
+        ),
+    ]
+    assert find_teensy_port(ports) == "COM12"
 
 
 def test_connect_with_explicit_com_port() -> None:
@@ -658,15 +669,52 @@ def test_state_error_seq_in_health_snapshot() -> None:
     health = adapter.health()
     metrics = health.metrics
     assert metrics["last_fw_state"] == 7
+    assert metrics["last_fw_state_name"] == "unknown"
     assert metrics["last_fw_error_code"] == 0
+    assert metrics["last_fw_error_name"] == "normal"
     assert metrics["last_fw_sequence"] == 43
     assert metrics["non_zero_error_count"] == 1
 
     snap = adapter.configuration_snapshot()
     assert snap["last_fw_state"] == 7
+    assert snap["last_fw_state_name"] == "unknown"
     assert snap["last_fw_error_code"] == 0
+    assert snap["last_fw_error_name"] == "normal"
     assert snap["last_fw_sequence"] == 43
     assert snap["non_zero_error_count"] == 1
+    adapter.stop()
+    adapter.close()
+
+
+@pytest.mark.parametrize(
+    ("state", "error", "state_name", "error_name"),
+    [
+        (0, 0x00, "disabled", "normal"),
+        (2, 0xFD, "enabled", "one_or_more_motor_feedback_timeouts"),
+        (0, 0xFE, "disabled", "host_control_frame_timeout_auto_disabled"),
+        (2, 0x12, "enabled", "AK80_V3_motor_fault_code"),
+    ],
+)
+def test_firmware_state_and_error_codes_are_named_in_health(
+    state: int,
+    error: int,
+    state_name: str,
+    error_name: str,
+) -> None:
+    serial_port = FakeSerial(
+        [make_raw_frame(state=state, error=error, teensy_time_us=5_000)]
+    )
+    adapter = TeensySerialEncoderAdapter(
+        {"port": "COM12", "batch_size": 1},
+        serial_factory=lambda **kwargs: serial_port,
+    )
+    adapter.connect()
+    adapter.prepare(context())
+    adapter.start()
+    wait_for(lambda: adapter.raw_queue.qsize() == 1)
+    metrics = adapter.health().metrics
+    assert metrics["last_fw_state_name"] == state_name
+    assert metrics["last_fw_error_name"] == error_name
     adapter.stop()
     adapter.close()
 
@@ -937,18 +985,25 @@ def test_descriptor_metadata_fields() -> None:
     adapter = TeensySerialEncoderAdapter()
     desc = adapter.descriptor()
     meta = desc.metadata
-    assert meta["protocol"] == "teensy_status_v2"
-    assert meta["status_size_bytes"] == 36
+    assert meta["protocol"] == "teensy_ak80_v3_status_v3"
+    assert meta["status_size_bytes"] == 35
     assert meta["device_timestamp_field"] == "teensy_time_us"
     assert meta["device_timestamp_unit"] == "us"
     assert meta["hardware_tick_hz"] == 1_000_000
     assert meta["tick_period_us"] == 5_000
     assert meta["gap_threshold_us"] == 7_500
     assert meta["gap_threshold_periods"] == 1.5
-    assert meta["crc8_range"] == "bytes[2:34]"
+    assert meta["crc8_range"] == "bytes[1:33]"
     assert meta["read_only"] is True
     assert meta["simulated"] is False
     assert meta["fw_seq_description"] == "command-echo (not frame counter)"
+    assert meta["teensy_status_rate_hz"] == 200.0
+    assert meta["motor_can_feedback_rate_hz"] == 50.0
+    assert meta["torque_semantics"] == "estimated_from_iq"
+    assert meta["torque_coefficient_nm_per_a"] == pytest.approx(0.5701)
+    assert meta["state_codes"] == {"0": "disabled", "2": "enabled"}
+    assert meta["error_codes"]["0xFD"] == "one_or_more_motor_feedback_timeouts"
+    assert meta["error_codes"]["0xFE"] == "host_control_frame_timeout_auto_disabled"
 
 
 # ------------------------------------------------------------------

@@ -4,22 +4,21 @@ Firmware ``StatusFrame`` (C struct, ExoCode.ino)::
 
     Offset  Size  Field          Type
     ──────────────────────────────────────
-      0      1    head1          0xCC
-      1      1    head2          0xAA
-      2      2    seq            uint16 LE  (command echo; NOT a frame counter)
-      4      1    state          uint8
-      5      1    error_code     uint8
-      6      4    left_pos       float32 LE  (rad)
-     10      4    left_vel       float32 LE  (rad/s)
-     14      4    left_torque    float32 LE  (N*m)
-     18      4    right_pos      float32 LE  (rad)
-     22      4    right_vel      float32 LE  (rad/s)
-     26      4    right_torque   float32 LE  (N*m)
-     30      4    teensy_time_us uint32 LE  (1 MHz, wraps ~71.6 min)
-     34      1    crc8           CRC‑8 poly=0x07 init=0 over bytes [2:34]
-     35      1    tail           0x55
+      0      1    head           0xCC
+      1      2    seq            uint16 LE  (command echo; NOT a frame counter)
+      3      1    state          uint8
+      4      1    error_code     uint8
+      5      4    left_pos       float32 LE  (rad)
+      9      4    left_vel       float32 LE  (rad/s)
+     13      4    left_torque    float32 LE  (N*m, estimated from Iq)
+     17      4    right_pos      float32 LE  (rad)
+     21      4    right_vel      float32 LE  (rad/s)
+     25      4    right_torque   float32 LE  (N*m, estimated from Iq)
+     29      4    teensy_time_us uint32 LE  (1 MHz, wraps ~71.6 min)
+     33      1    crc8           CRC‑8 poly=0x07 init=0 over bytes [1:33]
+     34      1    tail           0x55
     ──────────────────────────────────────
-    Total   36 bytes
+    Total   35 bytes
 
 Firmware sends at 200 Hz (5 ms cycle).  The adapter is strictly read‑only:
 it never calls ``serial.write()`` during any lifecycle phase.
@@ -47,15 +46,20 @@ from exo_collection.domain.events import SampleBatch
 
 
 HEAD_STATUS1 = 0xCC
-HEAD_STATUS2 = 0xAA
 FRAME_TAIL = 0x55
-STATUS_FORMAT = "<BBHBBffffffIBB"
+STATUS_FORMAT = "<BHBBffffffIBB"
 STATUS_STRUCT = struct.Struct(STATUS_FORMAT)
-STATUS_SIZE = STATUS_STRUCT.size  # 36 bytes
+STATUS_SIZE = STATUS_STRUCT.size  # 35 bytes
 BAUD_DEFAULT = 1_000_000
 TEENSY_VID = 0x16C0
 TEENSY_PID = 0x0483
 CRC8_POLY = 0x07
+MOTOR_STATE_NAMES = {0: "disabled", 2: "enabled"}
+MOTOR_ERROR_NAMES = {
+    0x00: "normal",
+    0xFD: "one_or_more_motor_feedback_timeouts",
+    0xFE: "host_control_frame_timeout_auto_disabled",
+}
 
 # Default firmware cycle in microseconds: 1e6 / 200 = 5_000 us.
 _TICK_US = 5_000
@@ -72,6 +76,13 @@ def _nominal_tick_us(rate_hz: float) -> float:
 def _gap_threshold_us(rate_hz: float) -> int:
     return max(1, int(round(_GAP_THRESHOLD_PERIODS * _nominal_tick_us(rate_hz))))
 
+
+def _motor_error_name(error_code: int | None) -> str | None:
+    if error_code is None:
+        return None
+    return MOTOR_ERROR_NAMES.get(int(error_code), "AK80_V3_motor_fault_code")
+
+
 # Compatibility names retained for callers of the earlier draft.
 HEAD_STATUS = HEAD_STATUS1
 FRAME_HEADER = HEAD_STATUS1
@@ -87,7 +98,6 @@ __all__ = [
     "FRAME_TAIL",
     "HEAD_STATUS",
     "HEAD_STATUS1",
-    "HEAD_STATUS2",
     "MotorStatusFrame",
     "MotorStatusStreamParser",
     "PAYLOAD_SIZE",
@@ -142,17 +152,16 @@ def parse_status_frame(data: bytes) -> MotorStatusFrame | None:
 
     if len(data) != STATUS_SIZE:
         return None
-    if data[0] != HEAD_STATUS1 or data[1] != HEAD_STATUS2:
+    if data[0] != HEAD_STATUS1:
         return None
     if data[-1] != FRAME_TAIL:
         return None
-    # CRC covers bytes [2:34] — seq through teensy_time_us (inclusive).
-    if calc_crc8(data[2:STATUS_SIZE - 2]) != data[-2]:
+    # CRC covers bytes [1:33] — seq through teensy_time_us (inclusive).
+    if calc_crc8(data[1:STATUS_SIZE - 2]) != data[-2]:
         return None
     try:
         (
-            _head1,
-            _head2,
+            _head,
             sequence,
             state,
             error,
@@ -183,10 +192,10 @@ def parse_status_frame(data: bytes) -> MotorStatusFrame | None:
 
 
 class MotorStatusStreamParser:
-    """Incremental parser that re-synchronises on ``0xCC 0xAA``.
+    """Incremental parser that re-synchronises on the single ``0xCC`` head.
 
     Handles noise, fragmentation, consecutive frames, and payload bytes that
-    happen to equal ``0xCC`` or ``0xAA``.
+    happen to equal ``0xCC``.
     """
 
     def __init__(self) -> None:
@@ -212,15 +221,6 @@ class MotorStatusStreamParser:
             if head1_idx:
                 self.discarded_bytes += head1_idx
                 del self._buffer[:head1_idx]
-            # Need at least 2 bytes to check HEAD_STATUS2.
-            if len(self._buffer) < 2:
-                break
-            if self._buffer[1] != HEAD_STATUS2:
-                # False start: skip this HEAD_STATUS1 and resume search.
-                self.crc_or_format_errors += 1
-                self.discarded_bytes += 1
-                del self._buffer[0]
-                continue
             # Need a full frame.
             if len(self._buffer) < STATUS_SIZE:
                 break
@@ -303,7 +303,18 @@ def find_teensy_port(
     ports: Iterable[Any], *, vid: int = TEENSY_VID, pid: int = TEENSY_PID
 ) -> str | None:
     for port in ports:
-        if getattr(port, "vid", None) == vid and getattr(port, "pid", None) == pid:
+        hwid = str(getattr(port, "hwid", "") or "").upper()
+        description = str(getattr(port, "description", "") or "").upper()
+        is_bluetooth = (
+            "BTHENUM" in hwid
+            or "BLUETOOTH" in description
+            or "蓝牙" in description
+        )
+        if (
+            not is_bluetooth
+            and getattr(port, "vid", None) == vid
+            and getattr(port, "pid", None) == pid
+        ):
             return str(port.device)
     return None
 
@@ -444,11 +455,11 @@ class TeensySerialEncoderAdapter(QueuedHardwareAdapter):
             dtype=np.dtype(np.float32).str,
             metadata={
                 "simulated": False,
-                "protocol": "teensy_status_v2",
+                "protocol": "teensy_ak80_v3_status_v3",
                 "status_format": STATUS_FORMAT,
                 "status_size_bytes": STATUS_SIZE,
                 "crc8_polynomial": "0x07",
-                "crc8_range": "bytes[2:34]",
+                "crc8_range": "bytes[1:33]",
                 "vid": cfg.vid,
                 "pid": cfg.pid,
                 "baudrate": cfg.baudrate,
@@ -460,6 +471,21 @@ class TeensySerialEncoderAdapter(QueuedHardwareAdapter):
                 "gap_threshold_us": _gap_threshold_us(cfg.nominal_rate_hz),
                 "gap_threshold_periods": _GAP_THRESHOLD_PERIODS,
                 "fw_seq_description": "command-echo (not frame counter)",
+                "teensy_status_rate_hz": cfg.nominal_rate_hz,
+                "motor_can_feedback_rate_hz": 50.0,
+                "motor_can_feedback_semantics": (
+                    "AK80 driver feedback may repeat across consecutive 200 Hz "
+                    "Teensy status frames"
+                ),
+                "torque_semantics": "estimated_from_iq",
+                "torque_coefficient_nm_per_a": 0.5701,
+                "state_codes": {"0": "disabled", "2": "enabled"},
+                "error_codes": {
+                    "0x00": "normal",
+                    "0xFD": "one_or_more_motor_feedback_timeouts",
+                    "0xFE": "host_control_frame_timeout_auto_disabled",
+                    "other": "AK80_V3_motor_fault_code",
+                },
             },
         )
 
@@ -468,7 +494,13 @@ class TeensySerialEncoderAdapter(QueuedHardwareAdapter):
             **asdict(self._config),
             "resolved_port": self._resolved_port,
             "last_fw_state": self._frame_health.last_state,
+            "last_fw_state_name": MOTOR_STATE_NAMES.get(
+                self._frame_health.last_state, "unknown"
+            ),
             "last_fw_error_code": self._frame_health.last_error_code,
+            "last_fw_error_name": _motor_error_name(
+                self._frame_health.last_error_code
+            ),
             "last_fw_sequence": self._frame_health.last_fw_sequence,
             "non_zero_error_count": self._frame_health.non_zero_error_count,
         }
@@ -715,7 +747,11 @@ class TeensySerialEncoderAdapter(QueuedHardwareAdapter):
             "read_only": True,
             "first_data_received": self._first_data_received.is_set(),
             "last_fw_state": health.last_state,
+            "last_fw_state_name": MOTOR_STATE_NAMES.get(
+                health.last_state, "unknown"
+            ),
             "last_fw_error_code": health.last_error_code,
+            "last_fw_error_name": _motor_error_name(health.last_error_code),
             "last_fw_sequence": health.last_fw_sequence,
             "non_zero_error_count": health.non_zero_error_count,
             "timestamp_gap_events": json.dumps(health.timestamp_gap_events)

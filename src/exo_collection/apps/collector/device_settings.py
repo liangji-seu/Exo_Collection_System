@@ -383,10 +383,19 @@ def enumerate_serial_ports() -> list[tuple[str, str]]:
         import serial.tools.list_ports
     except ImportError:
         return []
-    return [
-        (str(port.device), str(port.description or port.device))
-        for port in serial.tools.list_ports.comports()
-    ]
+    ports: list[tuple[str, str]] = []
+    for port in serial.tools.list_ports.comports():
+        description = str(port.description or port.device)
+        hwid = str(getattr(port, "hwid", "") or "")
+        normalized = f"{description} {hwid}".upper()
+        if (
+            "BTHENUM" in normalized
+            or "BLUETOOTH" in normalized
+            or "蓝牙" in normalized
+        ):
+            continue
+        ports.append((str(port.device), description))
+    return ports
 
 
 class EncoderDeviceSettingsDialog(ModalityDeviceSettingsDialog):
@@ -401,7 +410,10 @@ class EncoderDeviceSettingsDialog(ModalityDeviceSettingsDialog):
         self.setWindowTitle("电机编码器设备设置")
         self.setMinimumWidth(560)
         outer = QVBoxLayout(self)
-        intro = QLabel("真实设备：Teensy 串口编码器；固定记录左右两侧位置。")
+        intro = QLabel(
+            "真实设备：Teensy 串口状态流；记录左右电机的位置、速度和 "
+            "Iq 估算扭矩。留空串口时按 VID/PID 自动发现，并排除蓝牙虚拟串口。"
+        )
         intro.setWordWrap(True)
         outer.addWidget(intro)
         form = QFormLayout()
