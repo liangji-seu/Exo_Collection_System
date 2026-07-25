@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from uuid import UUID
 
+from exo_collection.domain.project_codes import SUPPORTED_PROJECT_CODES
+
 from exo_collection.domain.models import normalize_relative_path
 
 
@@ -103,8 +105,9 @@ class TrialLayout:
         partition = None
         if project_partition is not None:
             partition = project_partition.strip().upper()
-            if partition not in {"F", "T"}:
-                raise ValueError("project_partition must be 'F' or 'T'")
+            if partition not in SUPPORTED_PROJECT_CODES:
+                allowed = ", ".join(sorted(SUPPORTED_PROJECT_CODES))
+                raise ValueError(f"project_partition must be one of: {allowed}")
         readable_subject = None
         if subject_code is not None:
             readable_subject = subject_code.strip()

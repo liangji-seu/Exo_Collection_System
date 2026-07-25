@@ -4,7 +4,7 @@
   "conditions": [
     {
       "condition_code": "STAND",
-      "condition_name": "基础｜静止站立30s（无负重）",
+      "condition_name": "静止站立30s（无负重）",
       "condition_level": "BASELINE",
       "parameters": {
         "category": "baseline_standard",
@@ -16,7 +16,7 @@
     },
     {
       "condition_code": "STAND_LOAD_2P5",
-      "condition_name": "基础｜静止站立30s（负重2.5kg）",
+      "condition_name": "静止站立30s（负重2.5kg）",
       "condition_level": "BASELINE",
       "parameters": {
         "category": "baseline_standard",
@@ -28,7 +28,7 @@
     },
     {
       "condition_code": "WALK_LEVEL",
-      "condition_name": "基础｜1.0m/s行走30s（无负重）",
+      "condition_name": "1.0m/s行走30s（无负重）",
       "condition_level": "BASELINE",
       "parameters": {
         "category": "baseline_standard",
@@ -41,7 +41,7 @@
     },
     {
       "condition_code": "WALK_LEVEL_LOAD_2P5",
-      "condition_name": "基础｜1.0m/s行走30s（负重2.5kg）",
+      "condition_name": "1.0m/s行走30s（负重2.5kg）",
       "condition_level": "BASELINE",
       "parameters": {
         "category": "baseline_standard",
@@ -54,7 +54,7 @@
     },
     {
       "condition_code": "SLOW_LEG_RAISE",
-      "condition_name": "基础｜缓慢抬腿",
+      "condition_name": "缓慢抬腿",
       "condition_level": "BASELINE",
       "parameters": {
         "category": "baseline_standard",
@@ -66,7 +66,7 @@
     },
     {
       "condition_code": "WALK_STEADY_0P75",
-      "condition_name": "稳态水平｜0.75m/s慢走",
+      "condition_name": "0.75m/s慢走",
       "condition_level": "STEADY_STATE",
       "parameters": {
         "category": "steady_level_walking",
@@ -79,7 +79,7 @@
     },
     {
       "condition_code": "WALK_STEADY_1P00",
-      "condition_name": "稳态水平｜1.0m/s正常偏慢",
+      "condition_name": "1.0m/s正常偏慢",
       "condition_level": "STEADY_STATE",
       "parameters": {
         "category": "steady_level_walking",
@@ -92,7 +92,7 @@
     },
     {
       "condition_code": "WALK_STEADY_1P25",
-      "condition_name": "稳态水平｜1.25m/s标准舒适步速",
+      "condition_name": "1.25m/s标准舒适步速",
       "condition_level": "STEADY_STATE",
       "parameters": {
         "category": "steady_level_walking",
@@ -106,7 +106,7 @@
     },
     {
       "condition_code": "WALK_STEADY_1P75",
-      "condition_name": "稳态水平｜1.75m/s高速步行",
+      "condition_name": "1.75m/s高速步行",
       "condition_level": "STEADY_STATE",
       "parameters": {
         "category": "steady_level_walking",
@@ -119,7 +119,7 @@
     },
     {
       "condition_code": "WALK_SLOPE_P05",
-      "condition_name": "稳态坡度｜+5°，1.0m/s",
+      "condition_name": "+5°坡度，1.0m/s",
       "condition_level": "STEADY_STATE",
       "parameters": {
         "category": "steady_slope_walking",
@@ -132,7 +132,7 @@
     },
     {
       "condition_code": "WALK_SLOPE_P10",
-      "condition_name": "稳态坡度｜+10°，1.0m/s",
+      "condition_name": "+10°坡度，1.0m/s",
       "condition_level": "STEADY_STATE",
       "parameters": {
         "category": "steady_slope_walking",
@@ -145,7 +145,7 @@
     },
     {
       "condition_code": "WALK_SLOPE_P15",
-      "condition_name": "稳态坡度｜+15°，1.0m/s",
+      "condition_name": "+15°坡度，1.0m/s",
       "condition_level": "STEADY_STATE",
       "parameters": {
         "category": "steady_slope_walking",
@@ -158,7 +158,7 @@
     },
     {
       "condition_code": "WALK_SLOPE_N05",
-      "condition_name": "稳态坡度｜-5°，1.0m/s",
+      "condition_name": "-5°坡度，1.0m/s",
       "condition_level": "STEADY_STATE",
       "parameters": {
         "category": "steady_slope_walking",
@@ -171,7 +171,7 @@
     },
     {
       "condition_code": "WALK_SLOPE_N10",
-      "condition_name": "稳态坡度｜-10°，1.0m/s",
+      "condition_name": "-10°坡度，1.0m/s",
       "condition_level": "STEADY_STATE",
       "parameters": {
         "category": "steady_slope_walking",
@@ -184,7 +184,7 @@
     },
     {
       "condition_code": "WALK_SLOPE_N15",
-      "condition_name": "稳态坡度｜-15°，1.0m/s",
+      "condition_name": "-15°坡度，1.0m/s",
       "condition_level": "STEADY_STATE",
       "parameters": {
         "category": "steady_slope_walking",
@@ -197,7 +197,7 @@
     },
     {
       "condition_code": "START_STOP_LEFT",
-      "condition_name": "非稳态起停｜随机提示2–5s，左脚先",
+      "condition_name": "随机提示2–5s起停（左脚先）",
       "condition_level": "TRANSIENT",
       "parameters": {
         "category": "transient_random_start_stop",
@@ -221,7 +221,7 @@
     },
     {
       "condition_code": "START_STOP_RIGHT",
-      "condition_name": "非稳态起停｜随机提示2–5s，右脚先",
+      "condition_name": "随机提示2–5s起停（右脚先）",
       "condition_level": "TRANSIENT",
       "parameters": {
         "category": "transient_random_start_stop",
@@ -245,7 +245,7 @@
     },
     {
       "condition_code": "SQUAT_STANDARD",
-      "condition_name": "非稳态深蹲｜站立→提示蹲下→提示起立",
+      "condition_name": "标准深蹲（站立→蹲下→起立）",
       "condition_level": "TRANSIENT",
       "parameters": {
         "category": "transient_standard_squat",
@@ -271,7 +271,7 @@
     },
     {
       "condition_code": "SPEED_CHANGE_0P6_TO_0P9",
-      "condition_name": "非稳态变速｜0.6→0.9m/s",
+      "condition_name": "随机变速（0.6→0.9m/s）",
       "condition_level": "TRANSIENT",
       "parameters": {
         "category": "transient_speed_change",

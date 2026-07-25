@@ -171,7 +171,7 @@ def test_manifest_rejects_unknown_schema_version() -> None:
 
 
 @pytest.mark.parametrize("project_code", [None, "", "X", "f", "FT"])
-def test_manifest_v1_1_requires_formal_or_test_project_code(
+def test_manifest_v1_2_requires_supported_project_code(
     project_code: str | None,
 ) -> None:
     payload = make_manifest().model_dump()
@@ -181,14 +181,36 @@ def test_manifest_v1_1_requires_formal_or_test_project_code(
         TrialManifest.model_validate(payload)
 
 
+@pytest.mark.parametrize(
+    "project_code",
+    ["F", "T", "F_BASE", "F_STEADY", "F_TRANSIENT"],
+)
+def test_manifest_v1_2_accepts_supported_project_codes(project_code: str) -> None:
+    payload = make_manifest().model_dump()
+    payload["project_code"] = project_code
+
+    assert TrialManifest.model_validate(payload).project_code == project_code
+
+
 @pytest.mark.parametrize("subject_code", [None, "", "1", "01", "0001", "00A", "００１"])
-def test_manifest_v1_1_requires_three_ascii_digit_subject_code(
+def test_manifest_v1_2_requires_three_ascii_digit_subject_code(
     subject_code: str | None,
 ) -> None:
     payload = make_manifest().model_dump()
     payload["subject_code"] = subject_code
 
     with pytest.raises(ValidationError):
+        TrialManifest.model_validate(payload)
+
+
+def test_manifest_reader_preserves_v1_1_project_code_contract() -> None:
+    payload = make_manifest().model_dump(mode="json")
+    payload["schema_version"] = "1.1.0"
+    payload["project_code"] = "F"
+    assert TrialManifest.model_validate(payload).project_code == "F"
+
+    payload["project_code"] = "F_BASE"
+    with pytest.raises(ValidationError, match="schema 1.1.0"):
         TrialManifest.model_validate(payload)
 
 
@@ -298,21 +320,32 @@ def test_manifest_partial_guard_is_case_insensitive_without_prefix_false_positiv
 
 def test_json_schema_can_be_exported(tmp_path) -> None:
     schema = manifest_json_schema()
-    assert schema["$id"].endswith("/1.1.0.json")
+    assert schema["$id"].endswith("/1.2.0.json")
     assert "schema_version" in schema["properties"]
     assert "condition" in schema["properties"]
     assert "clock_and_alignment" in schema["properties"]
-    assert schema["properties"]["schema_version"]["enum"] == ["1.0.0", "1.1.0"]
-    versioned_identity = schema["allOf"][0]
-    assert versioned_identity["if"]["properties"]["schema_version"] == {
+    assert schema["properties"]["schema_version"]["enum"] == [
+        "1.0.0",
+        "1.1.0",
+        "1.2.0",
+    ]
+    legacy_identity = schema["allOf"][0]
+    assert legacy_identity["if"]["properties"]["schema_version"] == {
         "const": "1.1.0"
+    }
+    assert legacy_identity["then"]["properties"]["project_code"] == {
+        "enum": ["F", "T"]
+    }
+    versioned_identity = schema["allOf"][1]
+    assert versioned_identity["if"]["properties"]["schema_version"] == {
+        "const": "1.2.0"
     }
     assert versioned_identity["then"]["required"] == [
         "project_code",
         "subject_code",
     ]
     assert versioned_identity["then"]["properties"]["project_code"] == {
-        "enum": ["F", "T"]
+        "enum": ["F", "F_BASE", "F_STEADY", "F_TRANSIENT", "T"]
     }
     assert versioned_identity["then"]["properties"]["subject_code"] == {
         "pattern": r"^[0-9]{3}$",

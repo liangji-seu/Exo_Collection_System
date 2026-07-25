@@ -491,7 +491,8 @@ def test_1080p_layout_scrolls_controls_instead_of_crushing_them(
     assert controls_content.height() >= controls_content.minimumSizeHint().height()
     assert controls_scroll.verticalScrollBar().maximum() == 0
     assert abs(window.project_combo.width() - window.subject_code_edit.width()) <= 2
-    assert abs(window.condition_combo.width() - window.repeat_spin.width()) <= 2
+    assert window.repeat_spin.width() <= 105
+    assert window.condition_combo.width() >= window.repeat_spin.width() * 3
 
     # The two toggle actions stay at their normal height and never overlap.
     action_buttons = [
@@ -1037,9 +1038,11 @@ def test_collector_locks_condition_polls_events_and_finalizes(
 ) -> None:
     caplog.set_level(logging.INFO, logger="exo_collection.collector.ui")
     app, window, created = _window_with_fake(tmp_path)
-    assert [window.project_combo.itemText(index) for index in range(2)] == [
-        "F — 正式",
-        "T — 测试",
+    assert [window.project_combo.itemText(index) for index in range(4)] == [
+        "测试",
+        "正式-基础",
+        "正式-稳态",
+        "正式-非稳态",
     ]
     assert window.project_combo.currentData()["project_code"] == "T"
     assert window.subject_code_edit.text() == "001"
@@ -1325,6 +1328,8 @@ def test_condition_combo_exposes_all_meeting_protocol_conditions(
             "SPEED_CHANGE_0P6_TO_0P9",
         ]
         assert window.condition_combo.currentData()["condition_code"] == "WALK_LEVEL"
+        assert window.condition_combo.currentText() == "1.0m/s行走30s（无负重）"
+        assert not window.condition_combo.currentText().startswith("WALK_LEVEL")
 
         slope_index = codes.index("WALK_SLOPE_N15")
         slope = window.condition_combo.itemData(slope_index)
@@ -1342,6 +1347,26 @@ def test_condition_combo_exposes_all_meeting_protocol_conditions(
         assert start_stop["parameters"]["lead_foot"] == "right"
         assert start_stop["parameters"]["effective_duration_s_min"] == 8
         assert start_stop["parameters"]["effective_duration_s_max"] == 10
+
+        expected_by_project = {
+            "T": 19,
+            "F_BASE": 5,
+            "F_STEADY": 10,
+            "F_TRANSIENT": 4,
+        }
+        for project_index in range(window.project_combo.count()):
+            window.project_combo.setCurrentIndex(project_index)
+            project_code = window.project_combo.currentData()["project_code"]
+            assert window.condition_combo.count() == expected_by_project[project_code]
+            for condition_index in range(window.condition_combo.count()):
+                condition = window.condition_combo.itemData(condition_index)
+                assert (
+                    window.condition_combo.itemText(condition_index)
+                    == condition["condition_name"]
+                )
+                assert not window.condition_combo.itemText(
+                    condition_index
+                ).startswith(condition["condition_code"])
     finally:
         window.close()
 
@@ -1625,11 +1650,11 @@ def test_experiment_metadata_is_scoped_by_project_and_subject(tmp_path: Path) ->
     assert window.experiment_metadata.trial_notes == "T/001 only"
     assert "已恢复" in window.experiment_metadata_summary.text()
 
-    window.project_combo.setCurrentIndex(0)
-    assert window.project_combo.currentData()["project_code"] == "F"
+    window.project_combo.setCurrentIndex(1)
+    assert window.project_combo.currentData()["project_code"] == "F_BASE"
     assert window.experiment_metadata == TrialExperimentMetadata()
     assert "已清空以避免串写" in window.experiment_metadata_summary.text()
-    window.project_combo.setCurrentIndex(1)
+    window.project_combo.setCurrentIndex(0)
     assert window.experiment_metadata.subject.height_cm == 171
     assert window.experiment_metadata.ultrasound_probe.muscle == "vastus lateralis"
     window.close()

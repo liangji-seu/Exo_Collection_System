@@ -23,6 +23,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from exo_collection.domain.project_codes import project_accepts_condition_level
 from exo_collection.domain.states import TrialState
 from exo_collection.external import ExternalAnnexManifest
 from exo_collection.protocols.models import (
@@ -806,7 +807,7 @@ def compute_subject_coverage(
     """
 
     definition = protocol or load_default_protocol()
-    expected: tuple[ConditionDefinition, ...] = tuple(definition.conditions)
+    all_expected: tuple[ConditionDefinition, ...] = tuple(definition.conditions)
     valid_grades = {str(value).strip().upper() for value in valid_quality_grades}
     if not valid_grades or any(not value for value in valid_grades):
         raise ValueError("valid_quality_grades must not be empty")
@@ -816,6 +817,14 @@ def compute_subject_coverage(
     summaries: list[SubjectCoverage] = []
     for (project_uuid, subject_uuid), subject_records in grouped.items():
         first = subject_records[0]
+        expected = tuple(
+            condition
+            for condition in all_expected
+            if project_accepts_condition_level(
+                first.project_code,
+                condition.condition_level,
+            )
+        )
         condition_rows: list[ConditionCoverage] = []
         for condition in expected:
             attempts = [

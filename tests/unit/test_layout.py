@@ -129,7 +129,10 @@ def test_finalization_rejects_mixed_case_unpublished_descendant(tmp_path) -> Non
         layout.finalize_directory()
 
 
-@pytest.mark.parametrize("partition", ["F", "T"])
+@pytest.mark.parametrize(
+    "partition",
+    ["F", "T", "F_BASE", "F_STEADY", "F_TRANSIENT"],
+)
 def test_project_partition_is_a_readable_top_level_folder(
     tmp_path, partition: str
 ) -> None:
@@ -142,8 +145,8 @@ def test_project_partition_is_a_readable_top_level_folder(
         project_partition=partition,
     )
 
-    assert layout.session_directory.relative_to(tmp_path).parts[0] == partition
-    assert str(layout.project_uuid) not in layout.session_directory.parts
+    assert layout.final_directory.relative_to(tmp_path).parts[0] == partition
+    assert str(layout.project_uuid) not in layout.final_directory.parts
 
 
 def test_subject_code_is_the_readable_folder_without_becoming_the_primary_key(
@@ -181,7 +184,10 @@ def test_subject_code_folder_rejects_noncanonical_values(
         )
 
 
-@pytest.mark.parametrize("partition", ["", "formal", "../F", "F/T"])
+@pytest.mark.parametrize(
+    "partition",
+    ["", "formal", "../F", "F/T", "F_BASE/escape", "F_OTHER"],
+)
 def test_project_partition_rejects_noncanonical_values(
     tmp_path, partition: str
 ) -> None:

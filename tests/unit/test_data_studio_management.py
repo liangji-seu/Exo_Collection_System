@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -356,6 +357,42 @@ def test_verified_sidecars_coverage_and_state_summary(
     assert summary.reviewed_trial_uuids == (str(reviewed_trial.record.trial_uuid),)
     assert summary.verified_upload_trial_uuids == (uploaded.trial_uuid,)
     assert invalid_upload.trial_uuid in summary.sidecar_error_trial_uuids
+
+
+@pytest.mark.parametrize(
+    ("project_code", "condition_level", "expected_count"),
+    [
+        ("F_BASE", "BASELINE", 5),
+        ("F_STEADY", "STEADY_STATE", 10),
+        ("F_TRANSIENT", "TRANSIENT", 4),
+    ],
+)
+def test_subject_coverage_uses_the_selected_formal_project_category(
+    dataset: tuple[Path, dict[str, Path]],
+    project_code: str,
+    condition_level: str,
+    expected_count: int,
+) -> None:
+    root, _paths = dataset
+    index = load_management_index(root)
+    categorized_records = tuple(
+        replace(record, project_code=project_code)
+        for record in index.records
+        if record.project_code == "F"
+    )
+
+    coverage = compute_subject_coverage(categorized_records)
+
+    assert len(coverage) == 1
+    expected_codes = {
+        condition.condition_code
+        for condition in load_default_protocol().conditions
+        if condition.condition_level == condition_level
+    }
+    assert len(coverage[0].conditions) == expected_count
+    assert {
+        condition.condition_code for condition in coverage[0].conditions
+    } == expected_codes
 
 
 def test_tampered_quality_sidecar_is_not_treated_as_reviewed(

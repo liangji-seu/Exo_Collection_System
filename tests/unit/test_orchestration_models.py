@@ -39,6 +39,36 @@ def test_formal_and_test_partitions_have_distinct_stable_project_ids(tmp_path) -
     assert formal.subject_uuid != test.subject_uuid
 
 
+@pytest.mark.parametrize(
+    ("project_code", "project_name"),
+    [
+        ("F_BASE", "正式-基础"),
+        ("F_STEADY", "正式-稳态"),
+        ("F_TRANSIENT", "正式-非稳态"),
+    ],
+)
+def test_explicit_formal_partitions_have_distinct_stable_ids(
+    tmp_path,
+    project_code: str,
+    project_name: str,
+) -> None:
+    formal = TrialRunRequest(
+        data_root=tmp_path,
+        project_code=project_code,
+        project_name=project_name,
+        subject_code="001",
+    )
+    test = TrialRunRequest(
+        data_root=tmp_path,
+        project_code="T",
+        project_name="测试",
+        subject_code="001",
+    )
+
+    assert formal.project_uuid != test.project_uuid
+    assert formal.subject_uuid != test.subject_uuid
+
+
 def test_explicit_hierarchy_uuids_are_never_rewritten(tmp_path) -> None:
     project_uuid = uuid4()
     subject_uuid = uuid4()

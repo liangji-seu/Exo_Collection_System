@@ -119,7 +119,13 @@ class TrialRunRequest(OrchestrationModel):
     # start so an optional missing pulse can never hang the Worker.
     duration_s: float | None = Field(default=None, gt=0, le=86_400)
     sync_wait_timeout_s: float | None = Field(default=None, gt=0, le=86_400)
-    project_code: Literal["F", "T"] = "T"
+    project_code: Literal[
+        "F",
+        "T",
+        "F_BASE",
+        "F_STEADY",
+        "F_TRANSIENT",
+    ] = "T"
     project_uuid: UUID = Field(default_factory=uuid4)
     subject_uuid: UUID = Field(default_factory=uuid4)
     session_uuid: UUID = Field(default_factory=uuid4)

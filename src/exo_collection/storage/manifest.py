@@ -36,6 +36,7 @@ from exo_collection.domain.models import (
     normalize_relative_path,
     utc_now,
 )
+from exo_collection.domain.project_codes import SUPPORTED_PROJECT_CODES
 from exo_collection.domain.states import TrialState
 from exo_collection.storage.layout import (
     name_has_storage_suffix,
@@ -43,8 +44,10 @@ from exo_collection.storage.layout import (
 )
 
 
-MANIFEST_SCHEMA_VERSION = "1.1.0"
-SUPPORTED_MANIFEST_SCHEMA_VERSIONS = frozenset({"1.0.0", MANIFEST_SCHEMA_VERSION})
+MANIFEST_SCHEMA_VERSION = "1.2.0"
+SUPPORTED_MANIFEST_SCHEMA_VERSIONS = frozenset(
+    {"1.0.0", "1.1.0", MANIFEST_SCHEMA_VERSION}
+)
 
 
 class ManifestModel(BaseModel):
@@ -447,7 +450,7 @@ class TrialManifest(ManifestModel):
                 {
                     "if": {
                         "properties": {
-                            "schema_version": {"const": MANIFEST_SCHEMA_VERSION}
+                            "schema_version": {"const": "1.1.0"}
                         }
                     },
                     "then": {
@@ -460,12 +463,31 @@ class TrialManifest(ManifestModel):
                         },
                         "required": ["project_code", "subject_code"],
                     },
-                }
+                },
+                {
+                    "if": {
+                        "properties": {
+                            "schema_version": {"const": MANIFEST_SCHEMA_VERSION}
+                        }
+                    },
+                    "then": {
+                        "properties": {
+                            "project_code": {
+                                "enum": sorted(SUPPORTED_PROJECT_CODES)
+                            },
+                            "subject_code": {
+                                "pattern": r"^[0-9]{3}$",
+                                "type": "string",
+                            },
+                        },
+                        "required": ["project_code", "subject_code"],
+                    },
+                },
             ]
         }
     )
 
-    schema_version: Literal["1.0.0", "1.1.0"] = MANIFEST_SCHEMA_VERSION
+    schema_version: Literal["1.0.0", "1.1.0", "1.2.0"] = MANIFEST_SCHEMA_VERSION
     manifest_uuid: UUID = Field(default_factory=uuid4)
     project_uuid: UUID
     project_code: NonEmptyStr | None = None
@@ -518,17 +540,23 @@ class TrialManifest(ManifestModel):
 
     @model_validator(mode="after")
     def validate_references(self) -> TrialManifest:
-        if self.schema_version == MANIFEST_SCHEMA_VERSION:
-            if self.project_code not in {"F", "T"}:
+        if self.schema_version in {"1.1.0", MANIFEST_SCHEMA_VERSION}:
+            allowed_project_codes = (
+                frozenset({"F", "T"})
+                if self.schema_version == "1.1.0"
+                else SUPPORTED_PROJECT_CODES
+            )
+            if self.project_code not in allowed_project_codes:
                 raise ValueError(
-                    "Manifest schema 1.1.0 requires project_code to be F or T"
+                    f"Manifest schema {self.schema_version} requires a "
+                    "supported project_code"
                 )
             if self.subject_code is None or re.fullmatch(
                 r"[0-9]{3}", self.subject_code
             ) is None:
                 raise ValueError(
-                    "Manifest schema 1.1.0 requires subject_code as exactly "
-                    "three ASCII digits"
+                    f"Manifest schema {self.schema_version} requires "
+                    "subject_code as exactly three ASCII digits"
                 )
         if self.state is TrialState.FINALIZED:
             if (

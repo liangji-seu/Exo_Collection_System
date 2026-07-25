@@ -88,6 +88,11 @@ from exo_collection.orchestration.models import (
     TrialExperimentMetadata,
     TrialRunRequest,
 )
+from exo_collection.domain.project_codes import (
+    COLLECTOR_PROJECTS,
+    SUPPORTED_PROJECT_CODES,
+    project_accepts_condition_level,
+)
 from exo_collection.protocols import load_default_protocol
 from exo_collection.quality import load_storage_policy
 
@@ -136,9 +141,8 @@ _ENCODER_SHARED_Y_RANGE = (-13.0, 13.0)
 DEFAULT_OPERATOR = "not_recorded"
 DEFAULT_CONTROLLED_STOP_TIMEOUT_S = 30.0
 
-PROJECTS: tuple[dict[str, str], ...] = (
-    {"project_code": "F", "project_name": "正式"},
-    {"project_code": "T", "project_name": "测试"},
+PROJECTS: tuple[dict[str, str], ...] = tuple(
+    dict(project) for project in COLLECTOR_PROJECTS
 )
 
 _PROTOCOL = load_default_protocol()
@@ -933,7 +937,7 @@ class CollectorWindow(QMainWindow):
         self.setStyleSheet(COLLECTOR_STYLESHEET)
         self.resize(1280, 820)
         self._create_ui(Path(data_root).expanduser().resolve())
-        self.project_combo.currentIndexChanged.connect(self._activate_selected_metadata_identity)
+        self.project_combo.currentIndexChanged.connect(self._handle_project_changed)
         self.subject_code_edit.textChanged.connect(self._activate_selected_metadata_identity)
         self._activate_selected_metadata_identity()
         self.condition_combo.currentIndexChanged.connect(self._handle_metadata_condition_changed)
@@ -1068,10 +1072,10 @@ class CollectorWindow(QMainWindow):
         self.project_combo.setObjectName("project")
         for project in PROJECTS:
             self.project_combo.addItem(
-                f"{project['project_code']} — {project['project_name']}",
+                project["project_name"],
                 dict(project),
             )
-        self.project_combo.setCurrentIndex(1)
+        self.project_combo.setCurrentIndex(0)
         row1.addWidget(QLabel("项目："), 0, 0)
         row1.addWidget(self.project_combo, 0, 1)
 
@@ -1102,59 +1106,7 @@ class CollectorWindow(QMainWindow):
             QSizePolicy.Policy.Fixed,
         )
         self.condition_combo.view().setMinimumWidth(620)
-        for condition in CONDITIONS:
-            self.condition_combo.addItem(
-                f"{condition['condition_code']} — {condition['condition_name']}",
-                dict(condition),
-            )
-            parameters = dict(condition.get("parameters", {}))
-            tooltip_parts = [
-                f"建议 Trial：{parameters['recommended_trial_count']}"
-                if "recommended_trial_count" in parameters
-                else "",
-                (
-                    f"目标有效时长：{parameters['target_effective_duration_s']} s"
-                    if "target_effective_duration_s" in parameters
-                    else ""
-                ),
-                (
-                    "有效时长："
-                    f"{parameters['effective_duration_s_min']}–"
-                    f"{parameters['effective_duration_s_max']} s"
-                    if "effective_duration_s_min" in parameters
-                    and "effective_duration_s_max" in parameters
-                    else ""
-                ),
-                (
-                    f"速度：{parameters['speed_mps']} m/s"
-                    if "speed_mps" in parameters
-                    else ""
-                ),
-                (
-                    f"坡度：{parameters['slope_deg']}°"
-                    if "slope_deg" in parameters
-                    else ""
-                ),
-                (
-                    f"负重：{parameters['load_kg']} kg"
-                    if "load_kg" in parameters
-                    else ""
-                ),
-            ]
-            self.condition_combo.setItemData(
-                self.condition_combo.count() - 1,
-                "\n".join(part for part in tooltip_parts if part),
-                Qt.ItemDataRole.ToolTipRole,
-            )
-        default_condition_index = next(
-            (
-                index
-                for index, condition in enumerate(CONDITIONS)
-                if condition["condition_code"] == "WALK_LEVEL"
-            ),
-            0,
-        )
-        self.condition_combo.setCurrentIndex(default_condition_index)
+        self._populate_condition_combo(preferred_code="WALK_LEVEL")
         row2.addWidget(QLabel("工况："), 0, 0)
         row2.addWidget(self.condition_combo, 0, 1)
 
@@ -1162,10 +1114,12 @@ class CollectorWindow(QMainWindow):
         self.repeat_spin.setObjectName("repeat_index")
         self.repeat_spin.setRange(1, 9999)
         self.repeat_spin.setValue(1)
+        self.repeat_spin.setMinimumWidth(78)
+        self.repeat_spin.setMaximumWidth(105)
         row2.addWidget(QLabel("重复轮次："), 0, 2)
         row2.addWidget(self.repeat_spin, 0, 3)
         row2.setColumnStretch(1, 1)
-        row2.setColumnStretch(3, 1)
+        row2.setColumnStretch(3, 0)
         form.addRow(row2)
         controls_layout.addWidget(metadata_box)
 
@@ -1479,6 +1433,102 @@ class CollectorWindow(QMainWindow):
     def _selected_device_profile_key(self) -> str:
         return self._settings.device_profile_key
 
+    @staticmethod
+    def _condition_tooltip(condition: Mapping[str, Any]) -> str:
+        parameters = dict(condition.get("parameters", {}))
+        parts = [
+            (
+                f"建议 Trial：{parameters['recommended_trial_count']}"
+                if "recommended_trial_count" in parameters
+                else ""
+            ),
+            (
+                f"目标有效时长：{parameters['target_effective_duration_s']} s"
+                if "target_effective_duration_s" in parameters
+                else ""
+            ),
+            (
+                "有效时长："
+                f"{parameters['effective_duration_s_min']}–"
+                f"{parameters['effective_duration_s_max']} s"
+                if "effective_duration_s_min" in parameters
+                and "effective_duration_s_max" in parameters
+                else ""
+            ),
+            (
+                f"速度：{parameters['speed_mps']} m/s"
+                if "speed_mps" in parameters
+                else ""
+            ),
+            (
+                f"坡度：{parameters['slope_deg']}°"
+                if "slope_deg" in parameters
+                else ""
+            ),
+            (
+                f"负重：{parameters['load_kg']} kg"
+                if "load_kg" in parameters
+                else ""
+            ),
+        ]
+        return "\n".join(part for part in parts if part)
+
+    def _populate_condition_combo(self, *, preferred_code: str | None = None) -> None:
+        project = self.project_combo.currentData()
+        project_code = (
+            str(project.get("project_code") or "").strip().upper()
+            if isinstance(project, dict)
+            else ""
+        )
+        visible = [
+            condition
+            for condition in CONDITIONS
+            if project_accepts_condition_level(
+                project_code,
+                condition.get("condition_level"),
+            )
+        ]
+        previous_blocked = self.condition_combo.blockSignals(True)
+        try:
+            self.condition_combo.clear()
+            for condition in visible:
+                # The stable English code remains in item data and the
+                # Manifest, while operators see only the Chinese condition.
+                self.condition_combo.addItem(
+                    str(condition["condition_name"]),
+                    dict(condition),
+                )
+                self.condition_combo.setItemData(
+                    self.condition_combo.count() - 1,
+                    self._condition_tooltip(condition),
+                    Qt.ItemDataRole.ToolTipRole,
+                )
+            selected_index = next(
+                (
+                    index
+                    for index, condition in enumerate(visible)
+                    if condition["condition_code"] == preferred_code
+                ),
+                0,
+            )
+            if visible:
+                self.condition_combo.setCurrentIndex(selected_index)
+        finally:
+            self.condition_combo.blockSignals(previous_blocked)
+
+    @Slot()
+    def _handle_project_changed(self, *_args: object) -> None:
+        current = self.condition_combo.currentData()
+        preferred_code = (
+            str(current.get("condition_code") or "")
+            if isinstance(current, dict)
+            else None
+        )
+        self._populate_condition_combo(preferred_code=preferred_code)
+        self._activate_selected_metadata_identity()
+        self._handle_metadata_condition_changed()
+        self._update_start_button()
+
     def _render_device_profile(self) -> None:
         hardware = self._selected_device_profile_key() == "hardware"
 
@@ -1590,7 +1640,7 @@ class CollectorWindow(QMainWindow):
         if not isinstance(project, dict):
             return None
         project_code = str(project.get("project_code") or "").strip().upper()
-        if project_code not in {"F", "T"}:
+        if project_code not in SUPPORTED_PROJECT_CODES:
             return None
         if not subject_code.isascii() or not subject_code.isdigit() or len(subject_code) != 3:
             return None
@@ -2307,7 +2357,7 @@ class CollectorWindow(QMainWindow):
             raise ValueError("请选择有效项目")
         project_code = str(project.get("project_code") or "").strip().upper()
         project_name = str(project.get("project_name") or "").strip()
-        if project_code not in {"F", "T"} or not project_name:
+        if project_code not in SUPPORTED_PROJECT_CODES or not project_name:
             raise ValueError("请选择有效项目")
         subject_code = self._subject_code()
         self._activate_selected_metadata_identity()
