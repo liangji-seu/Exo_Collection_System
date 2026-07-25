@@ -11,7 +11,7 @@ from uuid import uuid4
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QValidator
 from PySide6.QtWidgets import QApplication, QDialog, QScrollArea, QSplitter, QWidget
 
@@ -1054,7 +1054,12 @@ def test_collector_locks_condition_polls_events_and_finalizes(
     window.subject_code_edit.setText("7")
     window.normalize_subject_code()
     assert window.subject_code_edit.text() == "007"
-    window.condition_combo.setCurrentIndex(1)
+    walk_index = next(
+        index
+        for index in range(window.condition_combo.count())
+        if window.condition_combo.itemData(index)["condition_code"] == "WALK_LEVEL"
+    )
+    window.condition_combo.setCurrentIndex(walk_index)
     window.repeat_spin.setValue(3)
 
     # Connect all modality previews to satisfy Trial start requirements
@@ -1072,6 +1077,15 @@ def test_collector_locks_condition_polls_events_and_finalizes(
     assert request.subject_code == "007"
     assert request.operator == "not_recorded"
     assert request.condition_code == "WALK_LEVEL"
+    assert request.protocol_version == "1.1.0"
+    assert request.condition_parameters == {
+        "category": "baseline_standard",
+        "recommended_trial_count": 1,
+        "target_effective_duration_s": 30,
+        "speed_mps": 1.0,
+        "load_kg": 0,
+        "slope_deg": 0,
+    }
     assert request.repeat_index == 3
     assert request.duration_s is None
     assert window.configuration_locked
@@ -1285,6 +1299,51 @@ def test_collector_shows_failed_worker_error_without_blocking_ui(
     assert all(handle.stop_requests == 0 for handle in handles.values())
     assert all(len(handle.end_recording_calls) == 1 for handle in handles.values())
     window.close()
+
+
+def test_condition_combo_exposes_all_meeting_protocol_conditions(
+    tmp_path: Path,
+) -> None:
+    _app, window, _created = _window_with_fake(tmp_path)
+    try:
+        assert window.condition_combo.count() == 19
+        codes = [
+            window.condition_combo.itemData(index)["condition_code"]
+            for index in range(window.condition_combo.count())
+        ]
+        assert codes[:5] == [
+            "STAND",
+            "STAND_LOAD_2P5",
+            "WALK_LEVEL",
+            "WALK_LEVEL_LOAD_2P5",
+            "SLOW_LEG_RAISE",
+        ]
+        assert codes[-4:] == [
+            "START_STOP_LEFT",
+            "START_STOP_RIGHT",
+            "SQUAT_STANDARD",
+            "SPEED_CHANGE_0P6_TO_0P9",
+        ]
+        assert window.condition_combo.currentData()["condition_code"] == "WALK_LEVEL"
+
+        slope_index = codes.index("WALK_SLOPE_N15")
+        slope = window.condition_combo.itemData(slope_index)
+        assert slope["parameters"]["speed_mps"] == 1.0
+        assert slope["parameters"]["slope_deg"] == -15
+        slope_tooltip = window.condition_combo.itemData(
+            slope_index, Qt.ItemDataRole.ToolTipRole
+        )
+        assert "建议 Trial：5" in slope_tooltip
+        assert "目标有效时长：20 s" in slope_tooltip
+        assert "坡度：-15°" in slope_tooltip
+
+        start_index = codes.index("START_STOP_RIGHT")
+        start_stop = window.condition_combo.itemData(start_index)
+        assert start_stop["parameters"]["lead_foot"] == "right"
+        assert start_stop["parameters"]["effective_duration_s_min"] == 8
+        assert start_stop["parameters"]["effective_duration_s_max"] == 10
+    finally:
+        window.close()
 
 
 def test_collector_rejects_terminal_event_from_another_trial(

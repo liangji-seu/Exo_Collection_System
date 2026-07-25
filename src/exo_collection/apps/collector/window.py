@@ -1093,12 +1093,68 @@ class CollectorWindow(QMainWindow):
         row2 = QGridLayout()
         self.condition_combo = QComboBox()
         self.condition_combo.setObjectName("condition")
+        self.condition_combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.condition_combo.setMinimumContentsLength(12)
+        self.condition_combo.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Fixed,
+        )
+        self.condition_combo.view().setMinimumWidth(620)
         for condition in CONDITIONS:
             self.condition_combo.addItem(
                 f"{condition['condition_code']} — {condition['condition_name']}",
                 dict(condition),
             )
-        self.condition_combo.setCurrentIndex(1)
+            parameters = dict(condition.get("parameters", {}))
+            tooltip_parts = [
+                f"建议 Trial：{parameters['recommended_trial_count']}"
+                if "recommended_trial_count" in parameters
+                else "",
+                (
+                    f"目标有效时长：{parameters['target_effective_duration_s']} s"
+                    if "target_effective_duration_s" in parameters
+                    else ""
+                ),
+                (
+                    "有效时长："
+                    f"{parameters['effective_duration_s_min']}–"
+                    f"{parameters['effective_duration_s_max']} s"
+                    if "effective_duration_s_min" in parameters
+                    and "effective_duration_s_max" in parameters
+                    else ""
+                ),
+                (
+                    f"速度：{parameters['speed_mps']} m/s"
+                    if "speed_mps" in parameters
+                    else ""
+                ),
+                (
+                    f"坡度：{parameters['slope_deg']}°"
+                    if "slope_deg" in parameters
+                    else ""
+                ),
+                (
+                    f"负重：{parameters['load_kg']} kg"
+                    if "load_kg" in parameters
+                    else ""
+                ),
+            ]
+            self.condition_combo.setItemData(
+                self.condition_combo.count() - 1,
+                "\n".join(part for part in tooltip_parts if part),
+                Qt.ItemDataRole.ToolTipRole,
+            )
+        default_condition_index = next(
+            (
+                index
+                for index, condition in enumerate(CONDITIONS)
+                if condition["condition_code"] == "WALK_LEVEL"
+            ),
+            0,
+        )
+        self.condition_combo.setCurrentIndex(default_condition_index)
         row2.addWidget(QLabel("工况："), 0, 0)
         row2.addWidget(self.condition_combo, 0, 1)
 

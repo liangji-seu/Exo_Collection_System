@@ -414,11 +414,11 @@ def test_management_summary_and_filtered_export_are_wired_to_workers(
     assert isinstance(dialog.result, ManagementSummaryResult)
     assert "FINALIZED：3" in dialog.state_summary_label.text()
     coverage = dialog.findChild(QTableWidget, "management_coverage_table")
-    assert coverage is not None and coverage.rowCount() == 2
+    assert coverage is not None and coverage.rowCount() == 19
     walk_rows = [
         row
         for row in range(coverage.rowCount())
-        if "WALK_LEVEL" in coverage.item(row, 3).text()
+        if coverage.item(row, 3).text().startswith("WALK_LEVEL ·")
     ]
     assert len(walk_rows) == 1
     assert coverage.item(walk_rows[0], 8).text() == "1, 2"

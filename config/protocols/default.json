@@ -1,19 +1,291 @@
 {
   "schema_version": "1.0.0",
-  "protocol_version": "1.0.0",
+  "protocol_version": "1.1.0",
   "conditions": [
     {
       "condition_code": "STAND",
-      "condition_name": "静止站立",
-      "condition_level": 1,
-      "parameters": {"assist_level": 0, "load_kg": 0}
+      "condition_name": "基础｜静止站立30s（无负重）",
+      "condition_level": "BASELINE",
+      "parameters": {
+        "category": "baseline_standard",
+        "recommended_trial_count": 1,
+        "target_effective_duration_s": 30,
+        "load_kg": 0,
+        "slope_deg": 0
+      }
+    },
+    {
+      "condition_code": "STAND_LOAD_2P5",
+      "condition_name": "基础｜静止站立30s（负重2.5kg）",
+      "condition_level": "BASELINE",
+      "parameters": {
+        "category": "baseline_standard",
+        "recommended_trial_count": 1,
+        "target_effective_duration_s": 30,
+        "load_kg": 2.5,
+        "slope_deg": 0
+      }
     },
     {
       "condition_code": "WALK_LEVEL",
-      "condition_name": "平地行走",
-      "condition_level": 2,
-      "parameters": {"speed_mps": 0.8, "assist_level": 3, "load_kg": 0, "slope_deg": 0}
+      "condition_name": "基础｜1.0m/s行走30s（无负重）",
+      "condition_level": "BASELINE",
+      "parameters": {
+        "category": "baseline_standard",
+        "recommended_trial_count": 1,
+        "target_effective_duration_s": 30,
+        "speed_mps": 1.0,
+        "load_kg": 0,
+        "slope_deg": 0
+      }
+    },
+    {
+      "condition_code": "WALK_LEVEL_LOAD_2P5",
+      "condition_name": "基础｜1.0m/s行走30s（负重2.5kg）",
+      "condition_level": "BASELINE",
+      "parameters": {
+        "category": "baseline_standard",
+        "recommended_trial_count": 1,
+        "target_effective_duration_s": 30,
+        "speed_mps": 1.0,
+        "load_kg": 2.5,
+        "slope_deg": 0
+      }
+    },
+    {
+      "condition_code": "SLOW_LEG_RAISE",
+      "condition_name": "基础｜缓慢抬腿",
+      "condition_level": "BASELINE",
+      "parameters": {
+        "category": "baseline_standard",
+        "recommended_trial_count": 1,
+        "duration_mode": "manual",
+        "movement": "slow_leg_raise",
+        "load_kg": 0
+      }
+    },
+    {
+      "condition_code": "WALK_STEADY_0P75",
+      "condition_name": "稳态水平｜0.75m/s慢走",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_level_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 20,
+        "speed_mps": 0.75,
+        "load_kg": 0,
+        "slope_deg": 0
+      }
+    },
+    {
+      "condition_code": "WALK_STEADY_1P00",
+      "condition_name": "稳态水平｜1.0m/s正常偏慢",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_level_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 20,
+        "speed_mps": 1.0,
+        "load_kg": 0,
+        "slope_deg": 0
+      }
+    },
+    {
+      "condition_code": "WALK_STEADY_1P25",
+      "condition_name": "稳态水平｜1.25m/s标准舒适步速",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_level_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 20,
+        "speed_mps": 1.25,
+        "load_kg": 0,
+        "slope_deg": 0,
+        "reference": "Aaron metabolic experiment"
+      }
+    },
+    {
+      "condition_code": "WALK_STEADY_1P75",
+      "condition_name": "稳态水平｜1.75m/s高速步行",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_level_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 20,
+        "speed_mps": 1.75,
+        "load_kg": 0,
+        "slope_deg": 0
+      }
+    },
+    {
+      "condition_code": "WALK_SLOPE_P05",
+      "condition_name": "稳态坡度｜+5°，1.0m/s",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 20,
+        "speed_mps": 1.0,
+        "load_kg": 0,
+        "slope_deg": 5
+      }
+    },
+    {
+      "condition_code": "WALK_SLOPE_P10",
+      "condition_name": "稳态坡度｜+10°，1.0m/s",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 20,
+        "speed_mps": 1.0,
+        "load_kg": 0,
+        "slope_deg": 10
+      }
+    },
+    {
+      "condition_code": "WALK_SLOPE_P15",
+      "condition_name": "稳态坡度｜+15°，1.0m/s",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 20,
+        "speed_mps": 1.0,
+        "load_kg": 0,
+        "slope_deg": 15
+      }
+    },
+    {
+      "condition_code": "WALK_SLOPE_N05",
+      "condition_name": "稳态坡度｜-5°，1.0m/s",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 20,
+        "speed_mps": 1.0,
+        "load_kg": 0,
+        "slope_deg": -5
+      }
+    },
+    {
+      "condition_code": "WALK_SLOPE_N10",
+      "condition_name": "稳态坡度｜-10°，1.0m/s",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 20,
+        "speed_mps": 1.0,
+        "load_kg": 0,
+        "slope_deg": -10
+      }
+    },
+    {
+      "condition_code": "WALK_SLOPE_N15",
+      "condition_name": "稳态坡度｜-15°，1.0m/s",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 20,
+        "speed_mps": 1.0,
+        "load_kg": 0,
+        "slope_deg": -15
+      }
+    },
+    {
+      "condition_code": "START_STOP_LEFT",
+      "condition_name": "非稳态起停｜随机提示2–5s，左脚先",
+      "condition_level": "TRANSIENT",
+      "parameters": {
+        "category": "transient_random_start_stop",
+        "recommended_trial_count": 20,
+        "effective_duration_s_min": 8,
+        "effective_duration_s_max": 10,
+        "prompt_delay_s_min": 2,
+        "prompt_delay_s_max": 5,
+        "lead_foot": "left",
+        "event_markers": [
+          "start_command",
+          "operator_start_mark",
+          "subject_start_mark",
+          "steady_speed_reached",
+          "stop_command",
+          "operator_stop_mark",
+          "subject_stop_mark",
+          "stationary_reached"
+        ]
+      }
+    },
+    {
+      "condition_code": "START_STOP_RIGHT",
+      "condition_name": "非稳态起停｜随机提示2–5s，右脚先",
+      "condition_level": "TRANSIENT",
+      "parameters": {
+        "category": "transient_random_start_stop",
+        "recommended_trial_count": 20,
+        "effective_duration_s_min": 8,
+        "effective_duration_s_max": 10,
+        "prompt_delay_s_min": 2,
+        "prompt_delay_s_max": 5,
+        "lead_foot": "right",
+        "event_markers": [
+          "start_command",
+          "operator_start_mark",
+          "subject_start_mark",
+          "steady_speed_reached",
+          "stop_command",
+          "operator_stop_mark",
+          "subject_stop_mark",
+          "stationary_reached"
+        ]
+      }
+    },
+    {
+      "condition_code": "SQUAT_STANDARD",
+      "condition_name": "非稳态深蹲｜站立→提示蹲下→提示起立",
+      "condition_level": "TRANSIENT",
+      "parameters": {
+        "category": "transient_standard_squat",
+        "recommended_trial_count": 20,
+        "target_effective_duration_s": 8,
+        "squat_hold_s_min": 2,
+        "squat_hold_s_max": 5,
+        "event_markers": [
+          "squat_start_command",
+          "operator_squat_start_mark",
+          "subject_squat_start_mark",
+          "squat_position_reached",
+          "operator_squat_position_mark",
+          "subject_squat_position_mark",
+          "stand_start_command",
+          "operator_stand_start_mark",
+          "subject_stand_start_mark",
+          "standing_reached",
+          "operator_standing_mark",
+          "subject_standing_mark"
+        ]
+      }
+    },
+    {
+      "condition_code": "SPEED_CHANGE_0P6_TO_0P9",
+      "condition_name": "非稳态变速｜0.6→0.9m/s",
+      "condition_level": "TRANSIENT",
+      "parameters": {
+        "category": "transient_speed_change",
+        "status": "provisional",
+        "recommended_trial_count": 10,
+        "total_duration_s_min": 20,
+        "total_duration_s_max": 30,
+        "pre_change_stable_duration_s": 10,
+        "initial_speed_mps": 0.6,
+        "target_speed_mps": 0.9,
+        "event_markers": [
+          "speed_change_command"
+        ]
+      }
     }
   ]
 }
-

@@ -36,6 +36,7 @@ from exo_collection.external.importer import (
     MappingReference,
     SourceAudit,
 )
+from exo_collection.protocols import load_default_protocol
 from exo_collection.storage.activity import AcquisitionLock
 from exo_collection.storage.checksum import sha256_file, write_checksum_manifest
 from exo_collection.storage.manifest import (
@@ -332,9 +333,15 @@ def test_verified_sidecars_coverage_and_state_summary(
     assert walk.repeat_indices == (1, 2)
     test_subject = next(item for item in coverage if item.project_code == "T")
     assert test_subject.completed_condition_codes == ()
-    assert test_subject.missing_condition_codes == ("STAND", "WALK_LEVEL")
+    expected_condition_codes = tuple(
+        condition.condition_code
+        for condition in load_default_protocol().conditions
+    )
+    assert test_subject.missing_condition_codes == expected_condition_codes
     assert test_subject.attempted_without_valid_condition_codes == ("STAND",)
-    assert test_subject.never_attempted_condition_codes == ("WALK_LEVEL",)
+    assert test_subject.never_attempted_condition_codes == tuple(
+        code for code in expected_condition_codes if code != "STAND"
+    )
     stand = next(item for item in test_subject.conditions if item.condition_code == "STAND")
     walk_missing = next(
         item for item in test_subject.conditions if item.condition_code == "WALK_LEVEL"
