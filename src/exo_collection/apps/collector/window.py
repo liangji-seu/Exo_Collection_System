@@ -823,6 +823,53 @@ class ExperimentMetadataDialog(QDialog):
 # ── Ring Trace (preview display) ───────────────────────────────────────────
 
 
+class HoverDetailsPlotWidget(pg.PlotWidget):
+    """Plot that reveals its title, axis labels, and legend only on hover."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self._hover_details_visible = False
+        super().__init__(*args, **kwargs)
+        self._set_hover_details_visible(False)
+
+    def setTitle(self, *args: Any, **kwargs: Any) -> None:  # noqa: N802
+        self.getPlotItem().setTitle(*args, **kwargs)
+        self._set_hover_details_visible(self._hover_details_visible)
+
+    def setLabel(self, *args: Any, **kwargs: Any) -> None:  # noqa: N802
+        self.getPlotItem().setLabel(*args, **kwargs)
+        self._set_hover_details_visible(self._hover_details_visible)
+
+    def addLegend(self, *args: Any, **kwargs: Any) -> Any:  # noqa: N802
+        legend = self.getPlotItem().addLegend(*args, **kwargs)
+        self._set_hover_details_visible(self._hover_details_visible)
+        return legend
+
+    def enterEvent(self, event: Any) -> None:  # noqa: N802 - Qt API
+        self._set_hover_details_visible(True)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event: Any) -> None:  # noqa: N802 - Qt API
+        self._set_hover_details_visible(False)
+        super().leaveEvent(event)
+
+    def _set_hover_details_visible(self, visible: bool) -> None:
+        self._hover_details_visible = bool(visible)
+        plot_item = self.getPlotItem()
+        title_label = plot_item.titleLabel
+        title_label.setVisible(
+            self._hover_details_visible and bool(title_label.text)
+        )
+        for axis_name in ("left", "bottom"):
+            axis = plot_item.getAxis(axis_name)
+            axis.setStyle(showValues=self._hover_details_visible)
+            axis.label.setVisible(
+                self._hover_details_visible and bool(axis.labelText)
+            )
+        legend = plot_item.legend
+        if legend is not None:
+            legend.setVisible(self._hover_details_visible)
+
+
 class RingTrace:
     """Ring-buffer trace backed by a fixed-size numpy array for pyqtgraph."""
 
@@ -1677,7 +1724,9 @@ class CollectorWindow(QMainWindow):
         us_grid_layout = QGridLayout(us_grid)
         us_grid_layout.setContentsMargins(0, 0, 0, 0)
         for i in range(4):
-            plot = pg.PlotWidget(title=f"超声通道 {i + 1} · 当前帧")
+            plot = HoverDetailsPlotWidget(
+                title=f"超声通道 {i + 1} · 当前帧"
+            )
             plot.setObjectName(f"ultrasound_preview_ch{i}")
             plot.setBackground("w")
             plot.setXRange(0, ULTRASOUND_PREVIEW_SAMPLES - 1, padding=0)
@@ -1707,7 +1756,7 @@ class CollectorWindow(QMainWindow):
         imu_layout.setContentsMargins(0, 0, 0, 0)
         _sensor_display = ("躯干", "左腿", "右腿")
         for sensor_idx, sensor_label in enumerate(_IMU_SENSOR_LABELS):
-            plot = pg.PlotWidget()
+            plot = HoverDetailsPlotWidget()
             plot.setObjectName(f"imu_ring_{sensor_label}")
             plot.addLegend(offset=(-1, 1))
             for axis_name in _IMU_AXIS_NAMES:
@@ -1733,7 +1782,7 @@ class CollectorWindow(QMainWindow):
         enc_layout = QHBoxLayout(enc_grid)
         enc_layout.setContentsMargins(0, 0, 0, 0)
         for side_key, side_name in (("left", "左侧"), ("right", "右侧")):
-            plot = pg.PlotWidget()
+            plot = HoverDetailsPlotWidget()
             plot.setObjectName(f"encoder_ring_{side_key}")
             legend = plot.addLegend(offset=(5, 5))
             shared_cursor = None
@@ -1802,7 +1851,7 @@ class CollectorWindow(QMainWindow):
             ("torque", "Tz", ("tz",), "N·m"),
         )
         for group_key, title, labels, unit in force_groups:
-            plot = pg.PlotWidget(title=title)
+            plot = HoverDetailsPlotWidget(title=title)
             plot.setObjectName(f"force_plate_{group_key}")
             legend = plot.addLegend(offset=(5, 5))
             shared_cursor = None
@@ -1833,7 +1882,7 @@ class CollectorWindow(QMainWindow):
         emg_layout = QHBoxLayout(emg_grid)
         emg_layout.setContentsMargins(0, 0, 0, 0)
         for group_index in range(2):
-            plot = pg.PlotWidget()
+            plot = HoverDetailsPlotWidget()
             plot.setObjectName(f"emg_ring_{group_index + 1}")
             legend = plot.addLegend(offset=(5, 5))
             shared_cursor = None

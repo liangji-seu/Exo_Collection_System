@@ -11,7 +11,7 @@ from uuid import uuid4
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QEvent, QSettings, Qt
 from PySide6.QtGui import QValidator
 from PySide6.QtWidgets import (
     QApplication,
@@ -37,6 +37,7 @@ from exo_collection.apps.collector.device_settings import (
 from exo_collection.apps.collector.window import (
     ExperimentMetadataDialog,
     HardwareDeviceSettingsDialog,
+    HoverDetailsPlotWidget,
     MODALITIES,
     RingTrace,
     SIGNAL_RING_CAPACITY,
@@ -2718,4 +2719,42 @@ def test_toast_supports_warning_success_and_info_palettes(tmp_path: Path) -> Non
         assert window._toast_label.property("toastLevel") == level
         assert background in window._toast_label.styleSheet()
 
+    window.close()
+
+
+def test_preview_plot_text_is_hidden_until_hover(tmp_path: Path) -> None:
+    app, window, _created = _window_with_fake(tmp_path)
+    window.show()
+    app.processEvents()
+
+    plots = window.findChildren(HoverDetailsPlotWidget)
+    assert len(plots) == 14
+    for plot in plots:
+        plot_item = plot.getPlotItem()
+        assert not plot_item.titleLabel.isVisible()
+        assert not plot_item.getAxis("bottom").style["showValues"]
+        assert not plot_item.getAxis("left").style["showValues"]
+        assert not plot_item.getAxis("bottom").label.isVisible()
+        assert not plot_item.getAxis("left").label.isVisible()
+        if plot_item.legend is not None:
+            assert not plot_item.legend.isVisible()
+
+    emg_plot = window._emg_traces["emg_01"].plot
+    app.sendEvent(emg_plot, QEvent(QEvent.Type.Enter))
+    emg_item = emg_plot.getPlotItem()
+    assert emg_item.titleLabel.isVisible()
+    assert emg_item.getAxis("bottom").style["showValues"]
+    assert emg_item.getAxis("left").style["showValues"]
+    assert emg_item.getAxis("bottom").label.isVisible()
+    assert emg_item.getAxis("left").label.isVisible()
+    assert emg_item.legend is not None
+    assert emg_item.legend.isVisible()
+
+    app.sendEvent(emg_plot, QEvent(QEvent.Type.Leave))
+    assert not emg_item.titleLabel.isVisible()
+    assert not emg_item.getAxis("bottom").style["showValues"]
+    assert not emg_item.getAxis("left").style["showValues"]
+    assert not emg_item.getAxis("bottom").label.isVisible()
+    assert not emg_item.getAxis("left").label.isVisible()
+    assert not emg_item.legend.isVisible()
     window.close()
