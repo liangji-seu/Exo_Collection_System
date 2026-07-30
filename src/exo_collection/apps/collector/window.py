@@ -935,6 +935,38 @@ class RingTrace:
         self.cursor_line.setPos(0.0)
 
 
+class DismissibleToastLabel(QLabel):
+    """Opaque notification card dismissed by one click anywhere on it."""
+
+    dismissed = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setToolTip("点击关闭")
+        self.setAccessibleName("通知；点击关闭")
+
+    def mouseReleaseEvent(self, event: Any) -> None:  # noqa: N802 - Qt API
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.dismissed.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802 - Qt API
+        if event.key() in {
+            Qt.Key.Key_Escape,
+            Qt.Key.Key_Return,
+            Qt.Key.Key_Enter,
+            Qt.Key.Key_Space,
+        }:
+            self.dismissed.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
 # ── Preview Worker Factory Helpers ─────────────────────────────────────────
 
 # ── CollectorWindow ────────────────────────────────────────────────────────
@@ -1611,16 +1643,23 @@ class CollectorWindow(QMainWindow):
         controls_layout.addStretch(1)
 
         # ── Toast overlay for alerts ──
-        self._toast_label = QLabel(self)
+        self._toast_label = DismissibleToastLabel(self)
         self._toast_label.setObjectName("toast")
-        self._toast_label.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self._toast_label.setAttribute(
+            Qt.WidgetAttribute.WA_StyledBackground,
+            True,
+        )
         self._toast_label.setWordWrap(True)
-        self._toast_label.setMaximumWidth(480)
-        self._toast_label.setMinimumHeight(36)
+        self._toast_label.setMinimumWidth(340)
+        self._toast_label.setMaximumWidth(520)
+        self._toast_label.setMinimumHeight(48)
         self._toast_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self._toast_label.setVisible(False)
-        self._toast_label.setContentsMargins(16, 8, 16, 8)
-        self._toast_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._toast_label.setContentsMargins(14, 9, 14, 9)
+        self._toast_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.NoTextInteraction
+        )
+        self._toast_label.dismissed.connect(self._hide_toast)
         self._toast_timer = QTimer(self)
         self._toast_timer.setSingleShot(True)
         self._toast_timer.timeout.connect(self._hide_toast)
@@ -3810,7 +3849,7 @@ class CollectorWindow(QMainWindow):
         else:
             LOG.warning("Collector Worker 已完成，但未返回 Manifest 路径")
         self.start_button.setEnabled(False)
-        self._show_toast("✓ Trial 记录完成", level="INFO")
+        self._show_toast("Trial 记录完成", level="SUCCESS")
         self.statusBar().showMessage(event.message or "Trial 数据包已最终化。")
 
     def _mark_failed(self, message: str) -> None:
@@ -3967,11 +4006,41 @@ class CollectorWindow(QMainWindow):
         )
 
     def _append_alert(self, message: str) -> None:
-        error_markers = ("失败", "错误", "异常", "超时", "FAILED", "ERROR",
-                         "FAULT", "掉线", "断开", "断开连接")
-        level = "ERROR" if any(marker in message for marker in error_markers) else "INFO"
+        upper_message = message.upper()
+        error_markers = (
+            "失败",
+            "错误",
+            "异常",
+            "超时",
+            "FAILED",
+            "ERROR",
+            "FAULT",
+            "掉线",
+            "异常退出",
+        )
+        warning_markers = (
+            "警告",
+            "降级",
+            "丢包",
+            "全零",
+            "等待",
+            "未收到",
+            "未 READY",
+            "WARNING",
+        )
+        success_markers = ("成功", "已就绪", "已连接", "记录完成", "SUCCESS")
+        if any(marker in upper_message for marker in error_markers):
+            level = "ERROR"
+        elif any(marker in upper_message for marker in warning_markers):
+            level = "WARNING"
+        elif any(marker in upper_message for marker in success_markers):
+            level = "SUCCESS"
+        else:
+            level = "INFO"
         if level == "ERROR":
             LOG.error("UI: %s", message)
+        elif level == "WARNING":
+            LOG.warning("UI: %s", message)
         else:
             LOG.info("UI: %s", message)
         self._show_toast(message, level=level)
@@ -3979,24 +4048,41 @@ class CollectorWindow(QMainWindow):
     # ── toast overlay ────────────────────────────────────────────────────
 
     def _show_toast(self, message: str, *, level: str = "INFO") -> None:
-        if level == "ERROR":
-            bg = "rgba(220, 53, 69, 200)"; fg = "#ffffff"; icon = "⚠ "
-        else:
-            bg = "rgba(15, 118, 110, 210)"; fg = "#ffffff"; icon = "ℹ "
-        self._toast_label.setText(f"{icon}{message}")
+        normalized_level = level.strip().upper()
+        palettes = {
+            "ERROR": ("#FDE8E7", "#7F1D1D", "#D96C68", "⛔", 10_000),
+            "WARNING": ("#FFF4D6", "#6B4A00", "#D6A63C", "⚠", 7_000),
+            "SUCCESS": ("#E6F4EA", "#1F5D36", "#79B78C", "✓", 4_000),
+            "INFO": ("#E8F1FF", "#173B67", "#7AA7D9", "ℹ", 4_000),
+        }
+        if normalized_level not in palettes:
+            normalized_level = "INFO"
+        bg, fg, border, icon, timeout_ms = palettes[normalized_level]
+        self._toast_label.setProperty("toastLevel", normalized_level)
+        self._toast_label.setAccessibleName(
+            f"{normalized_level} 通知；点击关闭"
+        )
+        self._toast_label.setText(f"{icon}  {message}    ×")
         self._toast_label.setStyleSheet(
-            f"QLabel {{ background-color:{bg}; color:{fg}; border-radius:6px; "
-            f"font-size:13px; padding:8px 16px; }}"
+            "QLabel {"
+            f"background-color:{bg};"
+            f"color:{fg};"
+            f"border:2px solid {border};"
+            "border-radius:8px;"
+            "font-size:13px;"
+            "font-weight:600;"
+            "padding:10px 14px;"
+            "}"
         )
         self._toast_label.adjustSize()
         self._position_toast()
         self._toast_label.setVisible(True)
         self._toast_label.raise_()
-        # Auto-hide: 8 s for errors, 4 s for info
-        self._toast_timer.start(8000 if level == "ERROR" else 4000)
+        self._toast_timer.start(timeout_ms)
 
     @Slot()
     def _hide_toast(self) -> None:
+        self._toast_timer.stop()
         self._toast_label.setVisible(False)
 
     def _position_toast(self) -> None:
@@ -4004,8 +4090,13 @@ class CollectorWindow(QMainWindow):
         h = self._toast_label.height()
         parent_w = self.width()
         margin = 16
+        available_w = max(0, parent_w - 2 * margin)
+        toast_w = min(w, available_w)
         self._toast_label.setGeometry(
-            parent_w - w - margin, margin, min(w, parent_w - 2 * margin), h
+            max(margin, (parent_w - toast_w) // 2),
+            margin,
+            toast_w,
+            h,
         )
 
     @Slot(bool)

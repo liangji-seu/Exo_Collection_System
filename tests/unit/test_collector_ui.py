@@ -2674,3 +2674,48 @@ def test_preview_imu_streams_two_device_labels_skip_empty_slot(
     # Left trace must stay untouched
     assert np.isnan(window._imu_traces["imu_left_acc_x"]._buffer[0])
     window.close()
+
+
+def test_colored_toast_is_top_centered_and_click_to_dismiss(
+    tmp_path: Path,
+) -> None:
+    app, window, _created = _window_with_fake(tmp_path)
+    window.resize(1200, 800)
+    window.show()
+
+    window._show_toast("超声预览失败：未指定网络接口", level="ERROR")
+    app.processEvents()
+
+    toast = window._toast_label
+    assert toast.isVisible()
+    assert toast.property("toastLevel") == "ERROR"
+    assert "#FDE8E7" in toast.styleSheet()
+    assert "点击关闭" in toast.toolTip()
+    assert toast.textInteractionFlags() == Qt.TextInteractionFlag.NoTextInteraction
+    assert abs(toast.geometry().center().x() - window.rect().center().x()) <= 1
+    assert window._toast_timer.isActive()
+
+    QTest.mouseClick(toast, Qt.MouseButton.LeftButton)
+    app.processEvents()
+
+    assert not toast.isVisible()
+    assert not window._toast_timer.isActive()
+    window.close()
+
+
+def test_toast_supports_warning_success_and_info_palettes(tmp_path: Path) -> None:
+    app, window, _created = _window_with_fake(tmp_path)
+    window.show()
+
+    expected_backgrounds = {
+        "WARNING": "#FFF4D6",
+        "SUCCESS": "#E6F4EA",
+        "INFO": "#E8F1FF",
+    }
+    for level, background in expected_backgrounds.items():
+        window._show_toast("状态提示", level=level)
+        app.processEvents()
+        assert window._toast_label.property("toastLevel") == level
+        assert background in window._toast_label.styleSheet()
+
+    window.close()
