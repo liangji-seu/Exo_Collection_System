@@ -515,7 +515,7 @@ def test_preview_sections_are_not_user_resizable_splitters(tmp_path: Path) -> No
     window.close()
 
 
-def test_1080p_layout_scrolls_controls_instead_of_crushing_them(
+def test_1080p_layout_fits_controls_without_scrolling_or_crushing_them(
     tmp_path: Path,
 ) -> None:
     app, window, _created = _window_with_fake(tmp_path)
@@ -537,6 +537,7 @@ def test_1080p_layout_scrolls_controls_instead_of_crushing_them(
     assert 610 <= controls_scroll.width() <= 650
     assert controls_content.height() >= controls_content.minimumSizeHint().height()
     assert controls_scroll.widgetResizable()
+    assert controls_scroll.verticalScrollBar().maximum() == 0
     assert window.findChild(QWidget, "preview_workspace") is not None
     assert abs(window.project_combo.width() - window.subject_code_edit.width()) <= 2
     assert window.repeat_spin.width() <= 105
@@ -552,6 +553,14 @@ def test_1080p_layout_scrolls_controls_instead_of_crushing_them(
     for index, button in enumerate(action_buttons):
         for other in action_buttons[index + 1 :]:
             assert not button.geometry().intersects(other.geometry())
+    assert all(
+        window.health_table.rowHeight(row) == 22
+        for row in range(window.health_table.rowCount())
+    )
+    connection_heights = [
+        button.height() for button in window._connect_buttons.values()
+    ]
+    assert all(height == 28 for height in connection_heights), connection_heights
 
     assert body.sizes()[1] > body.sizes()[0]
     window.close()

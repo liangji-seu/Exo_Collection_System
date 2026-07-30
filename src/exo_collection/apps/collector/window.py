@@ -1238,6 +1238,8 @@ class CollectorWindow(QMainWindow):
     def _create_ui(self, data_root: Path) -> None:
         central = QWidget(self)
         outer = QVBoxLayout(central)
+        outer.setContentsMargins(8, 6, 8, 6)
+        outer.setSpacing(4)
 
         # ── Header ──
         header = QHBoxLayout()
@@ -1281,28 +1283,48 @@ class CollectorWindow(QMainWindow):
 
         controls = QWidget()
         controls.setObjectName("controls_content")
+        controls.setStyleSheet(
+            "QWidget#controls_content QPushButton { "
+            "min-height: 22px; max-height: 22px; padding: 2px 7px; }"
+            "QWidget#controls_content QPushButton[buttonRole='deviceConfig'] { "
+            "min-height: 21px; max-height: 21px; }"
+            "QWidget#controls_content QPushButton#connect_all, "
+            "QWidget#controls_content QPushButton#start_trial { "
+            "min-height: 28px; max-height: 28px; }"
+            "QWidget#controls_content QPushButton#edit_experiment_metadata { "
+            "min-height: 24px; max-height: 24px; }"
+        )
         controls.setSizePolicy(
             QSizePolicy.Policy.Preferred,
             QSizePolicy.Policy.Minimum,
         )
         controls_layout = QVBoxLayout(controls)
         controls_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+        controls_layout.setContentsMargins(6, 0, 6, 4)
+        controls_layout.setSpacing(4)
 
         # ── Trial Settings ──
         metadata_box = QGroupBox("Trial 设置")
         form = QFormLayout(metadata_box)
+        form.setContentsMargins(8, 12, 8, 7)
+        form.setHorizontalSpacing(7)
+        form.setVerticalSpacing(4)
         root_row = QHBoxLayout()
+        root_row.setSpacing(5)
         self.data_root_edit = QLineEdit(str(data_root))
         self.data_root_edit.setObjectName("data_root")
         self.data_root_edit.textChanged.connect(self._invalidate_preflight)
         root_row.addWidget(self.data_root_edit, 1)
         self.browse_button = QPushButton("选择…")
+        self.browse_button.setFixedHeight(28)
         self.browse_button.clicked.connect(self.choose_data_root)
         root_row.addWidget(self.browse_button)
         form.addRow("数据根目录：", root_row)
 
         # Row 1: 项目 + 受试者编码
         row1 = QGridLayout()
+        row1.setHorizontalSpacing(7)
+        row1.setVerticalSpacing(0)
         self.project_combo = QComboBox()
         self.project_combo.setObjectName("project")
         for project in PROJECTS:
@@ -1330,6 +1352,8 @@ class CollectorWindow(QMainWindow):
 
         # Row 2: 工况 + 重复轮次
         row2 = QGridLayout()
+        row2.setHorizontalSpacing(7)
+        row2.setVerticalSpacing(0)
         self.condition_combo = QComboBox()
         self.condition_combo.setObjectName("condition")
         self.condition_combo.setSizeAdjustPolicy(
@@ -1356,40 +1380,58 @@ class CollectorWindow(QMainWindow):
         row2.setColumnStretch(1, 1)
         row2.setColumnStretch(3, 0)
         form.addRow(row2)
+        for compact_control in (
+            self.data_root_edit,
+            self.project_combo,
+            self.subject_code_edit,
+            self.condition_combo,
+            self.repeat_spin,
+        ):
+            compact_control.setFixedHeight(28)
         controls_layout.addWidget(metadata_box)
 
         experiment_box = QGroupBox("详细信息")
         experiment_layout = QHBoxLayout(experiment_box)
+        experiment_layout.setContentsMargins(8, 11, 8, 6)
+        experiment_layout.setSpacing(8)
         self.experiment_metadata_button = QPushButton("填写 / 修改…")
         self.experiment_metadata_button.setObjectName("edit_experiment_metadata")
         self.experiment_metadata_button.clicked.connect(self.edit_experiment_metadata)
+        self.experiment_metadata_button.setFixedHeight(30)
         experiment_layout.addWidget(self.experiment_metadata_button)
         self.experiment_metadata_summary = QLabel("未填写；不影响采集")
         self.experiment_metadata_summary.setObjectName("experiment_metadata_summary")
         self.experiment_metadata_summary.setWordWrap(True)
+        self.experiment_metadata_summary.setMaximumHeight(32)
         experiment_layout.addWidget(self.experiment_metadata_summary, 1)
         controls_layout.addWidget(experiment_box)
 
         # ── Trial buttons ──
         buttons = QHBoxLayout()
+        buttons.setSpacing(6)
         self.connect_all_button = QPushButton("全部连接")
         self.connect_all_button.setObjectName("connect_all")
         self.connect_all_button.clicked.connect(self._toggle_connect_all)
         self.connect_all_button.setMinimumWidth(105)
+        self.connect_all_button.setFixedHeight(34)
         buttons.addWidget(self.connect_all_button)
         self.start_button = QPushButton("开始写盘")
         self.start_button.setObjectName("start_trial")
         self.start_button.setStyleSheet(
-            "QPushButton { font-weight: 600; padding: 8px; color: #ffffff; background: #0f766e; border: 1px solid #115e59; border-radius: 4px; }"
+            "QPushButton { font-weight: 600; padding: 4px 8px; color: #ffffff; background: #0f766e; border: 1px solid #115e59; border-radius: 4px; }"
         )
         self.start_button.clicked.connect(self._toggle_write)
         self.start_button.setMinimumWidth(105)
+        self.start_button.setFixedHeight(34)
         buttons.addWidget(self.start_button)
         controls_layout.addLayout(buttons)
 
         # ── Device Connection Area ──
         connection_box = QGroupBox("设备连接")
         connection_layout = QGridLayout(connection_box)
+        connection_layout.setContentsMargins(8, 11, 8, 6)
+        connection_layout.setHorizontalSpacing(6)
+        connection_layout.setVerticalSpacing(1)
         connection_layout.addWidget(QLabel("模态（点击设置）"), 0, 0)
         status_header = QLabel("状态")
         status_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1404,6 +1446,7 @@ class CollectorWindow(QMainWindow):
         self._device_profile_label = QLabel()
         self._device_profile_label.setObjectName("device_profile")
         self._device_profile_label.setWordWrap(True)
+        self._device_profile_label.setMaximumHeight(38)
         connection_layout.addWidget(self._device_profile_label, len(MODALITIES) + 1, 0, 1, 3)
 
         # Per-modality rows
@@ -1411,6 +1454,7 @@ class CollectorWindow(QMainWindow):
             configure_btn = QPushButton(MODALITY_DISPLAY_NAMES[modality])
             configure_btn.setObjectName(f"configure_{modality}")
             configure_btn.setProperty("buttonRole", "deviceConfig")
+            configure_btn.setFixedHeight(27)
             configure_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             configure_btn.setToolTip(f"设置{MODALITY_DISPLAY_NAMES[modality]}设备参数（自动保存）")
             configure_btn.clicked.connect(
@@ -1421,7 +1465,7 @@ class CollectorWindow(QMainWindow):
 
             status_label = QLabel("")
             status_label.setObjectName(f"connect_status_{modality}")
-            status_label.setFixedSize(20, 20)
+            status_label.setFixedSize(16, 16)
             self._style_connection_indicator(status_label, "未连接")
             status_label.setToolTip("状态：未连接")
             connection_layout.addWidget(
@@ -1433,6 +1477,8 @@ class CollectorWindow(QMainWindow):
             self._connect_status_labels[modality] = status_label
 
             btn_container = QHBoxLayout()
+            btn_container.setContentsMargins(0, 0, 0, 0)
+            btn_container.setSpacing(4)
             connect_btn = QPushButton("连接")
             connect_btn.setObjectName(f"connect_{modality}")
             connect_btn.setProperty("buttonRole", "connect")
@@ -1450,6 +1496,8 @@ class CollectorWindow(QMainWindow):
             disconnect_btn.setEnabled(False)
             connect_btn.setMinimumWidth(72)
             disconnect_btn.setMinimumWidth(72)
+            connect_btn.setFixedHeight(28)
+            disconnect_btn.setFixedHeight(28)
 
             btn_container.addWidget(connect_btn)
             btn_container.addWidget(disconnect_btn)
@@ -1462,6 +1510,8 @@ class CollectorWindow(QMainWindow):
         # ── Health Table ──
         health_box = QGroupBox("设备健康与样本计数")
         health_layout = QVBoxLayout(health_box)
+        health_layout.setContentsMargins(8, 11, 8, 6)
+        health_layout.setSpacing(2)
         self.health_table = QTableWidget(len(HEALTH_ROWS), 5)
         self.health_table.setObjectName("health_table")
         self.health_table.setHorizontalHeaderLabels(
@@ -1488,7 +1538,7 @@ class CollectorWindow(QMainWindow):
         sync_row = self._health_rows["sync_pulse"]
         self.sync_status_label = QLabel("")
         self.sync_status_label.setObjectName("sync_status")
-        self.sync_status_label.setFixedSize(20, 20)
+        self.sync_status_label.setFixedSize(16, 16)
         sync_indicator_container = QWidget()
         sync_indicator_layout = QHBoxLayout(sync_indicator_container)
         sync_indicator_layout.setContentsMargins(0, 0, 0, 0)
@@ -1503,8 +1553,9 @@ class CollectorWindow(QMainWindow):
         self._set_sync_indicator("WAITING_SYNC", "WAITING", 0, "—")
         self.health_table.resizeColumnsToContents()
         for row in range(self.health_table.rowCount()):
-            self.health_table.setRowHeight(row, 30)
+            self.health_table.setRowHeight(row, 22)
         health_header = self.health_table.horizontalHeader()
+        health_header.setFixedHeight(25)
         health_header.setSectionResizeMode(
             HEALTH_COLUMN_MODALITY,
             QHeaderView.ResizeMode.Stretch,
@@ -1868,15 +1919,22 @@ class CollectorWindow(QMainWindow):
 
         if hardware:
             self._device_profile_label.setText(
-                "真实设备模式：Raw Ethernet 超声 + Xsens MTw IMU + Teensy 编码器 + "
-                "XING/Nokov 动捕 Marker 与 EMG + gaitway-3D 测力台。"
-                "点击蓝色模态名称可分别设置；"
+                "真实设备模式：超声 / Xsens / Teensy / XING / gaitway；"
+                "同步脉冲为模拟信号。"
+            )
+            self._device_profile_label.setToolTip(
+                "Raw Ethernet 超声 + Xsens MTw IMU + Teensy 编码器 + "
+                "XING/Nokov 动捕 Marker 与 EMG + gaitway-3D 测力台；"
                 "同步脉冲仍为模拟台架信号。"
             )
             self._device_profile_label.setStyleSheet("color:#842029;font-weight:600;")
         else:
             self._device_profile_label.setText(
-                "当前为自动化测试用模拟设备；正常启动并保存任一设备设置后切换为真实设备模式。"
+                "模拟设备模式；保存任一设备设置后切换为真实设备。"
+            )
+            self._device_profile_label.setToolTip(
+                "当前为自动化测试用模拟设备；正常启动并保存任一设备设置后"
+                "切换为真实设备模式。"
             )
             self._device_profile_label.setStyleSheet("")
 
