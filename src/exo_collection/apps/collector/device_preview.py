@@ -461,6 +461,9 @@ def _preview_runner_target(
                         "queue_depth": health.queue_depth,
                         "queue_capacity": health.queue_capacity,
                         "dropped_packets": health.dropped_packets,
+                        "last_data_host_monotonic_ns": (
+                            health.last_data_host_monotonic_ns
+                        ),
                         "message": health.message,
                         "sampled_at_utc": health.sampled_at_utc.isoformat(),
                     },

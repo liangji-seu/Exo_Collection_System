@@ -1447,7 +1447,37 @@ class CollectorWindow(QMainWindow):
         self._device_profile_label.setObjectName("device_profile")
         self._device_profile_label.setWordWrap(True)
         self._device_profile_label.setMaximumHeight(38)
-        connection_layout.addWidget(self._device_profile_label, len(MODALITIES) + 1, 0, 1, 3)
+        connection_legend = QLabel(
+            "<span style='color:#64748B'>● 未连接</span>&nbsp;&nbsp;"
+            "<span style='color:#2563EB'>● 连接中</span>&nbsp;&nbsp;"
+            "<span style='color:#D97706'>● 等数据</span>&nbsp;&nbsp;"
+            "<span style='color:#15803D'>● 正常</span>&nbsp;&nbsp;"
+            "<span style='color:#EA580C'>● 异常</span>&nbsp;&nbsp;"
+            "<span style='color:#B91C1C'>● 故障</span>"
+        )
+        connection_legend.setObjectName("connection_status_legend")
+        connection_legend.setTextFormat(Qt.TextFormat.RichText)
+        connection_legend.setMaximumHeight(19)
+        connection_legend.setToolTip(
+            "灰：未连接；蓝：正在连接或断开；黄：已连接但尚无数据；"
+            "绿：持续收到正常数据；橙：数据中断、丢包、队列压力或健康降级；"
+            "红：设备故障或连接失败。"
+        )
+        connection_layout.addWidget(
+            connection_legend,
+            len(MODALITIES) + 1,
+            0,
+            1,
+            3,
+        )
+        connection_layout.addWidget(
+            self._device_profile_label,
+            len(MODALITIES) + 2,
+            0,
+            1,
+            3,
+        )
+        self._connection_status_legend = connection_legend
 
         # Per-modality rows
         for row_idx, modality in enumerate(MODALITIES, start=1):
@@ -2340,20 +2370,56 @@ class CollectorWindow(QMainWindow):
         return device.device_id, simulated
 
     @staticmethod
-    def _style_connection_indicator(label: QLabel, status: str) -> None:
+    def _connection_indicator_spec(
+        status: str,
+    ) -> tuple[str, str, str, str]:
         normalized = status.strip().upper()
-        if normalized in {"READY", "已连接"}:
-            indicator_state, fill, border = "green", "#22C55E", "#15803D"
-        elif any(token in status for token in ("连接中", "断开中", "启动中")):
-            indicator_state, fill, border = "yellow", "#FBBF24", "#D97706"
-        else:
-            indicator_state, fill, border = "red", "#EF4444", "#B91C1C"
+        if (
+            normalized in {"FAULT", "FAILED", "ERROR", "UNHEALTHY", "错误", "故障"}
+            or any(token in status for token in ("失败", "异常退出"))
+        ):
+            return "red", "#EF4444", "#B91C1C", "故障"
+        if normalized in {"DISCONNECTED", "CLOSED", "未连接", "UNKNOWN"}:
+            return "neutral", "#94A3B8", "#64748B", "未连接"
+        if (
+            normalized in {"CONNECTING", "STOPPING"}
+            or any(token in status for token in ("连接中", "断开中", "启动中"))
+        ):
+            return "blue", "#3B82F6", "#1D4ED8", "连接中"
+        if (
+            normalized in {"CONNECTED", "PREPARING", "PREVIEW_STARTING"}
+            or "等待数据" in status
+            or "无数据" in status
+        ):
+            return "yellow", "#FBBF24", "#D97706", "已连接，等待数据"
+        if (
+            normalized == "DEGRADED"
+            or any(token in status for token in ("数据异常", "数据中断", "降级"))
+        ):
+            return "orange", "#F97316", "#C2410C", "数据异常"
+        if normalized in {
+            "READY",
+            "RECORDING",
+            "HEALTHY",
+            "已连接",
+            "数据正常",
+        }:
+            return "green", "#22C55E", "#15803D", "数据正常"
+        return "neutral", "#94A3B8", "#64748B", "状态未知"
+
+    @classmethod
+    def _style_connection_indicator(cls, label: QLabel, status: str) -> str:
+        indicator_state, fill, border, display = cls._connection_indicator_spec(
+            status
+        )
         label.setText("")
         label.setProperty("indicatorState", indicator_state)
+        label.setProperty("indicatorStatus", display)
         label.setStyleSheet(
             f"QLabel {{ background-color:{fill}; border:2px solid {border}; "
-            "border-radius:10px; }}"
+            "border-radius:8px; }}"
         )
+        return display
 
     def _set_sync_indicator(
         self,
@@ -2393,20 +2459,31 @@ class CollectorWindow(QMainWindow):
         )
         self.sync_status_label.setAccessibleName(f"同步状态：{status_text}")
 
-    def _set_preview_status(self, modality: str, status: str, device_id: str,
-                            simulated: bool, error: str | None = None) -> None:
+    def _set_preview_status(
+        self,
+        modality: str,
+        status: str,
+        device_id: str,
+        simulated: bool,
+        error: str | None = None,
+        detail_lines: tuple[str, ...] = (),
+    ) -> None:
         """Update the per-modality UI status labels."""
         if modality in self._connect_status_labels:
             label = self._connect_status_labels[modality]
             source = "模拟" if simulated else "真实"
-            self._style_connection_indicator(label, status)
-            tooltip_lines = [f"状态：{status}", f"来源：{source}"]
+            display_status = self._style_connection_indicator(label, status)
+            tooltip_lines = [
+                f"状态：{display_status}",
+                f"来源：{source}",
+            ]
             if device_id:
                 tooltip_lines.append(f"设备 ID：{device_id}")
+            tooltip_lines.extend(detail_lines)
             if error:
                 tooltip_lines.append(f"详情：{error}")
             label.setToolTip("\n".join(tooltip_lines))
-            label.setAccessibleName(f"{modality} 状态：{status}")
+            label.setAccessibleName(f"{modality} 状态：{display_status}")
 
     @Slot()
     def _connect_modality(self, modality: str) -> None:
@@ -2579,7 +2656,13 @@ class CollectorWindow(QMainWindow):
                 self._preview_connection_status[modality] = "已连接"
                 if self.preview_workspace is not None:
                     self.preview_workspace.set_stream_state(modality, "connected")
-                self._set_preview_status(modality, "READY", handle.device_id, handle.simulated)
+                self._set_preview_status(
+                    modality,
+                    "数据正常",
+                    handle.device_id,
+                    handle.simulated,
+                    detail_lines=("已收到首批有效数据",),
+                )
                 self._update_connect_button_state()
                 self._update_start_button()
                 self._append_alert(
@@ -2587,13 +2670,59 @@ class CollectorWindow(QMainWindow):
                     f"{'模拟' if handle.simulated else '真实'}预览已就绪。"
                 )
                 LOG.info("%s (%s) preview READY simulated=%s", modality, handle.device_id, handle.simulated)
-            elif state in ("CONNECTING", "PREVIEW_STARTING"):
-                pass
+            elif state == "CONNECTING":
+                self._set_preview_status(
+                    modality,
+                    "连接中",
+                    handle.device_id,
+                    handle.simulated,
+                )
+            elif state == "PREVIEW_STARTING":
+                self._set_preview_status(
+                    modality,
+                    "已连接，等待数据",
+                    handle.device_id,
+                    handle.simulated,
+                    detail_lines=("通信已建立，正在等待首批有效数据",),
+                )
+            elif state in {"CONNECTED", "PREPARING", "RECORDING"}:
+                if modality not in self._preview_connected_modalities:
+                    self._set_preview_status(
+                        modality,
+                        "已连接，等待数据",
+                        handle.device_id,
+                        handle.simulated,
+                        detail_lines=("通信已建立，正在等待首批有效数据",),
+                    )
+            elif state == "STOPPING":
+                self._set_preview_status(
+                    modality,
+                    "断开中",
+                    handle.device_id,
+                    handle.simulated,
+                )
+            elif state == "FAULT":
+                self._preview_connected_modalities.discard(modality)
+                self._preview_connection_status[modality] = "错误"
+                self._set_preview_status(
+                    modality,
+                    "故障",
+                    handle.device_id,
+                    handle.simulated,
+                    error=event.message or "设备报告故障",
+                )
+                self._update_start_button()
             elif state == "DISCONNECTED":
                 self._preview_connected_modalities.discard(modality)
                 self._preview_connection_status[modality] = "未连接"
                 if self.preview_workspace is not None:
                     self.preview_workspace.set_stream_state(modality, "disconnected")
+                self._set_preview_status(
+                    modality,
+                    "未连接",
+                    handle.device_id,
+                    handle.simulated,
+                )
                 self._update_connect_button_state()
                 self._update_start_button()
         elif event.event_type is WorkerEventType.FAILED:
@@ -2707,10 +2836,156 @@ class CollectorWindow(QMainWindow):
         )
         previous = self._last_health_status.get(modality)
         self._last_health_status[modality] = status
+        indicator_status, indicator_reason, data_age_s = (
+            self._classify_preview_health(payload)
+        )
+        handle = self._preview_workers.get(modality)
+        device_id = str(
+            payload.get("device_id")
+            or (handle.device_id if handle is not None else "")
+        )
+        simulated = bool(
+            payload.get(
+                "simulated",
+                handle.simulated if handle is not None else False,
+            )
+        )
+        health_status = str(
+            payload.get("health_status") or status or "UNKNOWN"
+        ).upper()
+        nominal_rate = payload.get("nominal_sample_rate_hz")
+        queue_depth = payload.get("queue_depth")
+        queue_capacity = payload.get("queue_capacity")
+        details = [
+            f"设备健康：{health_status}",
+            f"累计样本/帧：{int(sample_count or 0)}",
+            (
+                "实际/标称速率："
+                f"{float(rate):.1f} / {float(nominal_rate):.1f} Hz"
+                if rate is not None and nominal_rate is not None
+                else "实际/标称速率：尚无完整数据"
+            ),
+            f"累计丢包：{int(dropped or 0)}",
+        ]
+        if queue_depth is not None and queue_capacity is not None:
+            details.append(
+                f"队列：{int(queue_depth)} / {int(queue_capacity)}"
+            )
+        if data_age_s is not None:
+            details.append(f"距最近数据：{data_age_s:.2f} s")
+        self._set_preview_status(
+            modality,
+            indicator_status,
+            device_id,
+            simulated,
+            error=indicator_reason,
+            detail_lines=tuple(details),
+        )
         if status in {"DEGRADED", "UNHEALTHY", "FAULT"} and status != previous:
             detail = event.message or str(payload.get("message") or "")
             suffix = f"：{detail}" if detail else ""
             self._append_alert(f"{modality} 健康状态 {status}{suffix}")
+
+    @staticmethod
+    def _classify_preview_health(
+        payload: Mapping[str, Any],
+    ) -> tuple[str, str | None, float | None]:
+        """Collapse connection, data freshness and health into one lamp state."""
+
+        device_status = str(payload.get("status") or "UNKNOWN").upper()
+        health_status = str(
+            payload.get("health_status")
+            or (
+                device_status
+                if device_status in {"HEALTHY", "DEGRADED", "UNHEALTHY"}
+                else "UNKNOWN"
+            )
+        ).upper()
+        connected = bool(
+            payload.get(
+                "connected",
+                device_status not in {"DISCONNECTED", "CLOSED"},
+            )
+        )
+        try:
+            sample_count = max(0, int(payload.get("sample_count") or 0))
+        except (TypeError, ValueError):
+            sample_count = 0
+        try:
+            dropped_packets = max(
+                0, int(payload.get("dropped_packets") or 0)
+            )
+        except (TypeError, ValueError):
+            dropped_packets = 0
+
+        if (
+            device_status in {"FAULT", "FAILED"}
+            or health_status == "UNHEALTHY"
+        ):
+            reason = str(payload.get("message") or "设备报告故障")
+            return "故障", reason, None
+        if not connected or device_status in {"DISCONNECTED", "CLOSED"}:
+            return "未连接", None, None
+        if device_status == "CONNECTING":
+            return "连接中", None, None
+        if sample_count <= 0:
+            return "已连接，等待数据", None, None
+
+        data_age_s: float | None = None
+        last_data_ns = payload.get("last_data_host_monotonic_ns")
+        try:
+            if last_data_ns is not None and int(last_data_ns) > 0:
+                data_age_s = max(
+                    0.0,
+                    (time.perf_counter_ns() - int(last_data_ns))
+                    / 1_000_000_000,
+                )
+        except (TypeError, ValueError):
+            data_age_s = None
+        nominal_rate = payload.get("nominal_sample_rate_hz")
+        try:
+            stale_after_s = max(
+                2.0,
+                20.0 / max(float(nominal_rate or 0.0), 1e-9),
+            )
+        except (TypeError, ValueError):
+            stale_after_s = 2.0
+        if data_age_s is not None and data_age_s > stale_after_s:
+            return (
+                "数据中断",
+                f"超过 {stale_after_s:.1f} s 未收到新数据",
+                data_age_s,
+            )
+
+        queue_depth = payload.get("queue_depth")
+        queue_capacity = payload.get("queue_capacity")
+        try:
+            queue_fill = (
+                float(queue_depth) / float(queue_capacity)
+                if float(queue_capacity) > 0
+                else 0.0
+            )
+        except (TypeError, ValueError):
+            queue_fill = 0.0
+        if health_status == "DEGRADED":
+            return (
+                "数据异常",
+                str(payload.get("message") or "设备健康状态降级"),
+                data_age_s,
+            )
+        if dropped_packets > 0:
+            return (
+                "数据异常",
+                f"已检测到 {dropped_packets} 个丢包",
+                data_age_s,
+            )
+        if queue_fill >= 0.8:
+            return (
+                "数据异常",
+                f"原始队列占用达到 {queue_fill:.0%}",
+                data_age_s,
+            )
+        return "数据正常", None, data_age_s
 
     def _handle_preview_worker_death(self, modality: str, handle: ModalityPreviewHandle) -> None:
         requested = modality in self._preview_disconnect_deadlines

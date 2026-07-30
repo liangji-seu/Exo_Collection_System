@@ -2406,14 +2406,74 @@ def test_device_connection_rows_omit_source_device_id_column(tmp_path: Path) -> 
     status = window._connect_status_labels["ultrasound"]
     assert status.text() == ""
     assert status.property("indicatorState") == "green"
-    assert "状态：READY" in status.toolTip()
+    assert "状态：数据正常" in status.toolTip()
     assert "very_long_device_identifier" in status.toolTip()
 
     window._set_preview_status("ultrasound", "连接中", "device", False)
+    assert status.property("indicatorState") == "blue"
+    window._set_preview_status(
+        "ultrasound", "已连接，等待数据", "device", False
+    )
     assert status.property("indicatorState") == "yellow"
     window._set_preview_status("ultrasound", "错误", "device", False, error="boom")
     assert status.property("indicatorState") == "red"
     assert "详情：boom" in status.toolTip()
+    window.close()
+
+
+def test_connection_lamp_combines_connection_data_and_health_states(
+    tmp_path: Path,
+) -> None:
+    _app, window, _created = _window_with_fake(tmp_path)
+    status = window._connect_status_labels["imu"]
+    assert status.property("indicatorState") == "neutral"
+    assert window._connection_status_legend is not None
+    assert "绿：持续收到正常数据" in window._connection_status_legend.toolTip()
+
+    common = {
+        "status": "RECORDING",
+        "health_status": "HEALTHY",
+        "connected": True,
+        "sample_count": 100,
+        "actual_sample_rate_hz": 100.0,
+        "nominal_sample_rate_hz": 100.0,
+        "queue_depth": 1,
+        "queue_capacity": 64,
+        "dropped_packets": 0,
+        "last_data_host_monotonic_ns": time.perf_counter_ns(),
+    }
+    state, reason, _age = window._classify_preview_health(common)
+    assert state == "数据正常"
+    assert reason is None
+
+    state, reason, _age = window._classify_preview_health(
+        {**common, "sample_count": 0, "last_data_host_monotonic_ns": None}
+    )
+    assert state == "已连接，等待数据"
+    assert reason is None
+
+    state, reason, _age = window._classify_preview_health(
+        {**common, "dropped_packets": 2}
+    )
+    assert state == "数据异常"
+    assert "2 个丢包" in str(reason)
+
+    state, reason, _age = window._classify_preview_health(
+        {
+            **common,
+            "last_data_host_monotonic_ns": (
+                time.perf_counter_ns() - 3_000_000_000
+            ),
+        }
+    )
+    assert state == "数据中断"
+    assert "未收到新数据" in str(reason)
+
+    state, reason, _age = window._classify_preview_health(
+        {**common, "health_status": "UNHEALTHY", "message": "device fault"}
+    )
+    assert state == "故障"
+    assert reason == "device fault"
     window.close()
 
 
