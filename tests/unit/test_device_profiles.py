@@ -17,6 +17,8 @@ from exo_collection.configuration.device_profiles import (
 from exo_collection.configuration.adapter_registry import build_adapters
 from exo_collection.adapters.encoder.teensy_serial import TeensySerialEncoderAdapter
 from exo_collection.adapters.imu.xsens_awinda import XsensAwindaImuAdapter
+from exo_collection.adapters.mocap import XingNokovMocapAdapter
+from exo_collection.adapters.emg import XingNokovEmgAdapter
 from exo_collection.adapters.sync_pulse.simulated import SimulatedSyncPulseAdapter
 from exo_collection.adapters.ultrasound.raw_ethernet import RawEthernetUltrasoundAdapter
 from exo_collection.orchestration.models import TrialRunRequest
@@ -29,7 +31,9 @@ def test_default_simulated_device_profile_is_typed_and_complete() -> None:
     devices = profile.by_modality()
 
     assert path.name == "simulated.json"
-    assert list(devices) == ["ultrasound", "imu", "encoder", "sync_pulse"]
+    assert list(devices) == [
+        "ultrasound", "imu", "encoder", "mocap", "emg", "sync_pulse"
+    ]
     assert isinstance(devices["imu"].parameters, ImuSimulationParameters)
     assert devices["ultrasound"].writer == "block_binary"
     assert devices["ultrasound"].required
@@ -63,7 +67,7 @@ def test_profile_rejects_unapproved_adapter_unknown_parameters_and_missing_modal
     missing["devices"].pop()
     path = tmp_path / "incomplete.json"
     path.write_text(json.dumps(missing), encoding="utf-8")
-    with pytest.raises(ValidationError, match="must define ultrasound"):
+    with pytest.raises(ValidationError, match="all six acquisition modalities"):
         load_simulated_device_profile(path)
 
 
@@ -113,7 +117,9 @@ def test_hardware_profile_is_strict_and_explicitly_has_simulated_sync() -> None:
     assert "Raw Ethernet" in profile.display_name
     assert profile.laboratory_sync_ready is False
     devices = profile.by_modality()
-    assert [devices[name].simulated for name in devices] == [False, False, False, True]
+    assert [devices[name].simulated for name in devices] == [
+        False, False, False, False, False, True
+    ]
     assert devices["ultrasound"].parameters.interface_name is None
     assert devices["imu"].parameters.sensor_ids == ()
     assert devices["encoder"].parameters.port is None
@@ -124,6 +130,8 @@ def test_hardware_registry_constructs_without_loading_vendor_sdks() -> None:
     assert isinstance(adapters["ultrasound"], RawEthernetUltrasoundAdapter)
     assert isinstance(adapters["imu"], XsensAwindaImuAdapter)
     assert isinstance(adapters["encoder"], TeensySerialEncoderAdapter)
+    assert isinstance(adapters["mocap"], XingNokovMocapAdapter)
+    assert isinstance(adapters["emg"], XingNokovEmgAdapter)
     assert isinstance(adapters["sync_pulse"], SimulatedSyncPulseAdapter)
     assert adapters["ultrasound"].descriptor().metadata["simulated"] is False
 

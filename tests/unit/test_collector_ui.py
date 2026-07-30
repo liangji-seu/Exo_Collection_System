@@ -529,7 +529,8 @@ def test_1080p_layout_scrolls_controls_instead_of_crushing_them(
     assert window.minimumSizeHint().height() < 700
     assert 610 <= controls_scroll.width() <= 650
     assert controls_content.height() >= controls_content.minimumSizeHint().height()
-    assert controls_scroll.verticalScrollBar().maximum() == 0
+    assert controls_scroll.widgetResizable()
+    assert window.findChild(QScrollArea, "preview_scroll") is not None
     assert abs(window.project_combo.width() - window.subject_code_edit.width()) <= 2
     assert window.repeat_spin.width() <= 105
     assert window.condition_combo.width() >= window.repeat_spin.width() * 3
@@ -2276,7 +2277,7 @@ def test_device_connection_rows_omit_source_device_id_column(tmp_path: Path) -> 
 def test_health_table_has_modalities_and_prompt_label_counters(tmp_path: Path) -> None:
     """Compact table includes both keyboard-label counters."""
     _app, window, _created = _window_with_fake(tmp_path)
-    assert window.health_table.rowCount() == 6
+    assert window.health_table.rowCount() == 8
     assert window.health_table.columnCount() == 5
     assert [
         window.health_table.horizontalHeaderItem(column).text()
@@ -2289,6 +2290,8 @@ def test_health_table_has_modalities_and_prompt_label_counters(tmp_path: Path) -
         "超声",
         "IMU",
         "电机编码器",
+        "动捕 Marker",
+        "表面肌电 EMG",
         "同步脉冲",
         "受试者标签（<）",
         "工作人员标签（>）",

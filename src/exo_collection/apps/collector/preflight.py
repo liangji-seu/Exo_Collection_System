@@ -24,6 +24,8 @@ from exo_collection.adapters.base import (
 )
 from exo_collection.adapters.encoder.simulated import SimulatedEncoderAdapter
 from exo_collection.adapters.imu.simulated import SimulatedImuAdapter
+from exo_collection.adapters.mocap.simulated import SimulatedMocapAdapter
+from exo_collection.adapters.emg.simulated import SimulatedEmgAdapter
 from exo_collection.adapters.sync_pulse.simulated import SimulatedSyncPulseAdapter
 from exo_collection.adapters.ultrasound.simulated import SimulatedUltrasoundAdapter
 from exo_collection.configuration.adapter_registry import build_adapters
@@ -39,6 +41,8 @@ _ADAPTERS: dict[str, type[QueuedSimulatedAdapter[Any]]] = {
     "ultrasound": SimulatedUltrasoundAdapter,
     "imu": SimulatedImuAdapter,
     "encoder": SimulatedEncoderAdapter,
+    "mocap": SimulatedMocapAdapter,
+    "emg": SimulatedEmgAdapter,
     "sync_pulse": SimulatedSyncPulseAdapter,
 }
 

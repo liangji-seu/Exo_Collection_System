@@ -983,5 +983,24 @@ Exo_Collection_System/
 17. 项目代码 `T`（测试）、`F_BASE`（正式-基础）、`F_STEADY`（正式-稳态）和 `F_TRANSIENT`（正式-非稳态）用于新数据根目录分区；历史 `F` 只作向后兼容，UUID + Manifest 仍是身份和文件关联的唯一依据。
 18. Collector 的正常采集界面不要求操作者或固定采集时长；旧字段仅作 Schema 兼容，不伪造用户输入。
 19. 新增 F/T 可读项目标签的 Manifest 发布为 `1.1.0`；四类项目代码扩展发布为 `1.2.0`。保留 `manifest-v1.0.0.json` 和 `manifest-v1.1.0.json`，新 Reader 兼容读取全部历史版本；禁止在已发布的同版本 Schema 上原地增加字段或取值。
+20. XING/Nokov 在线数据作为 Collector 原生模态接入：Marker 帧映射为 `mocap`
+    SampleBatch，Analog Channel 子帧映射为 `emg` SampleBatch。两者分别使用独立
+    Adapter、预览支路和 HDF5 Artifact；厂商 SDK 回调内只复制数据，不执行 UI 或写盘。
 
 这些决策构成项目第一版实现的架构边界。任何改变数据格式、时间语义或 Trial 身份规则的修改，都应先形成新的架构决策记录并评估兼容性。
+
+## 23. XING/Nokov 动捕与 EMG 在线采集
+
+- SDK 负责 UDP 传输细节；系统不重复实现或猜测厂商私有报文。
+- `mocap` 使用 `PySetDataCallback`。连接阶段读取 MarkerSet 描述并冻结 Marker
+  顺序，原始数组形状为 `(sample, marker, xyz)`，坐标单位为毫米；Marker 名称、
+  MarkerSet 归属、SDK 版本和服务器 IP 写入设备元数据。
+- `emg` 使用 `PySetAnalogChFunc`。SDK 的 `(channel, subframe)` 回调数据立即转置为
+  `(sample, channel)`；配置通道数与实际通道数不一致时进入 FAULT，禁止静默截断、
+  填零或重排。
+- 两个模态分别写入 `raw/mocap.h5` 和 `raw/emg.h5`，保留帧号/设备时间、主机单调
+  时间、UTC 审计时间和源序列号。
+- 实时预览属于有损抽取：动捕显示前 8 个 Marker 的 Z 坐标循环曲线，EMG 显示前
+  16 个通道；预览限流或界面卡顿不得影响原始记录支路。
+- 同一 Seeker 地址允许两个独立 SDK Client 分别订阅 Marker 和 Analog 回调，使
+  两个模态可独立连接、断开、健康监测和选择性写盘。

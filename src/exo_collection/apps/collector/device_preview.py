@@ -562,6 +562,12 @@ def _build_preview_event(
                 "preview_labels": list(
                     descriptor.metadata.get("preview_labels") or []
                 ),
+                "marker_names": list(
+                    descriptor.metadata.get("marker_names") or []
+                ),
+                "channel_names": list(
+                    descriptor.metadata.get("channel_names") or descriptor.channels
+                ),
             },
         )
     if isinstance(raw, SyncPulseEvent):

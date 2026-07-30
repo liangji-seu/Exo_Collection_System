@@ -181,6 +181,60 @@ def build_preview_event(
                 "channel": "position_velocity_torque",
                 "channel_count": len(channels),
             }
+        elif event.modality == "mocap":
+            if values.ndim != 3 or values.shape[2] != 3:
+                raise ValueError(f"invalid mocap batch shape: {values.shape}")
+            marker_names = []
+            if extra_payload is not None:
+                marker_names = [
+                    str(item) for item in extra_payload.get("marker_names", [])
+                ]
+            if len(marker_names) != values.shape[1]:
+                marker_names = [
+                    f"marker_{index + 1:02d}" for index in range(values.shape[1])
+                ]
+            visible_count = min(8, values.shape[1])
+            channels = [
+                values[:, index, 2].astype(float).tolist()
+                for index in range(visible_count)
+            ]
+            latest = values[-1, :visible_count, :].astype(float)
+            payload = {
+                "host_monotonic_ns": event.host_monotonic_ns,
+                "values": channels[0] if channels else [],
+                "channels": channels,
+                "labels": marker_names[:visible_count],
+                "marker_names": marker_names,
+                "latest_xyz_mm": latest.tolist(),
+                "channel": "marker_z_mm",
+                "channel_count": visible_count,
+                "marker_count": values.shape[1],
+            }
+        elif event.modality == "emg":
+            if values.ndim != 2:
+                raise ValueError(f"invalid EMG batch shape: {values.shape}")
+            labels = []
+            if extra_payload is not None:
+                labels = [
+                    str(item) for item in extra_payload.get("channel_names", [])
+                ]
+            if len(labels) != values.shape[1]:
+                labels = [
+                    f"emg_{index + 1:02d}" for index in range(values.shape[1])
+                ]
+            visible_count = min(16, values.shape[1])
+            channels = [
+                values[:, index].astype(float).tolist()
+                for index in range(visible_count)
+            ]
+            payload = {
+                "host_monotonic_ns": event.host_monotonic_ns,
+                "values": channels[0] if channels else [],
+                "channels": channels,
+                "labels": labels[:visible_count],
+                "channel": "emg",
+                "channel_count": visible_count,
+            }
         else:
             signal = values[:, 0]
             rate = event.sample_rate_hz or 1.0

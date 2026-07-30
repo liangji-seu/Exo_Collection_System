@@ -410,7 +410,13 @@ def _preview_event(
         extra_payload={
             "preview_labels": list(
                 descriptor.metadata.get("preview_labels") or []
-            )
+            ),
+            "marker_names": list(
+                descriptor.metadata.get("marker_names") or []
+            ),
+            "channel_names": list(
+                descriptor.metadata.get("channel_names") or descriptor.channels
+            ),
         },
     )
 
@@ -527,7 +533,7 @@ def run_trial(
     prompt_events: PromptEventSource | None = None,
     recording_stream_end_timeout_s: float = 10.0,
 ) -> TrialRunResult:
-    """Collect the selected four-modality profile and publish one Trial.
+    """Collect the selected multimodal profile and publish one Trial.
 
     When ``recording_streams`` are provided, each endpoint is used to build a
     ``StreamProxyAdapter`` that drains raw events from the persistent preview

@@ -9,8 +9,10 @@ from typing import Any
 from exo_collection.adapters.base import ModalityAdapter
 from exo_collection.adapters.encoder.simulated import SimulatedEncoderAdapter
 from exo_collection.adapters.encoder.teensy_serial import TeensySerialEncoderAdapter
+from exo_collection.adapters.emg import SimulatedEmgAdapter, XingNokovEmgAdapter
 from exo_collection.adapters.imu.simulated import SimulatedImuAdapter
 from exo_collection.adapters.imu.xsens_awinda import XsensAwindaImuAdapter
+from exo_collection.adapters.mocap import SimulatedMocapAdapter, XingNokovMocapAdapter
 from exo_collection.adapters.sync_pulse.simulated import SimulatedSyncPulseAdapter
 from exo_collection.adapters.ultrasound.elonxi import ElonxiUltrasoundAdapter
 from exo_collection.adapters.ultrasound.raw_ethernet import RawEthernetUltrasoundAdapter
@@ -22,11 +24,15 @@ from .device_profiles import (
     DeviceProfileDocument,
     ELONXI_ULTRASOUND_ADAPTER,
     ENCODER_ADAPTER,
+    EMG_ADAPTER,
     IMU_ADAPTER,
+    MOCAP_ADAPTER,
     RAW_ETHERNET_ULTRASOUND_ADAPTER,
     SYNC_PULSE_ADAPTER,
     TEENSY_ENCODER_ADAPTER,
     ULTRASOUND_ADAPTER,
+    XING_NOKOV_EMG_ADAPTER,
+    XING_NOKOV_MOCAP_ADAPTER,
     XSENS_AWINDA_ADAPTER,
 )
 
@@ -35,11 +41,15 @@ ADAPTER_REGISTRY: dict[str, type[Any]] = {
     ULTRASOUND_ADAPTER: SimulatedUltrasoundAdapter,
     IMU_ADAPTER: SimulatedImuAdapter,
     ENCODER_ADAPTER: SimulatedEncoderAdapter,
+    MOCAP_ADAPTER: SimulatedMocapAdapter,
+    EMG_ADAPTER: SimulatedEmgAdapter,
     SYNC_PULSE_ADAPTER: SimulatedSyncPulseAdapter,
     ELONXI_ULTRASOUND_ADAPTER: ElonxiUltrasoundAdapter,
     RAW_ETHERNET_ULTRASOUND_ADAPTER: RawEthernetUltrasoundAdapter,
     XSENS_AWINDA_ADAPTER: XsensAwindaImuAdapter,
     TEENSY_ENCODER_ADAPTER: TeensySerialEncoderAdapter,
+    XING_NOKOV_MOCAP_ADAPTER: XingNokovMocapAdapter,
+    XING_NOKOV_EMG_ADAPTER: XingNokovEmgAdapter,
 }
 
 

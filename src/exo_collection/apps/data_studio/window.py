@@ -111,6 +111,8 @@ _MODALITY_LABELS = {
     "ultrasound": "超声",
     "imu": "IMU",
     "encoder": "电机编码器",
+    "mocap": "动捕 Marker",
+    "emg": "表面肌电 EMG",
     "sync_pulse": "同步脉冲",
 }
 

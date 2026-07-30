@@ -45,7 +45,7 @@ def _validated_override(modality: str, override: Mapping[str, Any]) -> dict[str,
 
 
 class ModalityDeviceSettingsDialog(QDialog):
-    """Base contract shared by the four independent settings dialogs."""
+    """Base contract shared by the independent modality settings dialogs."""
 
     modality: str
 
@@ -570,10 +570,119 @@ class SyncPulseDeviceSettingsDialog(ModalityDeviceSettingsDialog):
         )
 
 
+class MocapDeviceSettingsDialog(ModalityDeviceSettingsDialog):
+    modality = "mocap"
+
+    def __init__(
+        self,
+        current: Mapping[str, Any],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("动捕设备设置")
+        self.setMinimumWidth(560)
+        outer = QVBoxLayout(self)
+        intro = QLabel(
+            "通过 XING/Nokov Python SDK 监听 Seeker 的 UDP Marker 数据。"
+            "正常情况下 Marker 名称和数量会从服务器自动读取。"
+        )
+        intro.setWordWrap(True)
+        outer.addWidget(intro)
+        form = QFormLayout()
+        self.server_edit = QLineEdit(str(current.get("server_ip", "10.1.1.198")))
+        self.server_edit.setObjectName("mocap_server_ip")
+        form.addRow("Seeker 服务器 IP：", self.server_edit)
+        self.rate_spin = QDoubleSpinBox()
+        self.rate_spin.setRange(1.0, 1000.0)
+        self.rate_spin.setDecimals(2)
+        self.rate_spin.setSuffix(" Hz")
+        self.rate_spin.setValue(float(current.get("nominal_rate_hz", 100.0)))
+        form.addRow("后备帧率：", self.rate_spin)
+        self.marker_count_spin = QSpinBox()
+        self.marker_count_spin.setRange(0, 1000)
+        self.marker_count_spin.setSpecialValueText("自动读取")
+        self.marker_count_spin.setValue(int(current.get("marker_count_fallback", 0)))
+        form.addRow("后备 Marker 数量：", self.marker_count_spin)
+        outer.addLayout(form)
+        outer.addWidget(self._button_box())
+
+    @Slot()
+    def accept(self) -> None:
+        self._finish_accept(
+            {
+                "server_ip": self.server_edit.text().strip(),
+                "nominal_rate_hz": self.rate_spin.value(),
+                "marker_count_fallback": self.marker_count_spin.value(),
+            }
+        )
+
+
+class EmgDeviceSettingsDialog(ModalityDeviceSettingsDialog):
+    modality = "emg"
+
+    def __init__(
+        self,
+        current: Mapping[str, Any],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("EMG 设备设置")
+        self.setMinimumWidth(600)
+        outer = QVBoxLayout(self)
+        intro = QLabel(
+            "EMG 由同一 XING/Nokov SDK 的 Analog Channel 回调接收。"
+            "通道数必须与 Seeker 当前输出严格一致。"
+        )
+        intro.setWordWrap(True)
+        outer.addWidget(intro)
+        form = QFormLayout()
+        self.server_edit = QLineEdit(str(current.get("server_ip", "10.1.1.198")))
+        self.server_edit.setObjectName("emg_server_ip")
+        form.addRow("Seeker 服务器 IP：", self.server_edit)
+        self.rate_spin = QDoubleSpinBox()
+        self.rate_spin.setRange(1.0, 100_000.0)
+        self.rate_spin.setDecimals(2)
+        self.rate_spin.setSuffix(" Hz")
+        self.rate_spin.setValue(float(current.get("sample_rate_hz", 1000.0)))
+        form.addRow("EMG 采样率：", self.rate_spin)
+        self.channel_count_spin = QSpinBox()
+        self.channel_count_spin.setRange(1, 80)
+        self.channel_count_spin.setValue(int(current.get("channel_count", 8)))
+        form.addRow("通道数：", self.channel_count_spin)
+        self.channel_names_edit = QLineEdit(
+            ", ".join(str(item) for item in current.get("channel_names", ()))
+        )
+        self.channel_names_edit.setPlaceholderText("留空自动命名；或输入：股直肌, 股二头肌, ...")
+        form.addRow("通道名称（逗号分隔）：", self.channel_names_edit)
+        self.unit_edit = QLineEdit(str(current.get("unit", "mV")))
+        form.addRow("单位：", self.unit_edit)
+        outer.addLayout(form)
+        outer.addWidget(self._button_box())
+
+    @Slot()
+    def accept(self) -> None:
+        names = tuple(
+            item.strip()
+            for item in self.channel_names_edit.text().replace("，", ",").split(",")
+            if item.strip()
+        )
+        self._finish_accept(
+            {
+                "server_ip": self.server_edit.text().strip(),
+                "sample_rate_hz": self.rate_spin.value(),
+                "channel_count": self.channel_count_spin.value(),
+                "channel_names": names,
+                "unit": self.unit_edit.text().strip(),
+            }
+        )
+
+
 DEVICE_SETTINGS_DIALOGS: dict[str, type[ModalityDeviceSettingsDialog]] = {
     "ultrasound": UltrasoundDeviceSettingsDialog,
     "imu": ImuDeviceSettingsDialog,
     "encoder": EncoderDeviceSettingsDialog,
+    "mocap": MocapDeviceSettingsDialog,
+    "emg": EmgDeviceSettingsDialog,
     "sync_pulse": SyncPulseDeviceSettingsDialog,
 }
 
@@ -582,6 +691,8 @@ __all__ = [
     "DEVICE_SETTINGS_DIALOGS",
     "EncoderDeviceSettingsDialog",
     "ImuDeviceSettingsDialog",
+    "MocapDeviceSettingsDialog",
+    "EmgDeviceSettingsDialog",
     "ModalityDeviceSettingsDialog",
     "SyncPulseDeviceSettingsDialog",
     "UltrasoundDeviceSettingsDialog",

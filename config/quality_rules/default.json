@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0.0",
   "algorithm_version": "exo-quality-rules-1.0.0",
-  "required_modalities": ["ultrasound", "imu", "encoder", "sync_pulse"],
+  "required_modalities": ["ultrasound", "imu", "encoder", "mocap", "emg", "sync_pulse"],
   "structural": {
     "minimum_formal_duration_s": 0.000001,
     "maximum_sequence_gaps": 0,

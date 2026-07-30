@@ -160,7 +160,7 @@ class TrialRunRequest(OrchestrationModel):
     def validate_device_override_modalities(
         cls, value: dict[str, dict[str, Any]]
     ) -> dict[str, dict[str, Any]]:
-        allowed = {"ultrasound", "imu", "encoder", "sync_pulse"}
+        allowed = {"ultrasound", "imu", "encoder", "mocap", "emg", "sync_pulse"}
         unknown = set(value) - allowed
         if unknown:
             raise ValueError(

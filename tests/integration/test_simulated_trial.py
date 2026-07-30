@@ -136,6 +136,8 @@ def test_simulated_trial_produces_complete_immutable_package(tmp_path) -> None:
         "ultrasound",
         "imu",
         "encoder",
+        "mocap",
+        "emg",
         "sync_pulse",
     }
     for artifact in manifest.artifacts:
@@ -298,7 +300,7 @@ def test_simulated_trial_produces_complete_immutable_package(tmp_path) -> None:
         assert all(block.header.host_utc_ns > 0 for block in blocks)
 
     embedded_trial_metadata: dict[str, dict[str, object]] = {}
-    for modality in ("imu", "encoder", "sync_pulse"):
+    for modality in ("imu", "encoder", "mocap", "emg", "sync_pulse"):
         with h5py.File(result.trial_directory / f"raw/{modality}.h5", "r") as file:
             assert bool(file.attrs["closed_cleanly"])
             assert file["samples/data"].shape[0] == result.modality_counts[modality]

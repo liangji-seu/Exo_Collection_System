@@ -34,18 +34,24 @@ def clean_evidence(**updates) -> TrialQualityEvidence:
             "ultrasound": 20,
             "imu": 200,
             "encoder": 100,
+            "mocap": 100,
+            "emg": 1000,
             "sync_pulse": 1000,
         },
         "sequence_gap_counts": {
             "ultrasound": 0,
             "imu": 0,
             "encoder": 0,
+            "mocap": 0,
+            "emg": 0,
             "sync_pulse": 0,
         },
         "dropped_batch_counts": {
             "ultrasound": 0,
             "imu": 0,
             "encoder": 0,
+            "mocap": 0,
+            "emg": 0,
             "sync_pulse": 0,
         },
         "sync_edges": (
@@ -108,6 +114,8 @@ def test_default_quality_rules_are_strict_versioned_and_uncalibrated() -> None:
         "ultrasound",
         "imu",
         "encoder",
+        "mocap",
+        "emg",
         "sync_pulse",
     )
     assert rules.ultrasound.saturation_fraction_warning is None

@@ -499,7 +499,9 @@ def test_run_device_preflight_hardware_with_fake_adapters(
     assert report.profile_kind == "hardware"
     assert report.profile_key == "hardware"
     modalities = set(report.devices)
-    assert modalities == {"ultrasound", "imu", "encoder", "sync_pulse"}
+    assert modalities == {
+        "ultrasound", "imu", "encoder", "mocap", "emg", "sync_pulse"
+    }
     for modality in modalities:
         item = report.devices[modality]
         assert item.status == "READY", f"{modality}: {item.message}"

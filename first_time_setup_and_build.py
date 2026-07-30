@@ -14,6 +14,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
+NOKOV_SDK_ROOT = ROOT.parent / "南理工设备信息" / "XING_Python_SDK-4.1.0.5645"
 
 
 def _run(label: str, arguments: list[str]) -> None:
@@ -39,9 +40,20 @@ def _validate_interpreter() -> None:
         )
 
 
+def _install_local_nokov_sdk_if_available() -> None:
+    wheels = sorted(NOKOV_SDK_ROOT.glob("**/dist/nokovpy-*.whl"))
+    if not wheels:
+        print(f"\n未找到本地 XING/Nokov wheel：{NOKOV_SDK_ROOT}")
+        return
+    _run(
+        "安装 XING/Nokov Python SDK",
+        [sys.executable, "-m", "pip", "install", "--user", "--upgrade", str(wheels[-1])],
+    )
+
+
 def _verify_hardware_build_dependencies() -> None:
     check = (
-        "import serial, scapy, xsensdeviceapi; "
+        "import serial, scapy, xsensdeviceapi; from nokov.nokovsdk import PySDKClient; "
         "from scapy.all import conf; "
         "assert conf.use_pcap, "
         "'Npcap/WinPcap API-compatible capture backend is unavailable'; "
@@ -52,9 +64,8 @@ def _verify_hardware_build_dependencies() -> None:
     )
     if completed.returncode != 0:
         raise RuntimeError(
-            "真实硬件构建依赖不完整。请先解压并运行 SDK_Transfer 中最新的 "
-            "INSTALL_HARDWARE_RUNTIME.cmd，同时安装 Npcap 并勾选 "
-            "WinPcap API-compatible Mode，然后重新运行本脚本。"
+            "真实硬件构建依赖不完整。除 SDK_Transfer 运行库与 Npcap 外，"
+            "还需安装南理工现场资料 dist 目录中的 nokovpy wheel，然后重新运行。"
         )
 
 
@@ -91,6 +102,7 @@ def main() -> int:
             f"{ROOT}[dev,packaging,hardware]",
         ],
     )
+    _install_local_nokov_sdk_if_available()
     _verify_hardware_build_dependencies()
     _run("运行完整测试", [sys.executable, "-m", "pytest", "-q"])
     _run("构建两个桌面应用", [sys.executable, str(ROOT / "build_exe.py")])

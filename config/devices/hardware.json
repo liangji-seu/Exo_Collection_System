@@ -1,6 +1,6 @@
 {
   "profile_kind": "hardware",
-  "display_name": "Raw Ethernet/Npcap 超声 + Xsens MTw + Teensy",
+  "display_name": "超声 + Xsens MTw + Teensy + XING 动捕/EMG",
   "schema_version": "1.0.0",
   "laboratory_sync_ready": false,
   "devices": [
@@ -60,6 +60,38 @@
         "queue_capacity": 256,
         "read_size": 128,
         "read_timeout_s": 0.05
+      }
+    },
+    {
+      "id": "mocap_xing_nokov",
+      "modality": "mocap",
+      "adapter": "exo_collection.adapters.mocap.XingNokovMocapAdapter",
+      "writer": "hdf5_signal",
+      "required": true,
+      "clock_domain": "mocap_xing_nokov_clock",
+      "simulated": false,
+      "parameters": {
+        "server_ip": "10.1.1.198",
+        "nominal_rate_hz": 100.0,
+        "marker_count_fallback": 0,
+        "queue_capacity": 256
+      }
+    },
+    {
+      "id": "emg_xing_nokov",
+      "modality": "emg",
+      "adapter": "exo_collection.adapters.emg.XingNokovEmgAdapter",
+      "writer": "hdf5_signal",
+      "required": true,
+      "clock_domain": "emg_xing_nokov_clock",
+      "simulated": false,
+      "parameters": {
+        "server_ip": "10.1.1.198",
+        "sample_rate_hz": 1000.0,
+        "channel_count": 8,
+        "channel_names": [],
+        "unit": "mV",
+        "queue_capacity": 512
       }
     },
     {

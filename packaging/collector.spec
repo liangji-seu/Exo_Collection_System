@@ -4,13 +4,21 @@ import importlib.util
 import json
 import os
 import subprocess
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 
 def optional_submodules(package):
     """Collect a hardware package only when it is installed for this build."""
 
     return collect_submodules(package) if importlib.util.find_spec(package) else []
+
+
+def optional_collection(package):
+    """Collect Python modules plus vendor DLL/data for an installed SDK."""
+
+    if not importlib.util.find_spec(package):
+        return [], [], []
+    return collect_all(package)
 
 project_root = Path(SPECPATH).parent
 source_root = project_root / "src"
@@ -19,6 +27,7 @@ build_info.parent.mkdir(parents=True, exist_ok=True)
 git_commit = os.environ.get("EXO_BUILD_GIT_COMMIT", "").strip()
 git_dirty = os.environ.get("EXO_BUILD_GIT_DIRTY", "").strip().lower()
 application_version = os.environ.get("EXO_BUILD_APP_VERSION", "").strip()
+nokov_datas, nokov_binaries, nokov_hiddenimports = optional_collection("nokov")
 if not git_commit:
     try:
         git_commit = subprocess.run(
@@ -85,19 +94,20 @@ hiddenimports = sorted(
         + optional_submodules("clr")
         + optional_submodules("scapy")
         + optional_submodules("xsensdeviceapi")
+        + nokov_hiddenimports
     )
 )
 
 a = Analysis(
     [str(source_root / "exo_collection/apps/collector/main.py")],
     pathex=[str(source_root)],
-    binaries=[],
+    binaries=nokov_binaries,
     datas=[
         (str(project_root / "config"), "config"),
         (str(project_root / "schemas"), "schemas"),
         (str(build_info), "exo_collection"),
         (str(source_root / "exo_collection/catalog/migrations"), "exo_collection/catalog/migrations"),
-    ],
+    ] + nokov_datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},

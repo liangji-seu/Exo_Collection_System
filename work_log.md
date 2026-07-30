@@ -6,6 +6,23 @@
 
 ---
 
+## 2026-07-30 — XING/Nokov 动捕 Marker + EMG 在线采集（已实现，待现场验证）
+
+- 新增 `mocap` 与 `emg` 两个原生采集模态，真实 Adapter 分别使用官方 SDK 的
+  `PySetDataCallback` 和 `PySetAnalogChFunc`。
+- MarkerSet 在连接时读取并冻结名称/顺序，写入 `raw/mocap.h5`，数据形状为
+  `(sample, marker, xyz)`、单位为 mm。
+- EMG Analog 子帧转为 `(sample, channel)` 并写入 `raw/emg.h5`；通道数不一致
+  直接报告设备故障。
+- Collector 增加两行独立连接/设置/健康状态，以及 Marker Z 曲线和最多 16 通道
+  EMG 实时预览；预览区域改为可滚动布局。
+- 模拟 Profile 同步增加动捕与 EMG 模拟源，可在无现场设备时验证完整预览与写盘。
+- PyInstaller 在构建环境已安装 `nokov` 时收集其 Python 模块与厂商 DLL。
+- 待现场验证：实际 Seeker IP、MarkerSet 描述读取、EMG 通道数/单位/实际采样率、
+  双 Client 长时间运行稳定性。
+
+---
+
 ## 1. 项目概览
 
 **Exo Collection System** 是外骨骼多模态数据采集系统的第二版实现。整个项目为一个 Git 仓库，发布一个安装包，但向工作人员提供两个职责不同的桌面应用：

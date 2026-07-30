@@ -110,13 +110,15 @@ from exo_collection.quality import load_storage_policy
 
 LOG = logging.getLogger("exo_collection.collector.ui")
 
-MODALITIES = ("ultrasound", "imu", "encoder", "sync_pulse")
+MODALITIES = ("ultrasound", "imu", "encoder", "mocap", "emg", "sync_pulse")
 PROMPT_HEALTH_ROWS = ("subject_prompt", "operator_prompt")
 HEALTH_ROWS = MODALITIES + PROMPT_HEALTH_ROWS
 MODALITY_DISPLAY_NAMES = {
     "ultrasound": "超声",
     "imu": "IMU",
     "encoder": "电机编码器",
+    "mocap": "动捕 Marker",
+    "emg": "表面肌电 EMG",
     "sync_pulse": "同步脉冲",
     "subject_prompt": "受试者标签（<）",
     "operator_prompt": "工作人员标签（>）",
@@ -146,6 +148,12 @@ ENCODER_PREVIEW_LABELS = (
     "right_position",
     "right_velocity",
     "right_torque",
+)
+MOCAP_PREVIEW_LABELS = tuple(f"marker_{index + 1:02d}" for index in range(8))
+EMG_PREVIEW_LABELS = tuple(f"emg_{index + 1:02d}" for index in range(16))
+_SIGNAL_COLORS = (
+    "#0d6efd", "#dc3545", "#198754", "#d97706",
+    "#6f42c1", "#0dcaf0", "#fd7e14", "#20c997",
 )
 _ENCODER_METRICS = (
     ("position", "位置", "rad", "#d97706"),
@@ -283,7 +291,7 @@ class UltrasoundInterfaceScanWorker(QThread):
 
 
 class HardwareDeviceSettingsDialog(QDialog):
-    """Persistent, non-secret settings for the three supported real devices."""
+    """Legacy combined settings dialog retained for compatibility tests."""
 
     def __init__(
         self,
@@ -297,6 +305,7 @@ class HardwareDeviceSettingsDialog(QDialog):
         self._ultrasound_scan_worker: UltrasoundInterfaceScanWorker | None = None
         self._ultrasound_scan_results: dict[str, int] = {}
         current = {name: dict(values) for name, values in overrides.items()}
+        self._initial_overrides = current
         ultrasound = current.get("ultrasound", {})
         imu = current.get("imu", {})
         encoder = current.get("encoder", {})
@@ -529,6 +538,11 @@ class HardwareDeviceSettingsDialog(QDialog):
                 self.ultrasound_interface_combo.currentData() or ""
             ).strip()
             overrides: dict[str, dict[str, Any]] = {
+                key: dict(value)
+                for key, value in self._initial_overrides.items()
+                if key not in {"ultrasound", "imu", "encoder"}
+            }
+            overrides.update({
                 "ultrasound": {
                     "interface_name": interface_name or None,
                 },
@@ -543,7 +557,7 @@ class HardwareDeviceSettingsDialog(QDialog):
                     "vid": int(self.encoder_vid_edit.text().strip(), 0),
                     "pid": int(self.encoder_pid_edit.text().strip(), 0),
                 },
-            }
+            })
             build_adapters(load_device_profile("hardware"), overrides)
         except Exception as exc:
             QMessageBox.warning(self, "真实设备设置无效", str(exc))
@@ -992,6 +1006,9 @@ class CollectorWindow(QMainWindow):
         self._ultrasound_format_alerted: set[tuple[int, str]] = set()
         self._imu_traces: dict[str, RingTrace] = {}
         self._enc_traces: dict[str, RingTrace] = {}
+        self._mocap_traces: dict[str, RingTrace] = {}
+        self._emg_traces: dict[str, RingTrace] = {}
+        self._mocap_plot: "pg.PlotWidget | None" = None
         self._preview_y_ranges: dict[str, tuple[float, float]] = {}
         self._timeline_started_at = time.monotonic()
         self._timeline_x: deque[float] = deque(maxlen=MAX_TIMELINE_EVENTS)
@@ -1165,7 +1182,12 @@ class CollectorWindow(QMainWindow):
 
     def _mark_prompt_on_previews(self, label: str) -> None:
         marked_plots: set[int] = set()
-        for trace in (*self._imu_traces.values(), *self._enc_traces.values()):
+        for trace in (
+            *self._imu_traces.values(),
+            *self._enc_traces.values(),
+            *self._mocap_traces.values(),
+            *self._emg_traces.values(),
+        ):
             plot_identity = id(trace.plot)
             if plot_identity in marked_plots:
                 continue
@@ -1515,6 +1537,7 @@ class CollectorWindow(QMainWindow):
 
         us_grid = QGroupBox("超声 · 4 通道当前单帧")
         us_grid.setObjectName("ultrasound_grid")
+        us_grid.setMinimumHeight(420)
         us_grid_layout = QGridLayout(us_grid)
         us_grid_layout.setContentsMargins(0, 0, 0, 0)
         for i in range(4):
@@ -1539,6 +1562,7 @@ class CollectorWindow(QMainWindow):
 
         imu_grid = QGroupBox("IMU · 加速度 3 轴循环帧")
         imu_grid.setObjectName("imu_ring_grid")
+        imu_grid.setMinimumHeight(230)
         imu_layout = QHBoxLayout(imu_grid)
         imu_layout.setContentsMargins(0, 0, 0, 0)
         _sensor_display = ("躯干", "左腿", "右腿")
@@ -1565,6 +1589,7 @@ class CollectorWindow(QMainWindow):
 
         enc_grid = QGroupBox("电机编码器 · 每侧同图显示位置 / 速度 / 估算扭矩")
         enc_grid.setObjectName("encoder_ring_grid")
+        enc_grid.setMinimumHeight(230)
         enc_layout = QHBoxLayout(enc_grid)
         enc_layout.setContentsMargins(0, 0, 0, 0)
         for side_key, side_name in (("left", "左侧"), ("right", "右侧")):
@@ -1603,7 +1628,68 @@ class CollectorWindow(QMainWindow):
         self._preview_y_ranges["encoder"] = _ENCODER_SHARED_Y_RANGE
         preview_layout.addWidget(enc_grid, 2)
 
-        body.addWidget(preview_box)
+        mocap_grid = QGroupBox("动捕 Marker · 前 8 个点的 Z 坐标循环帧")
+        mocap_grid.setMinimumHeight(230)
+        mocap_layout = QVBoxLayout(mocap_grid)
+        mocap_layout.setContentsMargins(0, 0, 0, 0)
+        mocap_plot = pg.PlotWidget()
+        mocap_plot.setObjectName("mocap_ring")
+        mocap_legend = mocap_plot.addLegend(offset=(5, 5))
+        shared_cursor = None
+        for index, label in enumerate(MOCAP_PREVIEW_LABELS):
+            trace = RingTrace(
+                mocap_plot,
+                _SIGNAL_COLORS[index % len(_SIGNAL_COLORS)],
+                "动捕 Marker Z 坐标",
+                capacity=500,
+            )
+            if shared_cursor is None:
+                shared_cursor = trace.cursor_line
+            else:
+                mocap_plot.removeItem(trace.cursor_line)
+                trace.cursor_line = shared_cursor
+            mocap_legend.addItem(trace.curve, label)
+            self._mocap_traces[label] = trace
+        mocap_plot.setLabel("left", "Z 坐标", units="mm")
+        self._mocap_plot = mocap_plot
+        mocap_layout.addWidget(mocap_plot)
+        preview_layout.addWidget(mocap_grid, 2)
+
+        emg_grid = QGroupBox("表面肌电 EMG · 前 16 通道循环帧")
+        emg_grid.setMinimumHeight(230)
+        emg_layout = QHBoxLayout(emg_grid)
+        emg_layout.setContentsMargins(0, 0, 0, 0)
+        for group_index in range(2):
+            plot = pg.PlotWidget()
+            plot.setObjectName(f"emg_ring_{group_index + 1}")
+            legend = plot.addLegend(offset=(5, 5))
+            shared_cursor = None
+            for local_index in range(8):
+                channel_index = group_index * 8 + local_index
+                label = EMG_PREVIEW_LABELS[channel_index]
+                trace = RingTrace(
+                    plot,
+                    _SIGNAL_COLORS[local_index],
+                    f"EMG 通道 {group_index * 8 + 1}–{group_index * 8 + 8}",
+                    capacity=1000,
+                )
+                if shared_cursor is None:
+                    shared_cursor = trace.cursor_line
+                else:
+                    plot.removeItem(trace.cursor_line)
+                    trace.cursor_line = shared_cursor
+                legend.addItem(trace.curve, label)
+                self._emg_traces[label] = trace
+            plot.setLabel("left", "幅值")
+            emg_layout.addWidget(plot, 1)
+        preview_layout.addWidget(emg_grid, 2)
+
+        preview_scroll = QScrollArea()
+        preview_scroll.setObjectName("preview_scroll")
+        preview_scroll.setWidgetResizable(True)
+        preview_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        preview_scroll.setWidget(preview_box)
+        body.addWidget(preview_scroll)
         body.setStretchFactor(0, 0)
         body.setStretchFactor(1, 1)
         body.setSizes([630, 1270])
@@ -1731,8 +1817,9 @@ class CollectorWindow(QMainWindow):
 
         if hardware:
             self._device_profile_label.setText(
-                "真实设备模式：Raw Ethernet 超声 + Xsens MTw IMU + Teensy 编码器。"
-                "点击蓝色模态名称可分别设置；参数保存后自动恢复；同步脉冲仍为模拟台架信号。"
+                "真实设备模式：Raw Ethernet 超声 + Xsens MTw IMU + Teensy 编码器 + "
+                "XING/Nokov 动捕 Marker 与 EMG。点击蓝色模态名称可分别设置；"
+                "同步脉冲仍为模拟台架信号。"
             )
             self._device_profile_label.setStyleSheet("color:#842029;font-weight:600;")
         else:
@@ -2100,7 +2187,7 @@ class CollectorWindow(QMainWindow):
                     f"落盘探测 {report.measured_write_mib_s:.1f} MiB/s（阈值待真实超声最大速率确定）；"
                     f"耗时 {report.elapsed_s:.2f} s。"
                 )
-            self.statusBar().showMessage(f"四个必需模态已实际连接/准备/采样，同步上升沿已观测。{storage}", 8000)
+            self.statusBar().showMessage(f"六个必需模态已实际连接/准备/采样，同步上升沿已观测。{storage}", 8000)
         else:
             self._set_trial_state("FAILED")
             detail = "、".join(missing_or_failed) or "预检服务未返回设备状态"
@@ -3114,6 +3201,39 @@ class CollectorWindow(QMainWindow):
             for label, values in prepared_series:
                 self._enc_traces[label].append(values)
             return
+        if modality == "mocap":
+            prepared_series = []
+            source_labels = event.payload.get("labels")
+            labels = source_labels if isinstance(source_labels, (list, tuple)) else ()
+            channels = event.payload.get("channels")
+            if isinstance(channels, (list, tuple)):
+                for index, raw_values in enumerate(channels[: len(MOCAP_PREVIEW_LABELS)]):
+                    values = self._numeric_values(raw_values)
+                    if values:
+                        prepared_series.append((MOCAP_PREVIEW_LABELS[index], values))
+            self._lock_preview_y_axis(
+                "mocap",
+                [values for _, values in prepared_series],
+                [trace.plot for trace in self._mocap_traces.values()],
+            )
+            for label, values in prepared_series:
+                self._mocap_traces[label].append(values)
+            if self._mocap_plot is not None:
+                marker_count = int(event.payload.get("marker_count") or len(labels))
+                visible_names = "、".join(str(item) for item in labels[:3])
+                suffix = f"；当前：{visible_names}…" if visible_names else ""
+                self._mocap_plot.setTitle(
+                    f"动捕 Marker Z 坐标（共 {marker_count} 点，显示前 8 点）{suffix}"
+                )
+            return
+        if modality == "emg":
+            channels = event.payload.get("channels")
+            if isinstance(channels, (list, tuple)):
+                for index, raw_values in enumerate(channels[: len(EMG_PREVIEW_LABELS)]):
+                    values = self._numeric_values(raw_values)
+                    if values:
+                        self._emg_traces[EMG_PREVIEW_LABELS[index]].append(values)
+            return
 
     def _lock_preview_y_axis(self, modality: str, series: list[list[float]],
                               plots: list["pg.PlotWidget"]) -> None:
@@ -3204,6 +3324,10 @@ class CollectorWindow(QMainWindow):
             return "imu"
         if "encoder" in normalized:
             return "encoder"
+        if "mocap" in normalized or "motion" in normalized or "marker" in normalized:
+            return "mocap"
+        if "emg" in normalized or "analog" in normalized:
+            return "emg"
         if "sync" in normalized or "pulse" in normalized:
             return "sync_pulse"
         return normalized

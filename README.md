@@ -30,8 +30,8 @@ python run_data_studio.py
 ## Collector 现场采集流程
 
 1. 选择项目 `F — 正式` 或 `T — 测试`（默认为更安全的 `T`），并输入三位受试者编码，例如 `001`。数据分别进入数据根目录下的 `F` 或 `T` 分区，实际关联仍由 UUID + Manifest 确定。
-2. 在“设备连接”中点击蓝色下划线的超声、IMU、电机编码器或同步脉冲名称，分别设置该模态的设备参数；保存后立即写入当前 Windows 用户设置，后续启动自动恢复。随后分别点击各行“连接”，或使用“全部连接”。每个模态收到首批真实帧/样本后才显示 `READY`，并立即驱动右侧对应预览窗口。
-3. 连接/预览阶段不创建 Trial、Manifest、HDF5 或超声二进制原始文件。四个必需模态都 `READY` 后“开始 Trial”才可用；点击后系统会先释放预览进程对设备的独占，再由独立 Collector Worker 开始原始写盘。
+2. 在“设备连接”中点击蓝色下划线的超声、IMU、电机编码器、动捕 Marker、EMG 或同步脉冲名称，分别设置该模态的设备参数；保存后立即写入当前 Windows 用户设置，后续启动自动恢复。随后分别点击各行“连接”，或使用“全部连接”。每个模态收到首批真实帧/样本后才显示 `READY`，并立即驱动右侧对应预览窗口。
+3. 连接/预览阶段不创建 Trial、Manifest、HDF5 或超声二进制原始文件。点击“开始写盘”后，已连接的模态通过现有预览进程的有界记录支路进入独立 Collector Worker，设备不会断开或重新连接。
 4. Trial Worker 打开写盘 gate 后立即进入“采集中”；同步状态独立显示为“等待同步”。若收到合格同步上升沿，则以该边沿建立正式 `t0`；否则以写盘 gate 的主机单调时钟作为 `t0`。同步前原始数据仍保留供审计。
 5. 实验完成时人工点击“受控停止”，无需预先设置采集秒数。Writer 完成 flush、校验和最终化后才会发布 Manifest。
 6. 若停止前从未收到合格触发，系统记录 `NOT_RECEIVED / OPTIONAL` 并正常最终化，不产生告警。只有已启用模态断流、设备故障、序列缺口、队列溢出或写盘完整性失败才保留 `.recording` 数据并进入失败/恢复流程。
@@ -100,10 +100,12 @@ dist\ExoDataStudio.exe
 ## 真实设备环境与 UI 配置
 
 真实设备不使用命令行参数，也没有全局“设备配置”表单。Collector“设备连接”
-表格中的四个模态名称就是各自的设置入口：超声设置 Raw Ethernet/Npcap 网卡与
+表格中的六个模态名称就是各自的设置入口：超声设置 Raw Ethernet/Npcap 网卡与
 标称帧率，并可在后台扫描目标帧；IMU 设置 Awinda 信道、采样率和按躯干/左腿/
 右腿顺序的 3 个 MTw ID；编码器设置 Teensy 串口、波特率、VID/PID 与标称采样率；
-同步脉冲设置当前台架模拟信号参数。每次保存只更新对应模态，不会覆盖其他设备，
+动捕设置 XING/Nokov Seeker 服务器 IP、后备帧率与后备 Marker 数；EMG 设置同一
+服务器 IP、采样率、通道数、通道名称和单位；同步脉冲设置当前台架模拟信号参数。
+每次保存只更新对应模态，不会覆盖其他设备，
 并立即写入当前 Windows 用户的 QSettings，以后启动默认沿用。密码和凭据不写入
 这些设置。
 
@@ -119,6 +121,20 @@ Teensy 编码器 Adapter 匹配当前 AK80-9 V3 固件的35字节小端状态帧
 ```powershell
 python -m pip install -e ".[hardware]"
 ```
+
+XING/Nokov SDK 不从 PyPI 猜测版本。使用南理工现场资料中的官方 wheel：
+
+```powershell
+python -m pip install `
+  "..\南理工设备信息\XING_Python_SDK-4.1.0.5645\XING_Python_SDK-4.1.0.5645\dist\nokovpy-3.0.1-py3-none-any.whl"
+```
+
+该 SDK 自己完成 UDP 接收。Collector 的 `mocap` 模态使用
+`PySetDataCallback` 获取 MarkerSet，连接时读取 Marker 名称并以
+`(frame, marker, xyz)`、毫米为单位写入 `raw/mocap.h5`；`emg` 模态使用
+`PySetAnalogChFunc` 获取 Analog Channel 子帧，以
+`(sample, channel)` 写入 `raw/emg.h5`。EMG 配置的通道数必须与 Seeker 输出一致，
+不一致会将设备置为故障，禁止生成通道错位的数据。
 
 Xsens Python 绑定由 MT SDK 提供，不从 PyPI 猜测安装。当前旧系统中已有与
 Python 3.11 x64 匹配的官方 wheel，可在两个项目共存时执行：
@@ -137,6 +153,6 @@ Raw Ethernet 超声依赖 Scapy；Windows 还必须安装 Npcap，并在 Npcap
 收集 `scapy`、`xsensdeviceapi` 和 `serial` 等可选硬件模块。Npcap 是系统
 驱动，不会被 PyInstaller 打进 EXE。
 
-> 当前 `hardware` Profile 的超声、三台 IMU 和电机编码器为真实适配；
-> `sync_pulse` 仍是台架模拟信号。这一模式用于验证三类设备接入，不得宣称为
-> 测力台/动捕正式同步已完成。
+> 当前 `hardware` Profile 的超声、三台 IMU、电机编码器、XING/Nokov 动捕与
+> EMG 为真实适配；`sync_pulse` 仍是台架模拟信号。测力台数据流尚未接入，
+> 动捕/EMG 也仍需在南理工现场完成真实设备持续采集和压力验收。

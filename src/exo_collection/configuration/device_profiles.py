@@ -24,13 +24,15 @@ from pydantic import (
 
 NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 SimulatedModality: TypeAlias = Literal[
-    "ultrasound", "imu", "encoder", "sync_pulse"
+    "ultrasound", "imu", "encoder", "mocap", "emg", "sync_pulse"
 ]
 
 ULTRASOUND_ADAPTER = "exo_collection.adapters.simulated.SimulatedUltrasoundAdapter"
 IMU_ADAPTER = "exo_collection.adapters.simulated.SimulatedImuAdapter"
 ENCODER_ADAPTER = "exo_collection.adapters.simulated.SimulatedEncoderAdapter"
 SYNC_PULSE_ADAPTER = "exo_collection.adapters.simulated.SimulatedSyncPulseAdapter"
+MOCAP_ADAPTER = "exo_collection.adapters.mocap.SimulatedMocapAdapter"
+EMG_ADAPTER = "exo_collection.adapters.emg.SimulatedEmgAdapter"
 ELONXI_ULTRASOUND_ADAPTER = (
     "exo_collection.adapters.ultrasound.ElonxiUltrasoundAdapter"
 )
@@ -41,6 +43,10 @@ TEENSY_ENCODER_ADAPTER = (
 RAW_ETHERNET_ULTRASOUND_ADAPTER = (
     "exo_collection.adapters.ultrasound.RawEthernetUltrasoundAdapter"
 )
+XING_NOKOV_MOCAP_ADAPTER = (
+    "exo_collection.adapters.mocap.XingNokovMocapAdapter"
+)
+XING_NOKOV_EMG_ADAPTER = "exo_collection.adapters.emg.XingNokovEmgAdapter"
 
 
 class ProfileModel(BaseModel):
@@ -106,6 +112,19 @@ class EncoderSimulationParameters(CommonSimulationParameters):
     sequence_modulus: int | None = Field(default=None, gt=1)
     gait_frequency_hz: float | None = Field(default=None, gt=0)
     noise_std: float | None = Field(default=None, ge=0)
+
+
+class MocapSimulationParameters(CommonSimulationParameters):
+    sample_rate_hz: float | None = Field(default=None, gt=0)
+    marker_count: int | None = Field(default=None, gt=0)
+    samples_per_batch: int | None = Field(default=None, gt=0)
+
+
+class EmgSimulationParameters(CommonSimulationParameters):
+    sample_rate_hz: float | None = Field(default=None, gt=0)
+    channel_count: int | None = Field(default=None, gt=0)
+    samples_per_batch: int | None = Field(default=None, gt=0)
+    amplitude_mv: float | None = Field(default=None, gt=0)
 
 
 class SyncPulseSimulationParameters(CommonSimulationParameters):
@@ -176,10 +195,26 @@ class SyncPulseDeviceProfile(DeviceProfileBase):
     parameters: SyncPulseSimulationParameters
 
 
+class MocapDeviceProfile(DeviceProfileBase):
+    modality: Literal["mocap"]
+    adapter: Literal[MOCAP_ADAPTER]
+    writer: Literal["hdf5_signal"]
+    parameters: MocapSimulationParameters
+
+
+class EmgDeviceProfile(DeviceProfileBase):
+    modality: Literal["emg"]
+    adapter: Literal[EMG_ADAPTER]
+    writer: Literal["hdf5_signal"]
+    parameters: EmgSimulationParameters
+
+
 SimulatedDeviceProfile: TypeAlias = Annotated[
     UltrasoundDeviceProfile
     | ImuDeviceProfile
     | EncoderDeviceProfile
+    | MocapDeviceProfile
+    | EmgDeviceProfile
     | SyncPulseDeviceProfile,
     Field(discriminator="modality"),
 ]
@@ -194,10 +229,10 @@ class SimulatedDeviceProfileDocument(ProfileModel):
     @model_validator(mode="after")
     def validate_complete_profile(self) -> SimulatedDeviceProfileDocument:
         modalities = [device.modality for device in self.devices]
-        expected = {"ultrasound", "imu", "encoder", "sync_pulse"}
+        expected = {"ultrasound", "imu", "encoder", "mocap", "emg", "sync_pulse"}
         if set(modalities) != expected or len(modalities) != len(expected):
             raise ValueError(
-                "simulated profile must define ultrasound, imu, encoder, and sync_pulse exactly once"
+                "simulated profile must define all six acquisition modalities exactly once"
             )
         device_ids = [device.device_id for device in self.devices]
         if len(device_ids) != len(set(device_ids)):
@@ -301,6 +336,30 @@ class HardwareEncoderParameters(ProfileModel):
     read_timeout_s: float = Field(default=0.05, gt=0)
 
 
+class HardwareMocapParameters(ProfileModel):
+    server_ip: NonEmptyStr = "10.1.1.198"
+    nominal_rate_hz: float = Field(default=100.0, gt=0)
+    marker_count_fallback: int = Field(default=0, ge=0, le=1000)
+    queue_capacity: int = Field(default=256, gt=0)
+
+
+class HardwareEmgParameters(ProfileModel):
+    server_ip: NonEmptyStr = "10.1.1.198"
+    sample_rate_hz: float = Field(default=1000.0, gt=0)
+    channel_count: int = Field(default=8, gt=0, le=80)
+    channel_names: tuple[str, ...] = ()
+    unit: NonEmptyStr = "mV"
+    queue_capacity: int = Field(default=512, gt=0)
+
+    @model_validator(mode="after")
+    def validate_channel_names(self) -> HardwareEmgParameters:
+        if self.channel_names and len(self.channel_names) != self.channel_count:
+            raise ValueError("channel_names length must equal channel_count")
+        if len(set(self.channel_names)) != len(self.channel_names):
+            raise ValueError("channel_names must be unique")
+        return self
+
+
 class HardwareDeviceProfileBase(ProfileModel):
     device_id: NonEmptyStr = Field(alias="id")
     required: bool
@@ -353,6 +412,22 @@ class HardwareEncoderDeviceProfile(HardwareDeviceProfileBase):
     parameters: HardwareEncoderParameters
 
 
+class HardwareMocapDeviceProfile(HardwareDeviceProfileBase):
+    modality: Literal["mocap"]
+    adapter: Literal[XING_NOKOV_MOCAP_ADAPTER]
+    writer: Literal["hdf5_signal"]
+    simulated: Literal[False]
+    parameters: HardwareMocapParameters
+
+
+class HardwareEmgDeviceProfile(HardwareDeviceProfileBase):
+    modality: Literal["emg"]
+    adapter: Literal[XING_NOKOV_EMG_ADAPTER]
+    writer: Literal["hdf5_signal"]
+    simulated: Literal[False]
+    parameters: HardwareEmgParameters
+
+
 class HardwareSyncPulseDeviceProfile(DeviceProfileBase):
     modality: Literal["sync_pulse"]
     adapter: Literal[SYNC_PULSE_ADAPTER]
@@ -365,6 +440,8 @@ HardwareDeviceProfile: TypeAlias = Annotated[
     HardwareUltrasoundDeviceProfile
     | HardwareImuDeviceProfile
     | HardwareEncoderDeviceProfile
+    | HardwareMocapDeviceProfile
+    | HardwareEmgDeviceProfile
     | HardwareSyncPulseDeviceProfile,
     Field(discriminator="modality"),
 ]
@@ -380,10 +457,10 @@ class HardwareDeviceProfileDocument(ProfileModel):
     @model_validator(mode="after")
     def validate_complete_profile(self) -> HardwareDeviceProfileDocument:
         modalities = [device.modality for device in self.devices]
-        expected = {"ultrasound", "imu", "encoder", "sync_pulse"}
+        expected = {"ultrasound", "imu", "encoder", "mocap", "emg", "sync_pulse"}
         if set(modalities) != expected or len(modalities) != len(expected):
             raise ValueError(
-                "hardware profile must define ultrasound, imu, encoder, and sync_pulse exactly once"
+                "hardware profile must define all six acquisition modalities exactly once"
             )
         device_ids = [device.device_id for device in self.devices]
         clock_domains = [device.clock_domain for device in self.devices]

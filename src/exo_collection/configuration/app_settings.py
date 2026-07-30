@@ -131,7 +131,9 @@ class SharedAppSettings:
             return {}
         if not isinstance(payload, dict):
             return {}
-        allowed = {"ultrasound", "imu", "encoder", "sync_pulse"}
+        allowed = {
+            "ultrasound", "imu", "encoder", "mocap", "emg", "sync_pulse"
+        }
         result: dict[str, dict[str, Any]] = {}
         for modality, values in payload.items():
             if modality in allowed and isinstance(values, dict):
@@ -147,7 +149,9 @@ class SharedAppSettings:
     def set_hardware_device_overrides(
         self, overrides: Mapping[str, Mapping[str, Any]]
     ) -> dict[str, dict[str, Any]]:
-        allowed = {"ultrasound", "imu", "encoder", "sync_pulse"}
+        allowed = {
+            "ultrasound", "imu", "encoder", "mocap", "emg", "sync_pulse"
+        }
         unknown = set(overrides) - allowed
         if unknown:
             raise ValueError(
@@ -177,7 +181,9 @@ class SharedAppSettings:
     ) -> dict[str, Any]:
         """Merge and immediately persist settings for exactly one modality."""
 
-        allowed = {"ultrasound", "imu", "encoder", "sync_pulse"}
+        allowed = {
+            "ultrasound", "imu", "encoder", "mocap", "emg", "sync_pulse"
+        }
         normalized_modality = modality.strip().lower()
         if normalized_modality not in allowed:
             raise ValueError(f"unknown hardware override modality: {modality!r}")

@@ -32,6 +32,24 @@
       "parameters": {"sample_rate_hz": 100}
     },
     {
+      "id": "mocap_sim",
+      "modality": "mocap",
+      "adapter": "exo_collection.adapters.mocap.SimulatedMocapAdapter",
+      "writer": "hdf5_signal",
+      "required": true,
+      "clock_domain": "mocap_sim_clock",
+      "parameters": {"sample_rate_hz": 100, "marker_count": 12, "samples_per_batch": 5}
+    },
+    {
+      "id": "emg_sim",
+      "modality": "emg",
+      "adapter": "exo_collection.adapters.emg.SimulatedEmgAdapter",
+      "writer": "hdf5_signal",
+      "required": true,
+      "clock_domain": "emg_sim_clock",
+      "parameters": {"sample_rate_hz": 1000, "channel_count": 8, "samples_per_batch": 20}
+    },
+    {
       "id": "sync_pulse_sim",
       "modality": "sync_pulse",
       "adapter": "exo_collection.adapters.simulated.SimulatedSyncPulseAdapter",
