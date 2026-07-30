@@ -13,7 +13,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import numpy as np
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QValidator
-from PySide6.QtWidgets import QApplication, QDialog, QScrollArea, QSplitter, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QDockWidget,
+    QScrollArea,
+    QSplitter,
+    QWidget,
+)
 from PySide6.QtTest import QTest
 
 from exo_collection.acquisition.messages import WorkerEvent, WorkerEventType
@@ -458,7 +465,7 @@ def _connect_all_previews_for_trial(
     tests can proceed without subprocesses.
     """
     handles: dict[str, FakePreviewHandle] = {}
-    for modality in ("ultrasound", "imu", "encoder", "sync_pulse"):
+    for modality in MODALITIES:
         existing = window._preview_workers.get(modality)
         handle = (
             existing
@@ -530,7 +537,7 @@ def test_1080p_layout_scrolls_controls_instead_of_crushing_them(
     assert 610 <= controls_scroll.width() <= 650
     assert controls_content.height() >= controls_content.minimumSizeHint().height()
     assert controls_scroll.widgetResizable()
-    assert window.findChild(QScrollArea, "preview_scroll") is not None
+    assert window.findChild(QWidget, "preview_workspace") is not None
     assert abs(window.project_combo.width() - window.subject_code_edit.width()) <= 2
     assert window.repeat_spin.width() <= 105
     assert window.condition_combo.width() >= window.repeat_spin.width() * 3
@@ -1064,6 +1071,130 @@ def test_trial_start_preserves_all_live_preview_curves(tmp_path: Path) -> None:
 
     worker.finish(0)
     window.close()
+
+
+def test_preview_workspace_registers_six_dynamic_modality_windows(
+    tmp_path: Path,
+) -> None:
+    app, window, _created = _window_with_fake(tmp_path)
+    window.show()
+    app.processEvents()
+
+    workspace = window.preview_workspace
+    assert workspace is not None
+    assert set(workspace.modalities) == {
+        "mocap",
+        "force_plate",
+        "emg",
+        "ultrasound",
+        "imu",
+        "encoder",
+    }
+    for modality in workspace.modalities:
+        dock = window.findChild(QDockWidget, f"preview_dock_{modality}")
+        assert dock is not None
+        assert dock.features() & QDockWidget.DockWidgetFeature.DockWidgetMovable
+        assert dock.features() & QDockWidget.DockWidgetFeature.DockWidgetFloatable
+        assert dock.features() & QDockWidget.DockWidgetFeature.DockWidgetClosable
+    window.close()
+
+
+def test_closed_preview_window_can_be_added_again_without_losing_binding(
+    tmp_path: Path,
+) -> None:
+    app, window, _created = _window_with_fake(tmp_path)
+    window.show()
+    app.processEvents()
+    workspace = window.preview_workspace
+    assert workspace is not None
+    dock = workspace.dock_for("emg")
+    assert dock is not None
+    identity = id(dock.widget())
+
+    dock.hide()
+    window._handle_worker_event(
+        WorkerEvent(
+            event_type=WorkerEventType.PREVIEW,
+            modality="emg",
+            payload={"channels": [[1.25, 2.5]]},
+        )
+    )
+    assert window._emg_traces["emg_01"]._buffer[0] == 1.25
+    assert "实时数据" in dock.windowTitle()
+
+    workspace.show_panel("emg")
+    app.processEvents()
+    assert dock.isVisible()
+    assert id(dock.widget()) == identity
+    assert window._emg_traces["emg_01"]._buffer[1] == 2.5
+    window.close()
+
+
+def test_mocap_preview_table_displays_every_marker_xyz(tmp_path: Path) -> None:
+    _app, window, _created = _window_with_fake(tmp_path)
+    names = [f"M{index + 1}" for index in range(12)]
+    xyz = [[index + 0.1, index + 0.2, index + 0.3] for index in range(12)]
+    window._handle_worker_event(
+        WorkerEvent(
+            event_type=WorkerEventType.PREVIEW,
+            modality="mocap",
+            payload={
+                "marker_names": names,
+                "marker_count": len(names),
+                "latest_xyz_mm": xyz,
+            },
+        )
+    )
+    table = window._mocap_table
+    assert table is not None
+    assert table.rowCount() == 12
+    assert table.item(11, 0).text() == "M12"
+    assert table.item(11, 1).text() == "11.100"
+    assert table.item(11, 2).text() == "11.200"
+    assert table.item(11, 3).text() == "11.300"
+    window.close()
+
+
+def test_force_plate_window_binds_generic_six_channel_preview(
+    tmp_path: Path,
+) -> None:
+    _app, window, _created = _window_with_fake(tmp_path)
+    window._handle_worker_event(
+        WorkerEvent(
+            event_type=WorkerEventType.PREVIEW,
+            modality="force_plate",
+            payload={
+                "labels": ["fx", "fy", "fz", "mx", "my", "mz"],
+                "channels": [[index, index + 0.5] for index in range(6)],
+            },
+        )
+    )
+    assert window._force_plate_traces["fx"]._buffer[1] == 0.5
+    assert window._force_plate_traces["fz"]._buffer[1] == 2.5
+    assert window._force_plate_traces["mz"]._buffer[1] == 5.5
+    window.close()
+
+
+def test_preview_workspace_layout_is_persisted(tmp_path: Path) -> None:
+    app, window, _created = _window_with_fake(tmp_path)
+    window.show()
+    app.processEvents()
+    workspace = window.preview_workspace
+    assert workspace is not None
+    workspace.hide_panel("force_plate")
+    window._save_preview_workspace_layout()
+    assert not window._settings.preview_workspace_state.isEmpty()
+    window.close()
+
+    app, restored_window, _created = _window_with_fake(tmp_path)
+    restored_window.show()
+    app.processEvents()
+    restored = restored_window.preview_workspace
+    assert restored is not None
+    assert restored.dock_for("force_plate") is not None
+    assert not restored.dock_for("force_plate").isVisible()  # type: ignore[union-attr]
+    assert restored.dock_for("ultrasound").isVisible()  # type: ignore[union-attr]
+    restored_window.close()
 
 
 # ── Basic integration test ──
@@ -1983,12 +2114,15 @@ def test_partial_begin_failure_rolls_back_only_successful_recording_gates(
     assert worker.stop_requests == 1
     assert worker.exitcode == -15
     assert worker.closed
-    # Handles are attached in sorted modality order: encoder succeeds, IMU
-    # fails, and the remaining two gates are never opened.
+    # Handles are attached in sorted modality order: EMG and encoder succeed,
+    # IMU fails, and the remaining gates are never opened.
+    assert len(handles["emg"].begin_recording_calls) == 1
+    assert len(handles["emg"].end_recording_calls) == 1
     assert len(handles["encoder"].begin_recording_calls) == 1
     assert len(handles["encoder"].end_recording_calls) == 1
     assert len(handles["imu"].begin_recording_calls) == 1
     assert handles["imu"].end_recording_calls == []
+    assert handles["mocap"].begin_recording_calls == []
     assert handles["sync_pulse"].begin_recording_calls == []
     assert handles["ultrasound"].begin_recording_calls == []
     assert all(handle.stop_requests == 0 for handle in handles.values())

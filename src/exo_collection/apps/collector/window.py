@@ -84,6 +84,7 @@ from exo_collection.apps.collector.preflight import (
     CollectorPreflightWorker,
     run_simulated_preflight,
 )
+from exo_collection.apps.collector.preview_workspace import PreviewWorkspace
 from exo_collection.apps.collector.theme import COLLECTOR_STYLESHEET
 from exo_collection.configuration import (
     SharedAppSettings,
@@ -149,8 +150,8 @@ ENCODER_PREVIEW_LABELS = (
     "right_velocity",
     "right_torque",
 )
-MOCAP_PREVIEW_LABELS = tuple(f"marker_{index + 1:02d}" for index in range(8))
 EMG_PREVIEW_LABELS = tuple(f"emg_{index + 1:02d}" for index in range(16))
+FORCE_PLATE_PREVIEW_LABELS = ("fx", "fy", "fz", "mx", "my", "mz")
 _SIGNAL_COLORS = (
     "#0d6efd", "#dc3545", "#198754", "#d97706",
     "#6f42c1", "#0dcaf0", "#fd7e14", "#20c997",
@@ -1006,9 +1007,11 @@ class CollectorWindow(QMainWindow):
         self._ultrasound_format_alerted: set[tuple[int, str]] = set()
         self._imu_traces: dict[str, RingTrace] = {}
         self._enc_traces: dict[str, RingTrace] = {}
-        self._mocap_traces: dict[str, RingTrace] = {}
         self._emg_traces: dict[str, RingTrace] = {}
-        self._mocap_plot: "pg.PlotWidget | None" = None
+        self._force_plate_traces: dict[str, RingTrace] = {}
+        self._mocap_table: QTableWidget | None = None
+        self.preview_workspace: PreviewWorkspace | None = None
+        self._preview_focus_previous_sizes: list[int] | None = None
         self._preview_y_ranges: dict[str, tuple[float, float]] = {}
         self._timeline_started_at = time.monotonic()
         self._timeline_x: deque[float] = deque(maxlen=MAX_TIMELINE_EVENTS)
@@ -1185,8 +1188,8 @@ class CollectorWindow(QMainWindow):
         for trace in (
             *self._imu_traces.values(),
             *self._enc_traces.values(),
-            *self._mocap_traces.values(),
             *self._emg_traces.values(),
+            *self._force_plate_traces.values(),
         ):
             plot_identity = id(trace.plot)
             if plot_identity in marked_plots:
@@ -1241,6 +1244,7 @@ class CollectorWindow(QMainWindow):
         body = QSplitter(Qt.Orientation.Horizontal)
         body.setObjectName("collector_body")
         body.setChildrenCollapsible(False)
+        self._body_splitter = body
 
         # The control column is deliberately scrollable.  On a 1080p Windows
         # desktop the taskbar, title bar and per-monitor DPI scaling leave less
@@ -1262,6 +1266,7 @@ class CollectorWindow(QMainWindow):
         )
         controls_scroll.setMinimumWidth(610)
         controls_scroll.setMaximumWidth(650)
+        self._controls_scroll = controls_scroll
 
         controls = QWidget()
         controls.setObjectName("controls_content")
@@ -1530,14 +1535,14 @@ class CollectorWindow(QMainWindow):
         controls_scroll.setWidget(controls)
         body.addWidget(controls_scroll)
 
-        # ── Preview Plots ──
-        preview_box = QGroupBox("实时预览（固定长度循环显示；不参与原始写盘）")
-        preview_layout = QVBoxLayout(preview_box)
+        # ── Dockable preview workspace ──
+        preview_workspace = PreviewWorkspace(self)
+        self.preview_workspace = preview_workspace
         pg.setConfigOptions(antialias=False, imageAxisOrder="row-major")
 
         us_grid = QGroupBox("超声 · 4 通道当前单帧")
         us_grid.setObjectName("ultrasound_grid")
-        us_grid.setMinimumHeight(420)
+        us_grid.setMinimumHeight(120)
         us_grid_layout = QGridLayout(us_grid)
         us_grid_layout.setContentsMargins(0, 0, 0, 0)
         for i in range(4):
@@ -1558,11 +1563,15 @@ class CollectorWindow(QMainWindow):
             self._us_plots.append(plot)
             self._us_curves.append(curve)
             us_grid_layout.addWidget(plot, i // 2, i % 2)
-        preview_layout.addWidget(us_grid, 4)
+        preview_workspace.register_panel(
+            "ultrasound",
+            "超声数据",
+            us_grid,
+        )
 
         imu_grid = QGroupBox("IMU · 加速度 3 轴循环帧")
         imu_grid.setObjectName("imu_ring_grid")
-        imu_grid.setMinimumHeight(230)
+        imu_grid.setMinimumHeight(120)
         imu_layout = QHBoxLayout(imu_grid)
         imu_layout.setContentsMargins(0, 0, 0, 0)
         _sensor_display = ("躯干", "左腿", "右腿")
@@ -1585,11 +1594,11 @@ class CollectorWindow(QMainWindow):
             imu_layout.addWidget(plot, 1)
         # Pre-register IMU Y range so auto-scale doesn't override the fixed range.
         self._preview_y_ranges["imu"] = (-10.0, 10.0)
-        preview_layout.addWidget(imu_grid, 2)
+        preview_workspace.register_panel("imu", "IMU 数据", imu_grid)
 
         enc_grid = QGroupBox("电机编码器 · 每侧同图显示位置 / 速度 / 估算扭矩")
         enc_grid.setObjectName("encoder_ring_grid")
-        enc_grid.setMinimumHeight(230)
+        enc_grid.setMinimumHeight(120)
         enc_layout = QHBoxLayout(enc_grid)
         enc_layout.setContentsMargins(0, 0, 0, 0)
         for side_key, side_name in (("left", "左侧"), ("right", "右侧")):
@@ -1626,37 +1635,69 @@ class CollectorWindow(QMainWindow):
             plot.setMouseEnabled(x=False, y=False)
             enc_layout.addWidget(plot, 1)
         self._preview_y_ranges["encoder"] = _ENCODER_SHARED_Y_RANGE
-        preview_layout.addWidget(enc_grid, 2)
+        preview_workspace.register_panel(
+            "encoder",
+            "电机编码器数据",
+            enc_grid,
+        )
 
-        mocap_grid = QGroupBox("动捕 Marker · 前 8 个点的 Z 坐标循环帧")
-        mocap_grid.setMinimumHeight(230)
+        mocap_grid = QGroupBox("动捕 Marker · 当前坐标")
+        mocap_grid.setMinimumHeight(120)
         mocap_layout = QVBoxLayout(mocap_grid)
         mocap_layout.setContentsMargins(0, 0, 0, 0)
-        mocap_plot = pg.PlotWidget()
-        mocap_plot.setObjectName("mocap_ring")
-        mocap_legend = mocap_plot.addLegend(offset=(5, 5))
-        shared_cursor = None
-        for index, label in enumerate(MOCAP_PREVIEW_LABELS):
-            trace = RingTrace(
-                mocap_plot,
-                _SIGNAL_COLORS[index % len(_SIGNAL_COLORS)],
-                "动捕 Marker Z 坐标",
-                capacity=500,
-            )
-            if shared_cursor is None:
-                shared_cursor = trace.cursor_line
-            else:
-                mocap_plot.removeItem(trace.cursor_line)
-                trace.cursor_line = shared_cursor
-            mocap_legend.addItem(trace.curve, label)
-            self._mocap_traces[label] = trace
-        mocap_plot.setLabel("left", "Z 坐标", units="mm")
-        self._mocap_plot = mocap_plot
-        mocap_layout.addWidget(mocap_plot)
-        preview_layout.addWidget(mocap_grid, 2)
+        mocap_table = QTableWidget(0, 4, mocap_grid)
+        mocap_table.setObjectName("mocap_marker_table")
+        mocap_table.setHorizontalHeaderLabels(["Marker", "X (mm)", "Y (mm)", "Z (mm)"])
+        mocap_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        mocap_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        mocap_table.setAlternatingRowColors(True)
+        mocap_table.verticalHeader().setVisible(False)
+        mocap_header = mocap_table.horizontalHeader()
+        mocap_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for column in range(1, 4):
+            mocap_header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        self._mocap_table = mocap_table
+        mocap_layout.addWidget(mocap_table)
+        preview_workspace.register_panel("mocap", "动捕 Marker 数据", mocap_grid)
+
+        force_grid = QGroupBox("测力台 · 力 / 力矩")
+        force_grid.setObjectName("force_plate_grid")
+        force_grid.setMinimumHeight(120)
+        force_layout = QHBoxLayout(force_grid)
+        force_layout.setContentsMargins(0, 0, 0, 0)
+        force_groups = (
+            ("force", "力", ("fx", "fy", "fz"), "N"),
+            ("moment", "力矩", ("mx", "my", "mz"), "N·m"),
+        )
+        for group_key, title, labels, unit in force_groups:
+            plot = pg.PlotWidget(title=title)
+            plot.setObjectName(f"force_plate_{group_key}")
+            legend = plot.addLegend(offset=(5, 5))
+            shared_cursor = None
+            for index, label in enumerate(labels):
+                trace = RingTrace(
+                    plot,
+                    _SIGNAL_COLORS[index],
+                    title,
+                    capacity=500,
+                )
+                if shared_cursor is None:
+                    shared_cursor = trace.cursor_line
+                else:
+                    plot.removeItem(trace.cursor_line)
+                    trace.cursor_line = shared_cursor
+                legend.addItem(trace.curve, label.upper())
+                self._force_plate_traces[label] = trace
+            plot.setLabel("left", title, units=unit)
+            force_layout.addWidget(plot, 1)
+        preview_workspace.register_panel(
+            "force_plate",
+            "测力台数据",
+            force_grid,
+        )
 
         emg_grid = QGroupBox("表面肌电 EMG · 前 16 通道循环帧")
-        emg_grid.setMinimumHeight(230)
+        emg_grid.setMinimumHeight(120)
         emg_layout = QHBoxLayout(emg_grid)
         emg_layout.setContentsMargins(0, 0, 0, 0)
         for group_index in range(2):
@@ -1682,20 +1723,18 @@ class CollectorWindow(QMainWindow):
                 self._emg_traces[label] = trace
             plot.setLabel("left", "幅值")
             emg_layout.addWidget(plot, 1)
-        preview_layout.addWidget(emg_grid, 2)
+        preview_workspace.register_panel("emg", "EMG 数据", emg_grid)
 
-        preview_scroll = QScrollArea()
-        preview_scroll.setObjectName("preview_scroll")
-        preview_scroll.setWidgetResizable(True)
-        preview_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        preview_scroll.setWidget(preview_box)
-        body.addWidget(preview_scroll)
+        body.addWidget(preview_workspace)
         body.setStretchFactor(0, 0)
         body.setStretchFactor(1, 1)
         body.setSizes([630, 1270])
         outer.addWidget(body, 1)
 
         self.setCentralWidget(central)
+        preview_workspace.focus_mode_requested.connect(self._set_preview_focus_mode)
+        preview_workspace.restore_layout(self._settings.preview_workspace_state)
+        preview_workspace.layout_changed.connect(self._save_preview_workspace_layout)
         self.statusBar().showMessage("就绪；原始写盘仅由 Collector Worker 负责。")
 
         self._configuration_widgets = (
@@ -2455,6 +2494,8 @@ class CollectorWindow(QMainWindow):
             if state == "READY":
                 self._preview_connected_modalities.add(modality)
                 self._preview_connection_status[modality] = "已连接"
+                if self.preview_workspace is not None:
+                    self.preview_workspace.set_stream_state(modality, "connected")
                 self._set_preview_status(modality, "READY", handle.device_id, handle.simulated)
                 self._update_connect_button_state()
                 self._update_start_button()
@@ -2468,6 +2509,8 @@ class CollectorWindow(QMainWindow):
             elif state == "DISCONNECTED":
                 self._preview_connected_modalities.discard(modality)
                 self._preview_connection_status[modality] = "未连接"
+                if self.preview_workspace is not None:
+                    self.preview_workspace.set_stream_state(modality, "disconnected")
                 self._update_connect_button_state()
                 self._update_start_button()
         elif event.event_type is WorkerEventType.FAILED:
@@ -2478,6 +2521,8 @@ class CollectorWindow(QMainWindow):
             full_tb = str(event.payload.get("traceback") or "")
             self._preview_connected_modalities.discard(modality)
             self._preview_connection_status[modality] = "错误"
+            if self.preview_workspace is not None:
+                self.preview_workspace.set_stream_state(modality, "error")
             self._set_preview_status(modality, "错误", handle.device_id, handle.simulated, error=error_msg)
             self._append_alert(f"{modality} 预览失败：{error_msg}")
             if full_tb:
@@ -3124,6 +3169,8 @@ class CollectorWindow(QMainWindow):
 
     def _handle_preview(self, event: WorkerEvent) -> None:
         modality = self._normalize_modality(event.modality or "")
+        if self.preview_workspace is not None:
+            self.preview_workspace.set_stream_state(modality, "live")
         if modality == "ultrasound":
             raw_channels = event.payload.get("channels")
             if not isinstance(raw_channels, (list, tuple)):
@@ -3202,29 +3249,25 @@ class CollectorWindow(QMainWindow):
                 self._enc_traces[label].append(values)
             return
         if modality == "mocap":
+            self._update_mocap_table(event.payload)
+            return
+        if modality == "force_plate":
             prepared_series = []
-            source_labels = event.payload.get("labels")
-            labels = source_labels if isinstance(source_labels, (list, tuple)) else ()
-            channels = event.payload.get("channels")
-            if isinstance(channels, (list, tuple)):
-                for index, raw_values in enumerate(channels[: len(MOCAP_PREVIEW_LABELS)]):
-                    values = self._numeric_values(raw_values)
-                    if values:
-                        prepared_series.append((MOCAP_PREVIEW_LABELS[index], values))
+            for label, values in self._preview_series(
+                event.payload,
+                FORCE_PLATE_PREVIEW_LABELS,
+            ):
+                numeric = self._numeric_values(values)
+                normalized_label = label.strip().lower()
+                if normalized_label in self._force_plate_traces and numeric:
+                    prepared_series.append((normalized_label, numeric))
             self._lock_preview_y_axis(
-                "mocap",
+                "force_plate",
                 [values for _, values in prepared_series],
-                [trace.plot for trace in self._mocap_traces.values()],
+                [trace.plot for trace in self._force_plate_traces.values()],
             )
             for label, values in prepared_series:
-                self._mocap_traces[label].append(values)
-            if self._mocap_plot is not None:
-                marker_count = int(event.payload.get("marker_count") or len(labels))
-                visible_names = "、".join(str(item) for item in labels[:3])
-                suffix = f"；当前：{visible_names}…" if visible_names else ""
-                self._mocap_plot.setTitle(
-                    f"动捕 Marker Z 坐标（共 {marker_count} 点，显示前 8 点）{suffix}"
-                )
+                self._force_plate_traces[label].append(values)
             return
         if modality == "emg":
             channels = event.payload.get("channels")
@@ -3234,6 +3277,62 @@ class CollectorWindow(QMainWindow):
                     if values:
                         self._emg_traces[EMG_PREVIEW_LABELS[index]].append(values)
             return
+
+    def _update_mocap_table(self, payload: Mapping[str, Any]) -> None:
+        """Render every latest marker coordinate without chart downsampling."""
+
+        table = self._mocap_table
+        if table is None:
+            return
+        raw_names = payload.get("marker_names")
+        if not isinstance(raw_names, (list, tuple)):
+            raw_names = payload.get("labels")
+        names = (
+            [str(item) for item in raw_names]
+            if isinstance(raw_names, (list, tuple))
+            else []
+        )
+        raw_xyz = payload.get("latest_xyz_mm")
+        xyz_rows = raw_xyz if isinstance(raw_xyz, (list, tuple)) else ()
+        channels = payload.get("channels")
+        marker_count = max(
+            len(names),
+            len(xyz_rows),
+            int(payload.get("marker_count") or 0),
+        )
+        if marker_count <= 0 and isinstance(channels, (list, tuple)):
+            marker_count = len(channels)
+        table.setRowCount(marker_count)
+        for row in range(marker_count):
+            name = names[row] if row < len(names) else f"marker_{row + 1:02d}"
+            values: list[float | None] = [None, None, None]
+            if row < len(xyz_rows):
+                raw_row = xyz_rows[row]
+                if isinstance(raw_row, (list, tuple)):
+                    for axis in range(min(3, len(raw_row))):
+                        try:
+                            number = float(raw_row[axis])
+                        except (TypeError, ValueError):
+                            continue
+                        if math.isfinite(number):
+                            values[axis] = number
+            elif isinstance(channels, (list, tuple)) and row < len(channels):
+                z_values = self._numeric_values(channels[row])
+                if z_values:
+                    values[2] = z_values[-1]
+            cells = [
+                name,
+                *[
+                    "—" if value is None else f"{value:.3f}"
+                    for value in values
+                ],
+            ]
+            for column, text in enumerate(cells):
+                item = table.item(row, column)
+                if item is None:
+                    item = QTableWidgetItem()
+                    table.setItem(row, column, item)
+                item.setText(text)
 
     def _lock_preview_y_axis(self, modality: str, series: list[list[float]],
                               plots: list["pg.PlotWidget"]) -> None:
@@ -3326,6 +3425,8 @@ class CollectorWindow(QMainWindow):
             return "encoder"
         if "mocap" in normalized or "motion" in normalized or "marker" in normalized:
             return "mocap"
+        if "force_plate" in normalized or "forceplate" in normalized:
+            return "force_plate"
         if "emg" in normalized or "analog" in normalized:
             return "emg"
         if "sync" in normalized or "pulse" in normalized:
@@ -3549,12 +3650,41 @@ class CollectorWindow(QMainWindow):
             parent_w - w - margin, margin, min(w, parent_w - 2 * margin), h
         )
 
+    @Slot(bool)
+    def _set_preview_focus_mode(self, enabled: bool) -> None:
+        """Temporarily give the complete content area to preview docks."""
+
+        if enabled:
+            if self._preview_focus_previous_sizes is None:
+                self._preview_focus_previous_sizes = self._body_splitter.sizes()
+            self._controls_scroll.hide()
+        else:
+            self._controls_scroll.show()
+            if self._preview_focus_previous_sizes:
+                self._body_splitter.setSizes(self._preview_focus_previous_sizes)
+            self._preview_focus_previous_sizes = None
+        if self.preview_workspace is not None:
+            self.preview_workspace.set_focus_mode(enabled)
+
+    @Slot()
+    def _save_preview_workspace_layout(self) -> None:
+        workspace = self.preview_workspace
+        if workspace is None:
+            return
+        try:
+            self._settings.set_preview_workspace_state(workspace.save_layout())
+        except Exception as exc:
+            LOG.warning("无法保存预览窗口布局: %s", exc)
+
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         if hasattr(self, "_toast_label") and self._toast_label.isVisible():
             self._position_toast()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API
+        self._save_preview_workspace_layout()
+        if self.preview_workspace is not None:
+            self.preview_workspace.suspend_layout_tracking()
         preflight_worker = self._preflight_worker
         if preflight_worker is not None:
             self._preflight_timer.stop()

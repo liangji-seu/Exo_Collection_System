@@ -114,7 +114,7 @@ def test_static_adapter_factory_applies_profile_then_request_overrides(tmp_path:
 def test_hardware_profile_is_strict_and_explicitly_has_simulated_sync() -> None:
     profile = load_device_profile("hardware")
     assert isinstance(profile, HardwareDeviceProfileDocument)
-    assert "Raw Ethernet" in profile.display_name
+    assert "XING" in profile.display_name
     assert profile.laboratory_sync_ready is False
     devices = profile.by_modality()
     assert [devices[name].simulated for name in devices] == [

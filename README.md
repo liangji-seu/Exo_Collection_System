@@ -37,6 +37,8 @@ python run_data_studio.py
 6. 若停止前从未收到合格触发，系统记录 `NOT_RECEIVED / OPTIONAL` 并正常最终化，不产生告警。只有已启用模态断流、设备故障、序列缺口、队列溢出或写盘完整性失败才保留 `.recording` 数据并进入失败/恢复流程。
 7. 写盘期间按 `<` 记录“受试者标签”，按 `>` 记录“工作人员标签”。左侧表格分别累计次数，IMU 与电机编码器预览在按键位置显示细红竖线，直到下一圈数据覆盖该位置；写盘前和停止后的按键不会写入 Trial。
 
+右侧实时预览是可停靠工作区。每个模态窗口都可以拖动、调整大小、浮动、关闭或重新停靠；关闭窗口只隐藏显示，不会停止设备或写盘。使用“＋ 添加窗口”重新显示任一模态，“恢复默认布局”生成两列平铺布局，“放大预览区”临时隐藏左侧控制栏。布局和窗口显隐状态按当前 Windows 用户自动保存，下次启动恢复。窗口通过模态键动态绑定后台预览流：动捕以表格显示全部 Marker 的最新 XYZ，测力台预留 Fx/Fy/Fz/Mx/My/Mz 通用曲线接口，EMG、超声、IMU 和编码器显示实时曲线。测力台真实采集 Adapter 尚未接入，因此该窗口当前保持“等待数据”，但不会影响其他模态。
+
 每个成功 Trial 都会生成 `manifest.json`、`quality_report.json`、`device_status.csv`、`sync_check.csv`、完整边沿/脉宽/间隔/时钟映射审计 `sync_manifest.json`、两张质控预览图和 `warnings.txt`，并纳入 Manifest Artifact 和 SHA-256 校验。存在人工标签时还会生成不可变的 `raw/prompt_labels.jsonl`，包含来源、连续序号、主机单调时间和 UTC 审计时间。实际使用的 `config/quality_rules/default.json` 与 `config/storage.json` 会冻结到 `derived/quality_rules_snapshot.json`；其算法版本和文件 SHA-256 同时写入统计、质量报告、配置快照及 Manifest Artifact。
 
 Collector 和 Data Studio 在项目/安装目录的 `log\` 中为每次启动创建一份独立 UTF-8 系统日志，文件名包含启动时间和进程 PID，例如 `ExoCollector_20260718_130501_123456_pid1234.log`。UI 中的“打开日志目录”可直接定位。单次日志达到 10 MiB 时会滚动；每个 Trial 另有自己的 `logs/trial.jsonl`。常见密码、token、secret 和 key 字段在写入主日志前会被脱敏。

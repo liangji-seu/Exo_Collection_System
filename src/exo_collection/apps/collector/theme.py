@@ -171,6 +171,36 @@ QScrollArea {
     border: none;
 }
 
+QMainWindow#preview_workspace {
+    background: #dbe4ef;
+    border: 1px solid #b9c7d8;
+    border-radius: 6px;
+}
+
+QToolBar#preview_workspace_toolbar {
+    background: #eef4fa;
+    border: none;
+    border-bottom: 1px solid #b9c7d8;
+    spacing: 6px;
+    padding: 4px;
+}
+
+QDockWidget {
+    color: #0f2744;
+    font-weight: 700;
+}
+
+QDockWidget::title {
+    background: #dbeafe;
+    border: 1px solid #b9c7d8;
+    padding: 6px 8px;
+    text-align: left;
+}
+
+QDockWidget > QWidget {
+    background: #f8fafc;
+}
+
 QScrollBar:vertical {
     width: 12px;
     margin: 0;

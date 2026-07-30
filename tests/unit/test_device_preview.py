@@ -702,6 +702,39 @@ def test_build_preview_public_api_respects_preview_labels_from_extra_payload() -
     assert event.payload.get("channel_count") == 6
 
 
+def test_mocap_preview_keeps_latest_xyz_for_every_marker() -> None:
+    marker_count = 12
+    values = np.arange(2 * marker_count * 3, dtype=np.float64).reshape(
+        2,
+        marker_count,
+        3,
+    )
+    names = [f"M{index + 1}" for index in range(marker_count)]
+    batch = SampleBatch(
+        device_id="test_mocap",
+        modality="mocap",
+        clock_domain="host",
+        data=values,
+        sample_rate_hz=100.0,
+        host_monotonic_ns=1000,
+        sequence_number=1,
+        first_sample_index=0,
+        sample_count=2,
+    )
+
+    event = build_preview_event(
+        batch,
+        extra_payload={"marker_names": names},
+    )
+
+    assert event.payload["marker_count"] == marker_count
+    assert len(event.payload["latest_xyz_mm"]) == marker_count
+    assert event.payload["latest_xyz_mm"][-1] == values[-1, -1].tolist()
+    # Waveform channels stay bounded because the Collector renders XYZ in a
+    # table and no longer needs a trace for every marker.
+    assert len(event.payload["channels"]) == 8
+
+
 def test_build_preview_event_none_for_unknown_type() -> None:
     desc = ModalityDescriptor(
         device_id="test", modality="imu", display_name="Test",

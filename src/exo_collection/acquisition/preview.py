@@ -198,7 +198,7 @@ def build_preview_event(
                 values[:, index, 2].astype(float).tolist()
                 for index in range(visible_count)
             ]
-            latest = values[-1, :visible_count, :].astype(float)
+            latest = values[-1, :, :].astype(float)
             payload = {
                 "host_monotonic_ns": event.host_monotonic_ns,
                 "values": channels[0] if channels else [],

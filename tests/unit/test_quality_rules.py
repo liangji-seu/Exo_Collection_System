@@ -74,7 +74,14 @@ def clean_evidence(**updates) -> TrialQualityEvidence:
                 anchor_count=10,
                 rms_residual_ns=100.0,
             )
-            for modality in ("ultrasound", "imu", "encoder", "sync_pulse")
+            for modality in (
+                "ultrasound",
+                "imu",
+                "encoder",
+                "mocap",
+                "emg",
+                "sync_pulse",
+            )
         ),
         "ultrasound": UltrasoundEvidence(
             formal_frame_count=20,

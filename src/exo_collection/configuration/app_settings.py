@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any, Literal, Mapping
 
-from PySide6.QtCore import QSettings, QStandardPaths
+from PySide6.QtCore import QByteArray, QSettings, QStandardPaths
 
 
 # These names are intentionally independent of QApplication.applicationName().
@@ -18,6 +18,7 @@ SETTINGS_APPLICATION_NAME = "Shared Settings"
 DATA_ROOT_KEY = "storage/data_root"
 DEVICE_PROFILE_KEY = "collector/device_profile"
 HARDWARE_OVERRIDES_KEY = "collector/hardware_device_overrides_json"
+PREVIEW_LAYOUT_KEY = "collector/preview_workspace_state"
 UPLOAD_ENDPOINT_KEY = "data_studio/upload_endpoint_json"
 ELONXI_RUNTIME_RELATIVE_PATH = (
     Path("SDK_Transfer")
@@ -191,6 +192,32 @@ class SharedAppSettings:
         merged[normalized_modality] = dict(values)
         persisted = self.set_hardware_device_overrides(merged)
         return dict(persisted[normalized_modality])
+
+    @property
+    def preview_workspace_state(self) -> QByteArray:
+        """Return the saved dock layout for the Collector preview workspace."""
+
+        stored = self._backend.value(PREVIEW_LAYOUT_KEY, QByteArray())
+        if isinstance(stored, QByteArray):
+            return stored
+        if isinstance(stored, bytes):
+            return QByteArray(stored)
+        return QByteArray()
+
+    def set_preview_workspace_state(
+        self,
+        state: QByteArray | bytes,
+    ) -> QByteArray:
+        """Persist the dock layout, including visibility and floating geometry."""
+
+        normalized = state if isinstance(state, QByteArray) else QByteArray(state)
+        self._backend.setValue(PREVIEW_LAYOUT_KEY, normalized)
+        self._sync_checked("Collector preview layout")
+        return normalized
+
+    def clear_preview_workspace_state(self) -> None:
+        self._backend.remove(PREVIEW_LAYOUT_KEY)
+        self._sync_checked("Collector preview layout")
 
     @property
     def upload_endpoint(self) -> dict[str, Any]:

@@ -28,6 +28,8 @@ from exo_collection.configuration.device_profiles import (
     ELONXI_ULTRASOUND_ADAPTER,
     SYNC_PULSE_ADAPTER,
     TEENSY_ENCODER_ADAPTER,
+    XING_NOKOV_EMG_ADAPTER,
+    XING_NOKOV_MOCAP_ADAPTER,
     XSENS_AWINDA_ADAPTER,
     HardwareDeviceProfileDocument,
 )
@@ -244,6 +246,20 @@ class FakeEncoderAdapter(FakeQueuedAdapter):
     _nominal_rate_hz = 100.0
 
 
+class FakeMocapAdapter(FakeQueuedAdapter):
+    _modality = "mocap"
+    _channels = ("x", "y", "z")
+    _units = ("mm", "mm", "mm")
+    _nominal_rate_hz = 100.0
+
+
+class FakeEmgAdapter(FakeQueuedAdapter):
+    _modality = "emg"
+    _channels = ("emg_01", "emg_02", "emg_03")
+    _units = ("mV", "mV", "mV")
+    _nominal_rate_hz = 1000.0
+
+
 class FakeSyncPulseAdapter(FakeQueuedAdapter):
     _modality = "sync_pulse"
     _channels = ("sync",)
@@ -302,6 +318,38 @@ def _load_hardware_profile() -> HardwareDeviceProfileDocument:
                     },
                 },
                 {
+                    "id": "mocap_hw",
+                    "modality": "mocap",
+                    "adapter": XING_NOKOV_MOCAP_ADAPTER,
+                    "writer": "hdf5_signal",
+                    "required": True,
+                    "clock_domain": "hw_mocap",
+                    "simulated": False,
+                    "parameters": {
+                        "server_ip": "10.1.1.198",
+                        "nominal_rate_hz": 100.0,
+                        "marker_count_fallback": 0,
+                        "queue_capacity": 64,
+                    },
+                },
+                {
+                    "id": "emg_hw",
+                    "modality": "emg",
+                    "adapter": XING_NOKOV_EMG_ADAPTER,
+                    "writer": "hdf5_signal",
+                    "required": True,
+                    "clock_domain": "hw_emg",
+                    "simulated": False,
+                    "parameters": {
+                        "server_ip": "10.1.1.198",
+                        "sample_rate_hz": 1000.0,
+                        "channel_count": 3,
+                        "channel_names": [],
+                        "unit": "mV",
+                        "queue_capacity": 64,
+                    },
+                },
+                {
                     "id": "sync_pulse_hw",
                     "modality": "sync_pulse",
                     "adapter": SYNC_PULSE_ADAPTER,
@@ -327,6 +375,8 @@ def _make_fake_adapters_for_registry() -> dict[str, type[FakeQueuedAdapter]]:
         ELONXI_ULTRASOUND_ADAPTER: FakeUltrasoundAdapter,
         XSENS_AWINDA_ADAPTER: FakeImuAdapter,
         TEENSY_ENCODER_ADAPTER: FakeEncoderAdapter,
+        XING_NOKOV_MOCAP_ADAPTER: FakeMocapAdapter,
+        XING_NOKOV_EMG_ADAPTER: FakeEmgAdapter,
         SYNC_PULSE_ADAPTER: FakeSyncPulseAdapter,
     }
 
@@ -356,6 +406,8 @@ def test_simulated_preflight_exercises_lifecycle_samples_sync_and_storage(
         "ultrasound",
         "imu",
         "encoder",
+        "mocap",
+        "emg",
         "sync_pulse",
     }
     assert all(item.status == "READY" for item in report.devices.values())
@@ -464,7 +516,14 @@ def test_run_device_preflight_simulated_passes(
     assert report.ready
     assert report.profile_kind == "simulated"
     assert report.profile_key == "simulated"
-    assert set(report.devices) == {"ultrasound", "imu", "encoder", "sync_pulse"}
+    assert set(report.devices) == {
+        "ultrasound",
+        "imu",
+        "encoder",
+        "mocap",
+        "emg",
+        "sync_pulse",
+    }
     assert all(item.status == "READY" for item in report.devices.values())
     assert all(item.observed_raw_data for item in report.devices.values())
 
@@ -530,6 +589,16 @@ class _BrokenEncoderAdapter(FakeEncoderAdapter):
         )
 
 
+class _BrokenMocapAdapter(FakeMocapAdapter):
+    def connect(self, config: Any = None) -> None:
+        raise ImportError("未安装 XING 动捕 SDK")
+
+
+class _BrokenEmgAdapter(FakeEmgAdapter):
+    def connect(self, config: Any = None) -> None:
+        raise ImportError("未安装 XING EMG SDK")
+
+
 def test_hardware_preflight_missing_sdk_gives_clear_error_no_fallback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -541,6 +610,8 @@ def test_hardware_preflight_missing_sdk_gives_clear_error_no_fallback(
         ELONXI_ULTRASOUND_ADAPTER: _BrokenUltrasoundAdapter,
         XSENS_AWINDA_ADAPTER: _BrokenImuAdapter,
         TEENSY_ENCODER_ADAPTER: _BrokenEncoderAdapter,
+        XING_NOKOV_MOCAP_ADAPTER: _BrokenMocapAdapter,
+        XING_NOKOV_EMG_ADAPTER: _BrokenEmgAdapter,
         SYNC_PULSE_ADAPTER: FakeSyncPulseAdapter,  # sync is still simulated
     }
     for slug, fake_cls in fake_types.items():
@@ -562,7 +633,7 @@ def test_hardware_preflight_missing_sdk_gives_clear_error_no_fallback(
     assert report.profile_kind == "hardware"
 
     # Hardware modalities must fail with the ImportError message
-    for mod in ("ultrasound", "imu", "encoder"):
+    for mod in ("ultrasound", "imu", "encoder", "mocap", "emg"):
         item = report.devices[mod]
         assert item.status == "FAILED", f"{mod}: {item.message}"
         assert "ImportError" in item.message
