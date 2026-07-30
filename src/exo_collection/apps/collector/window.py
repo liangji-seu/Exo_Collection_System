@@ -116,8 +116,8 @@ MODALITIES = (
     "imu",
     "encoder",
     "mocap",
-    "force_plate",
     "emg",
+    "force_plate",
     "sync_pulse",
 )
 PROMPT_HEALTH_ROWS = ("subject_prompt", "operator_prompt")
