@@ -86,7 +86,10 @@ class CollectorPreflightReport:
                 or self.measured_write_mib_s >= self.minimum_write_mib_s
             )
             and bool(self.devices)
-            and all(item.status == "READY" for item in self.devices.values())
+            and all(
+                item.status in {"READY", "OPTIONAL_UNAVAILABLE"}
+                for item in self.devices.values()
+            )
         )
 
 
@@ -653,9 +656,14 @@ def run_device_preflight(
         ):
             message += " (模拟同步 — 台架验证 only)"
 
+        optional_unavailable = not device.required and modality in failures
         results[modality] = DevicePreflightResult(
             modality=modality,
-            status="FAILED" if modality in failures else "READY",
+            status=(
+                "OPTIONAL_UNAVAILABLE"
+                if optional_unavailable
+                else "FAILED" if modality in failures else "READY"
+            ),
             device_id=device.device_id,
             nominal_rate_hz=descriptor.nominal_rate_hz if descriptor else 0.0,
             actual_rate_hz=(

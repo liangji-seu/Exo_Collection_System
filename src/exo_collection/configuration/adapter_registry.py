@@ -10,6 +10,7 @@ from exo_collection.adapters.base import ModalityAdapter
 from exo_collection.adapters.encoder.simulated import SimulatedEncoderAdapter
 from exo_collection.adapters.encoder.teensy_serial import TeensySerialEncoderAdapter
 from exo_collection.adapters.emg import SimulatedEmgAdapter, XingNokovEmgAdapter
+from exo_collection.adapters.force_plate import GaitwayForcePlateTcpAdapter
 from exo_collection.adapters.imu.simulated import SimulatedImuAdapter
 from exo_collection.adapters.imu.xsens_awinda import XsensAwindaImuAdapter
 from exo_collection.adapters.mocap import SimulatedMocapAdapter, XingNokovMocapAdapter
@@ -25,6 +26,7 @@ from .device_profiles import (
     ELONXI_ULTRASOUND_ADAPTER,
     ENCODER_ADAPTER,
     EMG_ADAPTER,
+    GAITWAY_FORCE_PLATE_ADAPTER,
     IMU_ADAPTER,
     MOCAP_ADAPTER,
     RAW_ETHERNET_ULTRASOUND_ADAPTER,
@@ -50,6 +52,7 @@ ADAPTER_REGISTRY: dict[str, type[Any]] = {
     TEENSY_ENCODER_ADAPTER: TeensySerialEncoderAdapter,
     XING_NOKOV_MOCAP_ADAPTER: XingNokovMocapAdapter,
     XING_NOKOV_EMG_ADAPTER: XingNokovEmgAdapter,
+    GAITWAY_FORCE_PLATE_ADAPTER: GaitwayForcePlateTcpAdapter,
 }
 
 

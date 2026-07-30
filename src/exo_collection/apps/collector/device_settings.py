@@ -9,6 +9,7 @@ from typing import Any
 from PySide6.QtCore import QThread, Qt, Signal, Slot
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -677,12 +678,109 @@ class EmgDeviceSettingsDialog(ModalityDeviceSettingsDialog):
         )
 
 
+class ForcePlateDeviceSettingsDialog(ModalityDeviceSettingsDialog):
+    modality = "force_plate"
+
+    def __init__(
+        self,
+        current: Mapping[str, Any],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("gaitway-3D 测力台设置")
+        self.setMinimumWidth(600)
+        outer = QVBoxLayout(self)
+        intro = QLabel(
+            "连接已经在 gaitway-3D 软件中启动的 STREAM DATA Server。"
+            "本软件只读取连续 Type I 数据，不控制跑台速度，也不会自动执行基线清零。"
+        )
+        intro.setWordWrap(True)
+        outer.addWidget(intro)
+        form = QFormLayout()
+
+        self.host_edit = QLineEdit(
+            str(current.get("server_host", "127.0.0.1"))
+        )
+        self.host_edit.setObjectName("force_plate_server_host")
+        form.addRow("Server 地址：", self.host_edit)
+
+        self.port_spin = QSpinBox()
+        self.port_spin.setObjectName("force_plate_server_port")
+        self.port_spin.setRange(1, 65_535)
+        self.port_spin.setValue(int(current.get("server_port", 49_500)))
+        form.addRow("TCP 端口：", self.port_spin)
+
+        self.rate_combo = QComboBox()
+        self.rate_combo.setObjectName("force_plate_sample_rate_hz")
+        for rate in (100, 200, 250, 400, 500, 1000, 2000):
+            self.rate_combo.addItem(f"{rate} Hz", rate)
+        rate_index = self.rate_combo.findData(
+            int(current.get("sample_rate_hz", 1000))
+        )
+        self.rate_combo.setCurrentIndex(max(0, rate_index))
+        form.addRow("采样率：", self.rate_combo)
+
+        self.trigger_combo = QComboBox()
+        self.trigger_combo.setObjectName("force_plate_trigger_mode")
+        self.trigger_combo.addItem("立即开始 / stopDS 停止", 0)
+        self.trigger_combo.addItem("等待开始触发", 1)
+        self.trigger_combo.addItem("立即开始 / 等待停止触发", 2)
+        self.trigger_combo.addItem("等待开始和停止触发", 3)
+        trigger_index = self.trigger_combo.findData(
+            int(current.get("trigger_mode", 0))
+        )
+        self.trigger_combo.setCurrentIndex(max(0, trigger_index))
+        form.addRow("触发模式：", self.trigger_combo)
+
+        self.sync_out_check = QCheckBox("采集期间启用测力台 Sync Out")
+        self.sync_out_check.setChecked(
+            bool(current.get("sync_out_enabled", False))
+        )
+        form.addRow("同步输出：", self.sync_out_check)
+
+        self.query_settings_check = QCheckBox(
+            "连接时读取并保存 gaitway 设置快照"
+        )
+        self.query_settings_check.setChecked(
+            bool(current.get("query_settings_on_connect", True))
+        )
+        form.addRow("连接核验：", self.query_settings_check)
+
+        notice = QLabel(
+            "基线清零必须在测力台完全卸载时执行。为避免误操作，当前版本不会在连接或开始采集时发送 resetBO。"
+        )
+        notice.setWordWrap(True)
+        notice.setStyleSheet(
+            "QLabel { color:#8a4b08; background:#fff7e6; padding:8px; "
+            "border:1px solid #edc98a; border-radius:4px; }"
+        )
+        outer.addLayout(form)
+        outer.addWidget(notice)
+        outer.addWidget(self._button_box())
+
+    @Slot()
+    def accept(self) -> None:
+        self._finish_accept(
+            {
+                "server_host": self.host_edit.text().strip(),
+                "server_port": self.port_spin.value(),
+                "sample_rate_hz": int(self.rate_combo.currentData()),
+                "trigger_mode": int(self.trigger_combo.currentData()),
+                "sync_out_enabled": self.sync_out_check.isChecked(),
+                "query_settings_on_connect": (
+                    self.query_settings_check.isChecked()
+                ),
+            }
+        )
+
+
 DEVICE_SETTINGS_DIALOGS: dict[str, type[ModalityDeviceSettingsDialog]] = {
     "ultrasound": UltrasoundDeviceSettingsDialog,
     "imu": ImuDeviceSettingsDialog,
     "encoder": EncoderDeviceSettingsDialog,
     "mocap": MocapDeviceSettingsDialog,
     "emg": EmgDeviceSettingsDialog,
+    "force_plate": ForcePlateDeviceSettingsDialog,
     "sync_pulse": SyncPulseDeviceSettingsDialog,
 }
 
@@ -693,6 +791,7 @@ __all__ = [
     "ImuDeviceSettingsDialog",
     "MocapDeviceSettingsDialog",
     "EmgDeviceSettingsDialog",
+    "ForcePlateDeviceSettingsDialog",
     "ModalityDeviceSettingsDialog",
     "SyncPulseDeviceSettingsDialog",
     "UltrasoundDeviceSettingsDialog",

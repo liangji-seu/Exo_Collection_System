@@ -562,7 +562,7 @@ def test_collector_theme_uses_direct_toggle_styles(tmp_path: Path) -> None:
 
     assert window.connect_all_button.text() == "全部连接"
     assert window.start_button.text() == "开始写盘"
-    assert "#0d6efd" in window.start_button.styleSheet()
+    assert "#0f766e" in window.start_button.styleSheet()
 
     window._preview_workers["ultrasound"] = object()
     window._update_connect_button_state()
@@ -576,9 +576,9 @@ def test_collector_theme_uses_direct_toggle_styles(tmp_path: Path) -> None:
         assert button.property("buttonRole") == "disconnect"
 
     stylesheet = window.styleSheet()
-    assert '#1d4ed8' in stylesheet
-    assert '#15803d' in stylesheet
-    assert '#b91c1c' in stylesheet
+    assert "#0f766e" in stylesheet
+    assert "#3f7d5b" in stylesheet
+    assert "#a53f3f" in stylesheet
     window.close()
 
 
@@ -1155,7 +1155,7 @@ def test_mocap_preview_table_displays_every_marker_xyz(tmp_path: Path) -> None:
     window.close()
 
 
-def test_force_plate_window_binds_generic_six_channel_preview(
+def test_force_plate_window_binds_gaitway_type_i_preview(
     tmp_path: Path,
 ) -> None:
     _app, window, _created = _window_with_fake(tmp_path)
@@ -1164,14 +1164,14 @@ def test_force_plate_window_binds_generic_six_channel_preview(
             event_type=WorkerEventType.PREVIEW,
             modality="force_plate",
             payload={
-                "labels": ["fx", "fy", "fz", "mx", "my", "mz"],
+                "labels": ["fx", "fy", "fz", "cop_x", "cop_y", "tz"],
                 "channels": [[index, index + 0.5] for index in range(6)],
             },
         )
     )
     assert window._force_plate_traces["fx"]._buffer[1] == 0.5
     assert window._force_plate_traces["fz"]._buffer[1] == 2.5
-    assert window._force_plate_traces["mz"]._buffer[1] == 5.5
+    assert window._force_plate_traces["tz"]._buffer[1] == 5.5
     window.close()
 
 
@@ -2411,7 +2411,7 @@ def test_device_connection_rows_omit_source_device_id_column(tmp_path: Path) -> 
 def test_health_table_has_modalities_and_prompt_label_counters(tmp_path: Path) -> None:
     """Compact table includes both keyboard-label counters."""
     _app, window, _created = _window_with_fake(tmp_path)
-    assert window.health_table.rowCount() == 8
+    assert window.health_table.rowCount() == 9
     assert window.health_table.columnCount() == 5
     assert [
         window.health_table.horizontalHeaderItem(column).text()
@@ -2425,6 +2425,7 @@ def test_health_table_has_modalities_and_prompt_label_counters(tmp_path: Path) -
         "IMU",
         "电机编码器",
         "动捕 Marker",
+        "gaitway-3D 测力台",
         "表面肌电 EMG",
         "同步脉冲",
         "受试者标签（<）",

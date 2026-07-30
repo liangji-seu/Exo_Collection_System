@@ -118,8 +118,14 @@ def test_hardware_profile_is_strict_and_explicitly_has_simulated_sync() -> None:
     assert profile.laboratory_sync_ready is False
     devices = profile.by_modality()
     assert [devices[name].simulated for name in devices] == [
-        False, False, False, False, False, True
+        False, False, False, False, False, True, False
     ]
+    force_plate = devices["force_plate"]
+    assert force_plate.required is False
+    assert force_plate.writer == "hdf5_signal"
+    assert force_plate.parameters.server_host == "127.0.0.1"
+    assert force_plate.parameters.server_port == 49_500
+    assert force_plate.parameters.sample_rate_hz == 1000
     assert devices["ultrasound"].parameters.interface_name is None
     assert devices["imu"].parameters.sensor_ids == ()
     assert devices["encoder"].parameters.port is None

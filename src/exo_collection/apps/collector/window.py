@@ -111,7 +111,15 @@ from exo_collection.quality import load_storage_policy
 
 LOG = logging.getLogger("exo_collection.collector.ui")
 
-MODALITIES = ("ultrasound", "imu", "encoder", "mocap", "emg", "sync_pulse")
+MODALITIES = (
+    "ultrasound",
+    "imu",
+    "encoder",
+    "mocap",
+    "force_plate",
+    "emg",
+    "sync_pulse",
+)
 PROMPT_HEALTH_ROWS = ("subject_prompt", "operator_prompt")
 HEALTH_ROWS = MODALITIES + PROMPT_HEALTH_ROWS
 MODALITY_DISPLAY_NAMES = {
@@ -119,12 +127,15 @@ MODALITY_DISPLAY_NAMES = {
     "imu": "IMU",
     "encoder": "电机编码器",
     "mocap": "动捕 Marker",
+    "force_plate": "gaitway-3D 测力台",
     "emg": "表面肌电 EMG",
     "sync_pulse": "同步脉冲",
     "subject_prompt": "受试者标签（<）",
     "operator_prompt": "工作人员标签（>）",
 }
-CRITICAL_MODALITIES = frozenset(MODALITIES)
+CRITICAL_MODALITIES = frozenset(
+    {"ultrasound", "imu", "encoder", "mocap", "emg", "sync_pulse"}
+)
 HEALTH_COLUMN_MODALITY = 0
 HEALTH_COLUMN_SAMPLE_COUNT = 1
 HEALTH_COLUMN_RATE = 2
@@ -151,7 +162,7 @@ ENCODER_PREVIEW_LABELS = (
     "right_torque",
 )
 EMG_PREVIEW_LABELS = tuple(f"emg_{index + 1:02d}" for index in range(16))
-FORCE_PLATE_PREVIEW_LABELS = ("fx", "fy", "fz", "mx", "my", "mz")
+FORCE_PLATE_PREVIEW_LABELS = ("fx", "fy", "fz", "cop_x", "cop_y", "tz")
 _SIGNAL_COLORS = (
     "#0d6efd", "#dc3545", "#198754", "#d97706",
     "#6f42c1", "#0dcaf0", "#fd7e14", "#20c997",
@@ -1660,14 +1671,15 @@ class CollectorWindow(QMainWindow):
         mocap_layout.addWidget(mocap_table)
         preview_workspace.register_panel("mocap", "动捕 Marker 数据", mocap_grid)
 
-        force_grid = QGroupBox("测力台 · 力 / 力矩")
+        force_grid = QGroupBox("gaitway-3D 测力台 · 三轴力 / COP / Tz")
         force_grid.setObjectName("force_plate_grid")
         force_grid.setMinimumHeight(120)
         force_layout = QHBoxLayout(force_grid)
         force_layout.setContentsMargins(0, 0, 0, 0)
         force_groups = (
-            ("force", "力", ("fx", "fy", "fz"), "N"),
-            ("moment", "力矩", ("mx", "my", "mz"), "N·m"),
+            ("force", "三轴力", ("fx", "fy", "fz"), "N"),
+            ("cop", "COP", ("cop_x", "cop_y"), "m"),
+            ("torque", "Tz", ("tz",), "N·m"),
         )
         for group_key, title, labels, unit in force_groups:
             plot = pg.PlotWidget(title=title)
@@ -1677,7 +1689,7 @@ class CollectorWindow(QMainWindow):
             for index, label in enumerate(labels):
                 trace = RingTrace(
                     plot,
-                    _SIGNAL_COLORS[index],
+                _SIGNAL_COLORS[index],
                     title,
                     capacity=500,
                 )
@@ -1857,7 +1869,8 @@ class CollectorWindow(QMainWindow):
         if hardware:
             self._device_profile_label.setText(
                 "真实设备模式：Raw Ethernet 超声 + Xsens MTw IMU + Teensy 编码器 + "
-                "XING/Nokov 动捕 Marker 与 EMG。点击蓝色模态名称可分别设置；"
+                "XING/Nokov 动捕 Marker 与 EMG + gaitway-3D 测力台。"
+                "点击蓝色模态名称可分别设置；"
                 "同步脉冲仍为模拟台架信号。"
             )
             self._device_profile_label.setStyleSheet("color:#842029;font-weight:600;")
@@ -2403,7 +2416,12 @@ class CollectorWindow(QMainWindow):
             for modality in list(self._preview_workers.keys()):
                 self._disconnect_modality(modality)
         else:
+            available = set(
+                load_device_profile(self._selected_device_profile_key()).by_modality()
+            )
             for modality in MODALITIES:
+                if modality not in available:
+                    continue
                 self._connect_modality(modality)
 
     def _update_connect_button_state(self) -> None:
@@ -2420,6 +2438,9 @@ class CollectorWindow(QMainWindow):
             self.connect_all_button.setStyleSheet("")
         self.connect_all_button.setEnabled(can_change)
 
+        available = set(
+            load_device_profile(self._selected_device_profile_key()).by_modality()
+        )
         for modality in MODALITIES:
             connect_button = self._connect_buttons.get(modality)
             disconnect_button = self._disconnect_buttons.get(modality)
@@ -2428,7 +2449,11 @@ class CollectorWindow(QMainWindow):
             active = modality in self._preview_workers
             stopping = modality in self._preview_disconnect_deadlines
             connect_button.setText("连接")
-            connect_button.setEnabled(can_change and not active)
+            connect_button.setEnabled(
+                can_change and not active and modality in available
+            )
+            if modality not in available:
+                connect_button.setToolTip("该模态仅在真实设备配置中可用")
             disconnect_button.setText("断开中…" if stopping else "断开")
             disconnect_button.setEnabled(
                 can_change and active and not stopping

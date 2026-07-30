@@ -47,6 +47,9 @@ XING_NOKOV_MOCAP_ADAPTER = (
     "exo_collection.adapters.mocap.XingNokovMocapAdapter"
 )
 XING_NOKOV_EMG_ADAPTER = "exo_collection.adapters.emg.XingNokovEmgAdapter"
+GAITWAY_FORCE_PLATE_ADAPTER = (
+    "exo_collection.adapters.force_plate.GaitwayForcePlateTcpAdapter"
+)
 
 
 class ProfileModel(BaseModel):
@@ -360,6 +363,19 @@ class HardwareEmgParameters(ProfileModel):
         return self
 
 
+class HardwareForcePlateParameters(ProfileModel):
+    server_host: NonEmptyStr = "127.0.0.1"
+    server_port: int = Field(default=49_500, ge=1, le=65_535)
+    sample_rate_hz: Literal[100, 200, 250, 400, 500, 1000, 2000] = 1000
+    trigger_mode: int = Field(default=0, ge=0, le=3)
+    sync_out_enabled: bool = False
+    queue_capacity: int = Field(default=512, gt=0)
+    connect_timeout_s: float = Field(default=5.0, gt=0)
+    socket_timeout_s: float = Field(default=0.2, gt=0)
+    stop_timeout_s: float = Field(default=8.0, gt=0)
+    query_settings_on_connect: bool = True
+
+
 class HardwareDeviceProfileBase(ProfileModel):
     device_id: NonEmptyStr = Field(alias="id")
     required: bool
@@ -428,6 +444,14 @@ class HardwareEmgDeviceProfile(HardwareDeviceProfileBase):
     parameters: HardwareEmgParameters
 
 
+class HardwareForcePlateDeviceProfile(HardwareDeviceProfileBase):
+    modality: Literal["force_plate"]
+    adapter: Literal[GAITWAY_FORCE_PLATE_ADAPTER]
+    writer: Literal["hdf5_signal"]
+    simulated: Literal[False]
+    parameters: HardwareForcePlateParameters
+
+
 class HardwareSyncPulseDeviceProfile(DeviceProfileBase):
     modality: Literal["sync_pulse"]
     adapter: Literal[SYNC_PULSE_ADAPTER]
@@ -442,6 +466,7 @@ HardwareDeviceProfile: TypeAlias = Annotated[
     | HardwareEncoderDeviceProfile
     | HardwareMocapDeviceProfile
     | HardwareEmgDeviceProfile
+    | HardwareForcePlateDeviceProfile
     | HardwareSyncPulseDeviceProfile,
     Field(discriminator="modality"),
 ]
@@ -457,10 +482,18 @@ class HardwareDeviceProfileDocument(ProfileModel):
     @model_validator(mode="after")
     def validate_complete_profile(self) -> HardwareDeviceProfileDocument:
         modalities = [device.modality for device in self.devices]
-        expected = {"ultrasound", "imu", "encoder", "mocap", "emg", "sync_pulse"}
-        if set(modalities) != expected or len(modalities) != len(expected):
+        required_modalities = {
+            "ultrasound", "imu", "encoder", "mocap", "emg", "sync_pulse"
+        }
+        allowed_modalities = required_modalities | {"force_plate"}
+        if (
+            not required_modalities.issubset(modalities)
+            or not set(modalities).issubset(allowed_modalities)
+            or len(modalities) != len(set(modalities))
+        ):
             raise ValueError(
-                "hardware profile must define all six acquisition modalities exactly once"
+                "hardware profile must define the six core modalities exactly once "
+                "and may define one force_plate modality"
             )
         device_ids = [device.device_id for device in self.devices]
         clock_domains = [device.clock_domain for device in self.devices]

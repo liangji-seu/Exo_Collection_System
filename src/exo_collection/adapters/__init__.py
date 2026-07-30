@@ -31,6 +31,12 @@ from .imu import (
     XsensAwindaImuAdapter,
 )
 from .hardware_base import QueuedHardwareAdapter
+from .force_plate import (
+    FORCE_PLATE_CHANNELS,
+    FORCE_PLATE_UNITS,
+    GaitwayForcePlateConfig,
+    GaitwayForcePlateTcpAdapter,
+)
 from .simulated import (
     SimulatedIMUAdapter,
     SimulatedIMUConfig,
@@ -50,6 +56,10 @@ __all__ = [
     "ENCODER_UNITS",
     "IMU_CHANNELS",
     "IMU_UNITS",
+    "FORCE_PLATE_CHANNELS",
+    "FORCE_PLATE_UNITS",
+    "GaitwayForcePlateConfig",
+    "GaitwayForcePlateTcpAdapter",
     "ModalityAdapter",
     "ModalityDescriptor",
     "QueuedHardwareAdapter",

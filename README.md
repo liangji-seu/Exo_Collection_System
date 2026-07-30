@@ -30,14 +30,14 @@ python run_data_studio.py
 ## Collector 现场采集流程
 
 1. 选择项目 `F — 正式` 或 `T — 测试`（默认为更安全的 `T`），并输入三位受试者编码，例如 `001`。数据分别进入数据根目录下的 `F` 或 `T` 分区，实际关联仍由 UUID + Manifest 确定。
-2. 在“设备连接”中点击蓝色下划线的超声、IMU、电机编码器、动捕 Marker、EMG 或同步脉冲名称，分别设置该模态的设备参数；保存后立即写入当前 Windows 用户设置，后续启动自动恢复。随后分别点击各行“连接”，或使用“全部连接”。每个模态收到首批真实帧/样本后才显示 `READY`，并立即驱动右侧对应预览窗口。
+2. 在“设备连接”中点击蓝色下划线的超声、IMU、电机编码器、动捕 Marker、gaitway-3D 测力台、EMG 或同步脉冲名称，分别设置该模态的设备参数；保存后立即写入当前 Windows 用户设置，后续启动自动恢复。随后分别点击各行“连接”，或使用“全部连接”。每个模态收到首批真实帧/样本后才显示 `READY`，并立即驱动右侧对应预览窗口。
 3. 连接/预览阶段不创建 Trial、Manifest、HDF5 或超声二进制原始文件。点击“开始写盘”后，已连接的模态通过现有预览进程的有界记录支路进入独立 Collector Worker，设备不会断开或重新连接。
 4. Trial Worker 打开写盘 gate 后立即进入“采集中”；同步状态独立显示为“等待同步”。若收到合格同步上升沿，则以该边沿建立正式 `t0`；否则以写盘 gate 的主机单调时钟作为 `t0`。同步前原始数据仍保留供审计。
 5. 实验完成时人工点击“受控停止”，无需预先设置采集秒数。Writer 完成 flush、校验和最终化后才会发布 Manifest。
 6. 若停止前从未收到合格触发，系统记录 `NOT_RECEIVED / OPTIONAL` 并正常最终化，不产生告警。只有已启用模态断流、设备故障、序列缺口、队列溢出或写盘完整性失败才保留 `.recording` 数据并进入失败/恢复流程。
 7. 写盘期间按 `<` 记录“受试者标签”，按 `>` 记录“工作人员标签”。左侧表格分别累计次数，IMU 与电机编码器预览在按键位置显示细红竖线，直到下一圈数据覆盖该位置；写盘前和停止后的按键不会写入 Trial。
 
-右侧实时预览是可停靠工作区。每个模态窗口都可以拖动、调整大小、浮动、关闭或重新停靠；关闭窗口只隐藏显示，不会停止设备或写盘。使用“＋ 添加窗口”重新显示任一模态，“恢复默认布局”生成两列平铺布局，“放大预览区”临时隐藏左侧控制栏。布局和窗口显隐状态按当前 Windows 用户自动保存，下次启动恢复。窗口通过模态键动态绑定后台预览流：动捕以表格显示全部 Marker 的最新 XYZ，测力台预留 Fx/Fy/Fz/Mx/My/Mz 通用曲线接口，EMG、超声、IMU 和编码器显示实时曲线。测力台真实采集 Adapter 尚未接入，因此该窗口当前保持“等待数据”，但不会影响其他模态。
+右侧实时预览是可停靠工作区。每个模态窗口都可以拖动、调整大小、浮动、关闭或重新停靠；关闭窗口只隐藏显示，不会停止设备或写盘。使用“＋ 添加窗口”重新显示任一模态，“恢复默认布局”生成两列平铺布局，“放大预览区”临时隐藏左侧控制栏。布局和窗口显隐状态按当前 Windows 用户自动保存，下次启动恢复。窗口通过模态键动态绑定后台预览流：动捕以表格显示全部 Marker 的最新 XYZ；gaitway-3D 测力台分别显示 Fx/Fy/Fz、COPx/COPy 和 Tz；EMG、超声、IMU 和编码器显示实时曲线。
 
 每个成功 Trial 都会生成 `manifest.json`、`quality_report.json`、`device_status.csv`、`sync_check.csv`、完整边沿/脉宽/间隔/时钟映射审计 `sync_manifest.json`、两张质控预览图和 `warnings.txt`，并纳入 Manifest Artifact 和 SHA-256 校验。存在人工标签时还会生成不可变的 `raw/prompt_labels.jsonl`，包含来源、连续序号、主机单调时间和 UTC 审计时间。实际使用的 `config/quality_rules/default.json` 与 `config/storage.json` 会冻结到 `derived/quality_rules_snapshot.json`；其算法版本和文件 SHA-256 同时写入统计、质量报告、配置快照及 Manifest Artifact。
 
@@ -102,10 +102,11 @@ dist\ExoDataStudio.exe
 ## 真实设备环境与 UI 配置
 
 真实设备不使用命令行参数，也没有全局“设备配置”表单。Collector“设备连接”
-表格中的六个模态名称就是各自的设置入口：超声设置 Raw Ethernet/Npcap 网卡与
+表格中的模态名称就是各自的设置入口：超声设置 Raw Ethernet/Npcap 网卡与
 标称帧率，并可在后台扫描目标帧；IMU 设置 Awinda 信道、采样率和按躯干/左腿/
 右腿顺序的 3 个 MTw ID；编码器设置 Teensy 串口、波特率、VID/PID 与标称采样率；
-动捕设置 XING/Nokov Seeker 服务器 IP、后备帧率与后备 Marker 数；EMG 设置同一
+动捕设置 XING/Nokov Seeker 服务器 IP、后备帧率与后备 Marker 数；测力台设置
+gaitway STREAM DATA Server 地址、固定端口、采样率、触发模式和 Sync Out；EMG 设置同一
 服务器 IP、采样率、通道数、通道名称和单位；同步脉冲设置当前台架模拟信号参数。
 每次保存只更新对应模态，不会覆盖其他设备，
 并立即写入当前 Windows 用户的 QSettings，以后启动默认沿用。密码和凭据不写入
@@ -138,6 +139,14 @@ python -m pip install `
 `(sample, channel)` 写入 `raw/emg.h5`。EMG 配置的通道数必须与 Seeker 输出一致，
 不一致会将设备置为故障，禁止生成通道错位的数据。
 
+gaitway-3D 测力台使用 ICD `TM-ICD-0004-ARS A5` 的 TCP 数据流接口。
+先在厂商 gaitway 软件中启动 STREAM DATA Server，再连接 Collector；默认地址为
+本机 `127.0.0.1:49500`。连接时 Collector 发送 `getDSsettings` 并将返回的设置包
+原样保存到设备配置快照；采集使用连续 Type I 数据包，按
+`Fx/Fy/Fz/COPx/COPy/Tz/跑台速度/坡度/心率/数字输入` 写入
+`raw/force_plate.h5`。当前不启用 Type II 分步数据，也不控制跑台速度。
+基线清零要求测力台完全卸载，因此软件不会在连接或开始采集时自动发送 `resetBO`。
+
 Xsens Python 绑定由 MT SDK 提供，不从 PyPI 猜测安装。当前旧系统中已有与
 Python 3.11 x64 匹配的官方 wheel，可在两个项目共存时执行：
 
@@ -155,6 +164,6 @@ Raw Ethernet 超声依赖 Scapy；Windows 还必须安装 Npcap，并在 Npcap
 收集 `scapy`、`xsensdeviceapi` 和 `serial` 等可选硬件模块。Npcap 是系统
 驱动，不会被 PyInstaller 打进 EXE。
 
-> 当前 `hardware` Profile 的超声、三台 IMU、电机编码器、XING/Nokov 动捕与
-> EMG 为真实适配；`sync_pulse` 仍是台架模拟信号。测力台数据流尚未接入，
-> 动捕/EMG 也仍需在南理工现场完成真实设备持续采集和压力验收。
+> 当前 `hardware` Profile 的超声、三台 IMU、电机编码器、XING/Nokov 动捕、
+> EMG 和 gaitway-3D 测力台为真实适配；`sync_pulse` 仍是台架模拟信号。
+> 测力台、动捕和 EMG 仍需在南理工现场完成真实设备持续采集和压力验收。
