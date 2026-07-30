@@ -1369,7 +1369,7 @@ class CollectorWindow(QMainWindow):
         self.start_button = QPushButton("开始写盘")
         self.start_button.setObjectName("start_trial")
         self.start_button.setStyleSheet(
-            "QPushButton { font-weight: 600; padding: 8px; color: #ffffff; background: #0d6efd; border: 1px solid #0d6efd; border-radius: 4px; }"
+            "QPushButton { font-weight: 600; padding: 8px; color: #ffffff; background: #0f766e; border: 1px solid #115e59; border-radius: 4px; }"
         )
         self.start_button.clicked.connect(self._toggle_write)
         self.start_button.setMinimumWidth(105)
@@ -1558,7 +1558,7 @@ class CollectorWindow(QMainWindow):
             plot.setMouseEnabled(x=False, y=False)
             plot.setLabel("bottom", "单帧采样点")
             plot.showGrid(x=True, y=True, alpha=0.2)
-            curve = plot.plot(pen=pg.mkPen("#2457c5", width=1.2))
+            curve = plot.plot(pen=pg.mkPen("#0f766e", width=1.2))
             curve.setData(self._us_x, np.full(ULTRASOUND_PREVIEW_SAMPLES, np.nan, dtype=np.float64))
             self._us_plots.append(plot)
             self._us_curves.append(curve)
@@ -3549,7 +3549,7 @@ class CollectorWindow(QMainWindow):
         else:
             self.start_button.setText("开始写盘")
             self.start_button.setStyleSheet(
-                "QPushButton { font-weight: 600; padding: 8px; color: #ffffff; background: #0d6efd; border: 1px solid #0d6efd; border-radius: 4px; }"
+                "QPushButton { font-weight: 600; padding: 8px; color: #ffffff; background: #0f766e; border: 1px solid #115e59; border-radius: 4px; }"
             )
             subject_valid = bool(
                 QRegularExpression(r"^\d{3}$").match(self.subject_code_edit.text().strip()).hasMatch()
@@ -3624,7 +3624,7 @@ class CollectorWindow(QMainWindow):
         if level == "ERROR":
             bg = "rgba(220, 53, 69, 200)"; fg = "#ffffff"; icon = "⚠ "
         else:
-            bg = "rgba(13, 110, 253, 200)"; fg = "#ffffff"; icon = "ℹ "
+            bg = "rgba(15, 118, 110, 210)"; fg = "#ffffff"; icon = "ℹ "
         self._toast_label.setText(f"{icon}{message}")
         self._toast_label.setStyleSheet(
             f"QLabel {{ background-color:{bg}; color:{fg}; border-radius:6px; "
