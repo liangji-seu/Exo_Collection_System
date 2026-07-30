@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import platform
+from queue import Empty
 import subprocess
 import time
 from typing import Any, Protocol
@@ -56,6 +57,11 @@ from exo_collection.domain.models import (
     Session,
     Subject,
     utc_now,
+)
+from exo_collection.domain.prompt_labels import (
+    PROMPT_LABEL_RELATIVE_PATH,
+    PromptLabelEvent,
+    PromptLabelSource,
 )
 from exo_collection.domain.states import TrialState, TrialStateMachine
 from exo_collection.quality import (
@@ -118,6 +124,10 @@ class StopSignal(Protocol):
     def is_set(self) -> bool: ...
 
 
+class PromptEventSource(Protocol):
+    def get_nowait(self) -> object: ...
+
+
 class _NeverStop:
     def is_set(self) -> bool:
         return False
@@ -174,6 +184,46 @@ class _JsonlJournal:
             self._stream.flush()
             self._stream.close()
             self._closed = True
+
+
+class _PromptLabelWriter:
+    """Durable NDJSON event stream kept separate from device signal Writers."""
+
+    def __init__(self, layout: TrialLayout) -> None:
+        self.path = layout.partial_path(PROMPT_LABEL_RELATIVE_PATH)
+        self._stream = self.path.open("x", encoding="utf-8", newline="\n")
+        self._closed = False
+        self.counts = {
+            PromptLabelSource.SUBJECT: 0,
+            PromptLabelSource.OPERATOR: 0,
+        }
+
+    @property
+    def count(self) -> int:
+        return sum(self.counts.values())
+
+    def append(self, event: PromptLabelEvent) -> None:
+        if self._closed:
+            raise RuntimeError("prompt-label writer is closed")
+        self._stream.write(event.model_dump_json() + "\n")
+        self._stream.flush()
+        os.fsync(self._stream.fileno())
+        self.counts[event.source] += 1
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._stream.flush()
+        os.fsync(self._stream.fileno())
+        self._stream.close()
+        self._closed = True
+
+    def close_incomplete(self) -> None:
+        if self._closed:
+            return
+        self._stream.flush()
+        self._stream.close()
+        self._closed = True
 
 
 def _publish(callback: PublishCallback | None, event: WorkerEvent) -> None:
@@ -474,6 +524,7 @@ def run_trial(
     | None = None,
     enabled_modalities: frozenset[str] | None = None,
     recording_streams: Mapping[str, RecordingStreamEndpoint] | None = None,
+    prompt_events: PromptEventSource | None = None,
     recording_stream_end_timeout_s: float = 10.0,
 ) -> TrialRunResult:
     """Collect the selected four-modality profile and publish one Trial.
@@ -610,6 +661,8 @@ def run_trial(
     catalog: Catalog | None = None
     repository: CatalogRepository | None = None
     journal: _JsonlJournal | None = None
+    prompt_writer: _PromptLabelWriter | None = None
+    prompt_label_events: list[PromptLabelEvent] = []
     writers: dict[str, Any] = {}
     stop_reports: dict[str, Any] = {}
     counts = {name: 0 for name in adapters}
@@ -675,6 +728,7 @@ def run_trial(
             layout.create_recording()
             _write_session_file(layout, visit)
             journal = _JsonlJournal(layout)
+            prompt_writer = _PromptLabelWriter(layout)
             transition(
                 TrialState.PREPARING,
                 f"checking and preparing {request.device_profile_key} devices",
@@ -819,6 +873,77 @@ def run_trial(
                 "recording gate opened; synchronization is optional alignment metadata",
             )
 
+            def drain_prompt_events(*, upper_bound_ns: int | None = None) -> int:
+                if prompt_events is None:
+                    return 0
+                accepted_count = 0
+                while True:
+                    try:
+                        payload = prompt_events.get_nowait()
+                    except Empty:
+                        break
+                    event = PromptLabelEvent.model_validate(payload)
+                    if event.trial_uuid != request.trial_uuid:
+                        raise RuntimeError(
+                            "prompt-label Trial UUID differs from active Trial"
+                        )
+                    if event.host_monotonic_ns < start_token.host_monotonic_ns:
+                        _publish(
+                            publish,
+                            WorkerEvent(
+                                event_type=WorkerEventType.ALERT,
+                                trial_uuid=str(request.trial_uuid),
+                                message="Prompt label preceded the recording gate and was ignored",
+                                payload=event.model_dump(mode="json"),
+                            ),
+                        )
+                        continue
+                    if (
+                        upper_bound_ns is not None
+                        and event.host_monotonic_ns > upper_bound_ns
+                    ):
+                        _publish(
+                            publish,
+                            WorkerEvent(
+                                event_type=WorkerEventType.ALERT,
+                                trial_uuid=str(request.trial_uuid),
+                                message="Prompt label followed the recording stop boundary and was ignored",
+                                payload=event.model_dump(mode="json"),
+                            ),
+                        )
+                        continue
+                    persisted = event.model_copy(
+                        update={"sequence": len(prompt_label_events)}
+                    )
+                    assert prompt_writer is not None
+                    prompt_writer.append(persisted)
+                    prompt_label_events.append(persisted)
+                    accepted_count += 1
+                    if journal is not None and not journal.closed:
+                        journal.write(
+                            "prompt_label",
+                            persisted.model_dump(mode="json"),
+                        )
+                    _publish(
+                        publish,
+                        WorkerEvent(
+                            event_type=WorkerEventType.PROMPT_LABEL,
+                            trial_uuid=str(request.trial_uuid),
+                            message=persisted.label,
+                            payload={
+                                **persisted.model_dump(mode="json"),
+                                "subject_count": prompt_writer.counts[
+                                    PromptLabelSource.SUBJECT
+                                ],
+                                "operator_count": prompt_writer.counts[
+                                    PromptLabelSource.OPERATOR
+                                ],
+                                "total_count": prompt_writer.count,
+                            },
+                        ),
+                    )
+                return accepted_count
+
             def accept_raw_event(modality: str, event: Any, now_ns: int) -> None:
                 nonlocal pulse_event_count
                 nonlocal trigger_count
@@ -950,6 +1075,8 @@ def run_trial(
             while True:
                 processed = False
                 now_ns = time.perf_counter_ns()
+                if drain_prompt_events():
+                    processed = True
                 if external_stream_mode:
                     proxy_adapters = tuple(
                         adapter
@@ -1114,6 +1241,7 @@ def run_trial(
                     time.sleep(0.001)
 
             assert formal_stop_monotonic_ns is not None
+            drain_prompt_events(upper_bound_ns=formal_stop_monotonic_ns)
             transition(TrialState.STOPPING, stop_reason)
             for modality, adapter in adapters.items():
                 stop_reports[modality] = adapter.stop()
@@ -1213,6 +1341,10 @@ def run_trial(
                 writer.close()
             for adapter in adapters.values():
                 adapter.close()
+            assert prompt_writer is not None
+            prompt_writer.close()
+            if prompt_writer.count == 0:
+                prompt_writer.path.unlink(missing_ok=True)
 
             # Verify source formats before any temporary name is published.
             ultrasound_scan = None
@@ -1364,6 +1496,11 @@ def run_trial(
                 "duration_s": formal_duration_s,
                 "pretrigger_duration_s": pretrigger_duration_s,
                 "modality_counts": counts,
+                "prompt_label_counts": {
+                    "subject": prompt_writer.counts[PromptLabelSource.SUBJECT],
+                    "operator": prompt_writer.counts[PromptLabelSource.OPERATOR],
+                    "total": prompt_writer.count,
+                },
                 "formal_item_counts": formal_item_counts,
                 "sequence_gap_counts": sequence_gap_counts,
                 "dropped_batch_counts": dropped_batch_counts,
@@ -1738,9 +1875,16 @@ def run_trial(
             quality_artifact_uuid = uuid4()
             quality_rules_artifact_uuid = uuid4()
             sync_manifest_artifact_uuid = uuid4()
+            prompt_label_artifact_uuid = (
+                uuid4() if prompt_label_events else None
+            )
             raw_artifact_uuids = tuple(
                 raw_artifact_uuid_by_modality[modality]
                 for modality in adapters
+            ) + (
+                (prompt_label_artifact_uuid,)
+                if prompt_label_artifact_uuid is not None
+                else ()
             )
             draft_by_key: dict[str, ArtifactDraft] = {}
             if "ultrasound" in adapters:
@@ -1794,6 +1938,27 @@ def run_trial(
                     artifact_uuid=raw_artifact_uuid_by_modality[modality],
                     created_at_utc=started_at_utc,
                     metadata=metadata,
+                )
+            if prompt_label_artifact_uuid is not None:
+                draft_by_key["prompt_labels"] = ArtifactDraft(
+                    request.trial_uuid,
+                    "prompt_label",
+                    ArtifactKind.RAW,
+                    "application/x-ndjson",
+                    PROMPT_LABEL_RELATIVE_PATH,
+                    artifact_uuid=prompt_label_artifact_uuid,
+                    created_at_utc=started_at_utc,
+                    metadata={
+                        "schema_version": "1.0.0",
+                        "event_count": prompt_writer.count,
+                        "subject_count": prompt_writer.counts[
+                            PromptLabelSource.SUBJECT
+                        ],
+                        "operator_count": prompt_writer.counts[
+                            PromptLabelSource.OPERATOR
+                        ],
+                        "primary_clock": "host_monotonic_ns",
+                    },
                 )
             draft_by_key.update(
                 {
@@ -2214,6 +2379,11 @@ def run_trial(
         if journal is not None:
             try:
                 journal.close_incomplete()
+            except BaseException:
+                pass
+        if prompt_writer is not None:
+            try:
+                prompt_writer.close_incomplete()
             except BaseException:
                 pass
         raise

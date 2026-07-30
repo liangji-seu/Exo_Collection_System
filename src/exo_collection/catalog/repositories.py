@@ -507,7 +507,8 @@ class CatalogRepository:
                                                 for artifact in artifacts_by_trial.get(
                                                     trial.trial_uuid, []
                                                 )
-                                                if artifact.modality != "trial"
+                                                if artifact.modality
+                                                not in {"trial", "prompt_label"}
                                             }
                                         ),
                                         "children": [

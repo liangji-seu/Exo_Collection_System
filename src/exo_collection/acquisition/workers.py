@@ -24,6 +24,7 @@ from exo_collection.acquisition.buffers import (
 )
 from exo_collection.acquisition.messages import WorkerEvent, WorkerEventType
 from exo_collection.acquisition.recording_stream import RecordingStreamEndpoint
+from exo_collection.domain.prompt_labels import PromptLabelEvent, PromptLabelSource
 from exo_collection.orchestration.models import TrialRunRequest
 
 
@@ -61,6 +62,7 @@ def _trial_worker_entry(
     telemetry_queue: Queue[Any],
     control_queue: Queue[Any],
     stop_event: Any,
+    prompt_label_queue: Queue[Any],
     preview_descriptors: dict[str, PreviewBufferDescriptor],
     stream_endpoints: dict[str, RecordingStreamEndpoint] | None,
 ) -> None:
@@ -137,6 +139,7 @@ def _trial_worker_entry(
             publish=publish,
             enabled_modalities=request.enabled_modalities,
             recording_streams=stream_endpoints,
+            prompt_events=prompt_label_queue,
         )
         publish(
             WorkerEvent(
@@ -200,6 +203,8 @@ class CollectorWorker:
         self._events = self._context.Queue(maxsize=queue_capacity)
         self._control_events = self._context.Queue(maxsize=32)
         self._stop_requested = self._context.Event()
+        self._prompt_labels = self._context.Queue(maxsize=256)
+        self._prompt_label_sequence = 0
         if not stream_endpoints:
             self._stream_endpoints = None
         elif isinstance(stream_endpoints, Mapping):
@@ -236,6 +241,7 @@ class CollectorWorker:
                 self._events,
                 self._control_events,
                 self._stop_requested,
+                self._prompt_labels,
                 {
                     modality: buffer.descriptor
                     for modality, buffer in self._preview_buffers.items()
@@ -275,6 +281,34 @@ class CollectorWorker:
         if self._closed:
             return
         self._stop_requested.set()
+
+    def record_prompt_label(
+        self,
+        source: PromptLabelSource | str,
+        *,
+        host_monotonic_ns: int,
+        host_utc_ns: int,
+    ) -> PromptLabelEvent:
+        """Reliably enqueue one human label without touching raw device queues."""
+
+        if self._closed or not self._process.is_alive():
+            raise RuntimeError("Collector worker is not recording")
+        label_source = PromptLabelSource(source)
+        event = PromptLabelEvent(
+            trial_uuid=self.request.trial_uuid,
+            sequence=self._prompt_label_sequence,
+            source=label_source,
+            label=label_source.display_name,
+            key=label_source.key_text,
+            host_monotonic_ns=host_monotonic_ns,
+            host_utc_ns=host_utc_ns,
+        )
+        try:
+            self._prompt_labels.put(event.model_dump(mode="json"), timeout=0.1)
+        except Full as exc:
+            raise RuntimeError("prompt-label queue is full") from exc
+        self._prompt_label_sequence += 1
+        return event
 
     def poll_events(self, limit: int = 100) -> list[WorkerEvent]:
         if limit <= 0 or self._closed:
@@ -368,6 +402,8 @@ class CollectorWorker:
         self._events.join_thread()
         self._control_events.close()
         self._control_events.join_thread()
+        self._prompt_labels.close()
+        self._prompt_labels.join_thread()
         self._process.close()
         for buffer in self._preview_buffers.values():
             try:
@@ -388,7 +424,7 @@ class CollectorWorker:
                     self._process.join(timeout=1.0)
         with suppress(BaseException):
             self._exitcode_snapshot = self._process.exitcode
-        for queue in (self._events, self._control_events):
+        for queue in (self._events, self._control_events, self._prompt_labels):
             with suppress(BaseException):
                 queue.close()
             with suppress(BaseException):

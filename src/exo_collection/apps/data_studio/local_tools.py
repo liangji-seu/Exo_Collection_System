@@ -25,6 +25,10 @@ from exo_collection.adapters.ultrasound.raw_ethernet import (
     decode_raw_ethernet_flags,
 )
 from exo_collection.domain.states import TrialState
+from exo_collection.domain.prompt_labels import (
+    PromptLabelSource,
+    load_prompt_label_events,
+)
 from exo_collection.readers.binary_block import BlockBinaryReader
 from exo_collection.storage.activity import read_activity
 from exo_collection.storage.layout import path_has_unpublished_component
@@ -76,6 +80,14 @@ class UltrasoundPlayback:
 
 
 @dataclass(frozen=True, slots=True)
+class PromptLabelPlaybackEvent:
+    time_s: float
+    source: PromptLabelSource
+    label: str
+    key: str
+
+
+@dataclass(frozen=True, slots=True)
 class TrialPlayback:
     manifest_path: Path
     trial_uuid: str
@@ -86,6 +98,7 @@ class TrialPlayback:
     encoder: SignalPlayback | None
     sync: SignalPlayback | None
     sync_trigger_times_s: NDArray[np.float64]
+    prompt_labels: tuple[PromptLabelPlaybackEvent, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -736,6 +749,43 @@ def load_trial_playback(
         if modality == "sync_pulse":
             sync_trigger_times = trigger_times
 
+    prompt_labels: tuple[PromptLabelPlaybackEvent, ...] = ()
+    prompt_relative = _artifact_for(
+        manifest,
+        modality="prompt_label",
+        suffix=".jsonl",
+    )
+    if prompt_relative is not None:
+        raw_prompt_events = load_prompt_label_events(
+            _artifact_path(trial_root, prompt_relative)
+        )
+        for event in raw_prompt_events:
+            if str(event.trial_uuid) != str(manifest.trial_uuid):
+                raise DataStudioToolError(
+                    "人工标签 Artifact 的 Trial UUID 与 Manifest 不一致。"
+                )
+        prompt_labels = tuple(
+            PromptLabelPlaybackEvent(
+                time_s=(event.host_monotonic_ns - formal_t0_ns) / 1e9,
+                source=event.source,
+                label=event.label,
+                key=event.key,
+            )
+            for event in raw_prompt_events
+        )
+        _log.info(
+            "人工标签加载完成: total=%d subject=%d operator=%d",
+            len(prompt_labels),
+            sum(
+                event.source is PromptLabelSource.SUBJECT
+                for event in prompt_labels
+            ),
+            sum(
+                event.source is PromptLabelSource.OPERATOR
+                for event in prompt_labels
+            ),
+        )
+
     _log.info("=== load_trial_playback 完成 ===")
     return TrialPlayback(
         manifest_path=path,
@@ -747,6 +797,7 @@ def load_trial_playback(
         encoder=signals["encoder"],
         sync=signals["sync_pulse"],
         sync_trigger_times_s=sync_trigger_times,
+        prompt_labels=prompt_labels,
     )
 
 
@@ -1052,6 +1103,7 @@ __all__ = [
     "ChecksumReport",
     "DataStudioToolError",
     "FullStatistics",
+    "PromptLabelPlaybackEvent",
     "QualityAudit",
     "SignalPlayback",
     "TrialPlayback",

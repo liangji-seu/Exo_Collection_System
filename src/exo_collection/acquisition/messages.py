@@ -14,6 +14,7 @@ class WorkerEventType(StrEnum):
     PREVIEW = "preview"
     HEALTH = "health"
     METRIC = "metric"
+    PROMPT_LABEL = "prompt_label"
     ALERT = "alert"
     COMPLETED = "completed"
     FAILED = "failed"

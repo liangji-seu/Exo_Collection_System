@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
+from queue import Empty
 import struct
 from threading import Event, Timer
 import time
@@ -18,11 +19,17 @@ from exo_collection.acquisition.workers import CollectorWorker
 from exo_collection.adapters.base import AdapterError
 from exo_collection.catalog import Catalog
 from exo_collection.catalog.repositories import CatalogRepository
+from exo_collection.apps.data_studio.local_tools import load_trial_playback
 from exo_collection.domain.events import FrameBatch
 from exo_collection.domain.models import ArtifactKind
+from exo_collection.domain.prompt_labels import (
+    PromptLabelEvent,
+    PromptLabelSource,
+    load_prompt_label_events,
+)
 from exo_collection.domain.states import TrialState
 from exo_collection.orchestration.models import TrialRunRequest
-from exo_collection.orchestration.simulated import run_simulated_trial
+from exo_collection.orchestration.simulated import run_simulated_trial, run_trial
 from exo_collection.quality import DiskSpaceEvidence, InsufficientDiskSpaceError
 from exo_collection.readers.binary_block import BlockBinaryReader
 from exo_collection.readers.binary_block import scan_binary_file
@@ -259,6 +266,7 @@ def test_simulated_trial_produces_complete_immutable_package(tmp_path) -> None:
     assert int(sync_row["first_trigger_host_monotonic_ns"]) == (
         result.first_trigger_host_monotonic_ns
     )
+
     assert sync_row["first_trigger_time_utc"].endswith("Z")
     assert sync_row["source_device"]
     sync_manifest = json.loads(
@@ -343,6 +351,151 @@ def test_simulated_trial_produces_complete_immutable_package(tmp_path) -> None:
     assert len(tree[0]["children"][0]["children"][0]["children"][0]["children"]) == len(
         manifest.artifacts
     )
+
+
+def test_prompt_labels_are_persisted_as_immutable_trial_artifact(tmp_path) -> None:
+    request = TrialRunRequest(data_root=tmp_path, duration_s=0.2)
+
+    class PromptSource:
+        def __init__(self) -> None:
+            self._sources = [
+                PromptLabelSource.SUBJECT,
+                PromptLabelSource.OPERATOR,
+            ]
+
+        def get_nowait(self) -> PromptLabelEvent:
+            if not self._sources:
+                raise Empty
+            source = self._sources.pop(0)
+            now_ns = time.perf_counter_ns()
+            return PromptLabelEvent(
+                trial_uuid=request.trial_uuid,
+                sequence=1 - len(self._sources),
+                source=source,
+                label=source.display_name,
+                key=source.key_text,
+                host_monotonic_ns=now_ns,
+                host_utc_ns=time.time_ns(),
+            )
+
+    result = run_trial(request, prompt_events=PromptSource())
+    manifest = load_manifest(result.manifest_path)
+    artifacts = [
+        artifact
+        for artifact in manifest.artifacts
+        if artifact.modality == "prompt_label"
+    ]
+    assert len(artifacts) == 1
+    artifact = artifacts[0]
+    assert artifact.relative_path == "raw/prompt_labels.jsonl"
+    assert artifact.immutable
+    assert artifact.media_type == "application/x-ndjson"
+    events = load_prompt_label_events(
+        result.trial_directory / artifact.relative_path
+    )
+    assert [event.source for event in events] == [
+        PromptLabelSource.SUBJECT,
+        PromptLabelSource.OPERATOR,
+    ]
+    assert [event.sequence for event in events] == [0, 1]
+    assert artifact.metadata["subject_count"] == 1
+    assert artifact.metadata["operator_count"] == 1
+    statistics = json.loads(
+        (result.trial_directory / ".exo/statistics.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert statistics["prompt_label_counts"] == {
+        "operator": 1,
+        "subject": 1,
+        "total": 2,
+    }
+    playback = load_trial_playback(
+        result.manifest_path,
+        max_ultrasound_frames=32,
+        max_signal_points=256,
+    )
+    assert [event.source for event in playback.prompt_labels] == [
+        PromptLabelSource.SUBJECT,
+        PromptLabelSource.OPERATOR,
+    ]
+    with Catalog(tmp_path / ".exo/catalog.sqlite3") as catalog:
+        trial_node = (
+            CatalogRepository(catalog)
+            .tree()[0]["children"][0]["children"][0]["children"][0]
+        )
+    assert trial_node["modality_count"] == 4
+
+
+def test_collector_worker_transfers_prompt_label_across_process_boundary(
+    tmp_path,
+) -> None:
+    request = TrialRunRequest(data_root=tmp_path, duration_s=0.7)
+    worker = CollectorWorker(request)
+    worker.start()
+    events = []
+    label_sent = False
+    deadline = time.monotonic() + 20.0
+    while time.monotonic() < deadline:
+        events.extend(worker.poll_events())
+        if not label_sent and any(
+            event.event_type is WorkerEventType.STATE
+            and event.payload.get("state") == "RECORDING"
+            for event in events
+        ):
+            worker.record_prompt_label(
+                PromptLabelSource.SUBJECT,
+                host_monotonic_ns=time.perf_counter_ns(),
+                host_utc_ns=time.time_ns(),
+            )
+            label_sent = True
+        if any(
+            event.event_type in {
+                WorkerEventType.COMPLETED,
+                WorkerEventType.FAILED,
+            }
+            for event in events
+        ):
+            break
+        time.sleep(0.01)
+    exitcode = worker.join(timeout=10)
+    events.extend(worker.poll_events())
+    try:
+        failures = [
+            event
+            for event in events
+            if event.event_type is WorkerEventType.FAILED
+        ]
+        assert not failures, failures[0].payload.get("traceback") if failures else ""
+        assert label_sent
+        assert exitcode == 0
+        acknowledgements = [
+            event
+            for event in events
+            if event.event_type is WorkerEventType.PROMPT_LABEL
+        ]
+        assert len(acknowledgements) == 1
+        assert acknowledgements[0].payload["source"] == "SUBJECT"
+        completed = next(
+            event
+            for event in events
+            if event.event_type is WorkerEventType.COMPLETED
+        )
+        manifest = load_manifest(Path(completed.payload["manifest_path"]))
+        artifact = next(
+            artifact
+            for artifact in manifest.artifacts
+            if artifact.modality == "prompt_label"
+        )
+        loaded = load_prompt_label_events(
+            Path(completed.payload["trial_directory"]) / artifact.relative_path
+        )
+        assert len(loaded) == 1
+        assert loaded[0].source is PromptLabelSource.SUBJECT
+    finally:
+        if worker.is_alive:
+            worker.terminate_for_recovery()
+        worker.close()
 
 
 def test_collector_worker_runs_acquisition_outside_ui_process(tmp_path) -> None:

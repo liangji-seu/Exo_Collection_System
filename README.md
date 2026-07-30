@@ -35,8 +35,9 @@ python run_data_studio.py
 4. Trial Worker 打开写盘 gate 后立即进入“采集中”；同步状态独立显示为“等待同步”。若收到合格同步上升沿，则以该边沿建立正式 `t0`；否则以写盘 gate 的主机单调时钟作为 `t0`。同步前原始数据仍保留供审计。
 5. 实验完成时人工点击“受控停止”，无需预先设置采集秒数。Writer 完成 flush、校验和最终化后才会发布 Manifest。
 6. 若停止前从未收到合格触发，系统记录 `NOT_RECEIVED / OPTIONAL` 并正常最终化，不产生告警。只有已启用模态断流、设备故障、序列缺口、队列溢出或写盘完整性失败才保留 `.recording` 数据并进入失败/恢复流程。
+7. 写盘期间按 `<` 记录“受试者标签”，按 `>` 记录“工作人员标签”。左侧表格分别累计次数，IMU 与电机编码器预览在按键位置显示细红竖线，直到下一圈数据覆盖该位置；写盘前和停止后的按键不会写入 Trial。
 
-每个成功 Trial 都会生成 `manifest.json`、`quality_report.json`、`device_status.csv`、`sync_check.csv`、完整边沿/脉宽/间隔/时钟映射审计 `sync_manifest.json`、两张质控预览图和 `warnings.txt`，并纳入 Manifest Artifact 和 SHA-256 校验。实际使用的 `config/quality_rules/default.json` 与 `config/storage.json` 会冻结到 `derived/quality_rules_snapshot.json`；其算法版本和文件 SHA-256 同时写入统计、质量报告、配置快照及 Manifest Artifact。
+每个成功 Trial 都会生成 `manifest.json`、`quality_report.json`、`device_status.csv`、`sync_check.csv`、完整边沿/脉宽/间隔/时钟映射审计 `sync_manifest.json`、两张质控预览图和 `warnings.txt`，并纳入 Manifest Artifact 和 SHA-256 校验。存在人工标签时还会生成不可变的 `raw/prompt_labels.jsonl`，包含来源、连续序号、主机单调时间和 UTC 审计时间。实际使用的 `config/quality_rules/default.json` 与 `config/storage.json` 会冻结到 `derived/quality_rules_snapshot.json`；其算法版本和文件 SHA-256 同时写入统计、质量报告、配置快照及 Manifest Artifact。
 
 Collector 和 Data Studio 在项目/安装目录的 `log\` 中为每次启动创建一份独立 UTF-8 系统日志，文件名包含启动时间和进程 PID，例如 `ExoCollector_20260718_130501_123456_pid1234.log`。UI 中的“打开日志目录”可直接定位。单次日志达到 10 MiB 时会滚动；每个 Trial 另有自己的 `logs/trial.jsonl`。常见密码、token、secret 和 key 字段在写入主日志前会被脱敏。
 
@@ -46,7 +47,7 @@ Collector 和 Data Studio 在项目/安装目录的 `log\` 中为每次启动创
 
 Data Studio 使用 Manifest 与 SQLite Catalog 建立 `项目 → 受试者 → 工况 → Session → 模态数据集` 数据树。上传时可选择项目、受试者、工况、Session 或单个 Trial，系统会上传该节点下全部 `FINALIZED` Trial，并原样保留它们相对于本地 `data/` 的目录结构。服务器配置和 Windows 凭据完整时，首页“上传所选”和“同步云端状态”均可一键执行且不再弹出设置窗口；“SSH/SCP 设置…”用于主动修改配置。每次完整上传并逐文件校验成功后，系统更新远端 `data/.exo/exo_sync_index.json` 和本地 `data/.exo/exo_sync_cache.json`。状态同步只读取并对比这两个小型不可变包指纹索引，不再通过网络重算大型超声/HDF5 文件 SHA-256，并用绿色、红色、橙色和紫色分别标记已上传、未上传、未建索引和内容冲突。
 
-离线回放使用统一时间游标显示四通道超声、IMU、编码器和同步事件。质量复核写入独立、带 SHA-256 锚点和哈希链的追加式审核记录，不修改原始文件。测力台、动作捕捉等外部文件通过“外部模态导入”复制到独立附录目录，保留源文件校验值、脉冲边沿和外部时钟映射；没有厂商协议时仅支持通用文件与显式列映射，不猜测数据语义。
+离线回放使用统一时间游标显示四通道超声、IMU、编码器、同步事件和人工标签。标签在超声瀑布图、IMU 和编码器窗口中显示为细红竖线；虚线为受试者、实线为工作人员。循环窗口换圈时不会整屏清空，而是保留上一圈内容并随新数据到达逐列覆盖。质量复核写入独立、带 SHA-256 锚点和哈希链的追加式审核记录，不修改原始文件。测力台、动作捕捉等外部文件通过“外部模态导入”复制到独立附录目录，保留源文件校验值、脉冲边沿和外部时钟映射；没有厂商协议时仅支持通用文件与显式列映射，不猜测数据语义。
 
 恢复、全量统计、校验、外部导入与 SSH/SCP 上传均在后台 Worker 中执行。Collector 活动锁存在或不可安全解析时，Data Studio 会保守进入轻量模式并禁用这些重任务。上传只能人工触发，且只接受已最终化 Trial。密码认证为默认方式；勾选“记住密码”后，密码由当前 Windows 用户的凭据管理器加密保管并自动恢复，仍不会写入配置、日志、SQLite 或命令行。私钥口令不持久化。
 

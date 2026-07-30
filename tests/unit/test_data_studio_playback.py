@@ -17,10 +17,12 @@ from exo_collection.apps.data_studio.local_dialogs import (
     _UltrasoundCurrentFramePlot,
 )
 from exo_collection.apps.data_studio.local_tools import (
+    PromptLabelPlaybackEvent,
     SignalPlayback,
     TrialPlayback,
     UltrasoundPlayback,
 )
+from exo_collection.domain.prompt_labels import PromptLabelSource
 
 
 def _complete_playback() -> TrialPlayback:
@@ -66,6 +68,20 @@ def _complete_playback() -> TrialPlayback:
         ),
         sync=None,
         sync_trigger_times_s=np.empty(0),
+        prompt_labels=(
+            PromptLabelPlaybackEvent(
+                time_s=2.0,
+                source=PromptLabelSource.SUBJECT,
+                label="受试者标签",
+                key="<",
+            ),
+            PromptLabelPlaybackEvent(
+                time_s=4.0,
+                source=PromptLabelSource.OPERATOR,
+                label="工作人员标签",
+                key=">",
+            ),
+        ),
     )
 
 
@@ -141,6 +157,71 @@ def test_playback_has_requested_modality_layout_and_fixed_sweep_axes() -> None:
     dialog.play_button.click()
 
     dialog.close()
+    app.processEvents()
+
+
+def test_sweep_keeps_previous_cycle_until_each_position_is_overwritten() -> None:
+    app = QApplication.instance() or QApplication(["test-sweep-overwrite"])
+    times = np.arange(0.0, 13.0, 0.1, dtype=np.float64)
+    series = SignalPlayback(
+        time_s=times,
+        values=times[:, None],
+        channels=("position",),
+        units=("rad",),
+    )
+    signal = _SweepSignalPlot("position", series, (0,), 10.0)
+
+    signal.update_time(9.9, 0.0)
+    before_wrap = signal._display_values[0].copy()
+    signal.update_time(10.2, 10.0)
+    after_wrap = signal._display_values[0]
+
+    phase_five_column = int(round(0.5 * (signal._columns - 1)))
+    assert np.isfinite(after_wrap).sum() >= np.isfinite(before_wrap).sum() - 3
+    assert after_wrap[phase_five_column] == before_wrap[phase_five_column]
+    assert np.nanmax(after_wrap[:5]) >= 10.0
+    signal.close()
+    app.processEvents()
+
+
+def test_prompt_markers_follow_ring_position_and_expire_when_overwritten() -> None:
+    app = QApplication.instance() or QApplication(["test-prompt-markers"])
+    prompt = (
+        PromptLabelPlaybackEvent(
+            time_s=2.0,
+            source=PromptLabelSource.SUBJECT,
+            label="受试者标签",
+            key="<",
+        ),
+    )
+    times = np.arange(0.0, 13.0, 0.1, dtype=np.float64)
+    series = SignalPlayback(
+        time_s=times,
+        values=np.sin(times)[:, None],
+        channels=("position",),
+        units=("rad",),
+    )
+    signal = _SweepSignalPlot("position", series, (0,), 10.0, prompt)
+    waterfall = _SweepWaterfallPlot(
+        "ultrasound",
+        times,
+        np.ones((1000, times.size), dtype=np.uint8),
+        10.0,
+        prompt,
+    )
+
+    for plot in (signal, waterfall):
+        plot.update_time(2.5, 0.0)
+        assert len(plot._prompt_lines) == 1
+        assert plot._prompt_lines[0].isVisible()
+        assert abs(float(plot._prompt_lines[0].value()) - 2.0) < 1e-6
+        assert "受试者标签" in plot._prompt_lines[0].toolTip()
+        plot.update_time(11.9, 10.0)
+        assert plot._prompt_lines[0].isVisible()
+        assert abs(float(plot._prompt_lines[0].value()) - 2.0) < 1e-6
+        plot.update_time(12.1, 10.0)
+        assert not plot._prompt_lines[0].isVisible()
+        plot.close()
     app.processEvents()
 
 

@@ -14,6 +14,7 @@ import numpy as np
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QValidator
 from PySide6.QtWidgets import QApplication, QDialog, QScrollArea, QSplitter, QWidget
+from PySide6.QtTest import QTest
 
 from exo_collection.acquisition.messages import WorkerEvent, WorkerEventType
 from exo_collection.acquisition.recording_stream import RecordingStreamEndpoint
@@ -36,6 +37,7 @@ from exo_collection.apps.collector.window import (
 from exo_collection.configuration import (
     SharedAppSettings,
 )
+from exo_collection.domain.prompt_labels import PromptLabelEvent, PromptLabelSource
 from exo_collection.orchestration.models import (
     MeasuredConditionMetadata,
     TrialExperimentMetadata,
@@ -58,6 +60,7 @@ class FakeCollectorWorker:
         self.join_timeouts: list[float | None] = []
         self.closed = False
         self._exitcode: int | None = None
+        self.prompt_events: list[PromptLabelEvent] = []
 
     @property
     def is_alive(self) -> bool:
@@ -73,6 +76,43 @@ class FakeCollectorWorker:
 
     def request_stop(self) -> None:
         self.stop_requests += 1
+
+    def record_prompt_label(
+        self,
+        source: PromptLabelSource | str,
+        *,
+        host_monotonic_ns: int,
+        host_utc_ns: int,
+    ) -> PromptLabelEvent:
+        label_source = PromptLabelSource(source)
+        event = PromptLabelEvent(
+            trial_uuid=self.request.trial_uuid,
+            sequence=len(self.prompt_events),
+            source=label_source,
+            label=label_source.display_name,
+            key=label_source.key_text,
+            host_monotonic_ns=host_monotonic_ns,
+            host_utc_ns=host_utc_ns,
+        )
+        self.prompt_events.append(event)
+        subject_count = sum(
+            item.source is PromptLabelSource.SUBJECT
+            for item in self.prompt_events
+        )
+        operator_count = len(self.prompt_events) - subject_count
+        self.events.append(
+            WorkerEvent(
+                event_type=WorkerEventType.PROMPT_LABEL,
+                trial_uuid=str(self.request.trial_uuid),
+                payload={
+                    **event.model_dump(mode="json"),
+                    "subject_count": subject_count,
+                    "operator_count": operator_count,
+                    "total_count": len(self.prompt_events),
+                },
+            )
+        )
+        return event
 
     def poll_events(self, limit: int = 100) -> list[WorkerEvent]:
         result = self.events[:limit]
@@ -664,6 +704,25 @@ def test_ring_trace_cursor_line() -> None:
     trace.append([2.0] * 950)
     assert trace._cursor == 50
     assert trace.cursor_line.value() == 49
+    app.processEvents()
+
+
+def test_ring_trace_prompt_marker_survives_until_same_slot_is_overwritten() -> None:
+    import pyqtgraph as pg
+
+    app = QApplication.instance() or QApplication(["test-ringtrace-marker"])
+    plot = pg.PlotWidget()
+    trace = RingTrace(plot, "#000000", "test-marker", capacity=5)
+    trace.append([1.0, 2.0])
+
+    slot = trace.mark_current("受试者标签")
+
+    assert slot == 1
+    assert slot in trace._marker_lines
+    trace.append([3.0, 4.0, 5.0, 6.0])
+    assert slot in trace._marker_lines
+    trace.append([7.0])
+    assert slot not in trace._marker_lines
     app.processEvents()
 
 
@@ -2214,10 +2273,10 @@ def test_device_connection_rows_omit_source_device_id_column(tmp_path: Path) -> 
     window.close()
 
 
-def test_health_table_has_four_modalities(tmp_path: Path) -> None:
-    """Compact table uses Chinese labels and embeds the sync indicator."""
+def test_health_table_has_modalities_and_prompt_label_counters(tmp_path: Path) -> None:
+    """Compact table includes both keyboard-label counters."""
     _app, window, _created = _window_with_fake(tmp_path)
-    assert window.health_table.rowCount() == 4
+    assert window.health_table.rowCount() == 6
     assert window.health_table.columnCount() == 5
     assert [
         window.health_table.horizontalHeaderItem(column).text()
@@ -2226,12 +2285,80 @@ def test_health_table_has_four_modalities(tmp_path: Path) -> None:
     modalities_displayed = set()
     for row in range(window.health_table.rowCount()):
         modalities_displayed.add(window.health_table.item(row, 0).text())
-    assert modalities_displayed == {"超声", "IMU", "电机编码器", "同步脉冲"}
+    assert modalities_displayed == {
+        "超声",
+        "IMU",
+        "电机编码器",
+        "同步脉冲",
+        "受试者标签（<）",
+        "工作人员标签（>）",
+    }
     assert window.sync_status_label.property("indicatorState") == "yellow"
     assert "等待同步信号" in window.sync_status_label.toolTip()
     assert window.health_table.cellWidget(window._health_rows["sync_pulse"], 4) is not None
     assert not hasattr(window, "manifest_label")
     assert not hasattr(window, "open_log_dir_button")
+    window.close()
+
+
+def test_prompt_buttons_record_only_during_trial_and_mark_signal_previews(
+    tmp_path: Path,
+) -> None:
+    app, window, created = _window_with_fake(tmp_path)
+    window._capture_prompt_label(PromptLabelSource.SUBJECT)
+    assert not created
+
+    _connect_all_previews_for_trial(window)
+    window.start_trial()
+    worker = created[0]
+    window._handle_worker_event(
+        WorkerEvent(
+            event_type=WorkerEventType.STATE,
+            trial_uuid=str(worker.request.trial_uuid),
+            payload={"state": "RECORDING"},
+        )
+    )
+    for trace in (*window._imu_traces.values(), *window._enc_traces.values()):
+        trace.append([1.0])
+
+    window.show()
+    window.activateWindow()
+    window.setFocus()
+    app.processEvents()
+    QTest.keyClick(
+        window,
+        Qt.Key.Key_Comma,
+        Qt.KeyboardModifier.ShiftModifier,
+    )
+    QTest.keyClick(
+        window,
+        Qt.Key.Key_Period,
+        Qt.KeyboardModifier.ShiftModifier,
+    )
+    window.poll_worker_events()
+    app.processEvents()
+
+    assert [event.source for event in worker.prompt_events] == [
+        PromptLabelSource.SUBJECT,
+        PromptLabelSource.OPERATOR,
+    ]
+    assert window.health_table.item(
+        window._health_rows["subject_prompt"],
+        1,
+    ).text() == "1"
+    assert window.health_table.item(
+        window._health_rows["operator_prompt"],
+        1,
+    ).text() == "1"
+    all_traces = (*window._imu_traces.values(), *window._enc_traces.values())
+    traces_by_plot: dict[int, list[RingTrace]] = {}
+    for trace in all_traces:
+        traces_by_plot.setdefault(id(trace.plot), []).append(trace)
+    assert all(
+        sum(bool(trace._marker_lines) for trace in traces) == 1
+        for traces in traces_by_plot.values()
+    )
+    worker.finish(0)
     window.close()
 
 

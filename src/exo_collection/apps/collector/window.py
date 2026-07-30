@@ -22,7 +22,17 @@ from uuid import uuid4
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QLocale, QRegularExpression, QThread, QTimer, Qt, Signal, Slot
+from PySide6.QtCore import (
+    QEvent,
+    QLocale,
+    QObject,
+    QRegularExpression,
+    QThread,
+    QTimer,
+    Qt,
+    Signal,
+    Slot,
+)
 from PySide6.QtGui import (
     QCloseEvent,
     QDoubleValidator,
@@ -31,6 +41,7 @@ from PySide6.QtGui import (
     QRegularExpressionValidator,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -93,17 +104,22 @@ from exo_collection.domain.project_codes import (
     SUPPORTED_PROJECT_CODES,
     project_accepts_condition_level,
 )
+from exo_collection.domain.prompt_labels import PromptLabelEvent, PromptLabelSource
 from exo_collection.protocols import load_default_protocol
 from exo_collection.quality import load_storage_policy
 
 LOG = logging.getLogger("exo_collection.collector.ui")
 
 MODALITIES = ("ultrasound", "imu", "encoder", "sync_pulse")
+PROMPT_HEALTH_ROWS = ("subject_prompt", "operator_prompt")
+HEALTH_ROWS = MODALITIES + PROMPT_HEALTH_ROWS
 MODALITY_DISPLAY_NAMES = {
     "ultrasound": "超声",
     "imu": "IMU",
     "encoder": "电机编码器",
     "sync_pulse": "同步脉冲",
+    "subject_prompt": "受试者标签（<）",
+    "operator_prompt": "工作人员标签（>）",
 }
 CRITICAL_MODALITIES = frozenset(MODALITIES)
 HEALTH_COLUMN_MODALITY = 0
@@ -161,6 +177,14 @@ class WorkerHandle(Protocol):
     def start(self) -> None: ...
 
     def request_stop(self) -> None: ...
+
+    def record_prompt_label(
+        self,
+        source: PromptLabelSource | str,
+        *,
+        host_monotonic_ns: int,
+        host_utc_ns: int,
+    ) -> PromptLabelEvent: ...
 
     def poll_events(self, limit: int = 100) -> list[WorkerEvent]: ...
 
@@ -778,7 +802,7 @@ class RingTrace:
 
     __slots__ = (
         "_buffer", "_capacity", "_count", "_cursor", "_x",
-        "curve", "cursor_line", "plot",
+        "_marker_lines", "curve", "cursor_line", "plot",
     )
 
     def __init__(
@@ -792,6 +816,7 @@ class RingTrace:
         self._x = np.arange(self._capacity, dtype=np.float64)
         self._cursor = 0
         self._count = 0
+        self._marker_lines: dict[int, "pg.InfiniteLine"] = {}
         self.plot = plot
         self.curve = plot.plot(pen=pg.mkPen(pen, width=1.2))
         self.cursor_line = pg.InfiniteLine(pos=0.0, angle=90, pen=pg.mkPen("#dc3545", width=2))
@@ -810,6 +835,7 @@ class RingTrace:
         n = int(arr.size)
         if n == 0:
             return
+        self._clear_overwritten_markers(n)
         next_cursor = (self._cursor + n) % self._capacity
         if n >= self._capacity:
             tail = arr[-self._capacity :]
@@ -826,6 +852,46 @@ class RingTrace:
         self._count = min(self._capacity, self._count + n)
         self._render()
 
+    def mark_current(self, label: str) -> int:
+        """Mark the latest displayed sample until its slot is overwritten."""
+
+        slot = (self._cursor - 1) % self._capacity if self._count else self._cursor
+        existing = self._marker_lines.get(slot)
+        if existing is not None:
+            previous = existing.toolTip().strip()
+            existing.setToolTip(
+                f"{previous}\n{label}" if previous and label not in previous else label
+            )
+            return slot
+        line = pg.InfiniteLine(
+            pos=float(slot),
+            angle=90,
+            movable=False,
+            pen=pg.mkPen(
+                "#ff0000",
+                width=1.5,
+                style=Qt.PenStyle.DashLine,
+            ),
+        )
+        line.setZValue(90)
+        line.setToolTip(label)
+        self.plot.addItem(line)
+        self._marker_lines[slot] = line
+        return slot
+
+    def _clear_overwritten_markers(self, count: int) -> None:
+        if count >= self._capacity:
+            overwritten = tuple(self._marker_lines)
+        else:
+            overwritten = tuple(
+                (self._cursor + offset) % self._capacity
+                for offset in range(count)
+            )
+        for slot in overwritten:
+            line = self._marker_lines.pop(slot, None)
+            if line is not None:
+                self.plot.removeItem(line)
+
     def _render(self) -> None:
         display = self._buffer.copy()
         if self._count == self._capacity:
@@ -835,6 +901,7 @@ class RingTrace:
             self.cursor_line.setPos((self._cursor - 1) % self._capacity)
 
     def reset(self) -> None:
+        self._clear_overwritten_markers(self._capacity)
         self._buffer.fill(np.nan)
         self._cursor = 0
         self._count = 0
@@ -913,7 +980,11 @@ class CollectorWindow(QMainWindow):
         self._session_key: tuple[str, str, str] | None = None
         self._session_uuid = uuid4()
 
-        self._health_rows = {name: index for index, name in enumerate(MODALITIES)}
+        self._health_rows = {name: index for index, name in enumerate(HEALTH_ROWS)}
+        self._prompt_label_counts = {
+            PromptLabelSource.SUBJECT: 0,
+            PromptLabelSource.OPERATOR: 0,
+        }
         self._last_health_status: dict[str, str] = {}
         self._us_plots: list["pg.PlotWidget"] = []
         self._us_curves: list["pg.PlotDataItem"] = []
@@ -937,6 +1008,13 @@ class CollectorWindow(QMainWindow):
         self.setStyleSheet(COLLECTOR_STYLESHEET)
         self.resize(1280, 820)
         self._create_ui(Path(data_root).expanduser().resolve())
+        self._prompt_event_filter_installed = False
+        application = QApplication.instance()
+        if application is not None:
+            # Capture hardware-button key events before a focused child widget
+            # (for example QLineEdit) can consume them.
+            application.installEventFilter(self)
+            self._prompt_event_filter_installed = True
         self.project_combo.currentIndexChanged.connect(self._handle_project_changed)
         self.subject_code_edit.textChanged.connect(self._activate_selected_metadata_identity)
         self._activate_selected_metadata_identity()
@@ -974,6 +1052,125 @@ class CollectorWindow(QMainWindow):
                 self.showFullScreen()
             return
         super().keyPressEvent(event)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
+        """Capture prompt HID keys application-wide while a Trial is writing."""
+
+        if (
+            event.type() == QEvent.Type.KeyPress
+            and isinstance(event, QKeyEvent)
+            and self._worker is not None
+            and not self._stop_requested
+            and self._worker_state in {"WAITING_SYNC", "RECORDING"}
+        ):
+            text = event.text()
+            key = event.key()
+            modifiers = event.modifiers()
+            LOG.debug(
+                "Trial keypress: text=%r key=%d modifiers=%d "
+                "native_scan_code=%d native_virtual_key=%d auto_repeat=%s",
+                text,
+                key,
+                int(modifiers.value),
+                event.nativeScanCode(),
+                event.nativeVirtualKey(),
+                event.isAutoRepeat(),
+            )
+            source: PromptLabelSource | None = None
+            if (
+                text == "<"
+                or key == Qt.Key.Key_Less
+                or (
+                    key == Qt.Key.Key_Comma
+                    and bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
+                )
+            ):
+                source = PromptLabelSource.SUBJECT
+            elif (
+                text == ">"
+                or key == Qt.Key.Key_Greater
+                or (
+                    key == Qt.Key.Key_Period
+                    and bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
+                )
+            ):
+                source = PromptLabelSource.OPERATOR
+            if source is not None:
+                if event.isAutoRepeat():
+                    LOG.debug(
+                        "Ignoring auto-repeat prompt key: source=%s",
+                        source.value,
+                    )
+                else:
+                    LOG.info(
+                        "Prompt hardware key captured: source=%s text=%r "
+                        "key=%d native_scan_code=%d",
+                        source.value,
+                        text,
+                        key,
+                        event.nativeScanCode(),
+                    )
+                    self._capture_prompt_label(source)
+                return True
+        return super().eventFilter(watched, event)
+
+    @Slot()
+    def _capture_prompt_label(self, source: PromptLabelSource) -> None:
+        """Capture one hardware-button keystroke only while writing a Trial."""
+
+        worker = self._worker
+        if (
+            worker is None
+            or self._stop_requested
+            or self._worker_state not in {"WAITING_SYNC", "RECORDING"}
+        ):
+            self.statusBar().showMessage(
+                f"{source.display_name}未记录：当前没有正在写盘的 Trial。",
+                2500,
+            )
+            return
+        record_prompt = getattr(worker, "record_prompt_label", None)
+        if not callable(record_prompt):
+            self._append_alert("当前 Collector Worker 不支持人工标签记录。")
+            return
+        host_monotonic_ns = time.perf_counter_ns()
+        host_utc_ns = time.time_ns()
+        try:
+            event = record_prompt(
+                source,
+                host_monotonic_ns=host_monotonic_ns,
+                host_utc_ns=host_utc_ns,
+            )
+        except Exception as exc:
+            self._append_alert(
+                f"{source.display_name}记录失败：{type(exc).__name__}: {exc}"
+            )
+            LOG.exception("Prompt label enqueue failed: source=%s", source.value)
+            return
+        label = (
+            event.label
+            if isinstance(event, PromptLabelEvent)
+            else source.display_name
+        )
+        self._mark_prompt_on_previews(label)
+        self.statusBar().showMessage(
+            f"已捕获{label}（{source.key_text}）",
+            2500,
+        )
+        LOG.info(
+            "Prompt label enqueued: source=%s host_monotonic_ns=%d",
+            source.value,
+            host_monotonic_ns,
+        )
+
+    def _mark_prompt_on_previews(self, label: str) -> None:
+        marked_plots: set[int] = set()
+        for trace in (*self._imu_traces.values(), *self._enc_traces.values()):
+            plot_identity = id(trace.plot)
+            if plot_identity in marked_plots:
+                continue
+            trace.mark_current(label)
+            marked_plots.add(plot_identity)
 
     # ── Properties ─────────────────────────────────────────────────────
 
@@ -1227,7 +1424,7 @@ class CollectorWindow(QMainWindow):
         # ── Health Table ──
         health_box = QGroupBox("设备健康与样本计数")
         health_layout = QVBoxLayout(health_box)
-        self.health_table = QTableWidget(len(MODALITIES), 5)
+        self.health_table = QTableWidget(len(HEALTH_ROWS), 5)
         self.health_table.setObjectName("health_table")
         self.health_table.setHorizontalHeaderLabels(
             ["模态", "样本/帧", "实际速率", "丢包", "同步"]
@@ -1236,7 +1433,7 @@ class CollectorWindow(QMainWindow):
         self.health_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
         self.health_table.setAlternatingRowColors(True)
         self.health_table.verticalHeader().setVisible(False)
-        for row, modality in enumerate(MODALITIES):
+        for row, modality in enumerate(HEALTH_ROWS):
             self.health_table.setItem(
                 row,
                 HEALTH_COLUMN_MODALITY,
@@ -2549,6 +2746,10 @@ class CollectorWindow(QMainWindow):
         # recording is not a device-stream boundary and must be visually
         # imperceptible apart from the Trial state controls.
         self._last_health_status.clear()
+        self._prompt_label_counts = {
+            PromptLabelSource.SUBJECT: 0,
+            PromptLabelSource.OPERATOR: 0,
+        }
         self._set_sync_indicator("WAITING_SYNC", "WAITING", 0, "—")
         for row in self._health_rows.values():
             self.health_table.item(row, HEALTH_COLUMN_MODALITY).setToolTip("")
@@ -2711,6 +2912,8 @@ class CollectorWindow(QMainWindow):
             self._handle_health(event)
         elif event.event_type is WorkerEventType.METRIC:
             self._handle_metric(event.payload)
+        elif event.event_type is WorkerEventType.PROMPT_LABEL:
+            self._handle_prompt_label(event)
         elif event.event_type is WorkerEventType.ALERT:
             message = event.message or "Collector Worker 报告需要关注的事件。"
             self._append_alert(message)
@@ -2722,6 +2925,38 @@ class CollectorWindow(QMainWindow):
         elif event.event_type is WorkerEventType.FAILED:
             self._terminal_event_received = True
             self._mark_failed(event.message or "Collector Worker 报告未知错误。")
+
+    def _handle_prompt_label(self, event: WorkerEvent) -> None:
+        try:
+            source = PromptLabelSource(str(event.payload.get("source") or ""))
+        except ValueError:
+            self._append_alert("Collector Worker 返回了未知的人工标签来源。")
+            return
+        count_key = (
+            "subject_count"
+            if source is PromptLabelSource.SUBJECT
+            else "operator_count"
+        )
+        count = max(0, int(event.payload.get(count_key) or 0))
+        self._prompt_label_counts[source] = count
+        row_key = (
+            "subject_prompt"
+            if source is PromptLabelSource.SUBJECT
+            else "operator_prompt"
+        )
+        row = self._health_rows[row_key]
+        self.health_table.item(row, HEALTH_COLUMN_SAMPLE_COUNT).setText(str(count))
+        self.health_table.item(row, HEALTH_COLUMN_SAMPLE_COUNT).setToolTip(
+            f"{source.display_name}累计 {count} 次"
+        )
+        self._add_timeline_event(1, f"{source.display_name} · {count}")
+        LOG.info(
+            "Prompt label persisted acknowledgement: source=%s count=%d "
+            "host_monotonic_ns=%s",
+            source.value,
+            count,
+            event.payload.get("host_monotonic_ns"),
+        )
 
     def _handle_health(self, event: WorkerEvent) -> None:
         payload = event.payload
@@ -3251,5 +3486,10 @@ class CollectorWindow(QMainWindow):
 
         self._poll_timer.stop()
         self._close_started_at = None
+        if self._prompt_event_filter_installed:
+            application = QApplication.instance()
+            if application is not None:
+                application.removeEventFilter(self)
+            self._prompt_event_filter_installed = False
         LOG.info("CollectorWindow 已关闭")
         event.accept()

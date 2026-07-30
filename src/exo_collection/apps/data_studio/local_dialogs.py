@@ -34,10 +34,12 @@ from PySide6.QtWidgets import (
 from .local_tools import (
     ChecksumReport,
     FullStatistics,
+    PromptLabelPlaybackEvent,
     QualityAudit,
     SignalPlayback,
     TrialPlayback,
 )
+from exo_collection.domain.prompt_labels import PromptLabelSource
 
 _log = logging.getLogger(__name__)
 
@@ -70,6 +72,50 @@ def _empty_tab(message: str) -> QWidget:
     label.setAlignment(Qt.AlignmentFlag.AlignCenter)
     layout.addWidget(label)
     return widget
+
+
+def _update_prompt_marker_lines(
+    plot: "pg.PlotWidget",
+    events: tuple[PromptLabelPlaybackEvent, ...],
+    lines: list["pg.InfiniteLine"],
+    *,
+    current_s: float,
+    cycle_start_s: float,
+    window_s: float,
+) -> None:
+    """Show labels for one ring window; old lines expire when overwritten."""
+
+    visible = tuple(
+        event
+        for event in events
+        if current_s - window_s < event.time_s <= current_s
+    )
+    while len(lines) < len(visible):
+        line = pg.InfiniteLine(pos=0.0, angle=90, movable=False)
+        line.setZValue(95)
+        plot.addItem(line)
+        lines.append(line)
+    for index, line in enumerate(lines):
+        if index >= len(visible):
+            line.hide()
+            continue
+        event = visible[index]
+        line.setPen(
+            pg.mkPen(
+                "#ff0000",
+                width=1.6,
+                style=(
+                    Qt.PenStyle.DashLine
+                    if event.source is PromptLabelSource.SUBJECT
+                    else Qt.PenStyle.SolidLine
+                ),
+            )
+        )
+        line.setPos((event.time_s - cycle_start_s) % window_s)
+        line.setToolTip(
+            f"{event.label}（{event.key}） · t={event.time_s:.3f} s"
+        )
+        line.show()
 
 
 def _ultrasound_amplitude_range(values: np.ndarray) -> tuple[float, float]:
@@ -431,6 +477,7 @@ class _SweepWaterfallPlot(pg.PlotWidget):
         time_s: np.ndarray,
         depth_by_time: np.ndarray,
         window_s: float,
+        prompt_labels: tuple[PromptLabelPlaybackEvent, ...] = (),
     ) -> None:
         super().__init__()
         self._times = np.asarray(time_s, dtype=np.float64)
@@ -440,6 +487,8 @@ class _SweepWaterfallPlot(pg.PlotWidget):
         # megabytes of ultrasound data.
         self._data = np.asarray(depth_by_time)
         self._window_s = float(window_s)
+        self._prompt_labels = tuple(prompt_labels)
+        self._prompt_lines: list["pg.InfiniteLine"] = []
         self._columns = max(96, min(800, int(self._times.size or 96)))
         self.setTitle(title)
         self.setLabel("bottom", "循环时间", units="s")
@@ -487,8 +536,7 @@ class _SweepWaterfallPlot(pg.PlotWidget):
         phase = min(max(float(current_s - cycle_start_s), 0.0), self._window_s)
         depth = self._data.shape[0] if self._data.ndim == 2 else 0
         continuing = (
-            self._last_cycle_start == cycle_start_s
-            and self._last_current is not None
+            self._last_current is not None
             and current_s >= self._last_current
         )
         if not continuing:
@@ -547,6 +595,14 @@ class _SweepWaterfallPlot(pg.PlotWidget):
         self._last_cycle_start = cycle_start_s
         self._last_current = current_s
         self.cursor.setPos(phase)
+        _update_prompt_marker_lines(
+            self,
+            self._prompt_labels,
+            self._prompt_lines,
+            current_s=current_s,
+            cycle_start_s=cycle_start_s,
+            window_s=self._window_s,
+        )
 
 
 class _UltrasoundCurrentFramePlot(pg.PlotWidget):
@@ -607,7 +663,7 @@ class _UltrasoundCurrentFramePlot(pg.PlotWidget):
 
 
 class _SweepSignalPlot(pg.PlotWidget):
-    """Line plot that clears at each fixed-window sweep boundary."""
+    """Fixed sweep that overwrites only the positions reached in the new cycle."""
 
     def __init__(
         self,
@@ -615,11 +671,31 @@ class _SweepSignalPlot(pg.PlotWidget):
         series: SignalPlayback,
         indices: tuple[int, ...],
         window_s: float,
+        prompt_labels: tuple[PromptLabelPlaybackEvent, ...] = (),
     ) -> None:
         super().__init__()
         self._times = np.asarray(series.time_s, dtype=np.float64)
         self._values = np.asarray(series.values)
         self._window_s = float(window_s)
+        self._prompt_labels = tuple(prompt_labels)
+        self._prompt_lines: list["pg.InfiniteLine"] = []
+        source_span = (
+            float(self._times[-1] - self._times[0])
+            if self._times.size > 1
+            else self._window_s
+        )
+        estimated_window_points = int(
+            round(self._times.size * self._window_s / max(source_span, 1e-9))
+        )
+        self._columns = max(128, min(2000, estimated_window_points))
+        self._x_grid = np.linspace(
+            0.0,
+            self._window_s,
+            self._columns,
+            dtype=np.float64,
+        )
+        self._display_values: dict[int, np.ndarray] = {}
+        self._last_current: float | None = None
         self._curves: list[tuple[int, pg.PlotDataItem]] = []
         self.setTitle(title)
         self.setLabel("bottom", "循环时间", units="s")
@@ -639,6 +715,11 @@ class _SweepSignalPlot(pg.PlotWidget):
                 pen=pg.mkPen(_PLOT_COLORS[color_index % len(_PLOT_COLORS)], width=1.1),
             )
             self._curves.append((index, curve))
+            self._display_values[index] = np.full(
+                self._columns,
+                np.nan,
+                dtype=np.float64,
+            )
             values = np.asarray(self._values[:, index], dtype=float)
             finite_parts.append(values[np.isfinite(values)])
         finite_parts = [part for part in finite_parts if part.size]
@@ -660,11 +741,54 @@ class _SweepSignalPlot(pg.PlotWidget):
 
     def update_time(self, current_s: float, cycle_start_s: float) -> None:
         phase = min(max(float(current_s - cycle_start_s), 0.0), self._window_s)
-        mask = (self._times >= cycle_start_s) & (self._times <= current_s)
-        x_values = self._times[mask] - cycle_start_s
+        continuing = (
+            self._last_current is not None
+            and current_s >= self._last_current
+        )
+        if not continuing:
+            for display in self._display_values.values():
+                display.fill(np.nan)
+        lower_bound = self._last_current if continuing else cycle_start_s
+        sample_indices = np.flatnonzero(
+            (
+                self._times > lower_bound
+                if continuing
+                else self._times >= lower_bound
+            )
+            & (self._times <= current_s)
+        )
+        for source_index in sample_indices:
+            sample_phase = (
+                float(self._times[source_index]) - cycle_start_s
+            ) % self._window_s
+            column = int(
+                np.clip(
+                    round(
+                        sample_phase
+                        / self._window_s
+                        * (self._columns - 1)
+                    ),
+                    0,
+                    self._columns - 1,
+                )
+            )
+            for index, _curve in self._curves:
+                self._display_values[index][column] = self._values[
+                    source_index,
+                    index,
+                ]
         for index, curve in self._curves:
-            curve.setData(x_values, self._values[mask, index])
+            curve.setData(self._x_grid, self._display_values[index])
+        self._last_current = current_s
         self.cursor.setPos(phase)
+        _update_prompt_marker_lines(
+            self,
+            self._prompt_labels,
+            self._prompt_lines,
+            current_s=current_s,
+            cycle_start_s=cycle_start_s,
+            window_s=self._window_s,
+        )
 
 
 def _measurement_kind(label: str) -> str | None:
@@ -776,7 +900,7 @@ class PlaybackDialog(QDialog):
         layout = QVBoxLayout(self)
         banner = QLabel(
             f"Trial {playback.trial_uuid} · 固定 {self._window_s:g} s 循环窗口 · "
-            "红线表示当前回放位置"
+            "粗红线表示当前回放位置；细红线表示人工标签（< 受试者，> 工作人员）"
         )
         banner.setObjectName("playback_banner")
         layout.addWidget(banner)
@@ -909,7 +1033,11 @@ class PlaybackDialog(QDialog):
                 indices = kinds.get(kind, ())
                 if imu is not None and indices:
                     plot = _SweepSignalPlot(
-                        f"{sensor} · {title}", imu, indices, self._window_s
+                        f"{sensor} · {title}",
+                        imu,
+                        indices,
+                        self._window_s,
+                        playback.prompt_labels,
                     )
                     self._sweep_plots.append(plot)
                     imu_grid.addWidget(plot, row, sensor_slot)
@@ -935,7 +1063,13 @@ class PlaybackDialog(QDialog):
         for side_slot in range(2):
             if encoder is not None and side_slot < len(encoder_groups):
                 title, indices = encoder_groups[side_slot]
-                plot = _SweepSignalPlot(title, encoder, indices, self._window_s)
+                plot = _SweepSignalPlot(
+                    title,
+                    encoder,
+                    indices,
+                    self._window_s,
+                    playback.prompt_labels,
+                )
                 self._sweep_plots.append(plot)
                 encoder_layout.addWidget(plot, 1)
             else:
@@ -971,6 +1105,7 @@ class PlaybackDialog(QDialog):
                         us.time_s,
                         np.asarray(us.waterfall[channel]).T,
                         self._window_s,
+                        playback.prompt_labels,
                     )
                     channel_panel = QWidget(tab)
                     channel_layout = QVBoxLayout(channel_panel)
@@ -1019,7 +1154,13 @@ class PlaybackDialog(QDialog):
             for kind, title in (("acc", "加速度计"), ("mag", "磁力计"), ("gyr", "陀螺仪")):
                 indices = kinds.get(kind, ())
                 if imu is not None and indices:
-                    plot = _SweepSignalPlot(title, imu, indices, self._window_s)
+                    plot = _SweepSignalPlot(
+                        title,
+                        imu,
+                        indices,
+                        self._window_s,
+                        playback.prompt_labels,
+                    )
                     self._sweep_plots.append(plot)
                     group_layout.addWidget(plot)
                 else:
@@ -1046,6 +1187,7 @@ class PlaybackDialog(QDialog):
                     encoder,
                     indices,
                     self._window_s,
+                    playback.prompt_labels,
                 )
                 self._sweep_plots.append(plot)
                 layout.addWidget(plot, 1)
@@ -1062,6 +1204,13 @@ class PlaybackDialog(QDialog):
         for series in (playback.imu, playback.encoder, playback.sync):
             if series is not None:
                 arrays.append(np.asarray(series.time_s, dtype=float))
+        if playback.prompt_labels:
+            arrays.append(
+                np.asarray(
+                    [event.time_s for event in playback.prompt_labels],
+                    dtype=float,
+                )
+            )
         finite = [array[np.isfinite(array)] for array in arrays if array.size]
         if not finite:
             return 0.0, 1.0
