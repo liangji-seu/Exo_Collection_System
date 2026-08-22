@@ -37,9 +37,12 @@ from exo_collection.apps.data_studio.local_tools import (
     AcquisitionBecameActiveError,
     ChecksumReport,
     DataStudioToolError,
+    TrialInspection,
     TrialPlayback,
+    _inspect_hdf5,
     _read_ultrasound,
     compute_full_statistics,
+    inspect_trial_artifacts,
     load_quality_audit,
     load_trial_playback,
     verify_trial_checksums,
@@ -796,3 +799,90 @@ def test_window_polls_spawned_checksum_worker_without_blocking_gui(
     assert window.findChild(ChecksumDialog, "checksum_dialog") is not None
     window.close()
     app.processEvents()
+
+
+def test_inspect_trial_artifacts_covers_every_published_artifact(
+    tmp_path: Path,
+) -> None:
+    manifest_path, manifest = _build_finalized_trial(tmp_path)
+
+    inspection = inspect_trial_artifacts(manifest_path, data_root=tmp_path)
+
+    assert isinstance(inspection, TrialInspection)
+    assert inspection.artifact_count == len(manifest.artifacts) == 10
+    assert inspection.trial_uuid == str(manifest.trial_uuid)
+
+    by_path = {artifact.relative_path: artifact for artifact in inspection.artifacts}
+
+    imu = by_path["raw/imu.h5"]
+    assert imu.kind == "hdf5"
+    assert imu.hdf5 is not None
+    assert imu.hdf5.sample_count == 100
+    assert "float32" in imu.hdf5.dtype
+    assert imu.hdf5.sample_shape == (6,)
+    assert imu.hdf5.closed_cleanly is True
+    assert imu.hdf5.channels == (
+        "imu_1",
+        "imu_2",
+        "imu_3",
+        "imu_4",
+        "imu_5",
+        "imu_6",
+    )
+    assert len(imu.hdf5.stats) == 6
+    assert len(imu.hdf5.preview_columns) == 6
+    assert len(imu.hdf5.preview_rows) == 20
+    assert any("samples/data" in line for line in imu.hdf5.structure)
+
+    sync = by_path["raw/sync_pulse.h5"]
+    assert sync.hdf5 is not None
+    assert sync.hdf5.event_count == 1
+    assert sync.hdf5.discontinuity_count == 0
+
+    ultrasound = by_path["raw/ultrasound.bin"]
+    assert ultrasound.kind == "ultrasound"
+    assert ultrasound.ultrasound is not None
+    assert ultrasound.ultrasound.block_count == 30
+    assert ultrasound.ultrasound.metadata.get("nominal_frame_rate_hz") == 20.0
+
+    report = by_path["reports/quality_report.json"]
+    assert report.kind == "other"
+    assert report.message == "无内建预览"
+
+
+def test_inspect_hdf5_handles_multidimensional_sample_shape(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "mocap.h5"
+    markers = tuple(f"marker_{index:02d}" for index in range(16))
+    with Hdf5SignalWriter(
+        path,
+        channels=markers,
+        units=("mm",) * 16,
+        device_metadata={"device_id": "mocap_sim"},
+        sample_shape=(16, 3),
+        nominal_rate_hz=100.0,
+    ) as writer:
+        writer.append(
+            np.arange(8 * 16 * 3, dtype=np.float32).reshape(8, 16, 3),
+            sample_index=0,
+            host_monotonic_ns=np.arange(8, dtype=np.uint64) * 10_000_000 + 900_000_000,
+        )
+
+    artifact = _inspect_hdf5(
+        path,
+        modality="mocap",
+        relative_path="raw/mocap.h5",
+        size_bytes=path.stat().st_size,
+        max_preview_rows=20,
+        max_stat_rows=10_000,
+    )
+
+    assert artifact.kind == "hdf5"
+    assert artifact.hdf5 is not None
+    assert artifact.hdf5.sample_count == 8
+    assert artifact.hdf5.sample_shape == (16, 3)
+    assert artifact.hdf5.closed_cleanly is True
+    assert len(artifact.hdf5.preview_columns) == 48
+    assert len(artifact.hdf5.stats) == 48
+    assert artifact.hdf5.preview_rows[0][0] == 0.0

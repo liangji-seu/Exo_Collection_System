@@ -157,6 +157,79 @@ class QualityAudit:
     soft_metrics: dict[str, Any]
 
 
+@dataclass(frozen=True, slots=True)
+class Hdf5ChannelStat:
+    channel: str
+    unit: str
+    min: float
+    max: float
+    mean: float
+    std: float
+    nan_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class Hdf5Inspection:
+    relative_path: str
+    size_bytes: int
+    closed_cleanly: bool
+    sample_count: int
+    dtype: str
+    sample_shape: tuple[int, ...]
+    nominal_rate_hz: float | None
+    channels: tuple[str, ...]
+    units: tuple[str, ...]
+    device_metadata: dict[str, Any]
+    trial_metadata: dict[str, Any]
+    clock_model: dict[str, Any]
+    root_attrs: tuple[tuple[str, str], ...]
+    structure: tuple[str, ...]
+    stats: tuple[Hdf5ChannelStat, ...]
+    preview_columns: tuple[str, ...]
+    preview_rows: tuple[tuple[Any, ...], ...]
+    discontinuity_count: int
+    event_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class UltrasoundInspection:
+    relative_path: str
+    size_bytes: int
+    meta_path: str
+    index_path: str
+    metadata: dict[str, Any]
+    block_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class JsonlInspection:
+    relative_path: str
+    size_bytes: int
+    event_count: int
+    preview: tuple[dict[str, Any], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactInspection:
+    modality: str
+    relative_path: str
+    size_bytes: int
+    kind: str
+    message: str = ""
+    hdf5: Hdf5Inspection | None = None
+    ultrasound: UltrasoundInspection | None = None
+    jsonl: JsonlInspection | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TrialInspection:
+    manifest_path: Path
+    trial_uuid: str
+    condition_code: str
+    artifact_count: int
+    artifacts: tuple[ArtifactInspection, ...]
+
+
 def _has_active_component(path: Path) -> bool:
     return path_has_unpublished_component(path)
 
@@ -1097,18 +1170,429 @@ def load_quality_audit(
     )
 
 
+def inspect_trial_artifacts(
+    manifest_path: str | Path,
+    *,
+    data_root: str | Path | None = None,
+    max_preview_rows: int = 20,
+    max_stat_rows: int = 10_000,
+) -> TrialInspection:
+    """Return a read-only, bounded inspection of every published Artifact.
+
+    This is intentionally generic over modality: HDF5 signal artifacts share
+    the :class:`~exo_collection.writers.hdf5_signal.Hdf5SignalWriter` schema, so
+    a single reader covers imu/encoder/sync_pulse/mocap/emg alike.  Unlike
+    :func:`load_trial_playback`, nothing is downsampled away — sample counts,
+    dtype, sample_shape, the ``closed_cleanly`` flag, per-channel statistics,
+    and the file structure are all surfaced verbatim.
+    """
+
+    if min(max_preview_rows, max_stat_rows) <= 0:
+        raise ValueError("inspection limits must be positive")
+    path, trial_root, manifest = _load_finalized_trial(manifest_path)
+    dataset_root = (
+        Path(data_root).expanduser().resolve() if data_root is not None else trial_root
+    )
+    _require_trial_under_data_root(path, dataset_root)
+    _require_idle(dataset_root)
+
+    artifacts: list[ArtifactInspection] = []
+    for artifact in manifest.artifacts:
+        relative = artifact.relative_path
+        try:
+            absolute = _artifact_path(trial_root, relative)
+        except DataStudioToolError as exc:
+            artifacts.append(
+                ArtifactInspection(
+                    modality=artifact.modality,
+                    relative_path=relative,
+                    size_bytes=int(artifact.size_bytes or 0),
+                    kind="other",
+                    message=str(exc),
+                )
+            )
+            continue
+        if not absolute.is_file():
+            artifacts.append(
+                ArtifactInspection(
+                    modality=artifact.modality,
+                    relative_path=relative,
+                    size_bytes=int(artifact.size_bytes or 0),
+                    kind="other",
+                    message="文件缺失",
+                )
+            )
+            continue
+        size_bytes = int(absolute.stat().st_size)
+        lowered = relative.casefold()
+        if lowered.endswith(".h5"):
+            artifacts.append(
+                _inspect_hdf5(
+                    absolute,
+                    modality=artifact.modality,
+                    relative_path=relative,
+                    size_bytes=size_bytes,
+                    max_preview_rows=max_preview_rows,
+                    max_stat_rows=max_stat_rows,
+                )
+            )
+        elif lowered.endswith(".bin"):
+            artifacts.append(
+                _inspect_ultrasound(
+                    absolute,
+                    trial_root=trial_root,
+                    modality=artifact.modality,
+                    relative_path=relative,
+                    size_bytes=size_bytes,
+                )
+            )
+        elif lowered.endswith(".jsonl"):
+            artifacts.append(
+                _inspect_jsonl(
+                    absolute,
+                    modality=artifact.modality,
+                    relative_path=relative,
+                    size_bytes=size_bytes,
+                    max_preview_rows=max_preview_rows,
+                )
+            )
+        else:
+            artifacts.append(
+                ArtifactInspection(
+                    modality=artifact.modality,
+                    relative_path=relative,
+                    size_bytes=size_bytes,
+                    kind="other",
+                    message="无内建预览",
+                )
+            )
+
+    return TrialInspection(
+        manifest_path=path,
+        trial_uuid=str(manifest.trial_uuid),
+        condition_code=manifest.condition.condition_code,
+        artifact_count=len(artifacts),
+        artifacts=tuple(artifacts),
+    )
+
+
+def _inspect_hdf5(
+    path: Path,
+    *,
+    modality: str,
+    relative_path: str,
+    size_bytes: int,
+    max_preview_rows: int,
+    max_stat_rows: int,
+) -> ArtifactInspection:
+    try:
+        with h5py.File(path, "r") as handle:
+            closed_cleanly = bool(handle.attrs.get("closed_cleanly", False))
+            raw_rate = handle.attrs.get("nominal_rate_hz")
+            nominal_rate_hz = float(raw_rate) if raw_rate is not None else None
+            root_attrs = tuple(
+                (str(key), _attr_to_text(handle.attrs[key]))
+                for key in handle.attrs.keys()
+            )
+            structure = _collect_hdf5_structure(handle)
+            discontinuity_count = (
+                int(handle["events/discontinuities"].shape[0])
+                if "events/discontinuities" in handle
+                else 0
+            )
+            event_count = (
+                int(handle["events/records"].shape[0])
+                if "events/records" in handle
+                else 0
+            )
+            channels = (
+                _decode_strings(handle["metadata/channels"][:])
+                if "metadata/channels" in handle
+                else ()
+            )
+            units = (
+                _decode_strings(handle["metadata/units"][:])
+                if "metadata/units" in handle
+                else ()
+            )
+            device_metadata = _read_json_dataset(handle, "metadata/device")
+            trial_metadata = _read_json_dataset(handle, "metadata/trial")
+            clock_model = _read_json_dataset(handle, "metadata/clock_model")
+
+            if "samples/data" not in handle:
+                return ArtifactInspection(
+                    modality=modality,
+                    relative_path=relative_path,
+                    size_bytes=size_bytes,
+                    kind="hdf5",
+                    message="缺少 samples/data",
+                )
+            data = handle["samples/data"]
+            count = int(data.shape[0])
+            sample_shape = tuple(int(value) for value in data.shape[1:])
+            dtype = str(data.dtype)
+
+            if count > 0:
+                stat_selector = _even_indices(count, max_stat_rows)
+                sampled = np.asarray(data[stat_selector])
+                flat = sampled.reshape((sampled.shape[0], -1))
+                preview_rows = _build_preview_rows(data, max_preview_rows)
+                labels, expanded_units = _flatten_channel_labels(
+                    channels, units, int(flat.shape[1])
+                )
+                stats = _compute_channel_stats(flat, labels, expanded_units)
+            else:
+                labels, expanded_units = _flatten_channel_labels(
+                    channels, units, len(channels) or 1
+                )
+                stats = ()
+                preview_rows = ()
+
+            return ArtifactInspection(
+                modality=modality,
+                relative_path=relative_path,
+                size_bytes=size_bytes,
+                kind="hdf5",
+                hdf5=Hdf5Inspection(
+                    relative_path=relative_path,
+                    size_bytes=size_bytes,
+                    closed_cleanly=closed_cleanly,
+                    sample_count=count,
+                    dtype=dtype,
+                    sample_shape=sample_shape,
+                    nominal_rate_hz=nominal_rate_hz,
+                    channels=channels,
+                    units=units,
+                    device_metadata=device_metadata,
+                    trial_metadata=trial_metadata,
+                    clock_model=clock_model,
+                    root_attrs=root_attrs,
+                    structure=structure,
+                    stats=stats,
+                    preview_columns=labels,
+                    preview_rows=preview_rows,
+                    discontinuity_count=discontinuity_count,
+                    event_count=event_count,
+                ),
+            )
+    except (OSError, KeyError, ValueError) as exc:
+        return ArtifactInspection(
+            modality=modality,
+            relative_path=relative_path,
+            size_bytes=size_bytes,
+            kind="hdf5",
+            message=f"无法读取 HDF5：{exc}",
+        )
+
+
+def _inspect_ultrasound(
+    path: Path,
+    *,
+    trial_root: Path,
+    modality: str,
+    relative_path: str,
+    size_bytes: int,
+) -> ArtifactInspection:
+    meta_rel, index_rel = companion_paths(relative_path)
+    meta_path = _artifact_path(trial_root, meta_rel.as_posix())
+    index_path = _artifact_path(trial_root, index_rel.as_posix())
+    metadata: dict[str, Any] = {}
+    if meta_path.is_file():
+        try:
+            loaded = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            loaded = None
+        if isinstance(loaded, dict):
+            metadata = loaded
+    try:
+        with BlockBinaryReader(
+            path,
+            meta_path=meta_path,
+            index_path=index_path,
+            validate_crc=False,
+            auto_rebuild_index=False,
+        ) as reader:
+            block_count = int(reader.block_count)
+            if not metadata:
+                metadata = dict(reader.metadata or {})
+    except (OSError, ValueError) as exc:
+        return ArtifactInspection(
+            modality=modality,
+            relative_path=relative_path,
+            size_bytes=size_bytes,
+            kind="ultrasound",
+            message=f"无法读取超声 .bin：{exc}",
+        )
+    return ArtifactInspection(
+        modality=modality,
+        relative_path=relative_path,
+        size_bytes=size_bytes,
+        kind="ultrasound",
+        ultrasound=UltrasoundInspection(
+            relative_path=relative_path,
+            size_bytes=size_bytes,
+            meta_path=meta_rel.as_posix(),
+            index_path=index_rel.as_posix(),
+            metadata=metadata,
+            block_count=block_count,
+        ),
+    )
+
+
+def _inspect_jsonl(
+    path: Path,
+    *,
+    modality: str,
+    relative_path: str,
+    size_bytes: int,
+    max_preview_rows: int,
+) -> ArtifactInspection:
+    preview: list[dict[str, Any]] = []
+    event_count = 0
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            event_count += 1
+            if len(preview) < max_preview_rows:
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    preview.append({"_raw": line})
+                else:
+                    preview.append(
+                        payload if isinstance(payload, dict) else {"_value": payload}
+                    )
+    except OSError as exc:
+        return ArtifactInspection(
+            modality=modality,
+            relative_path=relative_path,
+            size_bytes=size_bytes,
+            kind="jsonl",
+            message=f"无法读取 JSONL：{exc}",
+        )
+    return ArtifactInspection(
+        modality=modality,
+        relative_path=relative_path,
+        size_bytes=size_bytes,
+        kind="jsonl",
+        jsonl=JsonlInspection(
+            relative_path=relative_path,
+            size_bytes=size_bytes,
+            event_count=event_count,
+            preview=tuple(preview),
+        ),
+    )
+
+
+def _collect_hdf5_structure(handle: h5py.File, max_depth: int = 3) -> tuple[str, ...]:
+    lines: list[str] = []
+
+    def visit(name: str, obj: Any) -> None:
+        if isinstance(obj, h5py.Dataset) and name.count("/") <= max_depth:
+            lines.append(f"{name}  shape={obj.shape}  dtype={obj.dtype}")
+
+    handle.visititems(visit)
+    return tuple(lines)
+
+
+def _read_json_dataset(handle: h5py.File, key: str) -> dict[str, Any]:
+    if key not in handle:
+        return {}
+    raw = handle[key][()]
+    if isinstance(raw, np.ndarray) and raw.size == 1:
+        raw = raw.item()
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", errors="replace")
+    try:
+        value = json.loads(str(raw))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _compute_channel_stats(
+    flat: NDArray[np.generic],
+    labels: tuple[str, ...],
+    units: tuple[str, ...],
+) -> tuple[Hdf5ChannelStat, ...]:
+    column_count = int(flat.shape[1])
+    stats: list[Hdf5ChannelStat] = []
+    for index in range(column_count):
+        column = np.asarray(flat[:, index], dtype=np.float64)
+        nan_count = int(np.count_nonzero(np.isnan(column)))
+        finite = column[np.isfinite(column)]
+        if finite.size:
+            minimum = float(np.min(finite))
+            maximum = float(np.max(finite))
+            mean = float(np.mean(finite))
+            std = float(np.std(finite))
+        else:
+            minimum = maximum = mean = std = float("nan")
+        stats.append(
+            Hdf5ChannelStat(
+                channel=labels[index] if index < len(labels) else f"ch_{index + 1}",
+                unit=units[index] if index < len(units) else "",
+                min=minimum,
+                max=maximum,
+                mean=mean,
+                std=std,
+                nan_count=nan_count,
+            )
+        )
+    return tuple(stats)
+
+
+def _build_preview_rows(
+    data: h5py.Dataset, max_rows: int
+) -> tuple[tuple[Any, ...], ...]:
+    preview = np.asarray(data[: min(int(data.shape[0]), max_rows)])
+    if preview.size == 0:
+        return ()
+    flat = preview.reshape((preview.shape[0], -1))
+    return tuple(
+        tuple(_py_scalar(value) for value in row) for row in flat
+    )
+
+
+def _py_scalar(value: Any) -> Any:
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def _attr_to_text(value: Any) -> str:
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float):
+        return repr(value)
+    return str(value)
+
+
 __all__ = [
     "AcquisitionBecameActiveError",
+    "ArtifactInspection",
     "ChecksumItem",
     "ChecksumReport",
     "DataStudioToolError",
     "FullStatistics",
+    "Hdf5ChannelStat",
+    "Hdf5Inspection",
+    "JsonlInspection",
     "PromptLabelPlaybackEvent",
     "QualityAudit",
     "SignalPlayback",
+    "TrialInspection",
     "TrialPlayback",
+    "UltrasoundInspection",
     "UltrasoundPlayback",
     "compute_full_statistics",
+    "inspect_trial_artifacts",
     "load_trial_playback",
     "load_quality_audit",
     "verify_trial_checksums",

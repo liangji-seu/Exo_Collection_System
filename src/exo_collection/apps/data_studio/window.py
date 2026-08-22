@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QStyleOptionViewItem,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -46,6 +47,7 @@ from exo_collection.configuration import SharedAppSettings
 from exo_collection.external import ExternalImportRequest, ExternalImportResult
 from exo_collection.storage.activity import AcquisitionActivity, read_activity
 
+from .data_view import DataViewWidget
 from .external_import_dialog import ExternalImportDialog
 from .external_import_worker import ExternalImportWorker
 from .local_dialogs import (
@@ -58,8 +60,10 @@ from .local_tools import (
     ChecksumReport,
     FullStatistics,
     QualityAudit,
+    TrialInspection,
     TrialPlayback,
     compute_full_statistics,
+    inspect_trial_artifacts,
     load_quality_audit,
 )
 from .management import (
@@ -522,7 +526,12 @@ class DataStudioWindow(QMainWindow):
         self.scan_summary_label = QLabel("尚未刷新。")
         self.scan_summary_label.setObjectName("scan_summary")
         outer.addWidget(self.scan_summary_label)
-        self.setCentralWidget(central)
+
+        self.tabs = QTabWidget()
+        self.tabs.addTab(central, "数据管理")
+        self.data_view_widget = DataViewWidget(self._inspect_selected_trial)
+        self.tabs.addTab(self.data_view_widget, "数据查看")
+        self.setCentralWidget(self.tabs)
         self.statusBar().showMessage("就绪")
 
     @Slot()
@@ -1250,6 +1259,16 @@ class DataStudioWindow(QMainWindow):
             self._apply_activity(read_activity(self._data_root))
 
     @Slot()
+    def _inspect_selected_trial(self) -> None:
+        manifest_path = self._selected_finalized_manifest_path()
+        if manifest_path is None:
+            return
+        self._start_local_tool(
+            "数据查看",
+            lambda: inspect_trial_artifacts(manifest_path, data_root=self._data_root),
+            self.data_view_widget.show_result,
+        )
+
     def playback_selected_trial(self) -> None:
         _log.info("=== 离线回放请求开始 ===")
         manifest_path = self._selected_finalized_manifest_path()
