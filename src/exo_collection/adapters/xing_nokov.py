@@ -60,6 +60,7 @@ class NokovSdkBackend:
         stream_kind: str,
         marker_count_fallback: int = 0,
         frame_rate_fallback_hz: float = 100.0,
+        unlabeled_marker_capacity: int = 16,
     ) -> None:
         if stream_kind not in {"mocap", "emg"}:
             raise ValueError("stream_kind must be mocap or emg")
@@ -67,6 +68,7 @@ class NokovSdkBackend:
         self.stream_kind = stream_kind
         self.marker_count_fallback = int(marker_count_fallback)
         self.frame_rate_fallback_hz = float(frame_rate_fallback_hz)
+        self.unlabeled_marker_capacity = int(unlabeled_marker_capacity)
         self.metadata: dict[str, Any] = {}
         self._sdk: Any = None
         self._client: Any = None
@@ -87,7 +89,15 @@ class NokovSdkBackend:
         self._callback = callback
         client = nokovsdk.PySDKClient()
         self._client = client
-        client.PySetVerbosityLevel(0)
+        # Mirror the vendor example ordering (Nokov_SDK_Client.py): Initialize
+        # first, then register the data/message/notify callbacks, then read the
+        # server description before the data descriptions.
+        result = int(client.Initialize(self.server_ip.encode("utf-8")))
+        if result != 0:
+            self.close()
+            raise AdapterError(
+                f"XING/Nokov SDK 连接 {self.server_ip} 失败，错误码 {result}"
+            )
         self._sdk_callback = (
             self._on_mocap_frame if self.stream_kind == "mocap" else self._on_analog_frame
         )
@@ -95,12 +105,9 @@ class NokovSdkBackend:
             client.PySetDataCallback(self._sdk_callback, None)
         else:
             client.PySetAnalogChFunc(self._sdk_callback, None)
-        result = int(client.Initialize(self.server_ip.encode("utf-8")))
-        if result != 0:
-            self.close()
-            raise AdapterError(
-                f"XING/Nokov SDK 连接 {self.server_ip} 失败，错误码 {result}"
-            )
+        client.PySetVerbosityLevel(0)
+        client.PySetMessageCallback(self._on_sdk_message)
+        client.PySetNotifyMsgCallback(self._on_sdk_notify, None)
         version = tuple(int(value) for value in client.PyNokovVersion())
         self.metadata = {
             "manufacturer": "Nokov/XING",
@@ -109,6 +116,8 @@ class NokovSdkBackend:
             "transport": "vendor_sdk_udp",
         }
         if self.stream_kind == "mocap":
+            server_description = nokovsdk.ServerDescription()
+            client.PyGetServerDescription(server_description)
             self.metadata.update(self._read_mocap_description())
 
     def _read_mocap_description(self) -> dict[str, Any]:
@@ -143,21 +152,36 @@ class NokovSdkBackend:
             for marker_set in marker_sets
             for name in marker_set["marker_names"]
         ]
-        if not marker_names and self.marker_count_fallback > 0:
+        if marker_names:
+            marker_source = "labeled"
+        elif self.marker_count_fallback > 0:
             marker_names = [
                 f"marker_{index + 1:02d}" for index in range(self.marker_count_fallback)
             ]
             marker_sets = [{"name": "configured", "marker_names": marker_names.copy()}]
+            marker_source = "fallback"
+        else:
+            # No labelled MarkerSet is defined: collect the Seeker's unlabelled
+            # (OtherMarkers) points so the acquisition pipeline still has data
+            # to flow.  The per-frame count varies, so the stream is padded to a
+            # fixed capacity with NaN where a marker is absent.
+            marker_names = [
+                f"marker_{index + 1:02d}"
+                for index in range(self.unlabeled_marker_capacity)
+            ]
+            marker_sets = []
+            marker_source = "unlabeled"
         if not marker_names:
             raise AdapterError(
-                "XING/Nokov 未返回 MarkerSet 定义；请先在 Seeker 中创建并启用 "
-                "MarkerSet，或在动捕设置中填写 Marker 数量作为后备值。"
+                "XING/Nokov 未返回 MarkerSet 定义，且未配置后备 Marker 数量；"
+                "无法确定 marker 流。"
             )
         return {
             "frame_rate_hz": frame_rate,
             "marker_count": len(marker_names),
             "marker_names": marker_names,
             "marker_sets": marker_sets,
+            "marker_source": marker_source,
         }
 
     def start(self) -> None:
@@ -174,6 +198,15 @@ class NokovSdkBackend:
         self._client = None
         self._sdk = None
         gc.collect()
+
+    def _on_sdk_message(self, _level: Any, _message: Any) -> None:
+        # Vendor log telemetry; deliberately ignored.  Never unwind through the
+        # ctypes callback boundary, and never log opaque SDK content here.
+        return None
+
+    def _on_sdk_notify(self, _notify: Any, _user_data: Any) -> None:
+        # Vendor state-change notifications; deliberately ignored.
+        return None
 
     def _on_mocap_frame(self, pointer: Any, _user_data: Any) -> None:
         if not self._accepting or not pointer or self._callback is None:
@@ -194,11 +227,17 @@ class NokovSdkBackend:
                         "values": values,
                     }
                 )
+            other_markers = np.empty((int(frame.nOtherMarkers), 3), dtype=np.float32)
+            for marker_index in range(int(frame.nOtherMarkers)):
+                other_markers[marker_index] = tuple(
+                    float(frame.OtherMarkers[marker_index][axis]) for axis in range(3)
+                )
             self._callback(
                 {
                     "frame_number": int(frame.iFrame),
                     "device_timestamp": int(frame.iTimeStamp),
                     "marker_sets": marker_sets,
+                    "other_markers": other_markers,
                 },
                 perf_counter_ns(),
             )
@@ -236,6 +275,7 @@ class XingNokovMocapConfig:
     server_ip: str = "10.1.1.198"
     nominal_rate_hz: float = 100.0
     marker_count_fallback: int = 0
+    unlabeled_marker_capacity: int = 16
     queue_capacity: int = 256
 
     def __post_init__(self) -> None:
@@ -243,6 +283,8 @@ class XingNokovMocapConfig:
             raise ValueError("device_id, clock_domain, and server_ip must not be empty")
         if self.nominal_rate_hz <= 0 or self.marker_count_fallback < 0:
             raise ValueError("invalid mocap rate or marker_count_fallback")
+        if self.unlabeled_marker_capacity < 0:
+            raise ValueError("unlabeled_marker_capacity must be non-negative")
         if self.queue_capacity <= 0:
             raise ValueError("queue_capacity must be positive")
 
@@ -261,9 +303,12 @@ class XingNokovMocapAdapter(QueuedHardwareAdapter):
             stream_kind="mocap",
             marker_count_fallback=self._config.marker_count_fallback,
             frame_rate_fallback_hz=self._config.nominal_rate_hz,
+            unlabeled_marker_capacity=self._config.unlabeled_marker_capacity,
         )
         self._marker_names: tuple[str, ...] = ()
         self._marker_sets: tuple[Mapping[str, Any], ...] = ()
+        self._unlabeled = False
+        self._last_unlabeled_marker_count = 0
         self._sample_index = 0
         self._sequence = 0
         self._last_frame_number: int | None = None
@@ -301,6 +346,7 @@ class XingNokovMocapAdapter(QueuedHardwareAdapter):
         metadata = dict(self._backend.metadata)
         self._marker_names = tuple(str(item) for item in metadata.get("marker_names", ()))
         self._marker_sets = tuple(metadata.get("marker_sets", ()))
+        self._unlabeled = metadata.get("marker_source") == "unlabeled" or not self._marker_sets
         if not self._marker_names:
             raise AdapterError("XING/Nokov Marker 定义为空")
 
@@ -322,21 +368,38 @@ class XingNokovMocapAdapter(QueuedHardwareAdapter):
 
     def _on_frame(self, payload: Mapping[str, Any], host_ns: int) -> None:
         try:
-            by_name = {
-                str(item["name"]): np.asarray(item["values"], dtype=np.float32)
-                for item in payload["marker_sets"]
-            }
-            rows: list[np.ndarray] = []
-            for marker_set in self._marker_sets:
-                values = by_name.get(str(marker_set["name"]))
-                expected = len(marker_set["marker_names"])
-                if values is None or values.shape != (expected, 3):
-                    raise ValueError(
-                        f"MarkerSet {marker_set['name']} shape mismatch: "
-                        f"expected {(expected, 3)}, got {None if values is None else values.shape}"
-                    )
-                rows.append(values)
-            data = np.ascontiguousarray(np.concatenate(rows, axis=0)[None, ...])
+            if self._unlabeled:
+                capacity = len(self._marker_names)
+                raw = payload.get("other_markers")
+                other = (
+                    np.asarray(raw, dtype=np.float32)
+                    if raw is not None
+                    else np.empty((0, 3), dtype=np.float32)
+                )
+                if other.ndim != 2 or other.shape[1] != 3:
+                    other = np.empty((0, 3), dtype=np.float32)
+                count = min(int(other.shape[0]), capacity)
+                data = np.full((1, capacity, 3), np.nan, dtype=np.float32)
+                if count:
+                    data[0, :count, :] = other[:count, :]
+                data = np.ascontiguousarray(data)
+                self._last_unlabeled_marker_count = count
+            else:
+                by_name = {
+                    str(item["name"]): np.asarray(item["values"], dtype=np.float32)
+                    for item in payload["marker_sets"]
+                }
+                rows: list[np.ndarray] = []
+                for marker_set in self._marker_sets:
+                    values = by_name.get(str(marker_set["name"]))
+                    expected = len(marker_set["marker_names"])
+                    if values is None or values.shape != (expected, 3):
+                        raise ValueError(
+                            f"MarkerSet {marker_set['name']} shape mismatch: "
+                            f"expected {(expected, 3)}, got {None if values is None else values.shape}"
+                        )
+                    rows.append(values)
+                data = np.ascontiguousarray(np.concatenate(rows, axis=0)[None, ...])
             frame_number = int(payload["frame_number"])
             if self._last_frame_number is not None and frame_number > self._last_frame_number + 1:
                 self._sequence_gaps_count += frame_number - self._last_frame_number - 1
@@ -367,11 +430,15 @@ class XingNokovMocapAdapter(QueuedHardwareAdapter):
         return self._sequence_gaps_count
 
     def _health_metrics(self) -> dict[str, int | float | str | bool | None]:
-        return {
+        metrics: dict[str, int | float | str | bool | None] = {
             "marker_count": len(self._marker_names),
             "malformed_frames": self._malformed_frames,
             "last_frame_number": self._last_frame_number,
         }
+        if self._unlabeled:
+            metrics["marker_source"] = "unlabeled"
+            metrics["last_unlabeled_marker_count"] = self._last_unlabeled_marker_count
+        return metrics
 
 
 @dataclass(frozen=True, slots=True)

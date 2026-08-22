@@ -343,6 +343,7 @@ class HardwareMocapParameters(ProfileModel):
     server_ip: NonEmptyStr = "10.1.1.198"
     nominal_rate_hz: float = Field(default=100.0, gt=0)
     marker_count_fallback: int = Field(default=0, ge=0, le=1000)
+    unlabeled_marker_capacity: int = Field(default=16, ge=1, le=1000)
     queue_capacity: int = Field(default=256, gt=0)
 
 
