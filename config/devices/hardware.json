@@ -1,6 +1,6 @@
 {
   "profile_kind": "hardware",
-  "display_name": "超声 + Xsens MTw + Teensy + XING 动捕/EMG + gaitway-3D",
+  "display_name": "超声 + Xsens MTw + Teensy + XING 动捕/EMG/测力台",
   "schema_version": "1.0.0",
   "laboratory_sync_ready": false,
   "devices": [
@@ -110,24 +110,20 @@
       }
     },
     {
-      "id": "gaitway_force_plate",
+      "id": "force_plate_xing_nokov",
       "modality": "force_plate",
-      "adapter": "exo_collection.adapters.force_plate.GaitwayForcePlateTcpAdapter",
+      "adapter": "exo_collection.adapters.force_plate.XingNokovForcePlateAdapter",
       "writer": "hdf5_signal",
       "required": false,
-      "clock_domain": "gaitway_stream_clock",
+      "clock_domain": "force_plate_xing_nokov_clock",
       "simulated": false,
       "parameters": {
-        "server_host": "127.0.0.1",
-        "server_port": 49500,
-        "sample_rate_hz": 1000,
-        "trigger_mode": 0,
-        "sync_out_enabled": false,
-        "queue_capacity": 512,
-        "connect_timeout_s": 5.0,
-        "socket_timeout_s": 0.2,
-        "stop_timeout_s": 8.0,
-        "query_settings_on_connect": true
+        "server_ip": "10.1.1.198",
+        "sample_rate_hz": 100.0,
+        "channel_count": 6,
+        "channel_names": ["fx", "fy", "fz", "mx", "my", "mz"],
+        "units": ["N", "N", "N", "N*m", "N*m", "N*m"],
+        "queue_capacity": 512
       }
     }
   ]

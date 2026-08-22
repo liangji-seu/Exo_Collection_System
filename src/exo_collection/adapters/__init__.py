@@ -36,6 +36,8 @@ from .force_plate import (
     FORCE_PLATE_UNITS,
     GaitwayForcePlateConfig,
     GaitwayForcePlateTcpAdapter,
+    XingNokovForcePlateAdapter,
+    XingNokovForcePlateConfig,
 )
 from .simulated import (
     SimulatedIMUAdapter,
@@ -60,6 +62,8 @@ __all__ = [
     "FORCE_PLATE_UNITS",
     "GaitwayForcePlateConfig",
     "GaitwayForcePlateTcpAdapter",
+    "XingNokovForcePlateAdapter",
+    "XingNokovForcePlateConfig",
     "ModalityAdapter",
     "ModalityDescriptor",
     "QueuedHardwareAdapter",

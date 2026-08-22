@@ -8,6 +8,7 @@ import numpy as np
 from exo_collection.adapters.base import StartToken, TrialContext
 from exo_collection.adapters.xing_nokov import (
     XingNokovEmgAdapter,
+    XingNokovForcePlateAdapter,
     XingNokovMocapAdapter,
 )
 
@@ -109,5 +110,25 @@ def test_emg_adapter_transports_sdk_subframes_as_sample_rows() -> None:
     assert event.data.shape == (2, 3)
     np.testing.assert_allclose(event.data, values)
     assert adapter.descriptor().channels == ("RF", "BF", "TA")
+    adapter.stop()
+    adapter.close()
+
+
+def test_force_plate_adapter_transports_mocap_frame_analog_channels() -> None:
+    backend = _FakeBackend({"sdk_version": "4.1.0.5645"})
+    adapter = XingNokovForcePlateAdapter(backend=backend)
+    _start(adapter)
+    values = np.asarray([[12.0, 3.0, -500.0, 1.0, 2.0, 3.0]], dtype=np.float32)
+    backend.publish(
+        {"frame_number": 17, "device_timestamp": 888, "values": values}
+    )
+    event = adapter.get_event(timeout=0.1)
+    assert event is not None
+    assert event.modality == "force_plate"
+    assert event.sample_count == 1
+    assert event.data.shape == (1, 6)
+    np.testing.assert_allclose(event.data, values)
+    assert adapter.descriptor().channels == ("fx", "fy", "fz", "mx", "my", "mz")
+    assert adapter.descriptor().units == ("N", "N", "N", "N*m", "N*m", "N*m")
     adapter.stop()
     adapter.close()

@@ -1165,7 +1165,7 @@ def test_mocap_preview_table_displays_every_marker_xyz(tmp_path: Path) -> None:
     window.close()
 
 
-def test_force_plate_window_binds_gaitway_type_i_preview(
+def test_force_plate_window_binds_six_axis_force_preview(
     tmp_path: Path,
 ) -> None:
     _app, window, _created = _window_with_fake(tmp_path)
@@ -1174,14 +1174,14 @@ def test_force_plate_window_binds_gaitway_type_i_preview(
             event_type=WorkerEventType.PREVIEW,
             modality="force_plate",
             payload={
-                "labels": ["fx", "fy", "fz", "cop_x", "cop_y", "tz"],
+                "labels": ["fx", "fy", "fz", "mx", "my", "mz"],
                 "channels": [[index, index + 0.5] for index in range(6)],
             },
         )
     )
     assert window._force_plate_traces["fx"]._buffer[1] == 0.5
     assert window._force_plate_traces["fz"]._buffer[1] == 2.5
-    assert window._force_plate_traces["tz"]._buffer[1] == 5.5
+    assert window._force_plate_traces["mz"]._buffer[1] == 5.5
     window.close()
 
 
@@ -2495,7 +2495,7 @@ def test_health_table_has_modalities_and_prompt_label_counters(tmp_path: Path) -
         "IMU",
         "电机编码器",
         "动捕 Marker",
-        "gaitway-3D 测力台",
+        "六维力测力台",
         "表面肌电 EMG",
         "同步脉冲",
         "受试者标签（<）",
@@ -2728,7 +2728,7 @@ def test_preview_plot_text_is_hidden_until_hover(tmp_path: Path) -> None:
     app.processEvents()
 
     plots = window.findChildren(HoverDetailsPlotWidget)
-    assert len(plots) == 14
+    assert len(plots) == 13
     for plot in plots:
         plot_item = plot.getPlotItem()
         assert not plot_item.titleLabel.isVisible()

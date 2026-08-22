@@ -50,6 +50,9 @@ XING_NOKOV_EMG_ADAPTER = "exo_collection.adapters.emg.XingNokovEmgAdapter"
 GAITWAY_FORCE_PLATE_ADAPTER = (
     "exo_collection.adapters.force_plate.GaitwayForcePlateTcpAdapter"
 )
+XING_NOKOV_FORCE_PLATE_ADAPTER = (
+    "exo_collection.adapters.force_plate.XingNokovForcePlateAdapter"
+)
 
 
 class ProfileModel(BaseModel):
@@ -377,6 +380,25 @@ class HardwareForcePlateParameters(ProfileModel):
     query_settings_on_connect: bool = True
 
 
+class HardwareForcePlateNokovParameters(ProfileModel):
+    server_ip: NonEmptyStr = "10.1.1.198"
+    sample_rate_hz: float = Field(default=100.0, gt=0)
+    channel_count: int = Field(default=6, gt=0, le=80)
+    channel_names: tuple[str, ...] = ("fx", "fy", "fz", "mx", "my", "mz")
+    units: tuple[str, ...] = ("N", "N", "N", "N*m", "N*m", "N*m")
+    queue_capacity: int = Field(default=512, gt=0)
+
+    @model_validator(mode="after")
+    def validate_channels(self) -> HardwareForcePlateNokovParameters:
+        if self.channel_names and len(self.channel_names) != self.channel_count:
+            raise ValueError("channel_names length must equal channel_count")
+        if self.units and len(self.units) != self.channel_count:
+            raise ValueError("units length must equal channel_count")
+        if len(set(self.channel_names)) != len(self.channel_names):
+            raise ValueError("channel_names must be unique")
+        return self
+
+
 class HardwareDeviceProfileBase(ProfileModel):
     device_id: NonEmptyStr = Field(alias="id")
     required: bool
@@ -447,10 +469,23 @@ class HardwareEmgDeviceProfile(HardwareDeviceProfileBase):
 
 class HardwareForcePlateDeviceProfile(HardwareDeviceProfileBase):
     modality: Literal["force_plate"]
-    adapter: Literal[GAITWAY_FORCE_PLATE_ADAPTER]
+    adapter: Literal[GAITWAY_FORCE_PLATE_ADAPTER, XING_NOKOV_FORCE_PLATE_ADAPTER]
     writer: Literal["hdf5_signal"]
     simulated: Literal[False]
-    parameters: HardwareForcePlateParameters
+    parameters: HardwareForcePlateParameters | HardwareForcePlateNokovParameters
+
+    @model_validator(mode="before")
+    @classmethod
+    def dispatch_parameters(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            adapter = data.get("adapter", "")
+            params = data.get("parameters")
+            if isinstance(params, dict):
+                if adapter == XING_NOKOV_FORCE_PLATE_ADAPTER:
+                    data["parameters"] = HardwareForcePlateNokovParameters(**dict(params))
+                elif adapter == GAITWAY_FORCE_PLATE_ADAPTER:
+                    data["parameters"] = HardwareForcePlateParameters(**dict(params))
+        return data
 
 
 class HardwareSyncPulseDeviceProfile(DeviceProfileBase):

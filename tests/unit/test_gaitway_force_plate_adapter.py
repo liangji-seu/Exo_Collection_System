@@ -7,6 +7,7 @@ import numpy as np
 from exo_collection.acquisition.preview import build_preview_event
 from exo_collection.adapters.base import AdapterState, TrialContext
 from exo_collection.adapters.force_plate import (
+    FORCE_PLATE_CHANNELS,
     GaitwayForcePlateTcpAdapter,
     GaitwayPacketFramer,
 )
@@ -53,7 +54,10 @@ def test_type_i_packet_is_reordered_to_canonical_force_plate_channels() -> None:
         event.data[0],
         [10.0, 20.0, 100.0, 0.1, 0.2, 3.0, 1.5, 2.5, 80.0, 9.0],
     )
-    preview = build_preview_event(event)
+    preview = build_preview_event(
+        event,
+        extra_payload={"channel_names": list(FORCE_PLATE_CHANNELS)},
+    )
     assert preview.payload["labels"][:6] == [
         "fx",
         "fy",

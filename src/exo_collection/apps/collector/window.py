@@ -127,7 +127,7 @@ MODALITY_DISPLAY_NAMES = {
     "imu": "IMU",
     "encoder": "电机编码器",
     "mocap": "动捕 Marker",
-    "force_plate": "gaitway-3D 测力台",
+    "force_plate": "六维力测力台",
     "emg": "表面肌电 EMG",
     "sync_pulse": "同步脉冲",
     "subject_prompt": "受试者标签（<）",
@@ -162,7 +162,7 @@ ENCODER_PREVIEW_LABELS = (
     "right_torque",
 )
 EMG_PREVIEW_LABELS = tuple(f"emg_{index + 1:02d}" for index in range(16))
-FORCE_PLATE_PREVIEW_LABELS = ("fx", "fy", "fz", "cop_x", "cop_y", "tz")
+FORCE_PLATE_PREVIEW_LABELS = ("fx", "fy", "fz", "mx", "my", "mz")
 _SIGNAL_COLORS = (
     "#0d6efd", "#dc3545", "#198754", "#d97706",
     "#6f42c1", "#0dcaf0", "#fd7e14", "#20c997",
@@ -1840,15 +1840,14 @@ class CollectorWindow(QMainWindow):
         mocap_layout.addWidget(mocap_table)
         preview_workspace.register_panel("mocap", "动捕 Marker 数据", mocap_grid)
 
-        force_grid = QGroupBox("gaitway-3D 测力台 · 三轴力 / COP / Tz")
+        force_grid = QGroupBox("测力台 · 三轴力 / 力矩")
         force_grid.setObjectName("force_plate_grid")
         force_grid.setMinimumHeight(120)
         force_layout = QHBoxLayout(force_grid)
         force_layout.setContentsMargins(0, 0, 0, 0)
         force_groups = (
             ("force", "三轴力", ("fx", "fy", "fz"), "N"),
-            ("cop", "COP", ("cop_x", "cop_y"), "m"),
-            ("torque", "Tz", ("tz",), "N·m"),
+            ("moment", "力矩", ("mx", "my", "mz"), "N·m"),
         )
         for group_key, title, labels, unit in force_groups:
             plot = HoverDetailsPlotWidget(title=title)
@@ -2037,12 +2036,12 @@ class CollectorWindow(QMainWindow):
 
         if hardware:
             self._device_profile_label.setText(
-                "真实设备模式：超声 / Xsens / Teensy / XING / gaitway；"
+                "真实设备模式：超声 / Xsens / Teensy / XING；"
                 "同步脉冲为模拟信号。"
             )
             self._device_profile_label.setToolTip(
                 "Raw Ethernet 超声 + Xsens MTw IMU + Teensy 编码器 + "
-                "XING/Nokov 动捕 Marker 与 EMG + gaitway-3D 测力台；"
+                "XING/Nokov 动捕 Marker、EMG 与六维力测力台；"
                 "同步脉冲仍为模拟台架信号。"
             )
             self._device_profile_label.setStyleSheet("color:#842029;font-weight:600;")

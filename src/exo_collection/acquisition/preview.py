@@ -236,32 +236,29 @@ def build_preview_event(
                 "channel_count": visible_count,
             }
         elif event.modality == "force_plate":
-            if values.ndim != 2 or values.shape[1] < 10:
+            if values.ndim != 2 or values.shape[1] < 1:
                 raise ValueError(
                     f"invalid force-plate batch shape: {values.shape}"
                 )
-            labels = (
-                "fx",
-                "fy",
-                "fz",
-                "cop_x",
-                "cop_y",
-                "tz",
-                "treadmill_speed",
-                "treadmill_elevation",
-                "heart_rate",
-                "digital_inputs",
-            )
+            labels = []
+            if extra_payload is not None:
+                labels = [
+                    str(item) for item in extra_payload.get("channel_names", [])
+                ]
+            if len(labels) != values.shape[1]:
+                labels = [
+                    f"force_{index + 1:02d}" for index in range(values.shape[1])
+                ]
             channels = [
                 values[:, index].astype(float).tolist()
-                for index in range(len(labels))
+                for index in range(values.shape[1])
             ]
             payload = {
                 "host_monotonic_ns": event.host_monotonic_ns,
-                "values": channels[0],
+                "values": channels[0] if channels else [],
                 "channels": channels,
                 "labels": list(labels),
-                "channel": "gaitway_type_i",
+                "channel": "six_axis_force",
                 "channel_count": len(channels),
                 "latest": {
                     label: channels[index][-1]

@@ -1,0 +1,128 @@
+﻿
+
+########## C:\Users\Admin\Desktop\SEU_liangji\software\XING_Python_SDK-4.1.0.5645\XING_Python_SDK-4.1.0.5645\说明.pdf ##########
+PAGES: 3
+
+===== PAGE 1 =====
+ 
+一、文件 
+（1）、【Dist】文件夹--------支持 Python3 的通用版本软件包 
+（2）、【Script】文件夹--------可执行脚本（SDK 数据接收验证；客户端接收程序，修改
+连接服务器 IP，例如 10.1.1.198），双击运行。 
+（3）、vcredist_x64.exe--------VS2019 运行库，若运行报错丢失msvcr140.dll，双击
+安装即可 
+ 
+二、Python 运行环境配置 
+（1）安装 Python3 64 位，URL： Python (http://python.org/download/) 
+（2）安装测试 Nokov 模块 
+1）进入 Dist 目录，根据指导进行如下操作，下面以 windows x64 位为例， Linux 
+x64 同理 
+a）安装软件包  
+新安装：pip install nokovpy-3.0.1-py3-none-any.whl， 
+重装: pip install --force-reinstall nokovpy-3.0.1-py3-none-any.whl 
+2）测试模块，进入 Script 目录  
+1）运行  python Nokov_SDK_Client.py , 根据需要修改待连接的 XINGYING
+的 IP 地址，例如 
+python Nokov_SDK_Client.py -s 10.1.1.198 
+2）使用 Python 解释器，键入相关 python 命令，参见 Python 包安装路径下的 
+nokovsdk.py 中的函数定义与注释，例如 C:\Users\Administrator\.pyenv\pye
+nv-win\versions\3.9.6\Lib\site-packages\nokov\nokovsdk.py，也可参照 No
+kov_SDK_Client.py 脚本 
+
+===== PAGE 2 =====
+ 
+ 
+三、操作流程（SDK 数据接收验证） 
+（1）、设置电脑 IP 为 10.1.1.198，子网掩码为 255.255.255.0。关闭防火墙和网络拦截软
+件。 
+（2）、以管理员的方式运行 NOKOV 动捕软件。 
+（3）、勾选菜单栏=》工具=》设置=》SDK Enabled。 
+（4）、设置菜单栏=》工具=》设置=》NIC Address 为“10.1.1.198”。 
+（5）、实时模式下，点击运行； 
+ 或者，后处理模式下，播放数据。 
+（6）、根据说明配置好 Python 运行环境后，双击运行 Nokov_SDK_Client.py 脚本，即
+可接收到 SDK 数据。 
+注意：在后处理模式下，需要先关闭客户端接收程序，才能切换动捕数据。 
+ 
+三、数据说明 
+（1）、坐标系为右手坐标系 
+（2）、对于 Markerset 中已经定义的 Marker，由于软件操作问题、Marker 遮挡等原因，
+造成丢点或识别不到的情况，X、Y、Z 坐标值会填充为 9999999.000000 
+（3）、Skeleton Builder 方式建立的骨骼，在骨骼运动过程中，Rx、Ry、Rz 可能超过 3
+60 度。例如：旋转两圈，对应旋转角度为 720 度 
+（4）、欧拉角旋转顺序，见 Markerset Properties =》Rotation Order，默认旋转顺序
+为 ZYX 
+（5）、骨骼轴朝向，见 Markerset Properties =》 Bone Axis，默认骨骼轴朝向 Y 轴正
+
+===== PAGE 3 =====
+ 
+方向 
+（6）、骨骼六个自由度信息，为骨骼相对于父段骨骼的平移和旋转。创建 Markerset 时，
+定义的骨骼默认相对于大地坐标系 
+
+
+########## C:\Users\Admin\Desktop\SEU_liangji\software\XING_Python_SDK-4.1.0.5645\XING_Python_SDK-4.1.0.5645\readme.pdf ##########
+PAGES: 3
+
+===== PAGE 1 =====
+ 
+1.Files 
+(1).Dist --------The directory of installation package(support python3). 
+(2).Script -------- The directory of python test scripts 
+(3).vcredist_x64.exe-------- VS2019 runtime library，If the msvcr140.dll is  
+lost, double-click to install it 
+ 
+2. Python runtime environment configuration 
+(1).Install Python3 64-bit，URL： Python (http://python.org/download/) 
+(2).Install the test Nokov module 
+1）Go to the Dist directory and perform the following operations. The  
+following uses Windows X64-bit as an example 
+a）Installing the packages 
+New: pip install nokovpy-3.0.1-py3-none-any.whl 
+Reinstall: pip install --force-reinstall nokovpy-3.0.1-py3-none-any.whl 
+2）Test module, go to Script directory  
+1）Run python Nokov_SDK_Client.py , Change the IP address of  
+XINGYING to be connected as required, for example: 
+python Nokov_SDK_Client.py -s 10.1.1.198 
+2）Using the Python interpreter, type the relevant Python commands, 
+as described in the function definitions and comments in nokovsdk.py
+ under the Python package installation path，例如 C:\Users\Administrat
+or\.pyenv\pyenv-win\versions\3.9.6\Lib\site-packages\nokov\nokovsdk.p
+y，see also the Nokov_SDK_Client.py script. 
+
+===== PAGE 2 =====
+ 
+ 
+2.Demo test 
+(1).Set the PC IP address to 10.1.1.198 and subnet mask to 255.255.255.0.
+ Disable the firewall and network blocking software. 
+(2).Run XINGYING motion capture software as an administrator. 
+(3).Select the data broadcast interface, select “NIC Address”, and then ch
+eck “Setting”, “SDK Enabled”.XINGYING sends motion capture data, the loca
+l and other computers can receive data.  
+(4).In live mode, click run;Or, in post-process mode, play back data. 
+(5).After configuring the Python runtime environment according to the ins
+tructions, double-click the Nokovr_SDK_Client. py script to receive SDK data. 
+ 
+Note: In post-process mode, you need to close the client receiver before swit
+ching. 
+ 
+3.Data instructions 
+(1). The coordinate system is right-handed. 
+(2). For the Marker defined in Markerset, due to software operation problems,
+ Marker occlusion and other reasons, the X, Y and Z coordinate values will b
+e filled with 9999999.000000 when points are lost or cannot be identified. 
+(3). For Skeleton Builder, Rx, Ry, Rz may exceed 360 degrees during the move
+ment of the skeleton, e.g., for two rotations, the rotation Angle is 720 degree
+
+===== PAGE 3 =====
+ 
+s. 
+(4). Euler Angle rotation order, see Markerset Properties =》 Rotation Order,the 
+default rotation order is ZYX. 
+(5). Bone axis orientation,see Markerset Properties =》 Bone Axis,the default  
+bone axis is positive in the Y direction. 
+(6). The six-degree-of-freedom information of the skeleton refers to the transl
+ation and rotation of the skeleton relative to the parent segment. When creat
+ing a Markerset, the skeleton defined by default is relative to the geodetic co
+ordinate system. 

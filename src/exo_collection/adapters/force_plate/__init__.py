@@ -1,4 +1,4 @@
-"""gaitway-3D force-plate adapter."""
+"""Force-plate adapters."""
 
 from .gaitway_tcp import (
     FORCE_PLATE_CHANNELS,
@@ -8,6 +8,7 @@ from .gaitway_tcp import (
     GaitwayPacketError,
     GaitwayPacketFramer,
 )
+from .xing_nokov import XingNokovForcePlateAdapter, XingNokovForcePlateConfig
 
 __all__ = [
     "FORCE_PLATE_CHANNELS",
@@ -16,4 +17,6 @@ __all__ = [
     "GaitwayForcePlateTcpAdapter",
     "GaitwayPacketError",
     "GaitwayPacketFramer",
+    "XingNokovForcePlateAdapter",
+    "XingNokovForcePlateConfig",
 ]
