@@ -174,6 +174,9 @@ _ENCODER_METRICS = (
 )
 # Five-times magnification relative to the original +/-65 rad preview range.
 _ENCODER_SHARED_Y_RANGE = (-13.0, 13.0)
+# Force plate (N / N·m) preview range.  A still-standing ~80 kg subject reads
+# roughly Fz ≈ -800 N, so a fixed +/-1000 span keeps the trace readable.
+_FORCE_PLATE_SHARED_Y_RANGE = (-1000.0, 1000.0)
 DEFAULT_OPERATOR = "not_recorded"
 DEFAULT_CONTROLLED_STOP_TIMEOUT_S = 30.0
 
@@ -1869,7 +1872,19 @@ class CollectorWindow(QMainWindow):
                 legend.addItem(trace.curve, label.upper())
                 self._force_plate_traces[label] = trace
             plot.setLabel("left", title, units=unit)
+            lower, upper = _FORCE_PLATE_SHARED_Y_RANGE
+            span = upper - lower
+            plot.setYRange(lower, upper, padding=0)
+            plot.setLimits(
+                yMin=lower,
+                yMax=upper,
+                minYRange=span,
+                maxYRange=span,
+            )
+            plot.setMouseEnabled(x=False, y=False)
             force_layout.addWidget(plot, 1)
+        # Pre-register the force-plate Y range so auto-scale does not override it.
+        self._preview_y_ranges["force_plate"] = _FORCE_PLATE_SHARED_Y_RANGE
         preview_workspace.register_panel(
             "force_plate",
             "测力台数据",

@@ -925,9 +925,10 @@ def test_preview_y_axes_lock_once_and_are_shared_per_modality(tmp_path: Path) ->
         "ultrasound": window._us_plots,
         "imu": [trace.plot for trace in window._imu_traces.values()],
         "encoder": [trace.plot for trace in window._enc_traces.values()],
+        "force_plate": [trace.plot for trace in window._force_plate_traces.values()],
     }
     locked = dict(window._preview_y_ranges)
-    assert set(locked) == {"ultrasound", "imu", "encoder"}
+    assert set(locked) == {"ultrasound", "imu", "encoder", "force_plate"}
     for modality, plots in plot_groups.items():
         expected = locked[modality]
         for plot in plots:
