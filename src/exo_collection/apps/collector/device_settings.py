@@ -584,8 +584,9 @@ class MocapDeviceSettingsDialog(ModalityDeviceSettingsDialog):
         self.setMinimumWidth(560)
         outer = QVBoxLayout(self)
         intro = QLabel(
-            "通过 XING/Nokov Python SDK 监听 Seeker 的 UDP Marker 数据。"
-            "正常情况下 Marker 名称和数量会从服务器自动读取。"
+            "动捕 Marker 与测力台数据由 XINGYING 原生录制为 .cap。"
+            "采集脚本不再从 SDK 读取原始数据，而是在 Trial 开始/结束时"
+            "通过「远程控制」端口触发 XINGYING 录制。"
         )
         intro.setWordWrap(True)
         outer.addWidget(intro)
@@ -604,6 +605,15 @@ class MocapDeviceSettingsDialog(ModalityDeviceSettingsDialog):
         self.marker_count_spin.setSpecialValueText("自动读取")
         self.marker_count_spin.setValue(int(current.get("marker_count_fallback", 0)))
         form.addRow("后备 Marker 数量：", self.marker_count_spin)
+        self.remote_control_ip_edit = QLineEdit(
+            str(current.get("remote_control_ip", "127.0.0.1"))
+        )
+        self.remote_control_ip_edit.setObjectName("mocap_remote_control_ip")
+        form.addRow("远程控制 IP：", self.remote_control_ip_edit)
+        self.remote_control_port_spin = QSpinBox()
+        self.remote_control_port_spin.setRange(1, 65535)
+        self.remote_control_port_spin.setValue(int(current.get("remote_control_port", 7060)))
+        form.addRow("远程控制端口：", self.remote_control_port_spin)
         outer.addLayout(form)
         outer.addWidget(self._button_box())
 
@@ -614,6 +624,8 @@ class MocapDeviceSettingsDialog(ModalityDeviceSettingsDialog):
                 "server_ip": self.server_edit.text().strip(),
                 "nominal_rate_hz": self.rate_spin.value(),
                 "marker_count_fallback": self.marker_count_spin.value(),
+                "remote_control_ip": self.remote_control_ip_edit.text().strip(),
+                "remote_control_port": self.remote_control_port_spin.value(),
             }
         )
 

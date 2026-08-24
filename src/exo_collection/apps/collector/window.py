@@ -79,6 +79,9 @@ from exo_collection.apps.collector.device_preview import (
     ProfileModalityAdapterFactory,
 )
 from exo_collection.apps.collector.device_settings import DEVICE_SETTINGS_DIALOGS
+from exo_collection.apps.collector.xingying_remote import (
+    XingYingRemoteCapture,
+)
 from exo_collection.apps.collector.preflight import (
     CollectorPreflightReport,
     CollectorPreflightWorker,
@@ -120,6 +123,9 @@ MODALITIES = (
     "force_plate",
     "sync_pulse",
 )
+# 动捕 Marker 与测力台绑定为「XINGYING 远程触发」：连接其一即连接另一，
+# 且不再从 SDK 读取原始数据，而是在 Trial 开始/结束时触发 .cap 录制。
+XINGYING_LINKED_MODALITIES = ("mocap", "force_plate")
 PROMPT_HEALTH_ROWS = ("subject_prompt", "operator_prompt")
 HEALTH_ROWS = MODALITIES + PROMPT_HEALTH_ROWS
 MODALITY_DISPLAY_NAMES = {
@@ -1055,6 +1061,7 @@ class CollectorWindow(QMainWindow):
         self._controlled_stop_timeout_s = float(controlled_stop_timeout_s)
         self._worker: WorkerHandle | None = None
         self._active_trial_uuid: str | None = None
+        self._active_request: TrialRunRequest | None = None
         self._terminal_event_received = False
         self._dead_poll_count = 0
         self._stop_requested = False
@@ -1083,6 +1090,11 @@ class CollectorWindow(QMainWindow):
         self._recording_preview_handles: dict[str, ModalityPreviewHandle] = {}
         self._recording_streams_ended = False
         self._injected_preview_factory = preview_worker_factory
+
+        # XINGYING 远程触发（动捕 Marker + 测力台绑定，不经过预览 worker）。
+        self._xingying_remote: XingYingRemoteCapture | None = None
+        self._xingying_capture_name: str | None = None
+        self._xingying_database_path: Path | None = None
 
         self._experiment_metadata = TrialExperimentMetadata()
         self._experiment_metadata_by_identity: dict[tuple[str, str], TrialExperimentMetadata] = {}
@@ -2591,9 +2603,170 @@ class CollectorWindow(QMainWindow):
             label.setToolTip("\n".join(tooltip_lines))
             label.setAccessibleName(f"{modality} 状态：{display_status}")
 
+    # ── XINGYING 远程触发（动捕 Marker + 测力台）─────────────────────────
+
+    def _xingying_linked_enabled(self) -> bool:
+        """仅在真实硬件配置下把动捕/测力台当作 XINGYING 远程触发处理。"""
+        return self._selected_device_profile_key() == "hardware"
+
+    def _xingying_remote_config(self) -> dict[str, Any]:
+        """读取 mocap 设备参数中的远程控制配置。"""
+        defaults = {
+            "ip": "127.0.0.1",
+            "port": 7060,
+        }
+        try:
+            profile = load_device_profile(self._selected_device_profile_key())
+            device = profile.by_modality()["mocap"]
+        except (KeyError, RuntimeError):
+            return defaults
+        params = getattr(device, "parameters", None)
+        data = params.model_dump(exclude_none=True) if hasattr(params, "model_dump") else {}
+        return {
+            "ip": str(data.get("remote_control_ip") or defaults["ip"]),
+            "port": int(data.get("remote_control_port") or defaults["port"]),
+        }
+
+    def _connect_xingying_remote(self) -> None:
+        """连接 XINGYING 远程触发端口（动捕 Marker 与测力台绑定，不读取数据）。"""
+        if self._xingying_remote is not None:
+            self._append_alert("XINGYING 远程捕获已就绪，无需重复连接。")
+            return
+        if self._worker is not None:
+            self._append_alert("Trial 进行中，无法连接远程捕获。")
+            return
+        cfg = self._xingying_remote_config()
+        remote = XingYingRemoteCapture(ip=cfg["ip"], port=cfg["port"])
+        self._xingying_remote = remote
+        available = set(load_device_profile(self._selected_device_profile_key()).by_modality())
+        for modality in XINGYING_LINKED_MODALITIES:
+            if modality not in available:
+                continue
+            device_id, simulated = self._get_modality_info(modality)
+            self._preview_connected_modalities.add(modality)
+            self._preview_connection_status[modality] = "已连接"
+            self._set_preview_status(
+                modality,
+                "已连接",
+                device_id,
+                simulated,
+                detail_lines=(
+                    f"远程触发已就绪（{remote.ip}:{remote.port}）",
+                    "开始采集时将触发 XINGYING 录制 .cap",
+                ),
+            )
+            if self.preview_workspace is not None:
+                self.preview_workspace.set_stream_state(modality, "connected")
+        self._update_connect_button_state()
+        self._update_start_button()
+        self._append_alert(
+            f"XINGYING 远程捕获已就绪（{remote.ip}:{remote.port}），"
+            "动捕 Marker 与测力台已绑定。开始采集时将触发 .cap 录制。"
+        )
+        LOG.info("XINGYING 远程捕获已就绪 ip=%s port=%s", remote.ip, remote.port)
+
+    def _disconnect_xingying_remote(self) -> None:
+        """断开 XINGYING 远程触发，同步解除动捕 Marker 与测力台的绑定。"""
+        remote = self._xingying_remote
+        available = set(load_device_profile(self._selected_device_profile_key()).by_modality())
+        for modality in XINGYING_LINKED_MODALITIES:
+            if modality not in available:
+                continue
+            self._preview_connected_modalities.discard(modality)
+            self._preview_connection_status[modality] = "未连接"
+            device_id, simulated = self._get_modality_info(modality)
+            self._set_preview_status(modality, "未连接", device_id, simulated)
+            if self.preview_workspace is not None:
+                self.preview_workspace.set_stream_state(modality, "disconnected")
+        self._xingying_remote = None
+        self._xingying_capture_name = None
+        self._xingying_database_path = None
+        self._update_connect_button_state()
+        self._update_start_button()
+        if remote is not None:
+            self._append_alert("XINGYING 远程捕获已断开。")
+            LOG.info("XINGYING 远程捕获已断开")
+
+    def _build_xingying_capture_name(self, request: TrialRunRequest) -> str:
+        """生成 XINGYING 录制文件名（.cap 前缀，XINGYING 会追加 take 序号）。"""
+        subject = str(request.subject_code or "subj").strip() or "subj"
+        condition = str(request.condition_code or "cond").strip() or "cond"
+        repeat = int(request.repeat_index or 1)
+        short_uuid = str(request.trial_uuid).replace("-", "")[:8]
+        return f"{subject}_{condition}_r{repeat}_{short_uuid}"
+
+    def _start_xingying_capture(
+        self,
+        request: TrialRunRequest,
+        database_path: Path,
+    ) -> None:
+        """Trial 开始时触发 XINGYING 录制 .cap 到本次 Trial 的 session 目录。
+
+        ``database_path`` 来自 Worker 回报的 ``recording_directory``，保证
+        1 session = 1 trial = 1 cap；.cap 随 .recording → final 的原子改名一起
+        进入最终 session 目录。
+        """
+        remote = self._xingying_remote
+        if remote is None:
+            return
+        try:
+            database_path.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self._append_alert(f"创建 XINGYING 捕获目录失败：{exc}")
+            LOG.error("创建 XINGYING 捕获目录失败: %s", exc)
+            return
+        name = self._build_xingying_capture_name(request)
+        try:
+            remote.capture_start(name, database_path)
+        except Exception as exc:
+            self._append_alert(f"触发 XINGYING 开始录制失败：{type(exc).__name__}: {exc}")
+            LOG.error("XINGYING CaptureStart 失败: %s", exc)
+            return
+        self._xingying_capture_name = name
+        self._xingying_database_path = database_path
+        self._append_alert(f"已触发 XINGYING 录制：{name} → {database_path}")
+        LOG.info("XINGYING CaptureStart name=%s path=%s", name, database_path)
+
+    def _stop_xingying_capture(self) -> None:
+        """Trial 停止/失败时触发 XINGYING 停止录制（幂等）。"""
+        remote = self._xingying_remote
+        name = self._xingying_capture_name
+        self._xingying_capture_name = None
+        if remote is None or not name:
+            return
+        try:
+            remote.capture_stop(name)
+        except Exception as exc:
+            self._append_alert(f"触发 XINGYING 停止录制失败：{type(exc).__name__}: {exc}")
+            LOG.error("XINGYING CaptureStop 失败: %s", exc)
+            return
+        self._append_alert(f"已触发 XINGYING 停止录制：{name}")
+        LOG.info("XINGYING CaptureStop name=%s", name)
+
+    def _maybe_start_xingying_capture(self, event: WorkerEvent) -> None:
+        """Worker 进入 RECORDING 且已回报 session 目录时，触发一次 XINGYING 录制。
+
+        只在硬件模式 + 已连接远程端口 + 尚未开始录制时触发；目录取自 STATE 事件的
+        ``recording_directory`` 字段，保证 .cap 落在本次 Trial 的 session 目录内。
+        """
+        if str(event.payload.get("state") or "") != "RECORDING":
+            return
+        recording_directory = event.payload.get("recording_directory")
+        if not recording_directory:
+            return
+        if self._xingying_remote is None or self._xingying_capture_name is not None:
+            return
+        request = self._active_request
+        if request is None:
+            return
+        self._start_xingying_capture(request, Path(recording_directory))
+
     @Slot()
     def _connect_modality(self, modality: str) -> None:
         """Spawn a single-modality preview worker for one modality."""
+        if self._xingying_linked_enabled() and modality in XINGYING_LINKED_MODALITIES:
+            self._connect_xingying_remote()
+            return
         if modality in self._preview_workers:
             self._append_alert(f"{modality} 已有预览连接，请先断开。")
             return
@@ -2633,6 +2806,9 @@ class CollectorWindow(QMainWindow):
     @Slot()
     def _disconnect_modality(self, modality: str) -> None:
         """Request a non-blocking controlled stop for one preview worker."""
+        if self._xingying_linked_enabled() and modality in XINGYING_LINKED_MODALITIES:
+            self._disconnect_xingying_remote()
+            return
         handle = self._preview_workers.get(modality)
         if handle is None:
             return
@@ -2653,9 +2829,11 @@ class CollectorWindow(QMainWindow):
     @Slot()
     def _toggle_connect_all(self) -> None:
         """Toggle between connect-all and disconnect-all."""
-        if self._preview_workers:
+        if self._preview_workers or self._xingying_remote is not None:
             for modality in list(self._preview_workers.keys()):
                 self._disconnect_modality(modality)
+            if self._xingying_remote is not None:
+                self._disconnect_xingying_remote()
         else:
             available = set(
                 load_device_profile(self._selected_device_profile_key()).by_modality()
@@ -2663,11 +2841,14 @@ class CollectorWindow(QMainWindow):
             for modality in MODALITIES:
                 if modality not in available:
                     continue
+                if self._xingying_linked_enabled() and modality == "force_plate":
+                    # force_plate 由 mocap 绑定连接，避免重复触发告警。
+                    continue
                 self._connect_modality(modality)
 
     def _update_connect_button_state(self) -> None:
         """Update connect-all toggle and per-modality buttons."""
-        has_any_connection = bool(self._preview_workers)
+        has_any_connection = bool(self._preview_workers) or self._xingying_remote is not None
         can_change = not self._configuration_locked and self._worker is None
         if has_any_connection:
             self.connect_all_button.setText("全部断开")
@@ -2687,7 +2868,10 @@ class CollectorWindow(QMainWindow):
             disconnect_button = self._disconnect_buttons.get(modality)
             if connect_button is None or disconnect_button is None:
                 continue
-            active = modality in self._preview_workers
+            if self._xingying_linked_enabled() and modality in XINGYING_LINKED_MODALITIES:
+                active = self._xingying_remote is not None
+            else:
+                active = modality in self._preview_workers
             stopping = modality in self._preview_disconnect_deadlines
             connect_button.setText("连接")
             connect_button.setEnabled(
@@ -3207,13 +3391,30 @@ class CollectorWindow(QMainWindow):
             return
 
         # Pass enabled modalities to the trial worker so only connected
-        # devices are recorded.
+        # devices are recorded.  在真实硬件模式下，XINGYING 绑定的动捕/测力台
+        # 不产生流数据，由远程触发录制 .cap，因此从 Worker 的流模态集合中排除；
+        # 模拟模式下动捕仍是正常流模态，保持不变。
         connected = frozenset(self._preview_connected_modalities)
-        request = request.model_copy(update={"enabled_modalities": connected})
+        streaming = frozenset(
+            modality
+            for modality in connected
+            if not (
+                self._xingying_linked_enabled()
+                and modality in XINGYING_LINKED_MODALITIES
+            )
+        )
+        if not streaming:
+            self.statusBar().showMessage(
+                "请至少连接一个数据模态（超声/IMU/编码器/EMG）。"
+            )
+            self._update_start_button()
+            return
+        request = request.model_copy(update={"enabled_modalities": streaming})
 
         # The already-running preview processes own the hardware Adapters.
         # Recording attaches to their raw IPC endpoints without stopping or
         # reconnecting a single device.
+        self._active_request = request
         self._set_configuration_locked(True)
         self._launch_trial_worker(request)
 
@@ -3377,6 +3578,7 @@ class CollectorWindow(QMainWindow):
         # Close only the recording gates.  The preview workers and hardware
         # Adapter instances remain alive and continue publishing UI previews.
         self._end_recording_streams()
+        self._stop_xingying_capture()
         try:
             self._worker.request_stop()
         except Exception as exc:
@@ -3502,6 +3704,7 @@ class CollectorWindow(QMainWindow):
             state = str(event.payload.get("state") or event.message or "UNKNOWN")
             self._set_trial_state(state)
             self._add_timeline_event(0, state.upper())
+            self._maybe_start_xingying_capture(event)
         elif event.event_type is WorkerEventType.SYNC:
             self._handle_sync(event.payload, record_event=True)
         elif event.event_type is WorkerEventType.HEALTH:
@@ -3921,6 +4124,7 @@ class CollectorWindow(QMainWindow):
 
     def _mark_failed(self, message: str) -> None:
         self._end_recording_streams()
+        self._stop_xingying_capture()
         self._trial_succeeded = False
         self._set_trial_state("FAILED")
         self.start_button.setEnabled(False)
@@ -3931,6 +4135,7 @@ class CollectorWindow(QMainWindow):
 
     def _release_worker(self, worker: WorkerHandle) -> None:
         self._end_recording_streams()
+        self._stop_xingying_capture()
         try:
             worker.join(timeout=0)
             worker.close()
@@ -3938,6 +4143,7 @@ class CollectorWindow(QMainWindow):
             self._append_alert(f"释放 Worker 资源时出错：{type(exc).__name__}: {exc}")
         self._worker = None
         self._active_trial_uuid = None
+        self._active_request = None
         self._recording_preview_handles.clear()
         self._recording_streams_ended = False
         self._stop_requested_at = None

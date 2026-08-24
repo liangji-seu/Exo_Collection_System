@@ -349,6 +349,10 @@ class HardwareMocapParameters(ProfileModel):
     marker_count_fallback: int = Field(default=0, ge=0, le=1000)
     unlabeled_marker_capacity: int = Field(default=16, ge=1, le=1000)
     queue_capacity: int = Field(default=256, gt=0)
+    # XINGYING 远程控制（不再从 SDK 读取 raw analog，只触发 .cap 录制）。
+    # .cap 直接落在本次 Trial 的 session 目录内，由 Worker 回报目录决定。
+    remote_control_ip: NonEmptyStr = "127.0.0.1"
+    remote_control_port: int = Field(default=7060, ge=1, le=65535)
 
 
 class HardwareEmgParameters(ProfileModel):

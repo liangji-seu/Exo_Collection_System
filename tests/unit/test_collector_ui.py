@@ -41,6 +41,7 @@ from exo_collection.apps.collector.window import (
     MODALITIES,
     RingTrace,
     SIGNAL_RING_CAPACITY,
+    XINGYING_LINKED_MODALITIES,
 )
 from exo_collection.configuration import (
     SharedAppSettings,
@@ -50,6 +51,14 @@ from exo_collection.orchestration.models import (
     MeasuredConditionMetadata,
     TrialExperimentMetadata,
     TrialRunRequest,
+)
+
+
+# 硬件模式下，mocap + force_plate 不再通过 SDK 流式读取，而是由 XINGYING 原生录制
+# （.cap），采集脚本仅通过 UDP 远程控制端口触发其开始/停止。因此 trial 录制时只有
+# 其余模态走预览 worker 的流式通道，本常量即这些「真正流式」的模态集合。
+STREAMING_MODALITIES = tuple(
+    modality for modality in MODALITIES if modality not in XINGYING_LINKED_MODALITIES
 )
 
 
@@ -1507,7 +1516,10 @@ def test_collector_shows_failed_worker_error_without_blocking_ui(
         name: id(window._preview_workers[name]) for name in MODALITIES
     } == identities
     assert all(handle.stop_requests == 0 for handle in handles.values())
-    assert all(len(handle.end_recording_calls) == 1 for handle in handles.values())
+    assert all(
+        len(handles[modality].end_recording_calls) == 1
+        for modality in STREAMING_MODALITIES
+    )
     window.close()
 
 
@@ -2048,13 +2060,16 @@ def test_trial_reuses_ready_preview_handles_without_disconnect_or_reconnect(
     assert len(created) == 1
     worker = created[0]
     assert worker.started
-    assert len(worker.stream_endpoints) == len(MODALITIES)
+    assert len(worker.stream_endpoints) == len(STREAMING_MODALITIES)
     assert {endpoint.modality for endpoint in worker.stream_endpoints} == set(
-        MODALITIES
+        STREAMING_MODALITIES
     )
     assert all(handle.stop_requests == 0 for handle in handles.values())
     assert all(handle.join_calls == 0 for handle in handles.values())
-    assert all(len(handle.begin_recording_calls) == 1 for handle in handles.values())
+    assert all(
+        len(handles[modality].begin_recording_calls) == 1
+        for modality in STREAMING_MODALITIES
+    )
     assert all(
         endpoint.descriptor["metadata"]["test_descriptor"]
         == endpoint.modality
@@ -2068,7 +2083,10 @@ def test_trial_reuses_ready_preview_handles_without_disconnect_or_reconnect(
 
     window.request_controlled_stop()
     assert all(handle.stop_requests == 0 for handle in handles.values())
-    assert all(len(handle.end_recording_calls) == 1 for handle in handles.values())
+    assert all(
+        len(handles[modality].end_recording_calls) == 1
+        for modality in STREAMING_MODALITIES
+    )
 
     worker.events.append(
         WorkerEvent(
@@ -2104,12 +2122,16 @@ def test_new_trial_discards_stale_recording_queue_items_before_attach(
 
     assert len(created) == 1
     assert all(
-        handle.discard_recording_backlog_calls == 1
-        for handle in handles.values()
+        handles[modality].discard_recording_backlog_calls == 1
+        for modality in STREAMING_MODALITIES
     )
-    assert all(not handle.recording_backlog for handle in handles.values())
     assert all(
-        len(handle.begin_recording_calls) == 1 for handle in handles.values()
+        not handles[modality].recording_backlog
+        for modality in STREAMING_MODALITIES
+    )
+    assert all(
+        len(handles[modality].begin_recording_calls) == 1
+        for modality in STREAMING_MODALITIES
     )
     created[0].finish(0)
     window.close()
@@ -2238,7 +2260,10 @@ def test_close_finalizes_recording_before_shutting_down_preview_workers(
 
     assert window.worker is worker
     assert worker.stop_requests == 1
-    assert all(len(handle.end_recording_calls) == 1 for handle in handles.values())
+    assert all(
+        len(handles[modality].end_recording_calls) == 1
+        for modality in STREAMING_MODALITIES
+    )
     assert all(handle.stop_requests == 0 for handle in handles.values())
 
     worker.events.append(
@@ -2319,7 +2344,10 @@ def test_recording_branch_fault_fails_trial_but_keeps_preview_alive(
     assert window.overall_status == "失败"
     assert window.configuration_locked
     assert worker.stop_requests == 1
-    assert all(len(handle.end_recording_calls) == 1 for handle in handles.values())
+    assert all(
+        len(handles[modality].end_recording_calls) == 1
+        for modality in STREAMING_MODALITIES
+    )
     assert all(handle.stop_requests == 0 for handle in handles.values())
     assert not window._preview_disconnect_deadlines
     assert window._preview_connected_modalities == set(MODALITIES)

@@ -74,7 +74,9 @@
         "server_ip": "10.1.1.198",
         "nominal_rate_hz": 100.0,
         "marker_count_fallback": 0,
-        "queue_capacity": 256
+        "queue_capacity": 256,
+        "remote_control_ip": "127.0.0.1",
+        "remote_control_port": 7060
       }
     },
     {

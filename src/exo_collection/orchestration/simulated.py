@@ -763,7 +763,12 @@ def run_trial(
                 event_type=WorkerEventType.STATE,
                 trial_uuid=str(request.trial_uuid),
                 message=reason,
-                payload={"state": target.value},
+                payload={
+                    "state": target.value,
+                    # 让 GUI 得知本次 Trial 的落盘目录，以便把 XINGYING 的 .cap
+                    # 直接录制到同一个 session 目录（1 session = 1 trial = 1 cap）。
+                    "recording_directory": str(layout.recording_directory),
+                },
             ),
         )
 
