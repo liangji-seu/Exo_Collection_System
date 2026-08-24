@@ -399,6 +399,54 @@ def _create_hdf5_writer(
     )
 
 
+def _create_block_binary_writer(
+    path: Path,
+    adapter: ModalityAdapter,
+    *,
+    modality: str,
+    simulated: bool,
+) -> BlockBinaryWriterProcess:
+    """Create a space-efficient block-binary Writer for one modality.
+
+    Ultrasound (frame-based) keeps its historical metadata keys; sample-based
+    block-binary modalities (e.g. Noraxon EMG) record their channel/unit and
+    muscle-to-channel correspondence in the companion ``.meta.json``.
+    """
+
+    descriptor = adapter.descriptor()
+    if modality == "ultrasound":
+        metadata: dict[str, Any] = {
+            **dict(descriptor.metadata),
+            "clock_domain": descriptor.clock_domain,
+            "nominal_frame_rate_hz": descriptor.nominal_rate_hz,
+            "unit": "a.u.",
+            "device": {
+                "device_id": descriptor.device_id,
+                "simulated": simulated,
+            },
+        }
+    else:
+        units = list(descriptor.units)
+        metadata = {
+            **dict(descriptor.metadata),
+            "clock_domain": descriptor.clock_domain,
+            "nominal_sample_rate_hz": descriptor.nominal_rate_hz,
+            "units": units,
+            "device": {
+                "device_id": descriptor.device_id,
+                "simulated": simulated,
+            },
+        }
+        if len(set(units)) == 1:
+            metadata["unit"] = units[0]
+    return BlockBinaryWriterProcess(
+        path,
+        dtype=descriptor.dtype,
+        sample_shape=descriptor.sample_shape,
+        metadata=metadata,
+    )
+
+
 def _preview_event(
     event: FrameBatch | SampleBatch,
     trial_uuid: UUID,
@@ -496,24 +544,30 @@ def _verify_hdf5(path: Path, expected_samples: int) -> None:
             raise RuntimeError(f"HDF5 dataset length mismatch: {path.name}")
 
 
-def _ultrasound_formal_frame_count(
+def _block_binary_formal_item_count(
     headers: Sequence[Any],
     *,
-    frame_rate_hz: float,
+    rate_hz: float,
     formal_start_ns: int,
     formal_stop_ns: int,
 ) -> int:
-    """Count formal frames from block headers without rereading large payloads."""
+    """Count formal items (frames or samples) from block headers.
 
-    period_ns = 1_000_000_000 / frame_rate_hz
+    Each block header records the host-monotonic timestamp of its first item
+    and the number of items it holds.  Because every block-binary modality is
+    uniformly sampled, the remaining items are reconstructed from ``rate_hz``
+    without rereading the payload.
+    """
+
+    period_ns = 1_000_000_000 / rate_hz
     count = 0
     for header in headers:
-        frame_times = header.host_monotonic_ns + np.rint(
+        item_times = header.host_monotonic_ns + np.rint(
             np.arange(header.sample_count, dtype=np.float64) * period_ns
         ).astype(np.int64)
         count += int(
             np.count_nonzero(
-                (frame_times >= formal_start_ns) & (frame_times <= formal_stop_ns)
+                (item_times >= formal_start_ns) & (item_times <= formal_stop_ns)
             )
         )
     return count
@@ -756,21 +810,17 @@ def run_trial(
                 name: adapter.descriptor() for name, adapter in adapters.items()
             }
 
-            if "ultrasound" in adapters:
-                writers["ultrasound"] = BlockBinaryWriterProcess(
-                    layout.partial_path("ultrasound.bin"),
-                    dtype=descriptors["ultrasound"].dtype,
-                    sample_shape=descriptors["ultrasound"].sample_shape,
-                    metadata={
-                        **dict(descriptors["ultrasound"].metadata),
-                        "clock_domain": descriptors["ultrasound"].clock_domain,
-                        "nominal_frame_rate_hz": descriptors["ultrasound"].nominal_rate_hz,
-                        "unit": "a.u.",
-                        "device": {
-                            "device_id": descriptors["ultrasound"].device_id,
-                            "simulated": simulated_by_modality["ultrasound"],
-                        },
-                    },
+            block_binary_modalities = {
+                modality
+                for modality in adapters
+                if profiles_by_modality[modality].writer == "block_binary"
+            }
+            for modality in block_binary_modalities:
+                writers[modality] = _create_block_binary_writer(
+                    layout.partial_path(f"{modality}.bin"),
+                    adapters[modality],
+                    modality=modality,
+                    simulated=simulated_by_modality[modality],
                 )
             hdf5_trial_metadata = {
                 # This immutable metadata is written when the raw file is
@@ -814,7 +864,7 @@ def run_trial(
                 },
             }
             for modality in adapters:
-                if modality == "ultrasound":
+                if modality in block_binary_modalities:
                     continue
                 writers[modality] = _create_hdf5_writer(
                     layout.partial_path(f"{modality}.h5"),
@@ -983,7 +1033,18 @@ def run_trial(
                             (float(event.device_timestamp), event.host_monotonic_ns)
                         )
                 elif isinstance(event, SampleBatch):
-                    writers[modality].append_batch(event)
+                    if profiles_by_modality[modality].writer == "block_binary":
+                        writers[modality].append(
+                            event.data,
+                            device_timestamp=event.device_timestamp,
+                            host_monotonic_ns=event.host_monotonic_ns,
+                            host_utc_ns=event.host_utc_ns,
+                            first_sample_index=event.first_sample_index,
+                            sequence=event.sequence_number,
+                            flags=0,
+                        )
+                    else:
+                        writers[modality].append_batch(event)
                     record_sample_bounds(
                         modality, event.first_sample_index, event.sample_count
                     )
@@ -1353,21 +1414,25 @@ def run_trial(
                 prompt_writer.path.unlink(missing_ok=True)
 
             # Verify source formats before any temporary name is published.
-            ultrasound_scan = None
-            if "ultrasound" in writers:
-                ultrasound_scan = scan_binary_file(layout.partial_path("ultrasound.bin"))
-                if ultrasound_scan.error is not None or ultrasound_scan.complete_block_count == 0:
-                    raise RuntimeError(f"ultrasound integrity check failed: {ultrasound_scan.error}")
-                ultrasound_writer = writers["ultrasound"]
-                if (
-                    not isinstance(ultrasound_writer, BlockBinaryWriterProcess)
-                    or ultrasound_scan.complete_block_count != ultrasound_writer.written_count
-                    or sum(header.sample_count for header in ultrasound_scan.headers)
-                    != counts.get("ultrasound", 0)
-                ):
-                    raise RuntimeError("ultrasound Writer count differs from the verified binary file")
+            binary_scans: dict[str, Any] = {}
             for modality in adapters:
-                if modality == "ultrasound":
+                if profiles_by_modality[modality].writer != "block_binary":
+                    continue
+                scan = scan_binary_file(layout.partial_path(f"{modality}.bin"))
+                if scan.error is not None or scan.complete_block_count == 0:
+                    raise RuntimeError(f"{modality} integrity check failed: {scan.error}")
+                writer = writers[modality]
+                if (
+                    not isinstance(writer, BlockBinaryWriterProcess)
+                    or scan.complete_block_count != writer.written_count
+                    or sum(header.sample_count for header in scan.headers)
+                    != counts.get(modality, 0)
+                ):
+                    raise RuntimeError(f"{modality} Writer count differs from the verified binary file")
+                binary_scans[modality] = scan
+            ultrasound_scan = binary_scans.get("ultrasound")
+            for modality in adapters:
+                if profiles_by_modality[modality].writer == "block_binary":
                     continue
                 _verify_hdf5(layout.partial_path(f"{modality}.h5"), counts.get(modality, 0))
 
@@ -1380,17 +1445,18 @@ def run_trial(
             )
             mappings = _clock_mappings(descriptors, anchors)
             formal_item_counts: dict[str, int] = {}
-            if "ultrasound" in adapters:
-                formal_item_counts["ultrasound"] = _ultrasound_formal_frame_count(
-                    ultrasound_scan.headers,
-                    frame_rate_hz=descriptors["ultrasound"].nominal_rate_hz,
-                    formal_start_ns=formal_start_host_monotonic_ns,
-                    formal_stop_ns=stopped_reading_ns,
-                )
+            for modality in adapters:
+                if profiles_by_modality[modality].writer == "block_binary":
+                    formal_item_counts[modality] = _block_binary_formal_item_count(
+                        binary_scans[modality].headers,
+                        rate_hz=descriptors[modality].nominal_rate_hz,
+                        formal_start_ns=formal_start_host_monotonic_ns,
+                        formal_stop_ns=stopped_reading_ns,
+                    )
             signal_evidence: dict[str, SignalEvidence] = {}
             hdf5_signal_evidence: dict[str, SignalEvidence] = {}
             for modality in adapters:
-                if modality == "ultrasound":
+                if profiles_by_modality[modality].writer == "block_binary":
                     continue
                 scanned_signal = scan_hdf5_signal_evidence(
                     layout.partial_path(f"{modality}.h5"),
@@ -1404,8 +1470,8 @@ def run_trial(
 
             sequence_gap_counts = {
                 modality: (
-                    ultrasound_scan.sequence_gap_count
-                    if modality == "ultrasound"
+                    binary_scans[modality].sequence_gap_count
+                    if profiles_by_modality[modality].writer == "block_binary"
                     else hdf5_signal_evidence[modality].sequence_gap_count
                 )
                 for modality in adapters
@@ -1607,8 +1673,8 @@ def run_trial(
                         "injected_dropped_batches": report.injected_dropped_batches,
                         "dropped_item_count": health.dropped_packets,
                         "sequence_gap_count": (
-                            ultrasound_scan.sequence_gap_count
-                            if modality == "ultrasound"
+                            binary_scans[modality].sequence_gap_count
+                            if profiles_by_modality[modality].writer == "block_binary"
                             else report.injected_dropped_batches
                         ),
                         "raw_queue_overflows": report.raw_queue_overflows,
@@ -1893,39 +1959,37 @@ def run_trial(
                 else ()
             )
             draft_by_key: dict[str, ArtifactDraft] = {}
-            if "ultrasound" in adapters:
-                ultrasound_artifact_uuid = raw_artifact_uuid_by_modality["ultrasound"]
-                draft_by_key.update(
-                    {
-                        "ultrasound": ArtifactDraft(
-                            request.trial_uuid,
-                            "ultrasound",
-                            ArtifactKind.RAW,
-                            "application/x-exo-ultrasound-blocks",
-                            "ultrasound.bin",
-                            artifact_uuid=ultrasound_artifact_uuid,
-                            created_at_utc=started_at_utc,
-                        ),
-                        "ultrasound_meta": ArtifactDraft(
-                            request.trial_uuid,
-                            "ultrasound",
-                            ArtifactKind.RAW,
-                            "application/json",
-                            "ultrasound.meta.json",
-                            created_at_utc=started_at_utc,
-                        ),
-                        "ultrasound_index": ArtifactDraft(
-                            request.trial_uuid,
-                            "ultrasound",
-                            ArtifactKind.DERIVED,
-                            "application/x-exo-ultrasound-index",
-                            "ultrasound.idx",
-                            created_at_utc=started_at_utc,
-                        ),
-                    }
-                )
             for modality in adapters:
-                if modality == "ultrasound":
+                if profiles_by_modality[modality].writer == "block_binary":
+                    draft_by_key.update(
+                        {
+                            modality: ArtifactDraft(
+                                request.trial_uuid,
+                                modality,
+                                ArtifactKind.RAW,
+                                f"application/x-exo-{modality}-blocks",
+                                f"{modality}.bin",
+                                artifact_uuid=raw_artifact_uuid_by_modality[modality],
+                                created_at_utc=started_at_utc,
+                            ),
+                            f"{modality}_meta": ArtifactDraft(
+                                request.trial_uuid,
+                                modality,
+                                ArtifactKind.RAW,
+                                "application/json",
+                                f"{modality}.meta.json",
+                                created_at_utc=started_at_utc,
+                            ),
+                            f"{modality}_index": ArtifactDraft(
+                                request.trial_uuid,
+                                modality,
+                                ArtifactKind.DERIVED,
+                                f"application/x-exo-{modality}-index",
+                                f"{modality}.idx",
+                                created_at_utc=started_at_utc,
+                            ),
+                        }
+                    )
                     continue
                 metadata = (
                     {
@@ -2149,9 +2213,10 @@ def run_trial(
             ]
             modalities: list[ModalityManifest] = []
             for modality, descriptor in descriptors.items():
+                is_block_binary = profiles_by_modality[modality].writer == "block_binary"
                 keys = (
-                    ("ultrasound", "ultrasound_meta", "ultrasound_index")
-                    if modality == "ultrasound"
+                    (modality, f"{modality}_meta", f"{modality}_index")
+                    if is_block_binary
                     else (modality,)
                 )
                 kwargs: dict[str, Any] = {
@@ -2170,8 +2235,8 @@ def run_trial(
                     "first_sample_index": sample_bounds[modality][0],
                     "last_sample_index": sample_bounds[modality][1],
                     "sequence_gap_count": (
-                        ultrasound_scan.sequence_gap_count
-                        if modality == "ultrasound"
+                        binary_scans[modality].sequence_gap_count
+                        if is_block_binary
                         else sequence_gap_counts[modality]
                     ),
                     "nominal_sample_rate_hz": descriptor.nominal_rate_hz,
@@ -2180,11 +2245,12 @@ def run_trial(
                         "simulated": simulated_by_modality[modality],
                     },
                 }
+                if is_block_binary:
+                    kwargs["metadata"]["source_sequence_gap_ranges"] = [
+                        list(item) for item in binary_scans[modality].sequence_gap_ranges
+                    ]
                 if modality == "ultrasound":
                     kwargs["frame_count"] = counts[modality]
-                    kwargs["metadata"]["source_sequence_gap_ranges"] = [
-                        list(item) for item in ultrasound_scan.sequence_gap_ranges
-                    ]
                 else:
                     kwargs["sample_count"] = counts[modality]
                 modalities.append(ModalityManifest(**kwargs))

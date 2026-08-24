@@ -47,6 +47,7 @@ XING_NOKOV_MOCAP_ADAPTER = (
     "exo_collection.adapters.mocap.XingNokovMocapAdapter"
 )
 XING_NOKOV_EMG_ADAPTER = "exo_collection.adapters.emg.XingNokovEmgAdapter"
+NORAXON_EMG_ADAPTER = "exo_collection.adapters.emg.NoraxonEmgAdapter"
 GAITWAY_FORCE_PLATE_ADAPTER = (
     "exo_collection.adapters.force_plate.GaitwayForcePlateTcpAdapter"
 )
@@ -367,6 +368,35 @@ class HardwareEmgParameters(ProfileModel):
         return self
 
 
+class NoraxonEmgChannelSpec(ProfileModel):
+    """One muscle (channel) mapped to a Noraxon sensor unit ID.
+
+    ``unit_id`` is the bare sensor serial (e.g. ``234fc``) or the full
+    ``line.noraxon_g3_<serial>`` tag.  An empty string marks a slot whose
+    sensor is not yet assigned; its channel is recorded as NaN and reported as
+    a missing-sensor warning.
+    """
+
+    name: NonEmptyStr
+    unit_id: str = ""
+
+
+class HardwareNoraxonEmgParameters(ProfileModel):
+    sample_rate_hz: float = Field(default=4000.0, gt=0)
+    unit: NonEmptyStr = "µV"
+    channels: tuple[NoraxonEmgChannelSpec, ...] = ()
+    queue_capacity: int = Field(default=512, gt=0)
+
+    @model_validator(mode="after")
+    def validate_channels(self) -> HardwareNoraxonEmgParameters:
+        if not self.channels:
+            raise ValueError("channels must define at least one muscle")
+        names = [channel.name for channel in self.channels]
+        if len(set(names)) != len(names):
+            raise ValueError("channel muscle names must be unique")
+        return self
+
+
 class HardwareForcePlateParameters(ProfileModel):
     server_host: NonEmptyStr = "127.0.0.1"
     server_port: int = Field(default=49_500, ge=1, le=65_535)
@@ -461,10 +491,23 @@ class HardwareMocapDeviceProfile(HardwareDeviceProfileBase):
 
 class HardwareEmgDeviceProfile(HardwareDeviceProfileBase):
     modality: Literal["emg"]
-    adapter: Literal[XING_NOKOV_EMG_ADAPTER]
-    writer: Literal["hdf5_signal"]
+    adapter: Literal[XING_NOKOV_EMG_ADAPTER, NORAXON_EMG_ADAPTER]
+    writer: Literal["hdf5_signal", "block_binary"]
     simulated: Literal[False]
-    parameters: HardwareEmgParameters
+    parameters: HardwareEmgParameters | HardwareNoraxonEmgParameters
+
+    @model_validator(mode="before")
+    @classmethod
+    def dispatch_parameters(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            adapter = data.get("adapter", "")
+            params = data.get("parameters")
+            if isinstance(params, dict):
+                if adapter == NORAXON_EMG_ADAPTER:
+                    data["parameters"] = HardwareNoraxonEmgParameters(**dict(params))
+                elif adapter == XING_NOKOV_EMG_ADAPTER:
+                    data["parameters"] = HardwareEmgParameters(**dict(params))
+        return data
 
 
 class HardwareForcePlateDeviceProfile(HardwareDeviceProfileBase):

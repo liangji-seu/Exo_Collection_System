@@ -925,7 +925,6 @@ def test_preview_y_axes_lock_once_and_are_shared_per_modality(tmp_path: Path) ->
         "ultrasound": window._us_plots,
         "imu": [trace.plot for trace in window._imu_traces.values()],
         "encoder": [trace.plot for trace in window._enc_traces.values()],
-        "force_plate": [trace.plot for trace in window._force_plate_traces.values()],
     }
     locked = dict(window._preview_y_ranges)
     assert set(locked) == {"ultrasound", "imu", "encoder", "force_plate"}
@@ -934,6 +933,12 @@ def test_preview_y_axes_lock_once_and_are_shared_per_modality(tmp_path: Path) ->
         for plot in plots:
             assert np.allclose(plot.getViewBox().viewRange()[1], expected)
             assert plot.getViewBox().state["mouseEnabled"] == [False, False]
+    # The force plate locks its two groups at different fixed spans: force axes
+    # at ±1000 and moment axes at ±10.
+    for label, trace in window._force_plate_traces.items():
+        expected = (-10.0, 10.0) if label in ("mx", "my", "mz") else locked["force_plate"]
+        assert np.allclose(trace.plot.getViewBox().viewRange()[1], expected)
+        assert trace.plot.getViewBox().state["mouseEnabled"] == [False, False]
 
     # Later out-of-range samples must not silently rescale any vertical axis.
     window._handle_worker_event(

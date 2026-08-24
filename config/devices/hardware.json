@@ -1,6 +1,6 @@
 {
   "profile_kind": "hardware",
-  "display_name": "超声 + Xsens MTw + Teensy + XING 动捕/EMG/测力台",
+  "display_name": "超声 + Xsens MTw + Teensy + XING 动捕/测力台 + Noraxon EMG",
   "schema_version": "1.0.0",
   "laboratory_sync_ready": false,
   "devices": [
@@ -78,19 +78,22 @@
       }
     },
     {
-      "id": "emg_xing_nokov",
+      "id": "emg_noraxon",
       "modality": "emg",
-      "adapter": "exo_collection.adapters.emg.XingNokovEmgAdapter",
-      "writer": "hdf5_signal",
+      "adapter": "exo_collection.adapters.emg.NoraxonEmgAdapter",
+      "writer": "block_binary",
       "required": true,
-      "clock_domain": "emg_xing_nokov_clock",
+      "clock_domain": "emg_noraxon_clock",
       "simulated": false,
       "parameters": {
-        "server_ip": "10.1.1.198",
-        "sample_rate_hz": 1000.0,
-        "channel_count": 8,
-        "channel_names": [],
-        "unit": "mV",
+        "sample_rate_hz": 4000.0,
+        "unit": "µV",
+        "channels": [
+          {"name": "股直肌", "unit_id": "noraxon_g3_234fc"},
+          {"name": "股内侧肌", "unit_id": "noraxon_g3_234f5"},
+          {"name": "股外侧肌", "unit_id": ""},
+          {"name": "股中肌", "unit_id": ""}
+        ],
         "queue_capacity": 512
       }
     },

@@ -621,59 +621,107 @@ class MocapDeviceSettingsDialog(ModalityDeviceSettingsDialog):
 class EmgDeviceSettingsDialog(ModalityDeviceSettingsDialog):
     modality = "emg"
 
+    _DEFAULT_CHANNELS: tuple[tuple[str, str], ...] = (
+        ("股直肌", "noraxon_g3_234fc"),
+        ("股内侧肌", "noraxon_g3_234f5"),
+        ("股外侧肌", ""),
+        ("股中肌", ""),
+    )
+
     def __init__(
         self,
         current: Mapping[str, Any],
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("EMG 设备设置")
-        self.setMinimumWidth(600)
+        self.setWindowTitle("EMG 设备设置（Noraxon）")
+        self.setMinimumWidth(640)
         outer = QVBoxLayout(self)
         intro = QLabel(
-            "EMG 由同一 XING/Nokov SDK 的 Analog Channel 回调接收。"
-            "通道数必须与 Seeker 当前输出严格一致。"
+            "Noraxon Ultium/G3 表面肌电。每块肌肉对应一个传感器 unit ID"
+            "（可填完整标签 noraxon_g3_<序列号> 或纯序列号）；"
+            "未填写 unit ID 的通道会以 NaN 记录，并在连接时触发「缺失传感器」告警。"
         )
         intro.setWordWrap(True)
         outer.addWidget(intro)
         form = QFormLayout()
-        self.server_edit = QLineEdit(str(current.get("server_ip", "10.1.1.198")))
-        self.server_edit.setObjectName("emg_server_ip")
-        form.addRow("Seeker 服务器 IP：", self.server_edit)
+
         self.rate_spin = QDoubleSpinBox()
+        self.rate_spin.setObjectName("emg_sample_rate_hz")
         self.rate_spin.setRange(1.0, 100_000.0)
         self.rate_spin.setDecimals(2)
         self.rate_spin.setSuffix(" Hz")
-        self.rate_spin.setValue(float(current.get("sample_rate_hz", 1000.0)))
+        self.rate_spin.setValue(float(current.get("sample_rate_hz", 4000.0)))
         form.addRow("EMG 采样率：", self.rate_spin)
-        self.channel_count_spin = QSpinBox()
-        self.channel_count_spin.setRange(1, 80)
-        self.channel_count_spin.setValue(int(current.get("channel_count", 8)))
-        form.addRow("通道数：", self.channel_count_spin)
-        self.channel_names_edit = QLineEdit(
-            ", ".join(str(item) for item in current.get("channel_names", ()))
-        )
-        self.channel_names_edit.setPlaceholderText("留空自动命名；或输入：股直肌, 股二头肌, ...")
-        form.addRow("通道名称（逗号分隔）：", self.channel_names_edit)
-        self.unit_edit = QLineEdit(str(current.get("unit", "mV")))
+
+        self.unit_edit = QLineEdit(str(current.get("unit", "µV")))
+        self.unit_edit.setObjectName("emg_unit")
         form.addRow("单位：", self.unit_edit)
+
+        channels = self._resolve_channels(current)
+        self._channel_name_edits: list[QLineEdit] = []
+        self._channel_unit_edits: list[QLineEdit] = []
+        channel_box = QWidget()
+        channel_layout = QVBoxLayout(channel_box)
+        channel_layout.setContentsMargins(0, 0, 0, 0)
+        channel_layout.setSpacing(6)
+        for index, (name, unit_id) in enumerate(channels, start=1):
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            name_edit = QLineEdit(name)
+            name_edit.setObjectName(f"emg_channel_name_{index}")
+            name_edit.setPlaceholderText(f"肌肉 {index} 名称")
+            row.addWidget(QLabel(f"通道 {index}："))
+            row.addWidget(name_edit, 1)
+            unit_edit = QLineEdit(unit_id)
+            unit_edit.setObjectName(f"emg_channel_unit_id_{index}")
+            unit_edit.setPlaceholderText("unit ID（留空=未分配，记录 NaN）")
+            row.addWidget(unit_edit, 2)
+            channel_layout.addLayout(row)
+            self._channel_name_edits.append(name_edit)
+            self._channel_unit_edits.append(unit_edit)
+        form.addRow("肌肉通道：", channel_box)
         outer.addLayout(form)
         outer.addWidget(self._button_box())
 
+    @staticmethod
+    def _resolve_channels(current: Mapping[str, Any]) -> list[tuple[str, str]]:
+        raw = current.get("channels", ())
+        resolved: list[tuple[str, str]] = []
+        if raw:
+            for channel in raw:
+                name = (
+                    channel.get("name", "")
+                    if isinstance(channel, Mapping)
+                    else getattr(channel, "name", "")
+                )
+                unit_id = (
+                    channel.get("unit_id", "")
+                    if isinstance(channel, Mapping)
+                    else getattr(channel, "unit_id", "")
+                )
+                resolved.append((str(name), str(unit_id)))
+        if not resolved:
+            resolved = list(EmgDeviceSettingsDialog._DEFAULT_CHANNELS)
+        while len(resolved) < 4:
+            resolved.append(("", ""))
+        return resolved
+
     @Slot()
     def accept(self) -> None:
-        names = tuple(
-            item.strip()
-            for item in self.channel_names_edit.text().replace("，", ",").split(",")
-            if item.strip()
-        )
+        channels: list[dict[str, str]] = []
+        for name_edit, unit_edit in zip(
+            self._channel_name_edits, self._channel_unit_edits
+        ):
+            name = name_edit.text().strip()
+            if not name:
+                continue
+            channels.append({"name": name, "unit_id": unit_edit.text().strip()})
         self._finish_accept(
             {
-                "server_ip": self.server_edit.text().strip(),
                 "sample_rate_hz": self.rate_spin.value(),
-                "channel_count": self.channel_count_spin.value(),
-                "channel_names": names,
                 "unit": self.unit_edit.text().strip(),
+                "channels": channels,
             }
         )
 

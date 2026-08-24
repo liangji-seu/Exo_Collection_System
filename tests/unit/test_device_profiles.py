@@ -18,7 +18,7 @@ from exo_collection.configuration.adapter_registry import build_adapters
 from exo_collection.adapters.encoder.teensy_serial import TeensySerialEncoderAdapter
 from exo_collection.adapters.imu.xsens_awinda import XsensAwindaImuAdapter
 from exo_collection.adapters.mocap import XingNokovMocapAdapter
-from exo_collection.adapters.emg import XingNokovEmgAdapter
+from exo_collection.adapters.emg import NoraxonEmgAdapter
 from exo_collection.adapters.force_plate import XingNokovForcePlateAdapter
 from exo_collection.adapters.sync_pulse.simulated import SimulatedSyncPulseAdapter
 from exo_collection.adapters.ultrasound.raw_ethernet import RawEthernetUltrasoundAdapter
@@ -140,7 +140,7 @@ def test_hardware_registry_constructs_without_loading_vendor_sdks() -> None:
     assert isinstance(adapters["imu"], XsensAwindaImuAdapter)
     assert isinstance(adapters["encoder"], TeensySerialEncoderAdapter)
     assert isinstance(adapters["mocap"], XingNokovMocapAdapter)
-    assert isinstance(adapters["emg"], XingNokovEmgAdapter)
+    assert isinstance(adapters["emg"], NoraxonEmgAdapter)
     assert isinstance(adapters["force_plate"], XingNokovForcePlateAdapter)
     assert isinstance(adapters["sync_pulse"], SimulatedSyncPulseAdapter)
     assert adapters["ultrasound"].descriptor().metadata["simulated"] is False

@@ -162,6 +162,8 @@ ENCODER_PREVIEW_LABELS = (
     "right_torque",
 )
 EMG_PREVIEW_LABELS = tuple(f"emg_{index + 1:02d}" for index in range(16))
+# Noraxon EMG runs at 4000 Hz; 4 s of signal = 16 000 samples per ring window.
+EMG_PREVIEW_RING_CAPACITY = 16_000
 FORCE_PLATE_PREVIEW_LABELS = ("fx", "fy", "fz", "mx", "my", "mz")
 _SIGNAL_COLORS = (
     "#0d6efd", "#dc3545", "#198754", "#d97706",
@@ -177,6 +179,8 @@ _ENCODER_SHARED_Y_RANGE = (-13.0, 13.0)
 # Force plate (N / N·m) preview range.  A still-standing ~80 kg subject reads
 # roughly Fz ≈ -800 N, so a fixed +/-1000 span keeps the trace readable.
 _FORCE_PLATE_SHARED_Y_RANGE = (-1000.0, 1000.0)
+# Moment axes (Mx/My/Mz) stay in single digits; keep a tighter fixed span.
+_FORCE_PLATE_MOMENT_Y_RANGE = (-10.0, 10.0)
 DEFAULT_OPERATOR = "not_recorded"
 DEFAULT_CONTROLLED_STOP_TIMEOUT_S = 30.0
 
@@ -1849,10 +1853,10 @@ class CollectorWindow(QMainWindow):
         force_layout = QHBoxLayout(force_grid)
         force_layout.setContentsMargins(0, 0, 0, 0)
         force_groups = (
-            ("force", "三轴力", ("fx", "fy", "fz"), "N"),
-            ("moment", "力矩", ("mx", "my", "mz"), "N·m"),
+            ("force", "三轴力", ("fx", "fy", "fz"), "N", _FORCE_PLATE_SHARED_Y_RANGE),
+            ("moment", "力矩", ("mx", "my", "mz"), "N·m", _FORCE_PLATE_MOMENT_Y_RANGE),
         )
-        for group_key, title, labels, unit in force_groups:
+        for group_key, title, labels, unit, y_range in force_groups:
             plot = HoverDetailsPlotWidget(title=title)
             plot.setObjectName(f"force_plate_{group_key}")
             legend = plot.addLegend(offset=(5, 5))
@@ -1872,7 +1876,7 @@ class CollectorWindow(QMainWindow):
                 legend.addItem(trace.curve, label.upper())
                 self._force_plate_traces[label] = trace
             plot.setLabel("left", title, units=unit)
-            lower, upper = _FORCE_PLATE_SHARED_Y_RANGE
+            lower, upper = y_range
             span = upper - lower
             plot.setYRange(lower, upper, padding=0)
             plot.setLimits(
@@ -1907,7 +1911,7 @@ class CollectorWindow(QMainWindow):
                     plot,
                     _SIGNAL_COLORS[local_index],
                     f"EMG 通道 {group_index * 8 + 1}–{group_index * 8 + 8}",
-                    capacity=1000,
+                    capacity=EMG_PREVIEW_RING_CAPACITY,
                 )
                 if shared_cursor is None:
                     shared_cursor = trace.cursor_line
