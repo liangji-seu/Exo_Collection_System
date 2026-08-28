@@ -20,7 +20,6 @@ from exo_collection.adapters.imu.xsens_awinda import XsensAwindaImuAdapter
 from exo_collection.adapters.mocap import XingNokovMocapAdapter
 from exo_collection.adapters.emg import NoraxonEmgAdapter
 from exo_collection.adapters.force_plate import XingNokovForcePlateAdapter
-from exo_collection.adapters.sync_pulse.simulated import SimulatedSyncPulseAdapter
 from exo_collection.adapters.ultrasound.raw_ethernet import RawEthernetUltrasoundAdapter
 from exo_collection.orchestration.models import TrialRunRequest
 from exo_collection.orchestration.simulated import _make_adapters
@@ -33,7 +32,7 @@ def test_default_simulated_device_profile_is_typed_and_complete() -> None:
 
     assert path.name == "simulated.json"
     assert list(devices) == [
-        "ultrasound", "imu", "encoder", "mocap", "emg", "sync_pulse"
+        "ultrasound", "imu", "encoder", "mocap", "emg"
     ]
     assert isinstance(devices["imu"].parameters, ImuSimulationParameters)
     assert devices["ultrasound"].writer == "block_binary"
@@ -42,10 +41,6 @@ def test_default_simulated_device_profile_is_typed_and_complete() -> None:
     assert devices["ultrasound"].parameters.channel_count == 4
     assert devices["ultrasound"].parameters.samples_per_channel == 1000
     assert devices["ultrasound"].parameters.frame_rate_hz == 20
-    assert devices["sync_pulse"].required
-    assert devices["sync_pulse"].clock_domain == "sync_pulse_sim_clock"
-    assert devices["sync_pulse"].parameters.pulse_width_s == 0.02
-    assert devices["sync_pulse"].parameters.first_pulse_s == 0.25
     assert TrialRunRequest(data_root=path.parent).duration_s is None
 
 
@@ -68,7 +63,7 @@ def test_profile_rejects_unapproved_adapter_unknown_parameters_and_missing_modal
     missing["devices"].pop()
     path = tmp_path / "incomplete.json"
     path.write_text(json.dumps(missing), encoding="utf-8")
-    with pytest.raises(ValidationError, match="all six acquisition modalities"):
+    with pytest.raises(ValidationError, match="all five acquisition modalities"):
         load_simulated_device_profile(path)
 
 
@@ -112,15 +107,16 @@ def test_static_adapter_factory_applies_profile_then_request_overrides(tmp_path:
         _make_adapters(invalid_request, profile)
 
 
-def test_hardware_profile_is_strict_and_explicitly_has_simulated_sync() -> None:
+def test_hardware_profile_is_strict() -> None:
     profile = load_device_profile("hardware")
     assert isinstance(profile, HardwareDeviceProfileDocument)
     assert "XING" in profile.display_name
     assert profile.laboratory_sync_ready is False
     devices = profile.by_modality()
-    assert [devices[name].simulated for name in devices] == [
-        False, False, False, False, False, True, False
+    assert list(devices) == [
+        "ultrasound", "imu", "encoder", "mocap", "emg", "force_plate"
     ]
+    assert all(not devices[name].simulated for name in devices)
     force_plate = devices["force_plate"]
     assert force_plate.required is False
     assert force_plate.writer == "hdf5_signal"
@@ -142,7 +138,6 @@ def test_hardware_registry_constructs_without_loading_vendor_sdks() -> None:
     assert isinstance(adapters["mocap"], XingNokovMocapAdapter)
     assert isinstance(adapters["emg"], NoraxonEmgAdapter)
     assert isinstance(adapters["force_plate"], XingNokovForcePlateAdapter)
-    assert isinstance(adapters["sync_pulse"], SimulatedSyncPulseAdapter)
     assert adapters["ultrasound"].descriptor().metadata["simulated"] is False
 
 
@@ -249,7 +244,28 @@ def test_hardware_imu_override_with_slot_preservation() -> None:
     )
     desc = adapters["imu"].descriptor()
     assert "preview_labels" in desc.metadata
-    assert desc.metadata["preview_labels"] == ["imu_trunk", "imu_right"]
+    assert desc.metadata["preview_labels"] == ["imu_left_leg", "imu_pelvis"]
     assert desc.metadata["active_sensor_slot_indices"] == [0, 2]
     for adapter in adapters.values():
         adapter.close()
+
+
+# ── Hardware mocap parameters: XINGYING remote trigger port ─────────────
+
+
+def test_hardware_mocap_remote_trigger_port_defaults_and_bounds() -> None:
+    from exo_collection.configuration.device_profiles import HardwareMocapParameters
+
+    params = HardwareMocapParameters()
+    assert params.remote_control_port == 7060
+    assert params.remote_trigger_port == 7061
+    assert params.database_path == (
+        "C:/Users/Admin/Desktop/SEU_liangji/software/Exo_Collection_Calibration_XINGYING"
+    )
+
+    with pytest.raises(ValidationError, match="greater_than_equal"):
+        HardwareMocapParameters(remote_trigger_port=0)
+    with pytest.raises(ValidationError, match="less_than_equal"):
+        HardwareMocapParameters(remote_trigger_port=65_536)
+
+    assert HardwareMocapParameters(remote_trigger_port=7000).remote_trigger_port == 7000

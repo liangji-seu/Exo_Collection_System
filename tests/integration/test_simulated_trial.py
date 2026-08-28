@@ -574,15 +574,15 @@ def test_collector_worker_runs_acquisition_outside_ui_process(tmp_path) -> None:
             event for event in reversed(signal_previews) if event.modality == "encoder"
         )
         assert latest_imu.payload["labels"] == [
-            "imu_trunk_acc_x",
-            "imu_trunk_acc_y",
-            "imu_trunk_acc_z",
-            "imu_left_acc_x",
-            "imu_left_acc_y",
-            "imu_left_acc_z",
-            "imu_right_acc_x",
-            "imu_right_acc_y",
-            "imu_right_acc_z",
+            "imu_left_leg_acc_x",
+            "imu_left_leg_acc_y",
+            "imu_left_leg_acc_z",
+            "imu_right_leg_acc_x",
+            "imu_right_leg_acc_y",
+            "imu_right_leg_acc_z",
+            "imu_pelvis_acc_x",
+            "imu_pelvis_acc_y",
+            "imu_pelvis_acc_z",
         ]
         assert latest_encoder.payload["labels"] == [
             "left_position",

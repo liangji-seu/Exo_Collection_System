@@ -12,12 +12,19 @@ CaptureStop 命令，控制其开始/停止录制 .cap 文件。
 
 from __future__ import annotations
 
+import logging
 import socket
+import threading
+import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Final
+from typing import Any, Callable, Final
+
+LOG = logging.getLogger("exo_collection.collector.xingying")
 
 DEFAULT_REMOTE_IP: Final = "127.0.0.1"  # XINGYING 通常与本机同机，监听 0.0.0.0:7060
 DEFAULT_REMOTE_PORT: Final = 7060
+DEFAULT_TRIGGER_PORT: Final = 7061  # XINGYING「捕获--触发」广播端口，第三方监听
 
 
 def _xml_escape(value: str) -> str:
@@ -119,8 +126,124 @@ class XingYingRemoteCapture:
             sock.close()
 
 
+def _xml_child_value(root: ET.Element, name: str) -> str:
+    """返回子元素 ``name`` 的 ``VALUE`` 属性；缺失或为空时返回空字符串。"""
+    element = root.find(name)
+    if element is None:
+        return ""
+    return str(element.get("VALUE") or "").strip()
+
+
+class XingYingRemoteTrigger:
+    """监听 XINGYING「捕获--触发」端口（默认 7061）的起停通知。
+
+    XINGYING 在真正开始/停止录制时反向广播 ``CaptureStart``/``CaptureStop``
+    XML。本类绑定一个 UDP socket 监听该端口，解析通知并以收到时刻的主机时钟
+    回调 ``on_trigger(kind, payload, host_monotonic_ns, host_utc_ns)``。解析
+    失败或缺失 ``Name`` 的通知会被静默忽略，不影响录制。
+    """
+
+    def __init__(
+        self,
+        ip: str,
+        port: int = DEFAULT_TRIGGER_PORT,
+        on_trigger: Callable[[str, dict[str, Any], int, int], None] | None = None,
+    ) -> None:
+        self._ip = ip or "0.0.0.0"
+        self._port = int(port or DEFAULT_TRIGGER_PORT)
+        self._on_trigger = on_trigger
+        self._stop_event = threading.Event()
+        self._sock: socket.socket | None = None
+        self._thread: threading.Thread | None = None
+
+    @property
+    def ip(self) -> str:
+        return self._ip
+
+    @property
+    def port(self) -> int:
+        return self._port
+
+    @property
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def start(self) -> None:
+        if self.is_running:
+            return
+        self._stop_event.clear()
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # INADDR_ANY：XINGYING 可能从任意网卡广播，绑定空地址最可靠。
+        sock.bind(("", self._port))
+        sock.settimeout(0.5)
+        self._sock = sock
+        self._thread = threading.Thread(
+            target=self._loop, name="xingying-trigger", daemon=True
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        sock = self._sock
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+        thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=1.0)
+        self._thread = None
+        self._sock = None
+
+    def _loop(self) -> None:
+        while not self._stop_event.is_set():
+            sock = self._sock
+            if sock is None:
+                return
+            try:
+                data, _addr = sock.recvfrom(65535)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            if data:
+                self._dispatch(data)
+
+    def _dispatch(self, data: bytes) -> None:
+        try:
+            root = ET.fromstring(data)
+        except ET.ParseError:
+            LOG.debug("忽略无法解析的 XINGYING 触发包")
+            return
+        if root.tag not in ("CaptureStart", "CaptureStop"):
+            return
+        payload = {
+            "capture_name": _xml_child_value(root, "Name"),
+            "database_path": _xml_child_value(root, "DatabasePath"),
+            "notes": _xml_child_value(root, "Notes"),
+            "description": _xml_child_value(root, "Description"),
+            "delay": _xml_child_value(root, "Delay"),
+            "timecode": _xml_child_value(root, "TimeCode"),
+            "packet_id": _xml_child_value(root, "PacketID"),
+        }
+        if not payload["capture_name"]:
+            LOG.debug("忽略缺少 Name 的 XINGYING 触发包")
+            return
+        kind = "capture_start" if root.tag == "CaptureStart" else "capture_stop"
+        host_monotonic_ns = time.perf_counter_ns()
+        host_utc_ns = time.time_ns()
+        if self._on_trigger is not None:
+            try:
+                self._on_trigger(kind, payload, host_monotonic_ns, host_utc_ns)
+            except Exception:
+                LOG.exception("XINGYING 触发回调失败")
+
+
 __all__ = [
     "DEFAULT_REMOTE_IP",
     "DEFAULT_REMOTE_PORT",
+    "DEFAULT_TRIGGER_PORT",
     "XingYingRemoteCapture",
+    "XingYingRemoteTrigger",
 ]

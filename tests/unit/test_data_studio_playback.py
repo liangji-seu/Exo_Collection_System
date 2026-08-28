@@ -55,7 +55,7 @@ def _complete_playback() -> TrialPlayback:
             values=np.zeros((time_s.size, 36), dtype=np.float32),
             channels=imu_channels,
             units=("",) * 36,
-            sensor_labels=("imu_trunk", "imu_left", "imu_right"),
+            sensor_labels=("imu_left_leg", "imu_right_leg", "imu_pelvis"),
         ),
         encoder=SignalPlayback(
             time_s=time_s,

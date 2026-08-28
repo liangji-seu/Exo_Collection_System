@@ -100,21 +100,6 @@
       }
     },
     {
-      "id": "sync_pulse_sim_for_hardware_bench",
-      "modality": "sync_pulse",
-      "adapter": "exo_collection.adapters.simulated.SimulatedSyncPulseAdapter",
-      "writer": "hdf5_signal",
-      "required": true,
-      "clock_domain": "sync_pulse_bench_sim_clock",
-      "simulated": true,
-      "parameters": {
-        "sample_rate_hz": 1000,
-        "pulse_interval_s": 1.0,
-        "pulse_width_s": 0.02,
-        "first_pulse_s": 0.25
-      }
-    },
-    {
       "id": "force_plate_xing_nokov",
       "modality": "force_plate",
       "adapter": "exo_collection.adapters.force_plate.XingNokovForcePlateAdapter",

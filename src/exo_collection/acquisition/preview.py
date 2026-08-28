@@ -130,7 +130,7 @@ def build_preview_event(
         if event.modality == "imu":
             if values.ndim != 3:
                 raise ValueError(f"invalid IMU batch shape: {values.shape}")
-            default_sensor_labels = ("imu_trunk", "imu_left", "imu_right")
+            default_sensor_labels = ("imu_left_leg", "imu_right_leg", "imu_pelvis")
             configured_labels = (
                 extra_payload.get("preview_labels")
                 if extra_payload is not None

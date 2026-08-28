@@ -1686,7 +1686,7 @@ def test_config_all_three_filled_works() -> None:
 
 
 def test_two_devices_slots_1_3_descriptor_has_correct_shape_and_labels() -> None:
-    """Descriptor for slot-1+3 config shows preview_labels = imu_trunk, imu_right."""
+    """Descriptor for slot-1+3 config shows preview_labels = imu_left_leg, imu_pelvis."""
     backend = FakeAwindaBackend(("A", "C"))
     adapter = XsensAwindaImuAdapter(
         backend=backend,
@@ -1694,7 +1694,7 @@ def test_two_devices_slots_1_3_descriptor_has_correct_shape_and_labels() -> None
     )
     desc = adapter.descriptor()
     assert desc.sample_shape == (2, 12)
-    assert desc.metadata["preview_labels"] == ["imu_trunk", "imu_right"]
+    assert desc.metadata["preview_labels"] == ["imu_left_leg", "imu_pelvis"]
     assert desc.metadata["active_sensor_slot_indices"] == [0, 2]
     assert desc.metadata["device_ids"] == ["A", "C"]
     assert desc.metadata["expected_device_count"] == 2
@@ -1820,7 +1820,7 @@ def test_active_count_1_device_descriptor_shape() -> None:
     )
     desc = adapter.descriptor()
     assert desc.sample_shape == (1, 12)
-    assert desc.metadata["preview_labels"] == ["imu_trunk"]
+    assert desc.metadata["preview_labels"] == ["imu_left_leg"]
     assert desc.metadata["active_sensor_slot_indices"] == [0]
     assert desc.metadata["expected_device_count"] == 1
     adapter.close()
@@ -1832,7 +1832,7 @@ def test_auto_discovery_descriptor_shows_unassigned_labels() -> None:
     adapter = XsensAwindaImuAdapter(backend=backend)
     desc = adapter.descriptor()
     assert desc.sample_shape == (3, 12)
-    assert desc.metadata["preview_labels"] == ["imu_trunk", "imu_left", "imu_right"]
+    assert desc.metadata["preview_labels"] == ["imu_left_leg", "imu_right_leg", "imu_pelvis"]
     assert desc.metadata["expected_device_count"] == 3
     assert desc.metadata["device_ids"] == ["unassigned_1", "unassigned_2", "unassigned_3"]
     assert desc.metadata["physical_location_mapping"] == "unassigned"

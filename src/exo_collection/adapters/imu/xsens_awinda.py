@@ -572,7 +572,7 @@ def _read_optional_sample_time_fine(packet: Any) -> int | None:
 # ──────────────────────────────────────────────────────────────
 
 _COUNTER_WRAP_MOD = 65536  # Xsens MTw packet counter is uint16
-_IMU_SLOT_PREVIEW_LABELS = ("imu_trunk", "imu_left", "imu_right")
+_IMU_SLOT_PREVIEW_LABELS = ("imu_left_leg", "imu_right_leg", "imu_pelvis")
 
 
 class XsensAwindaImuAdapter(QueuedHardwareAdapter):

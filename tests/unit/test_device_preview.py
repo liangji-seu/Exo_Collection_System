@@ -551,19 +551,19 @@ def test_build_preview_event_sample_batch_imu() -> None:
     assert len(channels) == 9
     assert event.payload["labels"] == [
         f"{sensor}_{axis}"
-        for sensor in ("imu_trunk", "imu_left", "imu_right")
+        for sensor in ("imu_left_leg", "imu_right_leg", "imu_pelvis")
         for axis in ("acc_x", "acc_y", "acc_z")
     ]
 
 
 def test_build_preview_event_imu_slot_1_3_labels_not_mapped_to_left() -> None:
-    """Slot 1+3 produces three axes for trunk/right, never imu_left."""
+    """Slot 1+3 produces three axes for left_leg/pelvis, never imu_right_leg."""
     desc = ModalityDescriptor(
         device_id="test_imu", modality="imu", display_name="Test IMU",
         clock_domain="host", event_kind="sample",
         nominal_rate_hz=200.0, channels=("acc_x",), units=("m/s^2",),
         sample_shape=(2,), dtype="float64",
-        metadata={"preview_labels": ["imu_trunk", "imu_right"]},
+        metadata={"preview_labels": ["imu_left_leg", "imu_pelvis"]},
     )
     batch = SampleBatch(
         device_id="test_imu", modality="imu", clock_domain="host",
@@ -576,14 +576,14 @@ def test_build_preview_event_imu_slot_1_3_labels_not_mapped_to_left() -> None:
     assert event.event_type == WorkerEventType.PREVIEW
     labels = event.payload.get("labels", [])
     assert labels == [
-        "imu_trunk_acc_x",
-        "imu_trunk_acc_y",
-        "imu_trunk_acc_z",
-        "imu_right_acc_x",
-        "imu_right_acc_y",
-        "imu_right_acc_z",
+        "imu_left_leg_acc_x",
+        "imu_left_leg_acc_y",
+        "imu_left_leg_acc_z",
+        "imu_pelvis_acc_x",
+        "imu_pelvis_acc_y",
+        "imu_pelvis_acc_z",
     ]
-    assert all("imu_left" not in label for label in labels)
+    assert all("imu_right_leg" not in label for label in labels)
 
 
 def test_build_preview_event_ultrasound() -> None:
@@ -682,21 +682,21 @@ def test_build_preview_public_api_respects_preview_labels_from_extra_payload() -
     )
     event = build_preview_event(
         batch,
-        extra_payload={"preview_labels": ["imu_trunk", "imu_right"]},
+        extra_payload={"preview_labels": ["imu_left_leg", "imu_pelvis"]},
     )
     assert event is not None
     assert event.event_type == WorkerEventType.PREVIEW
     assert event.modality == "imu"
     labels = event.payload.get("labels", [])
     assert labels == [
-        "imu_trunk_acc_x",
-        "imu_trunk_acc_y",
-        "imu_trunk_acc_z",
-        "imu_right_acc_x",
-        "imu_right_acc_y",
-        "imu_right_acc_z",
+        "imu_left_leg_acc_x",
+        "imu_left_leg_acc_y",
+        "imu_left_leg_acc_z",
+        "imu_pelvis_acc_x",
+        "imu_pelvis_acc_y",
+        "imu_pelvis_acc_z",
     ]
-    assert all("imu_left" not in label for label in labels)
+    assert all("imu_right_leg" not in label for label in labels)
     channels = event.payload.get("channels", [])
     assert len(channels) == 6
     assert event.payload.get("channel_count") == 6

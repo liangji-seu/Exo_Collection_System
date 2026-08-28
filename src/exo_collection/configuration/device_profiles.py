@@ -236,10 +236,10 @@ class SimulatedDeviceProfileDocument(ProfileModel):
     @model_validator(mode="after")
     def validate_complete_profile(self) -> SimulatedDeviceProfileDocument:
         modalities = [device.modality for device in self.devices]
-        expected = {"ultrasound", "imu", "encoder", "mocap", "emg", "sync_pulse"}
+        expected = {"ultrasound", "imu", "encoder", "mocap", "emg"}
         if set(modalities) != expected or len(modalities) != len(expected):
             raise ValueError(
-                "simulated profile must define all six acquisition modalities exactly once"
+                "simulated profile must define all five acquisition modalities exactly once"
             )
         device_ids = [device.device_id for device in self.devices]
         if len(device_ids) != len(set(device_ids)):
@@ -350,9 +350,17 @@ class HardwareMocapParameters(ProfileModel):
     unlabeled_marker_capacity: int = Field(default=16, ge=1, le=1000)
     queue_capacity: int = Field(default=256, gt=0)
     # XINGYING 远程控制（不再从 SDK 读取 raw analog，只触发 .cap 录制）。
-    # .cap 直接落在本次 Trial 的 session 目录内，由 Worker 回报目录决定。
     remote_control_ip: NonEmptyStr = "127.0.0.1"
     remote_control_port: int = Field(default=7060, ge=1, le=65535)
+    # XINGYING「捕获--触发」广播端口，第三方监听以记录真实起停主机时间戳。
+    remote_trigger_port: int = Field(default=7061, ge=1, le=65535)
+    # XINGYING 工程目录（工作目录）：.cap / 标定文件 / .mars 模型资产全部落于此，
+    # 且 DatabasePath 必须与其工作目录一致。本系统只在此目录录制、绝不搬移文件，
+    # Data/ 下仅保留超声 / IMU / 编码器 / 肌电等流式模态数据；动捕+测力台只记录
+    # 对应的 .cap 文件名（见 raw/xingying_trigger.jsonl 与 sync_manifest.json）。
+    database_path: NonEmptyStr = (
+        "C:/Users/Admin/Desktop/SEU_liangji/software/Exo_Collection_Calibration_XINGYING"
+    )
 
 
 class HardwareEmgParameters(ProfileModel):
@@ -566,7 +574,7 @@ class HardwareDeviceProfileDocument(ProfileModel):
     def validate_complete_profile(self) -> HardwareDeviceProfileDocument:
         modalities = [device.modality for device in self.devices]
         required_modalities = {
-            "ultrasound", "imu", "encoder", "mocap", "emg", "sync_pulse"
+            "ultrasound", "imu", "encoder", "mocap", "emg"
         }
         allowed_modalities = required_modalities | {"force_plate"}
         if (
@@ -575,7 +583,7 @@ class HardwareDeviceProfileDocument(ProfileModel):
             or len(modalities) != len(set(modalities))
         ):
             raise ValueError(
-                "hardware profile must define the six core modalities exactly once "
+                "hardware profile must define the five core modalities exactly once "
                 "and may define one force_plate modality"
             )
         device_ids = [device.device_id for device in self.devices]

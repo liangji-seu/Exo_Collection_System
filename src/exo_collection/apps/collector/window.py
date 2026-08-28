@@ -72,15 +72,20 @@ from PySide6.QtWidgets import (
 from exo_collection.acquisition.messages import WorkerEvent, WorkerEventType
 from exo_collection.acquisition.recording_stream import RecordingStreamEndpoint
 from exo_collection.acquisition.workers import CollectorWorker
+from exo_collection.apps.collector.button_marker import ButtonMarkerListener
 from exo_collection.apps.collector.device_preview import (
     AdapterFactory,
     ModalityPreviewHandle,
     ModalityPreviewProcessHandle,
     ProfileModalityAdapterFactory,
 )
-from exo_collection.apps.collector.device_settings import DEVICE_SETTINGS_DIALOGS
+from exo_collection.apps.collector.device_settings import (
+    DEVICE_SETTINGS_DIALOGS,
+    MocapForcePlateDeviceSettingsDialog,
+)
 from exo_collection.apps.collector.xingying_remote import (
     XingYingRemoteCapture,
+    XingYingRemoteTrigger,
 )
 from exo_collection.apps.collector.preflight import (
     CollectorPreflightReport,
@@ -109,6 +114,7 @@ from exo_collection.domain.project_codes import (
     project_accepts_condition_level,
 )
 from exo_collection.domain.prompt_labels import PromptLabelEvent, PromptLabelSource
+from exo_collection.domain.xingying_trigger import XingYingTriggerKind
 from exo_collection.protocols import load_default_protocol
 from exo_collection.quality import load_storage_policy
 
@@ -121,12 +127,35 @@ MODALITIES = (
     "mocap",
     "emg",
     "force_plate",
-    "sync_pulse",
 )
 # 动捕 Marker 与测力台绑定为「XINGYING 远程触发」：连接其一即连接另一，
 # 且不再从 SDK 读取原始数据，而是在 Trial 开始/结束时触发 .cap 录制。
 XINGYING_LINKED_MODALITIES = ("mocap", "force_plate")
-PROMPT_HEALTH_ROWS = ("subject_prompt", "operator_prompt")
+
+
+# 设备连接表把「动捕 Marker + 六维力测力台」折叠成一行（共享同一 Seeker 服务器）。
+XINGYING_GROUP_KEY = "mocap_force_plate"
+XINGYING_GROUP_DISPLAY_NAME = "动捕 Marker + 六维力测力台"
+# 按钮标签行不是数据模态，仅作为「连接 = 启用按钮记录」的 UI 开关。
+BUTTON_ROW_KEY = "button_label"
+BUTTON_ROW_DISPLAY_NAME = "按钮标签（,）"
+# 设备连接表的显示行：绑定组作为一项合并展示，其余模态各占一行。
+CONNECTION_ROWS: tuple[tuple[str, ...], ...] = (
+    ("ultrasound",),
+    ("imu",),
+    ("encoder",),
+    XINGYING_LINKED_MODALITIES,
+    ("emg",),
+)
+CONNECTION_ROW_DISPLAY_NAMES: dict[tuple[str, ...], str] = {
+    XINGYING_LINKED_MODALITIES: XINGYING_GROUP_DISPLAY_NAME,
+}
+# 模态 → 设备连接表行键：合并组共用同一状态点与连接/断开按钮。
+_MODALITY_ROW_KEY = {
+    "mocap": XINGYING_GROUP_KEY,
+    "force_plate": XINGYING_GROUP_KEY,
+}
+PROMPT_HEALTH_ROWS = ("subject_prompt", "operator_prompt", "button_prompt")
 HEALTH_ROWS = MODALITIES + PROMPT_HEALTH_ROWS
 MODALITY_DISPLAY_NAMES = {
     "ultrasound": "超声",
@@ -135,12 +164,12 @@ MODALITY_DISPLAY_NAMES = {
     "mocap": "动捕 Marker",
     "force_plate": "六维力测力台",
     "emg": "表面肌电 EMG",
-    "sync_pulse": "同步脉冲",
     "subject_prompt": "受试者标签（<）",
     "operator_prompt": "工作人员标签（>）",
+    "button_prompt": "按钮标签（,）",
 }
 CRITICAL_MODALITIES = frozenset(
-    {"ultrasound", "imu", "encoder", "mocap", "emg", "sync_pulse"}
+    {"ultrasound", "imu", "encoder", "mocap", "emg"}
 )
 HEALTH_COLUMN_MODALITY = 0
 HEALTH_COLUMN_SAMPLE_COUNT = 1
@@ -151,7 +180,7 @@ MAX_PREVIEW_POINTS = 4096
 MAX_TIMELINE_EVENTS = 300
 SIGNAL_RING_CAPACITY = 1000
 ULTRASOUND_PREVIEW_SAMPLES = 1000
-_IMU_SENSOR_LABELS = ("imu_trunk", "imu_left", "imu_right")
+_IMU_SENSOR_LABELS = ("imu_left_leg", "imu_right_leg", "imu_pelvis")
 _IMU_AXIS_NAMES = ("acc_x", "acc_y", "acc_z")
 _IMU_AXIS_COLORS = {"acc_x": "#dc3545", "acc_y": "#0d6efd", "acc_z": "#198754"}
 IMU_PREVIEW_LABELS: tuple[str, ...] = tuple(
@@ -218,6 +247,21 @@ class WorkerHandle(Protocol):
         host_monotonic_ns: int,
         host_utc_ns: int,
     ) -> PromptLabelEvent: ...
+
+    def record_xingying_trigger(
+        self,
+        kind: XingYingTriggerKind | str,
+        *,
+        capture_name: str,
+        database_path: str,
+        notes: str,
+        description: str,
+        delay: str,
+        timecode: str,
+        packet_id: str,
+        host_monotonic_ns: int,
+        host_utc_ns: int,
+    ) -> Any: ...
 
     def poll_events(self, limit: int = 100) -> list[WorkerEvent]: ...
 
@@ -373,16 +417,16 @@ class HardwareDeviceSettingsDialog(QDialog):
         )
         sensor_slots = (*current_ids[:3], *("" for _ in range(max(0, 3 - len(current_ids)))))
         self.awinda_id_left = QLineEdit(sensor_slots[0])
-        self.awinda_id_left.setPlaceholderText("左(IMU1) ID")
-        imu_ids_layout.addWidget(QLabel("左(IMU1)："))
+        self.awinda_id_left.setPlaceholderText("左腿(IMU1) ID")
+        imu_ids_layout.addWidget(QLabel("左腿(IMU1)："))
         imu_ids_layout.addWidget(self.awinda_id_left)
         self.awinda_id_mid = QLineEdit(sensor_slots[1])
-        self.awinda_id_mid.setPlaceholderText("中(IMU2) ID")
-        imu_ids_layout.addWidget(QLabel("中(IMU2)："))
+        self.awinda_id_mid.setPlaceholderText("右腿(IMU2) ID")
+        imu_ids_layout.addWidget(QLabel("右腿(IMU2)："))
         imu_ids_layout.addWidget(self.awinda_id_mid)
         self.awinda_id_right = QLineEdit(sensor_slots[2])
-        self.awinda_id_right.setPlaceholderText("右(IMU3) ID")
-        imu_ids_layout.addWidget(QLabel("右(IMU3)："))
+        self.awinda_id_right.setPlaceholderText("盆骨(IMU3) ID")
+        imu_ids_layout.addWidget(QLabel("盆骨(IMU3)："))
         imu_ids_layout.addWidget(self.awinda_id_right)
         form.addRow("MTw 传感器 ID：", imu_ids_layout)
 
@@ -1094,7 +1138,10 @@ class CollectorWindow(QMainWindow):
         # XINGYING 远程触发（动捕 Marker + 测力台绑定，不经过预览 worker）。
         self._xingying_remote: XingYingRemoteCapture | None = None
         self._xingying_capture_name: str | None = None
-        self._xingying_database_path: Path | None = None
+        self._xingying_trigger: XingYingRemoteTrigger | None = None
+
+        # 按钮标签（USB HID 键盘，逗号键）：全局钩子监听，连接时启用。
+        self._button_marker: ButtonMarkerListener | None = None
 
         self._experiment_metadata = TrialExperimentMetadata()
         self._experiment_metadata_by_identity: dict[tuple[str, str], TrialExperimentMetadata] = {}
@@ -1108,6 +1155,7 @@ class CollectorWindow(QMainWindow):
         self._prompt_label_counts = {
             PromptLabelSource.SUBJECT: 0,
             PromptLabelSource.OPERATOR: 0,
+            PromptLabelSource.BUTTON: 0,
         }
         self._last_health_status: dict[str, str] = {}
         self._us_plots: list["pg.PlotWidget"] = []
@@ -1159,6 +1207,9 @@ class CollectorWindow(QMainWindow):
         self._preview_timer = QTimer(self)
         self._preview_timer.setInterval(max(20, poll_interval_ms))
         self._preview_timer.timeout.connect(self._poll_preview_workers)
+        self._button_poll_timer = QTimer(self)
+        self._button_poll_timer.setInterval(50)
+        self._button_poll_timer.timeout.connect(self._poll_button_marker)
         self._set_trial_state("IDLE")
         self._update_start_button()
 
@@ -1244,7 +1295,13 @@ class CollectorWindow(QMainWindow):
         return super().eventFilter(watched, event)
 
     @Slot()
-    def _capture_prompt_label(self, source: PromptLabelSource) -> None:
+    def _capture_prompt_label(
+        self,
+        source: PromptLabelSource,
+        *,
+        host_monotonic_ns: int | None = None,
+        host_utc_ns: int | None = None,
+    ) -> None:
         """Capture one hardware-button keystroke only while writing a Trial."""
 
         worker = self._worker
@@ -1262,8 +1319,10 @@ class CollectorWindow(QMainWindow):
         if not callable(record_prompt):
             self._append_alert("当前 Collector Worker 不支持人工标签记录。")
             return
-        host_monotonic_ns = time.perf_counter_ns()
-        host_utc_ns = time.time_ns()
+        if host_monotonic_ns is None:
+            host_monotonic_ns = time.perf_counter_ns()
+        if host_utc_ns is None:
+            host_utc_ns = time.time_ns()
         try:
             event = record_prompt(
                 source,
@@ -1563,36 +1622,45 @@ class CollectorWindow(QMainWindow):
         )
         connection_layout.addWidget(
             connection_legend,
-            len(MODALITIES) + 1,
+            len(CONNECTION_ROWS) + 2,
             0,
             1,
             3,
         )
         connection_layout.addWidget(
             self._device_profile_label,
-            len(MODALITIES) + 2,
+            len(CONNECTION_ROWS) + 3,
             0,
             1,
             3,
         )
         self._connection_status_legend = connection_legend
 
-        # Per-modality rows
-        for row_idx, modality in enumerate(MODALITIES, start=1):
-            configure_btn = QPushButton(MODALITY_DISPLAY_NAMES[modality])
-            configure_btn.setObjectName(f"configure_{modality}")
+        # Per-row groups（动捕 Marker 与六维力测力台合并为一项）
+        for row_idx, group in enumerate(CONNECTION_ROWS, start=1):
+            row_key = group[0] if len(group) == 1 else XINGYING_GROUP_KEY
+            display_name = CONNECTION_ROW_DISPLAY_NAMES.get(
+                group, MODALITY_DISPLAY_NAMES[group[0]]
+            )
+            configure_btn = QPushButton(display_name)
+            configure_btn.setObjectName(f"configure_{row_key}")
             configure_btn.setProperty("buttonRole", "deviceConfig")
             configure_btn.setFixedHeight(27)
             configure_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            configure_btn.setToolTip(f"设置{MODALITY_DISPLAY_NAMES[modality]}设备参数（自动保存）")
-            configure_btn.clicked.connect(
-                lambda _checked=False, selected=modality: self.edit_modality_device_settings(selected)
-            )
+            configure_btn.setToolTip(f"设置{display_name}设备参数（自动保存）")
+            if len(group) == 1:
+                configure_btn.clicked.connect(
+                    lambda _checked=False, selected=group[0]: self.edit_modality_device_settings(selected)
+                )
+            else:
+                configure_btn.clicked.connect(
+                    lambda _checked=False: self._edit_xingying_group_settings()
+                )
             connection_layout.addWidget(configure_btn, row_idx, 0)
-            self._configure_buttons[modality] = configure_btn
+            self._configure_buttons[row_key] = configure_btn
 
             status_label = QLabel("")
-            status_label.setObjectName(f"connect_status_{modality}")
+            status_label.setObjectName(f"connect_status_{row_key}")
             status_label.setFixedSize(16, 16)
             self._style_connection_indicator(status_label, "未连接")
             status_label.setToolTip("状态：未连接")
@@ -1602,25 +1670,25 @@ class CollectorWindow(QMainWindow):
                 1,
                 alignment=Qt.AlignmentFlag.AlignCenter,
             )
-            self._connect_status_labels[modality] = status_label
+            self._connect_status_labels[row_key] = status_label
 
             btn_container = QHBoxLayout()
             btn_container.setContentsMargins(0, 0, 0, 0)
             btn_container.setSpacing(4)
             connect_btn = QPushButton("连接")
-            connect_btn.setObjectName(f"connect_{modality}")
+            connect_btn.setObjectName(f"connect_{row_key}")
             connect_btn.setProperty("buttonRole", "connect")
             disconnect_btn = QPushButton("断开")
-            disconnect_btn.setObjectName(f"disconnect_{modality}")
+            disconnect_btn.setObjectName(f"disconnect_{row_key}")
             disconnect_btn.setProperty("buttonRole", "disconnect")
 
-            def _make_connect_handler(m: str):
-                return lambda: self._connect_modality(m)
-            def _make_disconnect_handler(m: str):
-                return lambda: self._disconnect_modality(m)
+            def _make_connect_handler(grp: tuple[str, ...]):
+                return lambda: self._connect_group(grp)
+            def _make_disconnect_handler(grp: tuple[str, ...]):
+                return lambda: self._disconnect_group(grp)
 
-            connect_btn.clicked.connect(_make_connect_handler(modality))
-            disconnect_btn.clicked.connect(_make_disconnect_handler(modality))
+            connect_btn.clicked.connect(_make_connect_handler(group))
+            disconnect_btn.clicked.connect(_make_disconnect_handler(group))
             disconnect_btn.setEnabled(False)
             connect_btn.setMinimumWidth(72)
             disconnect_btn.setMinimumWidth(72)
@@ -1630,8 +1698,59 @@ class CollectorWindow(QMainWindow):
             btn_container.addWidget(connect_btn)
             btn_container.addWidget(disconnect_btn)
             connection_layout.addLayout(btn_container, row_idx, 2)
-            self._connect_buttons[modality] = connect_btn
-            self._disconnect_buttons[modality] = disconnect_btn
+            self._connect_buttons[row_key] = connect_btn
+            self._disconnect_buttons[row_key] = disconnect_btn
+
+        # ── 按钮标签行（非数据模态：连接 = 启用全局键盘钩子监听逗号键） ──
+        button_row_idx = len(CONNECTION_ROWS) + 1
+        button_label_btn = QPushButton(BUTTON_ROW_DISPLAY_NAME)
+        button_label_btn.setObjectName(f"configure_{BUTTON_ROW_KEY}")
+        button_label_btn.setProperty("buttonRole", "deviceConfig")
+        button_label_btn.setFixedHeight(27)
+        button_label_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        button_label_btn.setToolTip("按钮无需设置；按下 USB 按钮（逗号键）即记录一次标记。")
+        button_label_btn.clicked.connect(
+            lambda _checked=False: self.statusBar().showMessage(
+                "按钮标签：按下 USB 按钮（逗号键）即记录一次标记，无需额外设置。", 4000
+            )
+        )
+        connection_layout.addWidget(button_label_btn, button_row_idx, 0)
+        self._configure_buttons[BUTTON_ROW_KEY] = button_label_btn
+
+        button_status_label = QLabel("")
+        button_status_label.setObjectName(f"connect_status_{BUTTON_ROW_KEY}")
+        button_status_label.setFixedSize(16, 16)
+        self._style_connection_indicator(button_status_label, "未连接")
+        button_status_label.setToolTip("状态：未连接")
+        connection_layout.addWidget(
+            button_status_label,
+            button_row_idx,
+            1,
+            alignment=Qt.AlignmentFlag.AlignCenter,
+        )
+        self._connect_status_labels[BUTTON_ROW_KEY] = button_status_label
+
+        button_btn_container = QHBoxLayout()
+        button_btn_container.setContentsMargins(0, 0, 0, 0)
+        button_btn_container.setSpacing(4)
+        button_connect_btn = QPushButton("连接")
+        button_connect_btn.setObjectName(f"connect_{BUTTON_ROW_KEY}")
+        button_connect_btn.setProperty("buttonRole", "connect")
+        button_disconnect_btn = QPushButton("断开")
+        button_disconnect_btn.setObjectName(f"disconnect_{BUTTON_ROW_KEY}")
+        button_disconnect_btn.setProperty("buttonRole", "disconnect")
+        button_connect_btn.clicked.connect(self._start_button_marker)
+        button_disconnect_btn.clicked.connect(self._stop_button_marker)
+        button_disconnect_btn.setEnabled(False)
+        button_connect_btn.setMinimumWidth(72)
+        button_disconnect_btn.setMinimumWidth(72)
+        button_connect_btn.setFixedHeight(28)
+        button_disconnect_btn.setFixedHeight(28)
+        button_btn_container.addWidget(button_connect_btn)
+        button_btn_container.addWidget(button_disconnect_btn)
+        connection_layout.addLayout(button_btn_container, button_row_idx, 2)
+        self._connect_buttons[BUTTON_ROW_KEY] = button_connect_btn
+        self._disconnect_buttons[BUTTON_ROW_KEY] = button_disconnect_btn
 
         controls_layout.addWidget(connection_box)
 
@@ -1658,27 +1777,10 @@ class CollectorWindow(QMainWindow):
             self.health_table.setItem(row, HEALTH_COLUMN_SAMPLE_COUNT, QTableWidgetItem("0"))
             self.health_table.setItem(row, HEALTH_COLUMN_RATE, QTableWidgetItem("-"))
             self.health_table.setItem(row, HEALTH_COLUMN_DROPPED, QTableWidgetItem("-"))
-            if modality != "sync_pulse":
-                sync_placeholder = QTableWidgetItem("—")
-                sync_placeholder.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.health_table.setItem(row, HEALTH_COLUMN_SYNC, sync_placeholder)
+            sync_placeholder = QTableWidgetItem("—")
+            sync_placeholder.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.health_table.setItem(row, HEALTH_COLUMN_SYNC, sync_placeholder)
 
-        sync_row = self._health_rows["sync_pulse"]
-        self.sync_status_label = QLabel("")
-        self.sync_status_label.setObjectName("sync_status")
-        self.sync_status_label.setFixedSize(16, 16)
-        sync_indicator_container = QWidget()
-        sync_indicator_layout = QHBoxLayout(sync_indicator_container)
-        sync_indicator_layout.setContentsMargins(0, 0, 0, 0)
-        sync_indicator_layout.addStretch(1)
-        sync_indicator_layout.addWidget(self.sync_status_label)
-        sync_indicator_layout.addStretch(1)
-        self.health_table.setCellWidget(
-            sync_row,
-            HEALTH_COLUMN_SYNC,
-            sync_indicator_container,
-        )
-        self._set_sync_indicator("WAITING_SYNC", "WAITING", 0, "—")
         self.health_table.resizeColumnsToContents()
         for row in range(self.health_table.rowCount()):
             self.health_table.setRowHeight(row, 22)
@@ -1773,7 +1875,7 @@ class CollectorWindow(QMainWindow):
         imu_grid.setMinimumHeight(120)
         imu_layout = QHBoxLayout(imu_grid)
         imu_layout.setContentsMargins(0, 0, 0, 0)
-        _sensor_display = ("躯干", "左腿", "右腿")
+        _sensor_display = ("左腿", "右腿", "盆骨")
         for sensor_idx, sensor_label in enumerate(_IMU_SENSOR_LABELS):
             plot = HoverDetailsPlotWidget()
             plot.setObjectName(f"imu_ring_{sensor_label}")
@@ -2120,6 +2222,45 @@ class CollectorWindow(QMainWindow):
             f"{display}设备设置已保存；下次启动将自动恢复。", 8000
         )
         LOG.info("%s 设备设置已保存并持久化", modality)
+
+    @Slot()
+    def _edit_xingying_group_settings(self) -> None:
+        """配置合并后的「动捕 Marker + 六维力测力台」设备参数。"""
+        if (
+            "mocap" in self._preview_workers
+            or "force_plate" in self._preview_workers
+            or (
+                self._selected_device_profile_key() != "hardware"
+                and self._preview_workers
+            )
+        ):
+            QMessageBox.information(
+                self,
+                "请先断开设备",
+                "修改该设备设置前，请先断开对应预览连接；从模拟模式切换时需全部断开。",
+            )
+            return
+        if self._configuration_locked or self._preflight_busy:
+            QMessageBox.information(self, "当前不可修改", "采集或预检期间不能修改设备设置。")
+            return
+
+        current_mocap = self._settings.hardware_device_overrides.get("mocap", {})
+        current_force = self._settings.hardware_device_overrides.get("force_plate", {})
+        dialog = MocapForcePlateDeviceSettingsDialog(current_mocap, current_force, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        for modality, override in dialog.validated_override.items():
+            self._settings.set_hardware_device_override(modality, override)
+        # Saving any per-device settings is an explicit request to use the
+        # laboratory hardware profile. The choice and values are both synced
+        # immediately by SharedAppSettings and survive process restarts.
+        self._settings.set_device_profile_key("hardware")
+        self._invalidate_preflight()
+        self._render_device_profile()
+        self.statusBar().showMessage(
+            "动捕与测力台设备设置已保存；下次启动将自动恢复。", 8000
+        )
+        LOG.info("mocap + force_plate 设备设置已保存并持久化")
 
     @Slot()
     def choose_data_root(self) -> None:
@@ -2539,44 +2680,6 @@ class CollectorWindow(QMainWindow):
         )
         return display
 
-    def _set_sync_indicator(
-        self,
-        status: str,
-        quality: str,
-        trigger_count: int,
-        first_trigger_text: str,
-    ) -> None:
-        """Render the compact table indicator for qualified synchronization."""
-        received = status == "TRIGGERED" and quality == "PASS" and trigger_count > 0
-        if received:
-            indicator_state, fill, border = "green", "#22C55E", "#15803D"
-        elif status == "WAITING_SYNC":
-            indicator_state, fill, border = "yellow", "#FBBF24", "#D97706"
-        else:
-            # Synchronization is optional.  Not receiving a pulse is neutral,
-            # not a device or Trial failure.
-            indicator_state, fill, border = "neutral", "#94A3B8", "#64748B"
-        status_text = {
-            "WAITING_SYNC": "等待同步信号",
-            "TRIGGERED": "已收到合格同步信号",
-            "MISSING_TRIGGER": "未收到同步信号（可选）",
-            "NOT_RECEIVED": "未收到同步信号（可选）",
-        }.get(status, status)
-        self.sync_status_label.setText("")
-        self.sync_status_label.setProperty("indicatorState", indicator_state)
-        self.sync_status_label.setProperty("syncReceived", received)
-        self.sync_status_label.setStyleSheet(
-            f"QLabel {{ background-color:{fill}; border:2px solid {border}; "
-            "border-radius:10px; }}"
-        )
-        self.sync_status_label.setToolTip(
-            f"状态：{status_text}\n"
-            f"合格触发：{trigger_count}\n"
-            f"首触发：{first_trigger_text}\n"
-            f"质量：{quality}"
-        )
-        self.sync_status_label.setAccessibleName(f"同步状态：{status_text}")
-
     def _set_preview_status(
         self,
         modality: str,
@@ -2586,9 +2689,10 @@ class CollectorWindow(QMainWindow):
         error: str | None = None,
         detail_lines: tuple[str, ...] = (),
     ) -> None:
-        """Update the per-modality UI status labels."""
-        if modality in self._connect_status_labels:
-            label = self._connect_status_labels[modality]
+        """Update the per-row UI status labels."""
+        row_key = _MODALITY_ROW_KEY.get(modality, modality)
+        if row_key in self._connect_status_labels:
+            label = self._connect_status_labels[row_key]
             source = "模拟" if simulated else "真实"
             display_status = self._style_connection_indicator(label, status)
             tooltip_lines = [
@@ -2601,7 +2705,7 @@ class CollectorWindow(QMainWindow):
             if error:
                 tooltip_lines.append(f"详情：{error}")
             label.setToolTip("\n".join(tooltip_lines))
-            label.setAccessibleName(f"{modality} 状态：{display_status}")
+            label.setAccessibleName(f"{row_key} 状态：{display_status}")
 
     # ── XINGYING 远程触发（动捕 Marker + 测力台）─────────────────────────
 
@@ -2614,6 +2718,11 @@ class CollectorWindow(QMainWindow):
         defaults = {
             "ip": "127.0.0.1",
             "port": 7060,
+            "trigger_port": 7061,
+            "database_path": (
+                "C:/Users/Admin/Desktop/SEU_liangji/software/"
+                "Exo_Collection_Calibration_XINGYING"
+            ),
         }
         try:
             profile = load_device_profile(self._selected_device_profile_key())
@@ -2625,6 +2734,12 @@ class CollectorWindow(QMainWindow):
         return {
             "ip": str(data.get("remote_control_ip") or defaults["ip"]),
             "port": int(data.get("remote_control_port") or defaults["port"]),
+            "trigger_port": int(
+                data.get("remote_trigger_port") or defaults["trigger_port"]
+            ),
+            "database_path": str(
+                data.get("database_path") or defaults["database_path"]
+            ),
         }
 
     def _connect_xingying_remote(self) -> None:
@@ -2638,6 +2753,7 @@ class CollectorWindow(QMainWindow):
         cfg = self._xingying_remote_config()
         remote = XingYingRemoteCapture(ip=cfg["ip"], port=cfg["port"])
         self._xingying_remote = remote
+        self._start_xingying_trigger_listener(cfg)
         available = set(load_device_profile(self._selected_device_profile_key()).by_modality())
         for modality in XINGYING_LINKED_MODALITIES:
             if modality not in available:
@@ -2668,6 +2784,7 @@ class CollectorWindow(QMainWindow):
     def _disconnect_xingying_remote(self) -> None:
         """断开 XINGYING 远程触发，同步解除动捕 Marker 与测力台的绑定。"""
         remote = self._xingying_remote
+        self._stop_xingying_trigger_listener()
         available = set(load_device_profile(self._selected_device_profile_key()).by_modality())
         for modality in XINGYING_LINKED_MODALITIES:
             if modality not in available:
@@ -2680,12 +2797,87 @@ class CollectorWindow(QMainWindow):
                 self.preview_workspace.set_stream_state(modality, "disconnected")
         self._xingying_remote = None
         self._xingying_capture_name = None
-        self._xingying_database_path = None
         self._update_connect_button_state()
         self._update_start_button()
         if remote is not None:
             self._append_alert("XINGYING 远程捕获已断开。")
             LOG.info("XINGYING 远程捕获已断开")
+
+    def _start_xingying_trigger_listener(self, cfg: dict[str, Any]) -> None:
+        """启动 7061「远程触发」监听，接收 XINGYING 起停通知。"""
+        if self._xingying_trigger is not None:
+            return
+        try:
+            trigger = XingYingRemoteTrigger(
+                ip=str(cfg["ip"]),
+                port=int(cfg["trigger_port"]),
+                on_trigger=self._on_xingying_trigger,
+            )
+            trigger.start()
+        except Exception as exc:
+            self._append_alert(
+                f"启动 XINGYING 远程触发监听失败：{type(exc).__name__}: {exc}"
+            )
+            LOG.error("启动 XINGYING 远程触发监听失败: %s", exc)
+            return
+        self._xingying_trigger = trigger
+        LOG.info(
+            "XINGYING 远程触发监听已就绪 ip=%s port=%s", trigger.ip, trigger.port
+        )
+
+    def _stop_xingying_trigger_listener(self) -> None:
+        """停止并清空 7061 远程触发监听（幂等）。"""
+        trigger = self._xingying_trigger
+        self._xingying_trigger = None
+        if trigger is None:
+            return
+        try:
+            trigger.stop()
+        except Exception as exc:
+            LOG.warning("停止 XINGYING 远程触发监听时出错: %s", exc)
+
+    def _on_xingying_trigger(
+        self,
+        kind: str,
+        payload: dict[str, Any],
+        host_monotonic_ns: int,
+        host_utc_ns: int,
+    ) -> None:
+        """收到 XINGYING 起停通知：记录主机时间戳，录制中转发给 Worker 落盘。"""
+        try:
+            trigger_kind = XingYingTriggerKind(kind)
+        except ValueError:
+            LOG.warning("未知 XINGYING 触发类型: %s", kind)
+            return
+        name = str(payload.get("capture_name") or "")
+        display = "开始" if trigger_kind is XingYingTriggerKind.CAPTURE_START else "停止"
+        self._append_alert(f"收到 XINGYING {display}通知：{name}")
+        LOG.info(
+            "收到 XINGYING %s name=%s host_monotonic_ns=%d",
+            kind,
+            name,
+            host_monotonic_ns,
+        )
+        if self._worker is None or not self._worker.is_alive:
+            return
+        try:
+            self._worker.record_xingying_trigger(
+                trigger_kind,
+                capture_name=name,
+                database_path=str(payload.get("database_path") or ""),
+                notes=str(payload.get("notes") or ""),
+                description=str(payload.get("description") or ""),
+                delay=str(payload.get("delay") or ""),
+                timecode=str(payload.get("timecode") or ""),
+                packet_id=str(payload.get("packet_id") or ""),
+                host_monotonic_ns=host_monotonic_ns,
+                host_utc_ns=host_utc_ns,
+            )
+        except Exception as exc:
+            self._append_alert(
+                f"写入 XINGYING 触发事件失败：{type(exc).__name__}: {exc}"
+            )
+            LOG.error("写入 XINGYING 触发事件失败: %s", exc)
 
     def _build_xingying_capture_name(self, request: TrialRunRequest) -> str:
         """生成 XINGYING 录制文件名（.cap 前缀，XINGYING 会追加 take 序号）。"""
@@ -2700,11 +2892,13 @@ class CollectorWindow(QMainWindow):
         request: TrialRunRequest,
         database_path: Path,
     ) -> None:
-        """Trial 开始时触发 XINGYING 录制 .cap 到本次 Trial 的 session 目录。
+        """Trial 开始时触发 XINGYING 把 .cap 录进固定的工程目录。
 
-        ``database_path`` 来自 Worker 回报的 ``recording_directory``，保证
-        1 session = 1 trial = 1 cap；.cap 随 .recording → final 的原子改名一起
-        进入最终 session 目录。
+        XINGYING 加载刚体/人体模板后，``DatabasePath`` 必须与其工作目录（工程
+        目录）一致，否则现场会弹「录制失败」。因此 .cap 直接录到操作员指定的
+        XINGYING 工程目录（.cap / 标定 / .mars 模型资产全部在此），本系统绝不
+        搬移文件；Data/ 下只保留超声/IMU/编码器/肌电等流式模态，动捕+测力台仅
+        记录对应的 .cap 文件名（由 7061 触发监听写入 raw/xingying_trigger.jsonl）。
         """
         remote = self._xingying_remote
         if remote is None:
@@ -2712,8 +2906,8 @@ class CollectorWindow(QMainWindow):
         try:
             database_path.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            self._append_alert(f"创建 XINGYING 捕获目录失败：{exc}")
-            LOG.error("创建 XINGYING 捕获目录失败: %s", exc)
+            self._append_alert(f"创建 XINGYING 工程目录失败：{exc}")
+            LOG.error("创建 XINGYING 工程目录失败: %s", exc)
             return
         name = self._build_xingying_capture_name(request)
         try:
@@ -2723,7 +2917,6 @@ class CollectorWindow(QMainWindow):
             LOG.error("XINGYING CaptureStart 失败: %s", exc)
             return
         self._xingying_capture_name = name
-        self._xingying_database_path = database_path
         self._append_alert(f"已触发 XINGYING 录制：{name} → {database_path}")
         LOG.info("XINGYING CaptureStart name=%s path=%s", name, database_path)
 
@@ -2734,6 +2927,11 @@ class CollectorWindow(QMainWindow):
         self._xingying_capture_name = None
         if remote is None or not name:
             return
+        # XINGYING 的 7061「捕获--触发」在停止时可能不广播 CaptureStop（实测只
+        # 广播 CaptureStart）。在主动发送 CaptureStop 的同时，取主机时钟补记一条
+        # stop 锚点，保证每个 Trial 都有完整的 start→stop 区间供对齐。
+        host_monotonic_ns = time.perf_counter_ns()
+        host_utc_ns = time.time_ns()
         try:
             remote.capture_stop(name)
         except Exception as exc:
@@ -2742,26 +2940,74 @@ class CollectorWindow(QMainWindow):
             return
         self._append_alert(f"已触发 XINGYING 停止录制：{name}")
         LOG.info("XINGYING CaptureStop name=%s", name)
+        worker = self._worker
+        if worker is not None and worker.is_alive:
+            try:
+                worker.record_xingying_trigger(
+                    XingYingTriggerKind.CAPTURE_STOP,
+                    capture_name=name,
+                    database_path=str(
+                        self._xingying_remote_config().get("database_path") or ""
+                    ),
+                    notes=(
+                        "host-synthesized CaptureStop fallback "
+                        "(no XINGYING broadcast received)"
+                    ),
+                    description="",
+                    delay="",
+                    timecode="",
+                    packet_id="",
+                    host_monotonic_ns=host_monotonic_ns,
+                    host_utc_ns=host_utc_ns,
+                )
+            except Exception as exc:
+                self._append_alert(
+                    f"补记 XINGYING 停止锚点失败：{type(exc).__name__}: {exc}"
+                )
+                LOG.error("补记 XINGYING 停止锚点失败: %s", exc)
 
     def _maybe_start_xingying_capture(self, event: WorkerEvent) -> None:
-        """Worker 进入 RECORDING 且已回报 session 目录时，触发一次 XINGYING 录制。
+        """Worker 进入 RECORDING 时触发一次 XINGYING 录制到固定工程目录。
 
-        只在硬件模式 + 已连接远程端口 + 尚未开始录制时触发；目录取自 STATE 事件的
-        ``recording_directory`` 字段，保证 .cap 落在本次 Trial 的 session 目录内。
+        只在硬件模式 + 已连接远程端口 + 尚未开始录制时触发；``database_path`` 取自
+        mocap 设备参数（XINGYING 工程目录），与 Worker 回报的 session 目录无关。
         """
         if str(event.payload.get("state") or "") != "RECORDING":
-            return
-        recording_directory = event.payload.get("recording_directory")
-        if not recording_directory:
             return
         if self._xingying_remote is None or self._xingying_capture_name is not None:
             return
         request = self._active_request
         if request is None:
             return
-        self._start_xingying_capture(request, Path(recording_directory))
+        database_path = str(self._xingying_remote_config().get("database_path") or "")
+        if not database_path:
+            self._append_alert("XINGYING 工程目录（DatabasePath）未配置，跳过 .cap 录制。")
+            LOG.error("XINGYING database_path 未配置")
+            return
+        self._start_xingying_capture(request, Path(database_path))
 
     @Slot()
+    def _connect_group(self, group: tuple[str, ...]) -> None:
+        """Connect every available modality in a device-connection display row."""
+        if self._xingying_linked_enabled() and group == XINGYING_LINKED_MODALITIES:
+            self._connect_xingying_remote()
+            return
+        available = set(
+            load_device_profile(self._selected_device_profile_key()).by_modality()
+        )
+        for modality in group:
+            if modality not in available:
+                continue
+            self._connect_modality(modality)
+
+    def _disconnect_group(self, group: tuple[str, ...]) -> None:
+        """Disconnect every modality in a device-connection display row."""
+        if self._xingying_linked_enabled() and group == XINGYING_LINKED_MODALITIES:
+            self._disconnect_xingying_remote()
+            return
+        for modality in group:
+            self._disconnect_modality(modality)
+
     def _connect_modality(self, modality: str) -> None:
         """Spawn a single-modality preview worker for one modality."""
         if self._xingying_linked_enabled() and modality in XINGYING_LINKED_MODALITIES:
@@ -2826,14 +3072,68 @@ class CollectorWindow(QMainWindow):
         self._append_alert(f"正在断开 {modality} 预览…")
 
     @Slot()
+    def _start_button_marker(self) -> None:
+        """连接按钮标签：启用全局键盘钩子监听逗号键。"""
+        if self._button_marker is not None:
+            return
+        if self._worker is not None:
+            self._append_alert("Trial 进行中，无法连接按钮标签。")
+            return
+        marker = ButtonMarkerListener()
+        marker.start()
+        self._button_marker = marker
+        self._button_poll_timer.start()
+        status_label = self._connect_status_labels.get(BUTTON_ROW_KEY)
+        if status_label is not None:
+            self._style_connection_indicator(status_label, "已连接")
+            status_label.setToolTip("状态：已连接，等待按钮")
+        self._update_connect_button_state()
+        self._append_alert("按钮标签已启用：按下 USB 按钮即记录标记。")
+        LOG.info("按钮标签监听已启用")
+
+    @Slot()
+    def _stop_button_marker(self) -> None:
+        """断开按钮标签：停止全局键盘钩子。"""
+        marker = self._button_marker
+        self._button_marker = None
+        if marker is not None:
+            try:
+                marker.stop()
+            except Exception as exc:
+                LOG.warning("停止按钮标签监听时出错: %s", exc)
+        self._button_poll_timer.stop()
+        status_label = self._connect_status_labels.get(BUTTON_ROW_KEY)
+        if status_label is not None:
+            self._style_connection_indicator(status_label, "未连接")
+            status_label.setToolTip("状态：未连接")
+        self._update_connect_button_state()
+        self._append_alert("按钮标签已停止。")
+        LOG.info("按钮标签监听已停止")
+
+    @Slot()
+    def _poll_button_marker(self) -> None:
+        """主线程定时器：把钩子线程排队的按钮按下转成标签事件。"""
+        marker = self._button_marker
+        if marker is None:
+            return
+        for host_monotonic_ns, host_utc_ns in marker.drain():
+            self._capture_prompt_label(
+                PromptLabelSource.BUTTON,
+                host_monotonic_ns=host_monotonic_ns,
+                host_utc_ns=host_utc_ns,
+            )
+
+    @Slot()
     @Slot()
     def _toggle_connect_all(self) -> None:
         """Toggle between connect-all and disconnect-all."""
-        if self._preview_workers or self._xingying_remote is not None:
+        if self._preview_workers or self._xingying_remote is not None or self._button_marker is not None:
             for modality in list(self._preview_workers.keys()):
                 self._disconnect_modality(modality)
             if self._xingying_remote is not None:
                 self._disconnect_xingying_remote()
+            if self._button_marker is not None:
+                self._stop_button_marker()
         else:
             available = set(
                 load_device_profile(self._selected_device_profile_key()).by_modality()
@@ -2847,7 +3147,7 @@ class CollectorWindow(QMainWindow):
                 self._connect_modality(modality)
 
     def _update_connect_button_state(self) -> None:
-        """Update connect-all toggle and per-modality buttons."""
+        """Update connect-all toggle and per-row buttons."""
         has_any_connection = bool(self._preview_workers) or self._xingying_remote is not None
         can_change = not self._configuration_locked and self._worker is None
         if has_any_connection:
@@ -2863,26 +3163,40 @@ class CollectorWindow(QMainWindow):
         available = set(
             load_device_profile(self._selected_device_profile_key()).by_modality()
         )
-        for modality in MODALITIES:
-            connect_button = self._connect_buttons.get(modality)
-            disconnect_button = self._disconnect_buttons.get(modality)
+        for group in CONNECTION_ROWS:
+            row_key = group[0] if len(group) == 1 else XINGYING_GROUP_KEY
+            connect_button = self._connect_buttons.get(row_key)
+            disconnect_button = self._disconnect_buttons.get(row_key)
             if connect_button is None or disconnect_button is None:
                 continue
-            if self._xingying_linked_enabled() and modality in XINGYING_LINKED_MODALITIES:
-                active = self._xingying_remote is not None
+            if row_key == XINGYING_GROUP_KEY:
+                if self._xingying_linked_enabled():
+                    active = self._xingying_remote is not None
+                else:
+                    active = any(m in self._preview_workers for m in group)
+                group_available = any(m in available for m in group)
             else:
+                modality = group[0]
                 active = modality in self._preview_workers
-            stopping = modality in self._preview_disconnect_deadlines
+                group_available = modality in available
+            stopping = any(m in self._preview_disconnect_deadlines for m in group)
             connect_button.setText("连接")
-            connect_button.setEnabled(
-                can_change and not active and modality in available
-            )
-            if modality not in available:
-                connect_button.setToolTip("该模态仅在真实设备配置中可用")
+            connect_button.setEnabled(can_change and not active and group_available)
+            if not group_available:
+                connect_button.setToolTip("该设备仅在真实设备配置中可用")
             disconnect_button.setText("断开中…" if stopping else "断开")
-            disconnect_button.setEnabled(
-                can_change and active and not stopping
-            )
+            disconnect_button.setEnabled(can_change and active and not stopping)
+
+        # 按钮标签行：非数据模态，活跃 = 监听器已启动。
+        button_connect = self._connect_buttons.get(BUTTON_ROW_KEY)
+        button_disconnect = self._disconnect_buttons.get(BUTTON_ROW_KEY)
+        if button_connect is not None:
+            button_active = self._button_marker is not None
+            button_connect.setText("连接")
+            button_connect.setEnabled(can_change and not button_active)
+            button_connect.setToolTip("连接后按下 USB 按钮即记录标记")
+            button_disconnect.setText("断开")
+            button_disconnect.setEnabled(can_change and button_active)
 
         self._update_start_button()
 
@@ -3546,8 +3860,8 @@ class CollectorWindow(QMainWindow):
         self._prompt_label_counts = {
             PromptLabelSource.SUBJECT: 0,
             PromptLabelSource.OPERATOR: 0,
+            PromptLabelSource.BUTTON: 0,
         }
-        self._set_sync_indicator("WAITING_SYNC", "WAITING", 0, "—")
         for row in self._health_rows.values():
             self.health_table.item(row, HEALTH_COLUMN_MODALITY).setToolTip("")
             self.health_table.item(row, HEALTH_COLUMN_SAMPLE_COUNT).setText("0")
@@ -3731,18 +4045,17 @@ class CollectorWindow(QMainWindow):
         except ValueError:
             self._append_alert("Collector Worker 返回了未知的人工标签来源。")
             return
-        count_key = (
-            "subject_count"
-            if source is PromptLabelSource.SUBJECT
-            else "operator_count"
-        )
+        if source is PromptLabelSource.SUBJECT:
+            count_key = "subject_count"
+            row_key = "subject_prompt"
+        elif source is PromptLabelSource.OPERATOR:
+            count_key = "operator_count"
+            row_key = "operator_prompt"
+        else:
+            count_key = "button_count"
+            row_key = "button_prompt"
         count = max(0, int(event.payload.get(count_key) or 0))
         self._prompt_label_counts[source] = count
-        row_key = (
-            "subject_prompt"
-            if source is PromptLabelSource.SUBJECT
-            else "operator_prompt"
-        )
         row = self._health_rows[row_key]
         self.health_table.item(row, HEALTH_COLUMN_SAMPLE_COUNT).setText(str(count))
         self.health_table.item(row, HEALTH_COLUMN_SAMPLE_COUNT).setToolTip(
@@ -3802,11 +4115,6 @@ class CollectorWindow(QMainWindow):
                     self.health_table.item(row, HEALTH_COLUMN_SAMPLE_COUNT).setText(
                         str(int(count))
                     )
-        if "pulse_event_count" in payload:
-            row = self._health_rows["sync_pulse"]
-            self.health_table.item(row, HEALTH_COLUMN_SAMPLE_COUNT).setToolTip(
-                f"已检测边沿：{int(payload['pulse_event_count'])}"
-            )
         if any(key in payload for key in ("status", "quality", "trigger_count",
                                             "first_trigger_host_monotonic_ns", "trigger_time_utc")):
             self._handle_sync(payload, record_event=False)
@@ -3818,17 +4126,6 @@ class CollectorWindow(QMainWindow):
             trigger_count = max(0, int(payload.get("trigger_count") or 0))
         except (TypeError, ValueError):
             trigger_count = 0
-        first_trigger = payload.get("first_trigger_host_monotonic_ns")
-        trigger_utc = str(payload.get("trigger_time_utc") or "").strip()
-        if trigger_utc:
-            first_text = trigger_utc
-            if first_trigger is not None:
-                first_text += f" · host {int(first_trigger)} ns"
-        elif first_trigger is not None:
-            first_text = f"host {int(first_trigger)} ns"
-        else:
-            first_text = "—"
-        self._set_sync_indicator(status, quality, trigger_count, first_text)
         # Missing synchronization is deliberately informational.  Acquisition
         # faults and modality loss still arrive through HEALTH/FAILED events.
         if record_event:
@@ -4119,6 +4416,9 @@ class CollectorWindow(QMainWindow):
         else:
             LOG.warning("Collector Worker 已完成，但未返回 Manifest 路径")
         self.start_button.setEnabled(False)
+        # XINGYING 的 .cap 保留在其固定工程目录中，本系统只记录对应的 .cap 文件名
+        # （由 7061 触发监听写入 raw/xingying_trigger.jsonl + sync_manifest.json），
+        # 不做任何搬移。
         self._show_toast("Trial 记录完成", level="SUCCESS")
         self.statusBar().showMessage(event.message or "Trial 数据包已最终化。")
 
@@ -4459,6 +4759,16 @@ class CollectorWindow(QMainWindow):
         self._preview_workers.clear()
         self._preview_connected_modalities.clear()
         LOG.info("关闭窗口：所有预览 worker 已回收")
+
+        # ── Stop button label marker ──
+        self._button_poll_timer.stop()
+        button_marker = self._button_marker
+        self._button_marker = None
+        if button_marker is not None:
+            try:
+                button_marker.stop()
+            except Exception as exc:
+                LOG.warning("关闭窗口时停止按钮标签监听出错: %s", exc)
 
         self._poll_timer.stop()
         self._close_started_at = None

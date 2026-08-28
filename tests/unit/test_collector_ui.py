@@ -41,12 +41,14 @@ from exo_collection.apps.collector.window import (
     MODALITIES,
     RingTrace,
     SIGNAL_RING_CAPACITY,
+    XINGYING_GROUP_KEY,
     XINGYING_LINKED_MODALITIES,
 )
 from exo_collection.configuration import (
     SharedAppSettings,
 )
 from exo_collection.domain.prompt_labels import PromptLabelEvent, PromptLabelSource
+from exo_collection.domain.xingying_trigger import XingYingTriggerEvent, XingYingTriggerKind
 from exo_collection.orchestration.models import (
     MeasuredConditionMetadata,
     TrialExperimentMetadata,
@@ -78,6 +80,7 @@ class FakeCollectorWorker:
         self.closed = False
         self._exitcode: int | None = None
         self.prompt_events: list[PromptLabelEvent] = []
+        self.xingying_triggers: list[XingYingTriggerEvent] = []
 
     @property
     def is_alive(self) -> bool:
@@ -116,7 +119,14 @@ class FakeCollectorWorker:
             item.source is PromptLabelSource.SUBJECT
             for item in self.prompt_events
         )
-        operator_count = len(self.prompt_events) - subject_count
+        operator_count = sum(
+            item.source is PromptLabelSource.OPERATOR
+            for item in self.prompt_events
+        )
+        button_count = sum(
+            item.source is PromptLabelSource.BUTTON
+            for item in self.prompt_events
+        )
         self.events.append(
             WorkerEvent(
                 event_type=WorkerEventType.PROMPT_LABEL,
@@ -125,10 +135,42 @@ class FakeCollectorWorker:
                     **event.model_dump(mode="json"),
                     "subject_count": subject_count,
                     "operator_count": operator_count,
+                    "button_count": button_count,
                     "total_count": len(self.prompt_events),
                 },
             )
         )
+        return event
+
+    def record_xingying_trigger(
+        self,
+        kind: XingYingTriggerKind | str,
+        *,
+        capture_name: str,
+        database_path: str,
+        notes: str,
+        description: str,
+        delay: str,
+        timecode: str,
+        packet_id: str,
+        host_monotonic_ns: int,
+        host_utc_ns: int,
+    ) -> XingYingTriggerEvent:
+        event = XingYingTriggerEvent(
+            trial_uuid=self.request.trial_uuid,
+            sequence=len(self.xingying_triggers),
+            kind=XingYingTriggerKind(kind),
+            capture_name=capture_name,
+            database_path=database_path,
+            notes=notes,
+            description=description,
+            delay=delay,
+            timecode=timecode,
+            packet_id=packet_id,
+            host_monotonic_ns=host_monotonic_ns,
+            host_utc_ns=host_utc_ns,
+        )
+        self.xingying_triggers.append(event)
         return event
 
     def poll_events(self, limit: int = 100) -> list[WorkerEvent]:
@@ -606,7 +648,7 @@ def test_collector_theme_uses_direct_toggle_styles(tmp_path: Path) -> None:
 def test_imu_three_sensor_plots_expose_nine_axis_traces(tmp_path: Path) -> None:
     _app, window, _created = _window_with_fake(tmp_path)
     assert len(window._imu_traces) == 9
-    for label in ("imu_trunk", "imu_left", "imu_right"):
+    for label in ("imu_left_leg", "imu_right_leg", "imu_pelvis"):
         plot = window.findChild(QWidget, f"imu_ring_{label}")
         assert plot is not None, f"imu_ring_{label} not found"
         for axis in ("acc_x", "acc_y", "acc_z"):
@@ -828,17 +870,17 @@ def test_preview_imu_streams_payload(tmp_path: Path) -> None:
             payload={
                 "host_monotonic_ns": 2_000,
                 "streams": [
-                    {"label": "imu_trunk_acc_x", "values": [0.1, 0.2, 0.3]},
-                    {"label": "imu_left_acc_x", "values": [-0.1, -0.2, -0.3]},
-                    {"label": "imu_right_acc_x", "values": [0.05, 0.06, 0.07]},
+                    {"label": "imu_left_leg_acc_x", "values": [0.1, 0.2, 0.3]},
+                    {"label": "imu_right_leg_acc_x", "values": [-0.1, -0.2, -0.3]},
+                    {"label": "imu_pelvis_acc_x", "values": [0.05, 0.06, 0.07]},
                 ],
             },
         )
     )
     # Check that each trace received data
-    _, y_trunk = window._imu_traces["imu_trunk_acc_x"].curve.getData()
-    _, y_left = window._imu_traces["imu_left_acc_x"].curve.getData()
-    _, y_right = window._imu_traces["imu_right_acc_x"].curve.getData()
+    _, y_trunk = window._imu_traces["imu_left_leg_acc_x"].curve.getData()
+    _, y_left = window._imu_traces["imu_right_leg_acc_x"].curve.getData()
+    _, y_right = window._imu_traces["imu_pelvis_acc_x"].curve.getData()
     assert y_trunk[0] == 0.1
     assert y_trunk[2] == 0.3
     assert y_left[0] == -0.1
@@ -890,15 +932,15 @@ def test_preferred_labeled_channel_payload_updates_each_ring(tmp_path: Path) -> 
             event_type=WorkerEventType.PREVIEW,
             modality="imu",
             payload={
-                "labels": ["imu_trunk_acc_x", "imu_left_acc_x", "imu_right_acc_x"],
+                "labels": ["imu_left_leg_acc_x", "imu_right_leg_acc_x", "imu_pelvis_acc_x"],
                 "channels": [[1.0], [2.0], [3.0]],
                 "channel": "acc_x",
             },
         )
     )
-    assert window._imu_traces["imu_trunk_acc_x"]._buffer[0] == 1.0
-    assert window._imu_traces["imu_left_acc_x"]._buffer[0] == 2.0
-    assert window._imu_traces["imu_right_acc_x"]._buffer[0] == 3.0
+    assert window._imu_traces["imu_left_leg_acc_x"]._buffer[0] == 1.0
+    assert window._imu_traces["imu_right_leg_acc_x"]._buffer[0] == 2.0
+    assert window._imu_traces["imu_pelvis_acc_x"]._buffer[0] == 3.0
     window.close()
 
 
@@ -914,7 +956,7 @@ def test_preview_y_axes_lock_once_and_are_shared_per_modality(tmp_path: Path) ->
             event_type=WorkerEventType.PREVIEW,
             modality="imu",
             payload={
-                "labels": ["imu_trunk", "imu_left", "imu_right"],
+                "labels": ["imu_left_leg", "imu_right_leg", "imu_pelvis"],
                 "channels": [[-1.0, 0.5], [-0.5, 1.0], [-0.75, 0.75]],
             },
         ),
@@ -954,7 +996,7 @@ def test_preview_y_axes_lock_once_and_are_shared_per_modality(tmp_path: Path) ->
         WorkerEvent(
             event_type=WorkerEventType.PREVIEW,
             modality="imu",
-            payload={"labels": ["imu_trunk"], "channels": [[-100.0, 100.0]]},
+            payload={"labels": ["imu_left_leg"], "channels": [[-100.0, 100.0]]},
         )
     )
     assert window._preview_y_ranges == locked
@@ -973,8 +1015,8 @@ def test_legacy_single_series_payload_updates_only_first_window(tmp_path: Path) 
                 payload={"values": [4.0, 5.0]},
             )
         )
-    assert window._imu_traces["imu_trunk_acc_x"]._buffer[0] == 4.0
-    assert np.isnan(window._imu_traces["imu_trunk_acc_y"]._buffer[0])
+    assert window._imu_traces["imu_left_leg_acc_x"]._buffer[0] == 4.0
+    assert np.isnan(window._imu_traces["imu_left_leg_acc_y"]._buffer[0])
     assert window._enc_traces["left_position"]._buffer[0] == 4.0
     assert np.isnan(window._enc_traces["right_position"]._buffer[0])
     window.close()
@@ -1018,7 +1060,7 @@ def test_preview_imu_ring_label_format(tmp_path: Path) -> None:
     import pyqtgraph as pg
 
     _app, window, _created = _window_with_fake(tmp_path)
-    for label in ("imu_trunk", "imu_left", "imu_right"):
+    for label in ("imu_left_leg", "imu_right_leg", "imu_pelvis"):
         plot: pg.PlotWidget = window.findChild(QWidget, f"imu_ring_{label}")  # type: ignore[assignment]
         assert plot is not None, f"imu_ring_{label} not found"
         title_text = plot.getPlotItem().titleLabel.text
@@ -1064,7 +1106,7 @@ def test_trial_start_preserves_all_live_preview_curves(tmp_path: Path) -> None:
             modality="imu",
             payload={
                 "streams": [
-                        {"label": "imu_trunk_acc_x", "values": [1.0, 2.0]},
+                        {"label": "imu_left_leg_acc_x", "values": [1.0, 2.0]},
                 ],
             },
         )
@@ -1077,7 +1119,7 @@ def test_trial_start_preserves_all_live_preview_curves(tmp_path: Path) -> None:
         )
     )
     _x, ultrasound_before = window._us_curves[1].getData()
-    _x, imu_before = window._imu_traces["imu_trunk_acc_x"].curve.getData()
+    _x, imu_before = window._imu_traces["imu_left_leg_acc_x"].curve.getData()
     _x, encoder_before = window._enc_traces["left_position"].curve.getData()
     assert ultrasound_before[0] == 5.0
     assert imu_before[0] == 1.0
@@ -1088,7 +1130,7 @@ def test_trial_start_preserves_all_live_preview_curves(tmp_path: Path) -> None:
     worker = created[0]
 
     _x, ultrasound_after = window._us_curves[1].getData()
-    _x, imu_after = window._imu_traces["imu_trunk_acc_x"].curve.getData()
+    _x, imu_after = window._imu_traces["imu_left_leg_acc_x"].curve.getData()
     _x, encoder_after = window._enc_traces["left_position"].curve.getData()
     np.testing.assert_allclose(ultrasound_after, ultrasound_before, equal_nan=True)
     np.testing.assert_allclose(imu_after, imu_before, equal_nan=True)
@@ -1401,9 +1443,9 @@ def test_collector_locks_condition_polls_events_and_finalizes(
                 payload={
                     "host_monotonic_ns": 2_000,
                     "streams": [
-                            {"label": "imu_trunk_acc_x", "values": [0.1, 0.2, 0.3]},
-                            {"label": "imu_left_acc_x", "values": [0.4, 0.5, 0.6]},
-                            {"label": "imu_right_acc_x", "values": [0.7, 0.8, 0.9]},
+                            {"label": "imu_left_leg_acc_x", "values": [0.1, 0.2, 0.3]},
+                            {"label": "imu_right_leg_acc_x", "values": [0.4, 0.5, 0.6]},
+                            {"label": "imu_pelvis_acc_x", "values": [0.7, 0.8, 0.9]},
                     ],
                 },
             ),
@@ -1437,7 +1479,7 @@ def test_collector_locks_condition_polls_events_and_finalizes(
     assert np.all(np.isnan(ch0[4:]))
 
     # Check IMU ring traces received data
-    _, trunk_y = window._imu_traces["imu_trunk_acc_x"].curve.getData()
+    _, trunk_y = window._imu_traces["imu_left_leg_acc_x"].curve.getData()
     assert trunk_y[0] == 0.1
     assert trunk_y[2] == 0.3
 
@@ -1449,12 +1491,6 @@ def test_collector_locks_condition_polls_events_and_finalizes(
     assert right_y[0] == 20.0
     assert right_y[1] == 21.0
 
-    assert window.sync_status_label.text() == ""
-    assert window.sync_status_label.property("indicatorState") == "green"
-    assert window.sync_status_label.property("syncReceived") is True
-    assert "合格触发：1" in window.sync_status_label.toolTip()
-    assert "123456" in window.sync_status_label.toolTip()
-    assert "质量：PASS" in window.sync_status_label.toolTip()
     assert len(window._timeline_x) >= 4
     assert len(window._timeline_text) == len(window._timeline_x)
 
@@ -1699,10 +1735,6 @@ def test_optional_missing_sync_is_neutral_and_does_not_prevent_finalization(
     )
     _wait_until(app, lambda: window.overall_status == "等待同步")
     assert window.overall_status == "等待同步"
-    assert window.sync_status_label.property("indicatorState") == "yellow"
-    assert window.sync_status_label.property("syncReceived") is False
-    assert "等待同步信号" in window.sync_status_label.toolTip()
-    assert "background-color:#FBBF24" in window.sync_status_label.styleSheet()
 
     worker.events.append(
         WorkerEvent(
@@ -1718,14 +1750,9 @@ def test_optional_missing_sync_is_neutral_and_does_not_prevent_finalization(
     )
     _wait_until(
         app,
-        lambda: window.sync_status_label.property("indicatorState") == "neutral",
+        lambda: any("NOT_RECEIVED" in text for text in window._timeline_text),
     )
     assert window.overall_status == "等待同步"
-    assert window.sync_status_label.text() == ""
-    assert window.sync_status_label.property("syncReceived") is False
-    assert "未收到同步信号（可选）" in window.sync_status_label.toolTip()
-    assert "质量：OPTIONAL" in window.sync_status_label.toolTip()
-    assert "background-color:#94A3B8" in window.sync_status_label.styleSheet()
     assert any("NOT_RECEIVED" in text for text in window._timeline_text)
 
     manifest_path = tmp_path / "trial-without-sync" / "manifest.json"
@@ -1919,12 +1946,12 @@ def test_condition_switch_clears_only_condition_and_trial_scoped_metadata(
 # ── New per-modality connect/disconnect UI tests ──
 
 
-def test_four_independent_connect_buttons_exist(tmp_path: Path) -> None:
-    """Each modality must have its own 'connect' button in the UI."""
+def test_independent_connect_buttons_exist(tmp_path: Path) -> None:
+    """Each connection row (data modalities + button label) has its own connect button."""
     _app, window, _created = _window_with_fake(tmp_path)
-    for modality in ("ultrasound", "imu", "encoder", "sync_pulse"):
-        btn = window.findChild(QWidget, f"connect_{modality}")
-        assert btn is not None, f"connect_{modality} button not found"
+    for row_key in ("ultrasound", "imu", "encoder", XINGYING_GROUP_KEY, "emg", "button_label"):
+        btn = window.findChild(QWidget, f"connect_{row_key}")
+        assert btn is not None, f"connect_{row_key} button not found"
     window.close()
 
 
@@ -1995,11 +2022,24 @@ def test_trial_form_has_no_global_device_config_and_modalities_are_clickable(
     assert not hasattr(window, "device_profile_combo")
     assert not hasattr(window, "hardware_settings_button")
     assert not hasattr(window, "profile_warning_label")
-    assert set(window._configure_buttons) == set(MODALITIES)
-    for modality, button in window._configure_buttons.items():
-        assert button.objectName() == f"configure_{modality}"
+    expected_configure_keys = {
+        "ultrasound",
+        "imu",
+        "encoder",
+        XINGYING_GROUP_KEY,
+        "emg",
+        "button_label",
+    }
+    assert set(window._configure_buttons) == expected_configure_keys
+    for key, button in window._configure_buttons.items():
+        assert button.objectName() == f"configure_{key}"
         assert button.property("buttonRole") == "deviceConfig"
-        assert "自动保存" in button.toolTip()
+        if key == "button_label":
+            assert "无需设置" in button.toolTip()
+        else:
+            assert "自动保存" in button.toolTip()
+    # 合并行以「动捕 Marker + 六维力测力台」为一项展示。
+    assert window._configure_buttons[XINGYING_GROUP_KEY].text() == "动捕 Marker + 六维力测力台"
     window.close()
 
 
@@ -2020,6 +2060,38 @@ def test_connected_modality_enables_its_separate_disconnect_button(tmp_path: Pat
 
     # Cleanup
     window._preview_workers.clear()
+    window.close()
+
+
+def test_merged_mocap_force_plate_row_connects_and_disconnects_as_one(
+    tmp_path: Path,
+) -> None:
+    """合并后的「动捕 Marker + 六维力测力台」共用一个连接/断开按钮。"""
+    _app, window, _created = _window_with_fake(tmp_path)
+    window._settings.set_device_profile_key("simulated")
+    connect_button = window._connect_buttons[XINGYING_GROUP_KEY]
+    disconnect_button = window._disconnect_buttons[XINGYING_GROUP_KEY]
+    assert connect_button.text() == "连接"
+    assert disconnect_button.text() == "断开"
+
+    # 模拟模式下两者是独立预览 worker；合并行把它们当作一个整体。
+    window._preview_workers["mocap"] = object()
+    window._preview_workers["force_plate"] = object()
+    window._update_connect_button_state()
+    assert not connect_button.isEnabled()
+    assert disconnect_button.isEnabled()
+
+    # 只断开其中一个成员时，合并行仍视为已连接。
+    del window._preview_workers["mocap"]
+    window._update_connect_button_state()
+    assert not connect_button.isEnabled()
+    assert disconnect_button.isEnabled()
+
+    # 全部断开后，合并行恢复可连接。
+    window._preview_workers.clear()
+    window._update_connect_button_state()
+    assert connect_button.isEnabled()
+    assert not disconnect_button.isEnabled()
     window.close()
 
 
@@ -2161,7 +2233,6 @@ def test_partial_begin_failure_rolls_back_only_successful_recording_gates(
     assert len(handles["imu"].begin_recording_calls) == 1
     assert handles["imu"].end_recording_calls == []
     assert handles["mocap"].begin_recording_calls == []
-    assert handles["sync_pulse"].begin_recording_calls == []
     assert handles["ultrasound"].begin_recording_calls == []
     assert all(handle.stop_requests == 0 for handle in handles.values())
     assert window.worker is None
@@ -2531,13 +2602,10 @@ def test_health_table_has_modalities_and_prompt_label_counters(tmp_path: Path) -
         "动捕 Marker",
         "六维力测力台",
         "表面肌电 EMG",
-        "同步脉冲",
+        "按钮标签（,）",
         "受试者标签（<）",
         "工作人员标签（>）",
     }
-    assert window.sync_status_label.property("indicatorState") == "yellow"
-    assert "等待同步信号" in window.sync_status_label.toolTip()
-    assert window.health_table.cellWidget(window._health_rows["sync_pulse"], 4) is not None
     assert not hasattr(window, "manifest_label")
     assert not hasattr(window, "open_log_dir_button")
     window.close()
@@ -2672,24 +2740,24 @@ def test_preview_imu_two_device_labels_skip_empty_slot(tmp_path: Path) -> None:
             modality="imu",
             payload={
                 "host_monotonic_ns": 2_000,
-                "labels": ["imu_trunk_acc_x", "imu_right_acc_x"],
+                "labels": ["imu_left_leg_acc_x", "imu_pelvis_acc_x"],
                 "channels": [[1.0], [2.0]],
                 "channel": "acc_x",
             },
         )
     )
-    # Only trunk and right traces should update
-    assert window._imu_traces["imu_trunk_acc_x"]._buffer[0] == 1.0
-    assert window._imu_traces["imu_right_acc_x"]._buffer[0] == 2.0
-    # Left trace must stay untouched (still NaN)
-    assert np.isnan(window._imu_traces["imu_left_acc_x"]._buffer[0])
+    # Only left_leg and pelvis traces should update
+    assert window._imu_traces["imu_left_leg_acc_x"]._buffer[0] == 1.0
+    assert window._imu_traces["imu_pelvis_acc_x"]._buffer[0] == 2.0
+    # Right_leg trace must stay untouched (still NaN)
+    assert np.isnan(window._imu_traces["imu_right_leg_acc_x"]._buffer[0])
     window.close()
 
 
 def test_preview_imu_streams_two_device_labels_skip_empty_slot(
     tmp_path: Path,
 ) -> None:
-    """Streams payload with slots 1+3: trunk/right updated, left stays NaN."""
+    """Streams payload with slots 1+3: left_leg/pelvis updated, right_leg stays NaN."""
     _app, window, _created = _window_with_fake(tmp_path)
     window._handle_worker_event(
         WorkerEvent(
@@ -2698,16 +2766,16 @@ def test_preview_imu_streams_two_device_labels_skip_empty_slot(
             payload={
                 "host_monotonic_ns": 3_000,
                 "streams": [
-                    {"label": "imu_trunk_acc_x", "values": [0.5, 0.6]},
-                    {"label": "imu_right_acc_x", "values": [0.7, 0.8]},
+                    {"label": "imu_left_leg_acc_x", "values": [0.5, 0.6]},
+                    {"label": "imu_pelvis_acc_x", "values": [0.7, 0.8]},
                 ],
             },
         )
     )
-    assert window._imu_traces["imu_trunk_acc_x"]._buffer[0] == 0.5
-    assert window._imu_traces["imu_right_acc_x"]._buffer[0] == 0.7
+    assert window._imu_traces["imu_left_leg_acc_x"]._buffer[0] == 0.5
+    assert window._imu_traces["imu_pelvis_acc_x"]._buffer[0] == 0.7
     # Left trace must stay untouched
-    assert np.isnan(window._imu_traces["imu_left_acc_x"]._buffer[0])
+    assert np.isnan(window._imu_traces["imu_right_leg_acc_x"]._buffer[0])
     window.close()
 
 
@@ -2791,4 +2859,105 @@ def test_preview_plot_text_is_hidden_until_hover(tmp_path: Path) -> None:
     assert not emg_item.getAxis("bottom").label.isVisible()
     assert not emg_item.getAxis("left").label.isVisible()
     assert not emg_item.legend.isVisible()
+    window.close()
+
+
+# ── XINGYING 7061 remote-trigger listener lifecycle ──
+
+
+def test_xingying_trigger_listener_starts_and_stops_idempotently(
+    tmp_path: Path,
+) -> None:
+    from unittest.mock import patch
+
+    class FakeTrigger:
+        def __init__(self, ip: str, port: int, on_trigger) -> None:
+            self.ip = ip
+            self.port = port
+            self.on_trigger = on_trigger
+            self.started = False
+            self.stopped = False
+
+        def start(self) -> None:
+            self.started = True
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    _app, window, _created = _window_with_fake(tmp_path)
+    created: list[FakeTrigger] = []
+
+    def factory(ip: str, port: int, on_trigger) -> FakeTrigger:
+        trigger = FakeTrigger(ip=ip, port=port, on_trigger=on_trigger)
+        created.append(trigger)
+        return trigger
+
+    with patch(
+        "exo_collection.apps.collector.window.XingYingRemoteTrigger",
+        side_effect=factory,
+    ):
+        cfg = {"ip": "127.0.0.1", "trigger_port": 7061}
+        window._start_xingying_trigger_listener(cfg)
+        assert window._xingying_trigger is not None
+        assert created[0].started
+        assert created[0].port == 7061
+
+        # 第二次启动为幂等 no-op（复用同一监听实例）。
+        window._start_xingying_trigger_listener(cfg)
+        assert len(created) == 1
+
+        window._stop_xingying_trigger_listener()
+        assert window._xingying_trigger is None
+        assert created[0].stopped
+
+        # 重复停止同样幂等。
+        window._stop_xingying_trigger_listener()
+    window.close()
+
+
+def test_on_xingying_trigger_forwards_to_live_worker(tmp_path: Path) -> None:
+    _app, window, _created = _window_with_fake(tmp_path)
+    worker = FakeCollectorWorker(window.build_request())
+    worker.alive = True
+    window._worker = worker  # type: ignore[assignment]
+
+    window._on_xingying_trigger(
+        "capture_start",
+        {
+            "capture_name": "trial_01",
+            "database_path": "C:/xing/data",
+            "notes": "note",
+            "description": "desc",
+            "delay": "0",
+            "timecode": "00:00:00:00",
+            "packet_id": "0",
+        },
+        123_000_000,
+        1_800_000_000_000_123_000,
+    )
+
+    assert len(worker.xingying_triggers) == 1
+    event = worker.xingying_triggers[0]
+    assert event.kind is XingYingTriggerKind.CAPTURE_START
+    assert event.capture_name == "trial_01"
+    assert event.database_path == "C:/xing/data"
+    assert event.host_monotonic_ns == 123_000_000
+    assert event.host_utc_ns == 1_800_000_000_000_123_000
+    window.close()
+
+
+def test_on_xingying_trigger_skips_without_live_worker(tmp_path: Path) -> None:
+    _app, window, _created = _window_with_fake(tmp_path)
+    payload = {"capture_name": "trial_01"}
+
+    # 无 worker：仅告警，不落盘。
+    window._on_xingying_trigger("capture_stop", payload, 1, 2)
+
+    # worker 存在但已退出：同样跳过。
+    worker = FakeCollectorWorker(window.build_request())
+    worker.alive = False
+    window._worker = worker  # type: ignore[assignment]
+    window._on_xingying_trigger("capture_stop", payload, 3, 4)
+
+    assert worker.xingying_triggers == []
     window.close()

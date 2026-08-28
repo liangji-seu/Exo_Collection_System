@@ -17,12 +17,14 @@ PROMPT_LABEL_RELATIVE_PATH = "raw/prompt_labels.jsonl"
 class PromptLabelSource(StrEnum):
     SUBJECT = "SUBJECT"
     OPERATOR = "OPERATOR"
+    BUTTON = "BUTTON"
 
     @property
     def display_name(self) -> str:
         return {
             PromptLabelSource.SUBJECT: "受试者标签",
             PromptLabelSource.OPERATOR: "工作人员标签",
+            PromptLabelSource.BUTTON: "按钮标签",
         }[self]
 
     @property
@@ -30,6 +32,7 @@ class PromptLabelSource(StrEnum):
         return {
             PromptLabelSource.SUBJECT: "<",
             PromptLabelSource.OPERATOR: ">",
+            PromptLabelSource.BUTTON: ",",
         }[self]
 
 

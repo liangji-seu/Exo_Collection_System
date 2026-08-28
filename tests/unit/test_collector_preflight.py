@@ -26,7 +26,6 @@ from exo_collection.apps.collector.preflight import (
 from exo_collection.configuration import adapter_registry as reg_module
 from exo_collection.configuration.device_profiles import (
     ELONXI_ULTRASOUND_ADAPTER,
-    SYNC_PULSE_ADAPTER,
     TEENSY_ENCODER_ADAPTER,
     XING_NOKOV_EMG_ADAPTER,
     XING_NOKOV_MOCAP_ADAPTER,
@@ -34,12 +33,10 @@ from exo_collection.configuration.device_profiles import (
     HardwareDeviceProfileDocument,
 )
 from exo_collection.domain.events import (
-    EdgeType,
     FrameBatch,
     HealthSnapshot,
     HealthStatus,
     SampleBatch,
-    SyncPulseEvent,
 )
 
 
@@ -65,21 +62,6 @@ def _fake_event_for_modality(
             sequence_number=0,
             frame_rate_hz=20.0,
             data=np.zeros((10, 1000, 4), dtype=np.float32),
-        )
-    if modality == "sync_pulse":
-        return SyncPulseEvent(
-            event_type="sync_pulse",
-            device_id=device_id,
-            modality=modality,
-            clock_domain=clock_domain,
-            pulse_id="pulse_0",
-            source_device=device_id,
-            edge_type=EdgeType.RISING,
-            sample_index=0,
-            amplitude=3.3,
-            detection_threshold=2.5,
-            confidence=1.0,
-            detector_version="1.0.0",
         )
     return SampleBatch(
         event_type="sample_batch",
@@ -162,20 +144,6 @@ class FakeQueuedAdapter:
 
     def start(self, start_token: StartToken | None = None) -> None:
         self._started = True
-        if type(self)._modality == "sync_pulse":
-            self._queue.put(
-                SampleBatch(
-                    event_type="sample_batch",
-                    device_id=self._device_id,
-                    modality="sync_pulse",
-                    clock_domain=self._clock_domain,
-                    first_sample_index=0,
-                    sample_count=10,
-                    sequence_number=0,
-                    sample_rate_hz=type(self)._nominal_rate_hz,
-                    data=np.zeros((10, 1), dtype=np.float32),
-                )
-            )
         event = _fake_event_for_modality(
             modality=type(self)._modality,
             device_id=self._device_id,
@@ -257,13 +225,6 @@ class FakeEmgAdapter(FakeQueuedAdapter):
     _modality = "emg"
     _channels = ("emg_01", "emg_02", "emg_03")
     _units = ("mV", "mV", "mV")
-    _nominal_rate_hz = 1000.0
-
-
-class FakeSyncPulseAdapter(FakeQueuedAdapter):
-    _modality = "sync_pulse"
-    _channels = ("sync",)
-    _units = ("V",)
     _nominal_rate_hz = 1000.0
 
 
@@ -349,21 +310,6 @@ def _load_hardware_profile() -> HardwareDeviceProfileDocument:
                         "queue_capacity": 64,
                     },
                 },
-                {
-                    "id": "sync_pulse_hw",
-                    "modality": "sync_pulse",
-                    "adapter": SYNC_PULSE_ADAPTER,
-                    "writer": "hdf5_signal",
-                    "required": True,
-                    "clock_domain": "hw_sync",
-                    "simulated": True,
-                    "parameters": {
-                        "queue_capacity": 64,
-                        "sample_rate_hz": 1000,
-                        "pulse_interval_s": 1.0,
-                        "pulse_width_s": 0.02,
-                    },
-                },
             ],
         }
     )
@@ -377,7 +323,6 @@ def _make_fake_adapters_for_registry() -> dict[str, type[FakeQueuedAdapter]]:
         TEENSY_ENCODER_ADAPTER: FakeEncoderAdapter,
         XING_NOKOV_MOCAP_ADAPTER: FakeMocapAdapter,
         XING_NOKOV_EMG_ADAPTER: FakeEmgAdapter,
-        SYNC_PULSE_ADAPTER: FakeSyncPulseAdapter,
     }
 
 
@@ -408,12 +353,10 @@ def test_simulated_preflight_exercises_lifecycle_samples_sync_and_storage(
         "encoder",
         "mocap",
         "emg",
-        "sync_pulse",
     }
     assert all(item.status == "READY" for item in report.devices.values())
     assert all(item.observed_raw_data for item in report.devices.values())
     assert report.devices["ultrasound"].channel_count == 4
-    assert report.devices["sync_pulse"].observed_sync_rising_edge is True
     assert not list(tmp_path.glob(".exo-write-probe-*.tmp"))
     assert not list(tmp_path.rglob("*.recording"))
     assert not (tmp_path / "catalog.sqlite3").exists()
@@ -522,7 +465,6 @@ def test_run_device_preflight_simulated_passes(
         "encoder",
         "mocap",
         "emg",
-        "sync_pulse",
     }
     assert all(item.status == "READY" for item in report.devices.values())
     assert all(item.observed_raw_data for item in report.devices.values())
@@ -559,13 +501,12 @@ def test_run_device_preflight_hardware_with_fake_adapters(
     assert report.profile_key == "hardware"
     modalities = set(report.devices)
     assert modalities == {
-        "ultrasound", "imu", "encoder", "mocap", "emg", "sync_pulse"
+        "ultrasound", "imu", "encoder", "mocap", "emg"
     }
     for modality in modalities:
         item = report.devices[modality]
         assert item.status == "READY", f"{modality}: {item.message}"
         assert item.observed_raw_data
-    assert report.devices["sync_pulse"].observed_sync_rising_edge is True
 
 
 class _BrokenUltrasoundAdapter(FakeUltrasoundAdapter):
@@ -612,7 +553,6 @@ def test_hardware_preflight_missing_sdk_gives_clear_error_no_fallback(
         TEENSY_ENCODER_ADAPTER: _BrokenEncoderAdapter,
         XING_NOKOV_MOCAP_ADAPTER: _BrokenMocapAdapter,
         XING_NOKOV_EMG_ADAPTER: _BrokenEmgAdapter,
-        SYNC_PULSE_ADAPTER: FakeSyncPulseAdapter,  # sync is still simulated
     }
     for slug, fake_cls in fake_types.items():
         monkeypatch.setitem(reg_module.ADAPTER_REGISTRY, slug, fake_cls)
@@ -638,9 +578,8 @@ def test_hardware_preflight_missing_sdk_gives_clear_error_no_fallback(
         assert item.status == "FAILED", f"{mod}: {item.message}"
         assert "ImportError" in item.message
 
-    # sync_pulse uses FakeSyncPulseAdapter (not broken), so it may pass
-    # depending on timing.  The critical assertion is that no modality
-    # silently degraded to READY on a hardware adapter that raised.
+    # The critical assertion is that no modality silently degraded to READY
+    # on a hardware adapter that raised.
 
 
 def test_hardware_preflight_report_has_correct_profile_metadata(
@@ -666,33 +605,6 @@ def test_hardware_preflight_report_has_correct_profile_metadata(
 
     assert report.profile_kind == "hardware"
     assert report.profile_key == "hardware"
-
-
-def test_hardware_preflight_sync_pulse_annotated_as_simulated(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """In hardware profile, sync_pulse message notes it is still simulated."""
-    fake_types = _make_fake_adapters_for_registry()
-    for slug, fake_cls in fake_types.items():
-        monkeypatch.setitem(reg_module.ADAPTER_REGISTRY, slug, fake_cls)
-    monkeypatch.setattr(
-        preflight_module,
-        "load_device_profile",
-        lambda key: _load_hardware_profile(),
-    )
-
-    report = run_device_preflight(
-        tmp_path,
-        device_profile_key="hardware",
-        minimum_free_space_gib=0,
-        timeout_s=1.0,
-    )
-
-    sync_item = report.devices["sync_pulse"]
-    assert sync_item.status == "READY"
-    assert "模拟同步" in sync_item.message
-    assert "台架验证" in sync_item.message
 
 
 def test_collector_preflight_worker_accepts_profile_key(

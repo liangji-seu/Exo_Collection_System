@@ -63,6 +63,10 @@ from exo_collection.domain.prompt_labels import (
     PromptLabelEvent,
     PromptLabelSource,
 )
+from exo_collection.domain.xingying_trigger import (
+    XINGYING_TRIGGER_RELATIVE_PATH,
+    XingYingTriggerEvent,
+)
 from exo_collection.domain.states import TrialState, TrialStateMachine
 from exo_collection.quality import (
     ClockMappingEvidence,
@@ -88,6 +92,8 @@ from exo_collection.storage.checksum import sha256_file
 from exo_collection.storage.layout import TrialLayout
 from exo_collection.storage.manifest import (
     MANIFEST_SCHEMA_VERSION,
+    AlignmentQuality,
+    AlignmentRecord,
     ClockAndAlignment,
     ClockDomainKind,
     ClockDomainManifest,
@@ -196,6 +202,7 @@ class _PromptLabelWriter:
         self.counts = {
             PromptLabelSource.SUBJECT: 0,
             PromptLabelSource.OPERATOR: 0,
+            PromptLabelSource.BUTTON: 0,
         }
 
     @property
@@ -209,6 +216,39 @@ class _PromptLabelWriter:
         self._stream.flush()
         os.fsync(self._stream.fileno())
         self.counts[event.source] += 1
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._stream.flush()
+        os.fsync(self._stream.fileno())
+        self._stream.close()
+        self._closed = True
+
+    def close_incomplete(self) -> None:
+        if self._closed:
+            return
+        self._stream.flush()
+        self._stream.close()
+        self._closed = True
+
+
+class _XingYingTriggerWriter:
+    """Durable NDJSON stream for XINGYING remote-trigger notifications."""
+
+    def __init__(self, layout: TrialLayout) -> None:
+        self.path = layout.partial_path(XINGYING_TRIGGER_RELATIVE_PATH)
+        self._stream = self.path.open("x", encoding="utf-8", newline="\n")
+        self._closed = False
+        self.count = 0
+
+    def append(self, event: XingYingTriggerEvent) -> None:
+        if self._closed:
+            raise RuntimeError("xingying-trigger writer is closed")
+        self._stream.write(event.model_dump_json() + "\n")
+        self._stream.flush()
+        os.fsync(self._stream.fileno())
+        self.count += 1
 
     def close(self) -> None:
         if self._closed:
@@ -585,6 +625,7 @@ def run_trial(
     enabled_modalities: frozenset[str] | None = None,
     recording_streams: Mapping[str, RecordingStreamEndpoint] | None = None,
     prompt_events: PromptEventSource | None = None,
+    xingying_trigger_events: PromptEventSource | None = None,
     recording_stream_end_timeout_s: float = 10.0,
 ) -> TrialRunResult:
     """Collect the selected multimodal profile and publish one Trial.
@@ -723,6 +764,8 @@ def run_trial(
     journal: _JsonlJournal | None = None
     prompt_writer: _PromptLabelWriter | None = None
     prompt_label_events: list[PromptLabelEvent] = []
+    xingying_trigger_writer: _XingYingTriggerWriter | None = None
+    xingying_trigger_events_list: list[XingYingTriggerEvent] = []
     writers: dict[str, Any] = {}
     stop_reports: dict[str, Any] = {}
     counts = {name: 0 for name in adapters}
@@ -765,8 +808,8 @@ def run_trial(
                 message=reason,
                 payload={
                     "state": target.value,
-                    # 让 GUI 得知本次 Trial 的落盘目录，以便把 XINGYING 的 .cap
-                    # 直接录制到同一个 session 目录（1 session = 1 trial = 1 cap）。
+                    # 让 GUI 得知本次 Trial 的落盘目录。XINGYING 的 .cap 不写入
+                    # session 目录，而是录到固定的工程目录，此处仅回报流式落盘目录。
                     "recording_directory": str(layout.recording_directory),
                 },
             ),
@@ -794,6 +837,7 @@ def run_trial(
             _write_session_file(layout, visit)
             journal = _JsonlJournal(layout)
             prompt_writer = _PromptLabelWriter(layout)
+            xingying_trigger_writer = _XingYingTriggerWriter(layout)
             transition(
                 TrialState.PREPARING,
                 f"checking and preparing {request.device_profile_key} devices",
@@ -999,10 +1043,75 @@ def run_trial(
                                 "operator_count": prompt_writer.counts[
                                     PromptLabelSource.OPERATOR
                                 ],
+                                "button_count": prompt_writer.counts[
+                                    PromptLabelSource.BUTTON
+                                ],
                                 "total_count": prompt_writer.count,
                             },
                         ),
                     )
+                return accepted_count
+
+            def drain_xingying_trigger_events(
+                *, upper_bound_ns: int | None = None
+            ) -> int:
+                if xingying_trigger_events is None:
+                    return 0
+                accepted_count = 0
+                # XINGYING 会把同一条起停通知重发多次（packet_id 相同、时间戳差
+                # 几毫秒），这里按 (kind, packet_id) 去重，只保留第一次作为对齐锚点。
+                seen_trigger_keys: set[tuple[str, str]] = set()
+                while True:
+                    try:
+                        payload = xingying_trigger_events.get_nowait()
+                    except Empty:
+                        break
+                    event = XingYingTriggerEvent.model_validate(payload)
+                    if event.trial_uuid != request.trial_uuid:
+                        raise RuntimeError(
+                            "xingying-trigger Trial UUID differs from active Trial"
+                        )
+                    if event.host_monotonic_ns < start_token.host_monotonic_ns:
+                        _publish(
+                            publish,
+                            WorkerEvent(
+                                event_type=WorkerEventType.ALERT,
+                                trial_uuid=str(request.trial_uuid),
+                                message="XINGYING trigger preceded the recording gate and was ignored",
+                                payload=event.model_dump(mode="json"),
+                            ),
+                        )
+                        continue
+                    if (
+                        upper_bound_ns is not None
+                        and event.host_monotonic_ns > upper_bound_ns
+                    ):
+                        _publish(
+                            publish,
+                            WorkerEvent(
+                                event_type=WorkerEventType.ALERT,
+                                trial_uuid=str(request.trial_uuid),
+                                message="XINGYING trigger followed the recording stop boundary and was ignored",
+                                payload=event.model_dump(mode="json"),
+                            ),
+                        )
+                        continue
+                    dedup_key = (event.kind.value, event.packet_id)
+                    if dedup_key in seen_trigger_keys:
+                        continue
+                    seen_trigger_keys.add(dedup_key)
+                    persisted = event.model_copy(
+                        update={"sequence": len(xingying_trigger_events_list)}
+                    )
+                    assert xingying_trigger_writer is not None
+                    xingying_trigger_writer.append(persisted)
+                    xingying_trigger_events_list.append(persisted)
+                    accepted_count += 1
+                    if journal is not None and not journal.closed:
+                        journal.write(
+                            "xingying_trigger",
+                            persisted.model_dump(mode="json"),
+                        )
                 return accepted_count
 
             def accept_raw_event(modality: str, event: Any, now_ns: int) -> None:
@@ -1148,6 +1257,8 @@ def run_trial(
                 processed = False
                 now_ns = time.perf_counter_ns()
                 if drain_prompt_events():
+                    processed = True
+                if drain_xingying_trigger_events():
                     processed = True
                 if external_stream_mode:
                     proxy_adapters = tuple(
@@ -1314,6 +1425,7 @@ def run_trial(
 
             assert formal_stop_monotonic_ns is not None
             drain_prompt_events(upper_bound_ns=formal_stop_monotonic_ns)
+            drain_xingying_trigger_events(upper_bound_ns=formal_stop_monotonic_ns)
             transition(TrialState.STOPPING, stop_reason)
             for modality, adapter in adapters.items():
                 stop_reports[modality] = adapter.stop()
@@ -1417,6 +1529,10 @@ def run_trial(
             prompt_writer.close()
             if prompt_writer.count == 0:
                 prompt_writer.path.unlink(missing_ok=True)
+            assert xingying_trigger_writer is not None
+            xingying_trigger_writer.close()
+            if xingying_trigger_writer.count == 0:
+                xingying_trigger_writer.path.unlink(missing_ok=True)
 
             # Verify source formats before any temporary name is published.
             binary_scans: dict[str, Any] = {}
@@ -1576,6 +1692,7 @@ def run_trial(
                 "prompt_label_counts": {
                     "subject": prompt_writer.counts[PromptLabelSource.SUBJECT],
                     "operator": prompt_writer.counts[PromptLabelSource.OPERATOR],
+                    "button": prompt_writer.counts[PromptLabelSource.BUTTON],
                     "total": prompt_writer.count,
                 },
                 "formal_item_counts": formal_item_counts,
@@ -1818,6 +1935,27 @@ def run_trial(
                 for result in quality_evaluation.results
                 if result.scope in {"sync", "clock"}
             ]
+            xingying_trigger_audit = [
+                {
+                    "kind": event.kind.value,
+                    "capture_name": event.capture_name,
+                    "database_path": event.database_path,
+                    "notes": event.notes,
+                    "description": event.description,
+                    "delay": event.delay,
+                    "timecode": event.timecode,
+                    "packet_id": event.packet_id,
+                    "host_monotonic_ns": event.host_monotonic_ns,
+                    "mapped_host_utc_ns": (
+                        start_token.host_utc_ns
+                        + (event.host_monotonic_ns - start_token.host_monotonic_ns)
+                    ),
+                }
+                for event in sorted(
+                    xingying_trigger_events_list,
+                    key=lambda item: item.host_monotonic_ns,
+                )
+            ]
             sync_manifest_document = {
                 "schema_version": "1.0.0",
                 "trial_uuid": str(request.trial_uuid),
@@ -1844,6 +1982,8 @@ def run_trial(
                 "clock_mappings": [
                     mapping.model_dump(mode="json") for mapping in mappings
                 ],
+                "xingying_triggers": xingying_trigger_audit,
+                "xingying_trigger_count": len(xingying_trigger_audit),
                 "quality_algorithm_version": quality_evaluation.algorithm_version,
                 "quality_rule_results": sync_rule_results,
             }
@@ -1916,7 +2056,9 @@ def run_trial(
             )
             config_hash = sha256_file(configuration_path)
             publish_json(layout, ".exo/quality_report.json", quality_report)
-            if "sync_pulse" in adapters:
+            # 只要存在 sync_pulse 设备，或存在 XINGYING 起停触发事件，就落盘
+            # sync_manifest.json —— 后者是把动捕 .cap 与超声对齐的锚点来源。
+            if "sync_pulse" in adapters or xingying_trigger_events_list:
                 publish_json(layout, ".exo/sync_manifest.json", sync_manifest_document)
             _publish_csv(
                 layout,
@@ -1955,12 +2097,19 @@ def run_trial(
             prompt_label_artifact_uuid = (
                 uuid4() if prompt_label_events else None
             )
+            xingying_trigger_artifact_uuid = (
+                uuid4() if xingying_trigger_events_list else None
+            )
             raw_artifact_uuids = tuple(
                 raw_artifact_uuid_by_modality[modality]
                 for modality in adapters
             ) + (
                 (prompt_label_artifact_uuid,)
                 if prompt_label_artifact_uuid is not None
+                else ()
+            ) + (
+                (xingying_trigger_artifact_uuid,)
+                if xingying_trigger_artifact_uuid is not None
                 else ()
             )
             draft_by_key: dict[str, ArtifactDraft] = {}
@@ -2032,6 +2181,24 @@ def run_trial(
                         "operator_count": prompt_writer.counts[
                             PromptLabelSource.OPERATOR
                         ],
+                        "button_count": prompt_writer.counts[
+                            PromptLabelSource.BUTTON
+                        ],
+                        "primary_clock": "host_monotonic_ns",
+                    },
+                )
+            if xingying_trigger_artifact_uuid is not None:
+                draft_by_key["xingying_trigger"] = ArtifactDraft(
+                    request.trial_uuid,
+                    "xingying_trigger",
+                    ArtifactKind.RAW,
+                    "application/x-ndjson",
+                    XINGYING_TRIGGER_RELATIVE_PATH,
+                    artifact_uuid=xingying_trigger_artifact_uuid,
+                    created_at_utc=started_at_utc,
+                    metadata={
+                        "schema_version": "1.0.0",
+                        "event_count": len(xingying_trigger_events_list),
                         "primary_clock": "host_monotonic_ns",
                     },
                 )
@@ -2114,6 +2281,14 @@ def run_trial(
                                 "trigger_count": trigger_count,
                             },
                         ),
+                    }
+                    if "sync_pulse" in adapters
+                    else {}
+                ),
+                # sync_manifest 是「动捕 .cap 对齐锚点」的统一落点：sync_pulse 设备
+                # 之外，只要有 XINGYING 起停触发事件也要发布（纯 additive）。
+                **(
+                    {
                         "sync_manifest": ArtifactDraft(
                             request.trial_uuid,
                             "sync_pulse",
@@ -2136,7 +2311,7 @@ def run_trial(
                             },
                         ),
                     }
-                    if "sync_pulse" in adapters
+                    if ("sync_pulse" in adapters or xingying_trigger_events_list)
                     else {}
                 ),
                 "warnings": ArtifactDraft(
@@ -2216,6 +2391,23 @@ def run_trial(
                 )
                 for modality, descriptor in descriptors.items()
             ]
+            # XINGYING 动捕/测力台的 .cap 不进 Data/（留在工程目录），但我们通过
+            # 7061 触发广播拿到了 .cap 的起停主机时间戳。这里把它登记为一个外部
+            # 时钟域，作为 offset-only 对齐记录的 source_clock_domain。
+            if xingying_trigger_events_list:
+                clock_domains.append(
+                    ClockDomainManifest(
+                        clock_domain="xingying_capture_clock",
+                        kind=ClockDomainKind.EXTERNAL,
+                        unit="frame",
+                        device_id="xingying_nokov",
+                        nominal_rate_hz=None,
+                        description=(
+                            "XINGYING .cap capture frame clock; frame 0 anchored to "
+                            "host monotonic time at the CaptureStart broadcast"
+                        ),
+                    )
+                )
             modalities: list[ModalityManifest] = []
             for modality, descriptor in descriptors.items():
                 is_block_binary = profiles_by_modality[modality].writer == "block_binary"
@@ -2259,6 +2451,39 @@ def run_trial(
                 else:
                     kwargs["sample_count"] = counts[modality]
                 modalities.append(ModalityManifest(**kwargs))
+
+            sync_event_artifact_uuids = []
+            if "sync_pulse" in adapters:
+                sync_event_artifact_uuids.extend(
+                    [
+                        artifact_map["sync_pulse"].artifact_uuid,
+                        artifact_map["sync_manifest"].artifact_uuid,
+                    ]
+                )
+            alignments = []
+            if xingying_trigger_artifact_uuid is not None:
+                # 把 XINGYING 触发事件正式登记为「同步事件锚点」，并生成一条
+                # offset-only 对齐记录：.cap 第 0 帧 ↔ capture_start 的主机
+                # 单调时间戳（具体数值在 raw/xingying_trigger.jsonl 里）。
+                sync_event_artifact_uuids.append(
+                    artifact_map["xingying_trigger"].artifact_uuid
+                )
+                alignments.append(
+                    AlignmentRecord(
+                        source_artifact_uuid=xingying_trigger_artifact_uuid,
+                        source_clock_domain="xingying_capture_clock",
+                        pulse_ids=sorted(
+                            {
+                                event.capture_name
+                                for event in xingying_trigger_events_list
+                            }
+                        ),
+                        offset_only=True,
+                        quality=AlignmentQuality.GOOD,
+                        algorithm_version="xingying-trigger-offset-1.0.0",
+                        created_at_utc=finalized_at_utc,
+                    )
+                )
 
             manifest = TrialManifest(
                 project_uuid=request.project_uuid,
@@ -2335,14 +2560,8 @@ def run_trial(
                         if "sync_pulse" in adapters
                         else []
                     ),
-                    sync_event_artifact_uuids=(
-                        [
-                            artifact_map["sync_pulse"].artifact_uuid,
-                            artifact_map["sync_manifest"].artifact_uuid,
-                        ]
-                        if "sync_pulse" in adapters
-                        else []
-                    ),
+                    sync_event_artifact_uuids=sync_event_artifact_uuids,
+                    alignments=alignments,
                 ),
                 quality=QualitySummary(
                     computed_grade=grade,
@@ -2461,6 +2680,11 @@ def run_trial(
         if prompt_writer is not None:
             try:
                 prompt_writer.close_incomplete()
+            except BaseException:
+                pass
+        if xingying_trigger_writer is not None:
+            try:
+                xingying_trigger_writer.close_incomplete()
             except BaseException:
                 pass
         raise

@@ -25,6 +25,10 @@ from exo_collection.acquisition.buffers import (
 from exo_collection.acquisition.messages import WorkerEvent, WorkerEventType
 from exo_collection.acquisition.recording_stream import RecordingStreamEndpoint
 from exo_collection.domain.prompt_labels import PromptLabelEvent, PromptLabelSource
+from exo_collection.domain.xingying_trigger import (
+    XingYingTriggerEvent,
+    XingYingTriggerKind,
+)
 from exo_collection.orchestration.models import TrialRunRequest
 
 
@@ -63,6 +67,7 @@ def _trial_worker_entry(
     control_queue: Queue[Any],
     stop_event: Any,
     prompt_label_queue: Queue[Any],
+    xingying_trigger_queue: Queue[Any],
     preview_descriptors: dict[str, PreviewBufferDescriptor],
     stream_endpoints: dict[str, RecordingStreamEndpoint] | None,
 ) -> None:
@@ -140,6 +145,7 @@ def _trial_worker_entry(
             enabled_modalities=request.enabled_modalities,
             recording_streams=stream_endpoints,
             prompt_events=prompt_label_queue,
+            xingying_trigger_events=xingying_trigger_queue,
         )
         publish(
             WorkerEvent(
@@ -205,6 +211,8 @@ class CollectorWorker:
         self._stop_requested = self._context.Event()
         self._prompt_labels = self._context.Queue(maxsize=256)
         self._prompt_label_sequence = 0
+        self._xingying_triggers = self._context.Queue(maxsize=256)
+        self._xingying_trigger_sequence = 0
         if not stream_endpoints:
             self._stream_endpoints = None
         elif isinstance(stream_endpoints, Mapping):
@@ -242,6 +250,7 @@ class CollectorWorker:
                 self._control_events,
                 self._stop_requested,
                 self._prompt_labels,
+                self._xingying_triggers,
                 {
                     modality: buffer.descriptor
                     for modality, buffer in self._preview_buffers.items()
@@ -308,6 +317,46 @@ class CollectorWorker:
         except Full as exc:
             raise RuntimeError("prompt-label queue is full") from exc
         self._prompt_label_sequence += 1
+        return event
+
+    def record_xingying_trigger(
+        self,
+        kind: XingYingTriggerKind | str,
+        *,
+        capture_name: str,
+        database_path: str,
+        notes: str,
+        description: str,
+        delay: str,
+        timecode: str,
+        packet_id: str,
+        host_monotonic_ns: int,
+        host_utc_ns: int,
+    ) -> XingYingTriggerEvent:
+        """Reliably enqueue one XINGYING start/stop trigger without touching raw queues."""
+
+        if self._closed or not self._process.is_alive():
+            raise RuntimeError("Collector worker is not recording")
+        trigger_kind = XingYingTriggerKind(kind)
+        event = XingYingTriggerEvent(
+            trial_uuid=self.request.trial_uuid,
+            sequence=self._xingying_trigger_sequence,
+            kind=trigger_kind,
+            capture_name=capture_name,
+            database_path=database_path,
+            notes=notes,
+            description=description,
+            delay=delay,
+            timecode=timecode,
+            packet_id=packet_id,
+            host_monotonic_ns=host_monotonic_ns,
+            host_utc_ns=host_utc_ns,
+        )
+        try:
+            self._xingying_triggers.put(event.model_dump(mode="json"), timeout=0.1)
+        except Full as exc:
+            raise RuntimeError("xingying-trigger queue is full") from exc
+        self._xingying_trigger_sequence += 1
         return event
 
     def poll_events(self, limit: int = 100) -> list[WorkerEvent]:

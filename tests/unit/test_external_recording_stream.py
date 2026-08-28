@@ -24,10 +24,8 @@ from exo_collection.acquisition.stream_proxy import (
 )
 from exo_collection.adapters.base import StartToken, TrialContext
 from exo_collection.domain.events import (
-    EdgeType,
     FrameBatch,
     SampleBatch,
-    SyncPulseEvent,
 )
 from exo_collection.orchestration.models import TrialRunRequest
 from exo_collection.readers.binary_block import BlockBinaryReader
@@ -210,32 +208,6 @@ def test_proxy_discards_previous_trial_residue_before_current_start() -> None:
     proxy.stop()
 
 
-def _sync_descriptor() -> dict[str, object]:
-    return {
-        "device_id": "sync_stream",
-        "modality": "sync_pulse",
-        "display_name": "Sync pulse",
-        "clock_domain": "sync_clock",
-        "event_kind": "sample_batch",
-        "channels": ["voltage"],
-        "units": ["V"],
-        "nominal_rate_hz": 1000.0,
-        "sample_shape": [1],
-        "dtype": np.dtype(np.float64).str,
-        "metadata": {"simulated": True, "source": "external-test"},
-    }
-
-
-def _sync_endpoint(queue: Queue[object]) -> RecordingStreamEndpoint:
-    return RecordingStreamEndpoint(
-        queue=queue,
-        device_id="sync_stream",
-        modality="sync_pulse",
-        descriptor=_sync_descriptor(),
-        configuration_snapshot={"threshold": 2.5},
-    )
-
-
 def _signal_descriptor(modality: str) -> dict[str, object]:
     if modality == "imu":
         channels = (
@@ -297,17 +269,17 @@ def test_run_trial_external_streams_never_build_device_adapters_and_write_raw(
     host_ns = perf_counter_ns()
     utc_ns = time_ns()
     ultrasound_queue: Queue[object] = Queue(maxsize=32)
-    sync_queue: Queue[object] = Queue(maxsize=16)
+    encoder_queue: Queue[object] = Queue(maxsize=16)
     ultrasound_producer = _producer(ultrasound_queue)
-    sync_producer = RecordingStreamProducer(
-        sync_queue,
-        device_id="sync_stream",
-        modality="sync_pulse",
-        descriptor=_sync_descriptor(),
-        configuration_snapshot={"threshold": 2.5},
+    encoder_producer = RecordingStreamProducer(
+        encoder_queue,
+        device_id="encoder_stream",
+        modality="encoder",
+        descriptor=_signal_descriptor("encoder"),
+        configuration_snapshot={"source": "persistent-preview"},
     )
     ultrasound_producer.begin(trial_uuid)
-    sync_producer.begin(trial_uuid)
+    encoder_producer.begin(trial_uuid)
     expected_frames = []
     for channel in range(4):
         frame = _frame(channel, channel).model_copy(
@@ -318,37 +290,21 @@ def test_run_trial_external_streams_never_build_device_adapters_and_write_raw(
         )
         expected_frames.append(frame.data[0].tobytes())
         ultrasound_producer.forward(frame)
-    sync_producer.forward(
+    encoder_producer.forward(
         SampleBatch(
-            device_id="sync_stream",
-            modality="sync_pulse",
-            clock_domain="sync_clock",
+            device_id="encoder_stream",
+            modality="encoder",
+            clock_domain="encoder_clock",
             first_sample_index=0,
             sample_count=8,
             sequence_number=0,
-            sample_rate_hz=1000.0,
+            sample_rate_hz=200.0,
             host_monotonic_ns=host_ns,
             host_utc_ns=utc_ns,
-            data=np.asarray([[0.0], [0.0], [5.0], [5.0], [0.0], [0.0], [0.0], [0.0]]),
+            data=np.zeros((8, 6), dtype=np.float32),
         )
     )
-    sync_producer.forward(
-        SyncPulseEvent(
-            device_id="sync_stream",
-            modality="sync_pulse",
-            clock_domain="sync_clock",
-            pulse_id="pulse-1",
-            source_device="sync_stream",
-            edge_type=EdgeType.RISING,
-            sample_index=2,
-            amplitude=5.0,
-            detection_threshold=2.5,
-            confidence=1.0,
-            detector_version="test",
-            host_monotonic_ns=host_ns + 2_000_000,
-            host_utc_ns=utc_ns + 2_000_000,
-        )
-    )
+
     def forbidden_adapter_build(*_args, **_kwargs):
         raise AssertionError("external stream mode must not build device adapters")
 
@@ -357,7 +313,7 @@ def test_run_trial_external_streams_never_build_device_adapters_and_write_raw(
         data_root=tmp_path,
         device_profile_key="hardware",
         trial_uuid=trial_uuid,
-        enabled_modalities=frozenset({"ultrasound", "sync_pulse"}),
+        enabled_modalities=frozenset({"ultrasound", "encoder"}),
         duration_s=0.001,
         sync_wait_timeout_s=0.001,
     )
@@ -371,7 +327,7 @@ def test_run_trial_external_streams_never_build_device_adapters_and_write_raw(
                 0.08,
                 lambda: (
                     ultrasound_producer.end(trial_uuid),
-                    sync_producer.end(trial_uuid),
+                    encoder_producer.end(trial_uuid),
                 ),
             )
             timer.start()
@@ -389,7 +345,7 @@ def test_run_trial_external_streams_never_build_device_adapters_and_write_raw(
             publish=publish,
             recording_streams={
                 "ultrasound": _endpoint(ultrasound_queue),
-                "sync_pulse": _sync_endpoint(sync_queue),
+                "encoder": _signal_endpoint(encoder_queue, "encoder"),
             },
             # If duration/sync/local-stop incorrectly initiated END waiting,
             # this would fail well before the UI-owned timer closes the gates.
@@ -401,21 +357,28 @@ def test_run_trial_external_streams_never_build_device_adapters_and_write_raw(
 
     assert result.state == "FINALIZED"
     assert result.modality_counts["ultrasound"] == 4
-    assert result.modality_counts["sync_pulse"] == 8
+    assert result.modality_counts["encoder"] == 8
     assert not any(event.event_type.value == "preview" for event in published)
-    with BlockBinaryReader(result.trial_directory / "raw/ultrasound.bin") as reader:
+    with BlockBinaryReader(result.trial_directory / "ultrasound.bin") as reader:
         records = list(reader)
     assert [record.data[0].tobytes() for record in records] == expected_frames
     assert [record.header.flags for record in records] == [4, 5, 6, 7]
-    assert not (result.trial_directory / "raw/imu.h5").exists()
-    assert not (result.trial_directory / "raw/encoder.h5").exists()
-    assert not (result.trial_directory / "reports/imu_encoder_preview.png").exists()
-    manifest = json.loads((result.trial_directory / "manifest.json").read_text("utf-8"))
+    assert (result.trial_directory / "encoder.h5").is_file()
+    # Only streamed modalities produce raw files; the rest of the hardware
+    # profile (imu/mocap/force_plate) must leave no data behind.
+    assert not (result.trial_directory / "imu.h5").exists()
+    assert not (result.trial_directory / "mocap.h5").exists()
+    assert not (result.trial_directory / "force_plate.h5").exists()
+    manifest = json.loads(
+        (result.trial_directory / ".exo" / "manifest.json").read_text("utf-8")
+    )
     assert {item["modality"] for item in manifest["modalities"]} == {
         "ultrasound",
-        "sync_pulse",
+        "encoder",
     }
     artifact_paths = {item["relative_path"] for item in manifest["artifacts"]}
-    assert "raw/imu.h5" not in artifact_paths
-    assert "raw/encoder.h5" not in artifact_paths
-    assert "reports/imu_encoder_preview.png" not in artifact_paths
+    assert "ultrasound.bin" in artifact_paths
+    assert "encoder.h5" in artifact_paths
+    assert "imu.h5" not in artifact_paths
+    assert "mocap.h5" not in artifact_paths
+    assert "force_plate.h5" not in artifact_paths

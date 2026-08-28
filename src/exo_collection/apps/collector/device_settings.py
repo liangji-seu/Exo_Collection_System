@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -340,18 +341,18 @@ class ImuDeviceSettingsDialog(ModalityDeviceSettingsDialog):
         sensor_slots = (*current_ids[:3], *("" for _ in range(max(0, 3 - len(current_ids)))))
         self.id_1_edit = QLineEdit(sensor_slots[0])
         self.id_1_edit.setObjectName("imu_sensor_id_1")
-        self.id_1_edit.setPlaceholderText("IMU1 ID")
-        ids_layout.addWidget(QLabel("IMU1："))
+        self.id_1_edit.setPlaceholderText("左腿(IMU1) ID")
+        ids_layout.addWidget(QLabel("左腿(IMU1)："))
         ids_layout.addWidget(self.id_1_edit)
         self.id_2_edit = QLineEdit(sensor_slots[1])
         self.id_2_edit.setObjectName("imu_sensor_id_2")
-        self.id_2_edit.setPlaceholderText("IMU2 ID")
-        ids_layout.addWidget(QLabel("IMU2："))
+        self.id_2_edit.setPlaceholderText("右腿(IMU2) ID")
+        ids_layout.addWidget(QLabel("右腿(IMU2)："))
         ids_layout.addWidget(self.id_2_edit)
         self.id_3_edit = QLineEdit(sensor_slots[2])
         self.id_3_edit.setObjectName("imu_sensor_id_3")
-        self.id_3_edit.setPlaceholderText("IMU3 ID")
-        ids_layout.addWidget(QLabel("IMU3："))
+        self.id_3_edit.setPlaceholderText("盆骨(IMU3) ID")
+        ids_layout.addWidget(QLabel("盆骨(IMU3)："))
         ids_layout.addWidget(self.id_3_edit)
         # Compatibility aliases for code that used the first positional UI.
         self.id_left_edit = self.id_1_edit
@@ -614,6 +615,21 @@ class MocapDeviceSettingsDialog(ModalityDeviceSettingsDialog):
         self.remote_control_port_spin.setRange(1, 65535)
         self.remote_control_port_spin.setValue(int(current.get("remote_control_port", 7060)))
         form.addRow("远程控制端口：", self.remote_control_port_spin)
+        self.remote_trigger_port_spin = QSpinBox()
+        self.remote_trigger_port_spin.setRange(1, 65535)
+        self.remote_trigger_port_spin.setValue(
+            int(current.get("remote_trigger_port", 7061))
+        )
+        self.remote_trigger_port_spin.setObjectName("mocap_remote_trigger_port")
+        form.addRow("远程触发端口：", self.remote_trigger_port_spin)
+        self.database_path_edit = QLineEdit(
+            str(current.get(
+                "database_path",
+                "C:/Users/Admin/Desktop/SEU_liangji/software/Exo_Collection_Calibration_XINGYING",
+            ))
+        )
+        self.database_path_edit.setObjectName("mocap_database_path")
+        form.addRow("工程目录（DatabasePath）：", self.database_path_edit)
         outer.addLayout(form)
         outer.addWidget(self._button_box())
 
@@ -626,6 +642,8 @@ class MocapDeviceSettingsDialog(ModalityDeviceSettingsDialog):
                 "marker_count_fallback": self.marker_count_spin.value(),
                 "remote_control_ip": self.remote_control_ip_edit.text().strip(),
                 "remote_control_port": self.remote_control_port_spin.value(),
+                "remote_trigger_port": self.remote_trigger_port_spin.value(),
+                "database_path": self.database_path_edit.text().strip(),
             }
         )
 
@@ -816,6 +834,170 @@ class ForcePlateDeviceSettingsDialog(ModalityDeviceSettingsDialog):
         )
 
 
+class MocapForcePlateDeviceSettingsDialog(ModalityDeviceSettingsDialog):
+    """合并「动捕 Marker + 六维力测力台」的设置对话框。
+
+    两者由动捕供应商集成进同一 XING/Nokov Seeker 广播，共享同一服务器 IP，
+    因此设备连接表折叠为一项；本对话框一次同时保存两个模态的覆盖值。
+    """
+
+    # 基类占位；本对话框通过 validated_override 返回 {modality: override} 映射。
+    modality = "mocap"
+
+    def __init__(
+        self,
+        current_mocap: Mapping[str, Any],
+        current_force_plate: Mapping[str, Any],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("动捕与测力台设备设置")
+        self.setMinimumWidth(640)
+        outer = QVBoxLayout(self)
+        intro = QLabel(
+            "动捕 Marker 与测力台六维力由 XINGYING 原生录制为 .cap，"
+            "共享同一 Seeker 服务器。采集脚本不再从 SDK 读取原始数据，"
+            "而是在 Trial 开始/结束时通过「远程控制」端口触发录制。"
+        )
+        intro.setWordWrap(True)
+        outer.addWidget(intro)
+
+        form = QFormLayout()
+        # 共享服务器 IP：同时写入 mocap 与 force_plate 两个覆盖值。
+        self.server_edit = QLineEdit(
+            str(current_mocap.get("server_ip", "10.1.1.198"))
+        )
+        self.server_edit.setObjectName("xingying_server_ip")
+        form.addRow("Seeker 服务器 IP：", self.server_edit)
+        outer.addLayout(form)
+
+        # ── 动捕 Marker ──
+        mocap_box = QGroupBox("动捕 Marker")
+        mocap_form = QFormLayout(mocap_box)
+        self.mocap_rate_spin = QDoubleSpinBox()
+        self.mocap_rate_spin.setRange(1.0, 1000.0)
+        self.mocap_rate_spin.setDecimals(2)
+        self.mocap_rate_spin.setSuffix(" Hz")
+        self.mocap_rate_spin.setValue(
+            float(current_mocap.get("nominal_rate_hz", 100.0))
+        )
+        mocap_form.addRow("后备帧率：", self.mocap_rate_spin)
+        self.marker_count_spin = QSpinBox()
+        self.marker_count_spin.setRange(0, 1000)
+        self.marker_count_spin.setSpecialValueText("自动读取")
+        self.marker_count_spin.setValue(
+            int(current_mocap.get("marker_count_fallback", 0))
+        )
+        mocap_form.addRow("后备 Marker 数量：", self.marker_count_spin)
+        self.remote_control_ip_edit = QLineEdit(
+            str(current_mocap.get("remote_control_ip", "127.0.0.1"))
+        )
+        self.remote_control_ip_edit.setObjectName("mocap_remote_control_ip")
+        mocap_form.addRow("远程控制 IP：", self.remote_control_ip_edit)
+        self.remote_control_port_spin = QSpinBox()
+        self.remote_control_port_spin.setRange(1, 65535)
+        self.remote_control_port_spin.setValue(
+            int(current_mocap.get("remote_control_port", 7060))
+        )
+        mocap_form.addRow("远程控制端口：", self.remote_control_port_spin)
+        self.remote_trigger_port_spin = QSpinBox()
+        self.remote_trigger_port_spin.setRange(1, 65535)
+        self.remote_trigger_port_spin.setValue(
+            int(current_mocap.get("remote_trigger_port", 7061))
+        )
+        self.remote_trigger_port_spin.setObjectName("mocap_remote_trigger_port")
+        mocap_form.addRow("远程触发端口：", self.remote_trigger_port_spin)
+        self.database_path_edit = QLineEdit(
+            str(current_mocap.get(
+                "database_path",
+                "C:/Users/Admin/Desktop/SEU_liangji/software/Exo_Collection_Calibration_XINGYING",
+            ))
+        )
+        self.database_path_edit.setObjectName("mocap_database_path")
+        mocap_form.addRow("工程目录（DatabasePath）：", self.database_path_edit)
+        outer.addWidget(mocap_box)
+
+        # ── 六维力测力台 ──
+        force_box = QGroupBox("六维力测力台")
+        force_form = QFormLayout(force_box)
+        self.force_rate_spin = QDoubleSpinBox()
+        self.force_rate_spin.setRange(1.0, 100_000.0)
+        self.force_rate_spin.setDecimals(2)
+        self.force_rate_spin.setSuffix(" Hz")
+        self.force_rate_spin.setValue(
+            float(current_force_plate.get("sample_rate_hz", 100.0))
+        )
+        force_form.addRow("采样率：", self.force_rate_spin)
+        self.channel_count_spin = QSpinBox()
+        self.channel_count_spin.setRange(1, 80)
+        self.channel_count_spin.setValue(
+            int(current_force_plate.get("channel_count", 6))
+        )
+        force_form.addRow("通道数：", self.channel_count_spin)
+        self.channel_names_edit = QLineEdit(
+            ", ".join(str(item) for item in current_force_plate.get("channel_names", ()))
+        )
+        self.channel_names_edit.setPlaceholderText(
+            "留空自动命名；或输入：fx, fy, fz, mx, my, mz"
+        )
+        force_form.addRow("通道名称（逗号分隔）：", self.channel_names_edit)
+        self.units_edit = QLineEdit(
+            ", ".join(str(item) for item in current_force_plate.get("units", ()))
+        )
+        self.units_edit.setPlaceholderText(
+            "留空自动；或输入：N, N, N, N*m, N*m, N*m"
+        )
+        force_form.addRow("单位（逗号分隔）：", self.units_edit)
+        outer.addWidget(force_box)
+
+        outer.addWidget(self._button_box())
+
+    @property
+    def validated_override(self) -> dict[str, dict[str, Any]]:
+        if self._validated_override is None:
+            raise RuntimeError("device settings have not been accepted")
+        return dict(self._validated_override)
+
+    @Slot()
+    def accept(self) -> None:
+        names = tuple(
+            item.strip()
+            for item in self.channel_names_edit.text().replace("，", ",").split(",")
+            if item.strip()
+        )
+        units = tuple(
+            item.strip()
+            for item in self.units_edit.text().replace("，", ",").split(",")
+            if item.strip()
+        )
+        server_ip = self.server_edit.text().strip()
+        mocap_override = {
+            "server_ip": server_ip,
+            "nominal_rate_hz": self.mocap_rate_spin.value(),
+            "marker_count_fallback": self.marker_count_spin.value(),
+            "remote_control_ip": self.remote_control_ip_edit.text().strip(),
+            "remote_control_port": self.remote_control_port_spin.value(),
+            "remote_trigger_port": self.remote_trigger_port_spin.value(),
+            "database_path": self.database_path_edit.text().strip(),
+        }
+        force_override = {
+            "server_ip": server_ip,
+            "sample_rate_hz": self.force_rate_spin.value(),
+            "channel_count": self.channel_count_spin.value(),
+            "channel_names": names,
+            "units": units,
+        }
+        try:
+            self._validated_override = {
+                "mocap": _validated_override("mocap", mocap_override),
+                "force_plate": _validated_override("force_plate", force_override),
+            }
+        except Exception as exc:
+            QMessageBox.warning(self, "设备设置无效", str(exc))
+            return
+        super().accept()
+
+
 DEVICE_SETTINGS_DIALOGS: dict[str, type[ModalityDeviceSettingsDialog]] = {
     "ultrasound": UltrasoundDeviceSettingsDialog,
     "imu": ImuDeviceSettingsDialog,
@@ -835,6 +1017,7 @@ __all__ = [
     "EmgDeviceSettingsDialog",
     "ForcePlateDeviceSettingsDialog",
     "ModalityDeviceSettingsDialog",
+    "MocapForcePlateDeviceSettingsDialog",
     "SyncPulseDeviceSettingsDialog",
     "UltrasoundDeviceSettingsDialog",
     "UltrasoundInterfaceScanWorker",

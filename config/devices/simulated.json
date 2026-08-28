@@ -19,7 +19,7 @@
       "clock_domain": "imu_sim_clock",
       "parameters": {
         "sample_rate_hz": 200,
-        "device_ids": ["imu_trunk", "imu_left", "imu_right"]
+        "device_ids": ["imu_left_leg", "imu_right_leg", "imu_pelvis"]
       }
     },
     {
@@ -48,15 +48,6 @@
       "required": true,
       "clock_domain": "emg_sim_clock",
       "parameters": {"sample_rate_hz": 1000, "channel_count": 8, "samples_per_batch": 20}
-    },
-    {
-      "id": "sync_pulse_sim",
-      "modality": "sync_pulse",
-      "adapter": "exo_collection.adapters.simulated.SimulatedSyncPulseAdapter",
-      "writer": "hdf5_signal",
-      "required": true,
-      "clock_domain": "sync_pulse_sim_clock",
-      "parameters": {"sample_rate_hz": 1000, "pulse_interval_s": 1.0, "pulse_width_s": 0.02, "first_pulse_s": 0.25}
     }
   ]
 }
