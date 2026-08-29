@@ -7,6 +7,8 @@ layer owns a fixed in-process adapter registry.
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 import json
 from pathlib import Path
 import sys
@@ -663,6 +665,7 @@ def default_device_profile_path(key: Literal["simulated", "hardware"]) -> Path:
     raise FileNotFoundError(f"{key} device profile not found; searched:\n{searched}")
 
 
+@lru_cache(maxsize=8)
 def load_device_profile(
     key_or_path: Literal["simulated", "hardware"] | str | Path = "simulated",
 ) -> DeviceProfileDocument:

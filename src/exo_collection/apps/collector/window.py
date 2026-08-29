@@ -173,9 +173,31 @@ CRITICAL_MODALITIES = frozenset(
 )
 HEALTH_COLUMN_MODALITY = 0
 HEALTH_COLUMN_SAMPLE_COUNT = 1
-HEALTH_COLUMN_RATE = 2
-HEALTH_COLUMN_DROPPED = 3
-HEALTH_COLUMN_SYNC = 4
+HEALTH_COLUMN_NOMINAL_RATE = 2
+HEALTH_COLUMN_RATE = 3
+HEALTH_COLUMN_DROPPED = 4
+HEALTH_COLUMN_SYNC = 5
+
+
+def _nominal_rate_from_device(device: Any) -> float | None:
+    """Extract the nominal/set rate from a device profile's parameters.
+
+    Parameter models name this field inconsistently across modalities
+    (``nominal_rate_hz`` vs ``sample_rate_hz`` vs ``frame_rate_hz``), so we
+    inspect all three names and return the first non-None value.
+    """
+
+    parameters = getattr(device, "parameters", None)
+    if parameters is None:
+        return None
+    dumped = parameters.model_dump(exclude_none=True)
+    for key in ("nominal_rate_hz", "sample_rate_hz", "frame_rate_hz"):
+        value = dumped.get(key)
+        if value is not None:
+            return float(value)
+    return None
+
+
 MAX_PREVIEW_POINTS = 4096
 MAX_TIMELINE_EVENTS = 300
 SIGNAL_RING_CAPACITY = 1000
@@ -932,16 +954,17 @@ class RingTrace:
 
     __slots__ = (
         "_buffer", "_capacity", "_count", "_cursor", "_x",
-        "_marker_lines", "curve", "cursor_line", "plot",
+        "_marker_lines", "_render_stride", "curve", "cursor_line", "plot",
     )
 
     def __init__(
         self, plot: "pg.PlotWidget", pen: str, label: str,
-        *, capacity: int = SIGNAL_RING_CAPACITY,
+        *, capacity: int = SIGNAL_RING_CAPACITY, render_stride: int = 1,
     ) -> None:
         if capacity < 2:
             raise ValueError("ring trace capacity must be at least two")
         self._capacity = int(capacity)
+        self._render_stride = max(1, int(render_stride))
         self._buffer = np.full(self._capacity, np.nan, dtype=np.float64)
         self._x = np.arange(self._capacity, dtype=np.float64)
         self._cursor = 0
@@ -1023,10 +1046,18 @@ class RingTrace:
                 self.plot.removeItem(line)
 
     def _render(self) -> None:
-        display = self._buffer.copy()
-        if self._count == self._capacity:
-            display[self._cursor] = np.nan
-        self.curve.setData(self._x, display)
+        if self._render_stride > 1:
+            step = self._render_stride
+            x = self._x[::step]
+            display = self._buffer[::step].copy()
+            if self._count == self._capacity:
+                display[(self._cursor // step) % display.size] = np.nan
+            self.curve.setData(x, display)
+        else:
+            display = self._buffer.copy()
+            if self._count == self._capacity:
+                display[self._cursor] = np.nan
+            self.curve.setData(self._x, display)
         if self._count:
             self.cursor_line.setPos((self._cursor - 1) % self._capacity)
 
@@ -1081,6 +1112,8 @@ class CollectorWindow(QMainWindow):
 
     trial_started = Signal(object)
     trial_finished = Signal(bool)
+    # XINGYING 起停通知来自后台监听线程；经此信号 queued 到 GUI 线程再弹 toast。
+    xingying_alert_requested = Signal(str)
 
     def __init__(
         self,
@@ -1185,6 +1218,8 @@ class CollectorWindow(QMainWindow):
         self.setStyleSheet(COLLECTOR_STYLESHEET)
         self.resize(1280, 820)
         self._create_ui(Path(data_root).expanduser().resolve())
+        self._populate_nominal_rates()
+        self.xingying_alert_requested.connect(self._append_alert)
         self._prompt_event_filter_installed = False
         application = QApplication.instance()
         if application is not None:
@@ -1759,10 +1794,10 @@ class CollectorWindow(QMainWindow):
         health_layout = QVBoxLayout(health_box)
         health_layout.setContentsMargins(8, 11, 8, 6)
         health_layout.setSpacing(2)
-        self.health_table = QTableWidget(len(HEALTH_ROWS), 5)
+        self.health_table = QTableWidget(len(HEALTH_ROWS), 6)
         self.health_table.setObjectName("health_table")
         self.health_table.setHorizontalHeaderLabels(
-            ["模态", "样本/帧", "实际速率", "丢包", "同步"]
+            ["模态", "样本/帧", "设置频率", "实际速率", "丢包", "同步"]
         )
         self.health_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.health_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
@@ -1775,6 +1810,7 @@ class CollectorWindow(QMainWindow):
                 QTableWidgetItem(MODALITY_DISPLAY_NAMES[modality]),
             )
             self.health_table.setItem(row, HEALTH_COLUMN_SAMPLE_COUNT, QTableWidgetItem("0"))
+            self.health_table.setItem(row, HEALTH_COLUMN_NOMINAL_RATE, QTableWidgetItem("-"))
             self.health_table.setItem(row, HEALTH_COLUMN_RATE, QTableWidgetItem("-"))
             self.health_table.setItem(row, HEALTH_COLUMN_DROPPED, QTableWidgetItem("-"))
             sync_placeholder = QTableWidgetItem("—")
@@ -1790,7 +1826,12 @@ class CollectorWindow(QMainWindow):
             HEALTH_COLUMN_MODALITY,
             QHeaderView.ResizeMode.Stretch,
         )
-        for column in (HEALTH_COLUMN_SAMPLE_COUNT, HEALTH_COLUMN_RATE, HEALTH_COLUMN_DROPPED):
+        for column in (
+            HEALTH_COLUMN_SAMPLE_COUNT,
+            HEALTH_COLUMN_NOMINAL_RATE,
+            HEALTH_COLUMN_RATE,
+            HEALTH_COLUMN_DROPPED,
+        ):
             health_header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
         health_header.setSectionResizeMode(HEALTH_COLUMN_SYNC, QHeaderView.ResizeMode.Fixed)
         self.health_table.setColumnWidth(HEALTH_COLUMN_SYNC, 56)
@@ -2026,6 +2067,7 @@ class CollectorWindow(QMainWindow):
                     _SIGNAL_COLORS[local_index],
                     f"EMG 通道 {group_index * 8 + 1}–{group_index * 8 + 8}",
                     capacity=EMG_PREVIEW_RING_CAPACITY,
+                    render_stride=4,
                 )
                 if shared_cursor is None:
                     shared_cursor = trace.cursor_line
@@ -2067,6 +2109,29 @@ class CollectorWindow(QMainWindow):
 
     def _selected_device_profile_key(self) -> str:
         return self._settings.device_profile_key
+
+    def _populate_nominal_rates(self) -> None:
+        """预填健康表「设置频率」列：直接读设备配置的标称频率。
+
+        该列是静态配置值，未连接设备时也应可见（例如动捕/测力台硬件模式
+        100 Hz）。运行时 health 事件仍会以实际设备标称值覆盖它。
+        """
+
+        try:
+            profile = load_device_profile(self._selected_device_profile_key())
+            devices = profile.by_modality()
+        except Exception as exc:  # noqa: BLE001 - 预填失败不应阻断 UI 启动
+            LOG.warning("预填设置频率失败: %s", exc)
+            return
+        for modality, row in self._health_rows.items():
+            device = devices.get(modality)
+            if device is None:
+                continue
+            nominal = _nominal_rate_from_device(device)
+            if nominal is not None:
+                self.health_table.item(row, HEALTH_COLUMN_NOMINAL_RATE).setText(
+                    f"{nominal:.1f} Hz"
+                )
 
     @staticmethod
     def _condition_tooltip(condition: Mapping[str, Any]) -> str:
@@ -2217,6 +2282,7 @@ class CollectorWindow(QMainWindow):
         self._settings.set_device_profile_key("hardware")
         self._invalidate_preflight()
         self._render_device_profile()
+        self._populate_nominal_rates()
         display = MODALITY_DISPLAY_NAMES[modality]
         self.statusBar().showMessage(
             f"{display}设备设置已保存；下次启动将自动恢复。", 8000
@@ -2257,6 +2323,7 @@ class CollectorWindow(QMainWindow):
         self._settings.set_device_profile_key("hardware")
         self._invalidate_preflight()
         self._render_device_profile()
+        self._populate_nominal_rates()
         self.statusBar().showMessage(
             "动捕与测力台设备设置已保存；下次启动将自动恢复。", 8000
         )
@@ -2851,7 +2918,7 @@ class CollectorWindow(QMainWindow):
             return
         name = str(payload.get("capture_name") or "")
         display = "开始" if trigger_kind is XingYingTriggerKind.CAPTURE_START else "停止"
-        self._append_alert(f"收到 XINGYING {display}通知：{name}")
+        self.xingying_alert_requested.emit(f"收到 XINGYING {display}通知：{name}")
         LOG.info(
             "收到 XINGYING %s name=%s host_monotonic_ns=%d",
             kind,
@@ -2874,7 +2941,7 @@ class CollectorWindow(QMainWindow):
                 host_utc_ns=host_utc_ns,
             )
         except Exception as exc:
-            self._append_alert(
+            self.xingying_alert_requested.emit(
                 f"写入 XINGYING 触发事件失败：{type(exc).__name__}: {exc}"
             )
             LOG.error("写入 XINGYING 触发事件失败: %s", exc)
@@ -3433,6 +3500,10 @@ class CollectorWindow(QMainWindow):
         rate = payload.get("actual_sample_rate_hz")
         self.health_table.item(row, HEALTH_COLUMN_RATE).setText(
             "-" if rate is None else f"{float(rate):.1f} Hz"
+        )
+        nominal = payload.get("nominal_sample_rate_hz")
+        self.health_table.item(row, HEALTH_COLUMN_NOMINAL_RATE).setText(
+            "-" if nominal is None else f"{float(nominal):.1f} Hz"
         )
         dropped = payload.get("dropped_packets")
         self.health_table.item(row, HEALTH_COLUMN_DROPPED).setText(
@@ -4089,6 +4160,10 @@ class CollectorWindow(QMainWindow):
         rate = payload.get("actual_sample_rate_hz")
         self.health_table.item(row, HEALTH_COLUMN_RATE).setText(
             "-" if rate is None else f"{float(rate):.1f} Hz"
+        )
+        nominal = payload.get("nominal_sample_rate_hz")
+        self.health_table.item(row, HEALTH_COLUMN_NOMINAL_RATE).setText(
+            "-" if nominal is None else f"{float(nominal):.1f} Hz"
         )
         dropped = payload.get("dropped_packets")
         self.health_table.item(row, HEALTH_COLUMN_DROPPED).setText(

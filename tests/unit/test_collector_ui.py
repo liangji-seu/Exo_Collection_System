@@ -1467,9 +1467,9 @@ def test_collector_locks_condition_polls_events_and_finalizes(
     imu_row = window._health_rows["imu"]
     assert window.health_table.item(imu_row, 0).text() == "IMU"
     assert window.health_table.item(imu_row, 1).text() == "123"
-    assert window.health_table.item(imu_row, 2).text() == "198.5 Hz"
-    assert window.health_table.item(imu_row, 3).text() == "3"
-    assert window.health_table.item(imu_row, 4).text() == "—"
+    assert window.health_table.item(imu_row, 3).text() == "198.5 Hz"
+    assert window.health_table.item(imu_row, 4).text() == "3"
+    assert window.health_table.item(imu_row, 5).text() == "—"
     assert "设备状态：DEGRADED" in window.health_table.item(imu_row, 0).toolTip()
     assert "preview delay" in caplog.text
 
@@ -2587,11 +2587,11 @@ def test_health_table_has_modalities_and_prompt_label_counters(tmp_path: Path) -
     """Compact table includes both keyboard-label counters."""
     _app, window, _created = _window_with_fake(tmp_path)
     assert window.health_table.rowCount() == 9
-    assert window.health_table.columnCount() == 5
+    assert window.health_table.columnCount() == 6
     assert [
         window.health_table.horizontalHeaderItem(column).text()
         for column in range(window.health_table.columnCount())
-    ] == ["模态", "样本/帧", "实际速率", "丢包", "同步"]
+    ] == ["模态", "样本/帧", "设置频率", "实际速率", "丢包", "同步"]
     modalities_displayed = set()
     for row in range(window.health_table.rowCount()):
         modalities_displayed.add(window.health_table.item(row, 0).text())
