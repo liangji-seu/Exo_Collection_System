@@ -80,7 +80,7 @@ def _validate_scanned_manifest_location(
     Two canonical layouts are supported:
 
     * **Human-readable** (current):
-      ``{root}/{project}/{subject}/{condition}/session{repeat}_{ts}/.exo/manifest.json``
+      ``{root}/{subject}/{project}/{condition}/session{repeat}_{ts}/.exo/manifest.json``
     * **Legacy UUID** (pre-0.2.0):
       ``{root}/{project}/{subject}/trials/{trial_uuid}/manifest.json``
     """
@@ -98,8 +98,8 @@ def _validate_scanned_manifest_location(
         # ------------------------------------------------------------------
         trial_directory = path.parent.parent  # session{repeat}_{timestamp}
         condition_directory = trial_directory.parent
-        subject_directory = condition_directory.parent
-        project_directory = subject_directory.parent
+        project_directory = condition_directory.parent
+        subject_directory = project_directory.parent
         # The innermost condition directory merely groups trials — its name
         # is not an identity claim, so skip it.
         del condition_directory

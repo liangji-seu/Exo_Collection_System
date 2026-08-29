@@ -101,7 +101,7 @@ _TYPE_LABELS = {
     "project": "项目",
     "subject": "受试者",
     # Catalog keeps these compatibility type names, while the visible tree
-    # mirrors the current on-disk project/subject/condition/session layout.
+    # mirrors the current on-disk subject/project/condition/session layout.
     "session": "工况",
     "trial": "Session",
     "modality": "模态数据集",

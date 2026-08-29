@@ -240,11 +240,11 @@ def test_tree_groups_session_directories_under_one_condition(tmp_path: Path) -> 
     second = TrialManifest.model_validate(second_payload)
 
     first_path = (
-        tmp_path / "F" / "001" / "WALK_LEVEL" /
+        tmp_path / "001" / "F" / "WALK_LEVEL" /
         "session1_20260715_120000" / ".exo" / "manifest.json"
     )
     second_path = (
-        tmp_path / "F" / "001" / "WALK_LEVEL" /
+        tmp_path / "001" / "F" / "WALK_LEVEL" /
         "session2_20260715_120500" / ".exo" / "manifest.json"
     )
     with Catalog(tmp_path / "catalog.sqlite3") as catalog:

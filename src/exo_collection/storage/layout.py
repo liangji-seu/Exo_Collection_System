@@ -66,7 +66,7 @@ class TrialLayout:
 
     The operator-visible hierarchy is::
 
-        {data_root}/{project}/{subject}/{condition}/session{repeat}_{timestamp}/
+        {data_root}/{subject}/{project}/{condition}/session{repeat}_{timestamp}/
 
     All internal bookkeeping (manifest, checksums, logs, quality reports,
     session metadata) lives under a single ``.exo/`` subdirectory inside the
@@ -142,10 +142,10 @@ class TrialLayout:
 
     @property
     def subject_directory(self) -> Path:
-        """Top-level grouping: ``{root}/{project}/{subject}/``."""
+        """Top-level grouping: ``{root}/{subject}/{project}/``."""
         project_dir = self.project_partition or str(self.project_uuid)
         subject_dir = self.subject_code or str(self.subject_uuid)
-        return self.dataset_root / project_dir / subject_dir
+        return self.dataset_root / subject_dir / project_dir
 
     @property
     def _trial_leaf_name(self) -> str:

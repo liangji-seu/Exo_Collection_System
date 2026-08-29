@@ -481,13 +481,13 @@ def test_remote_directory_is_exact_trial_path_relative_to_data_root(
     )
 
 
-def test_readable_project_subject_condition_session_path_is_preserved(
+def test_readable_subject_project_condition_session_path_is_preserved(
     tmp_path: Path,
 ) -> None:
     data_root = tmp_path / "data"
     plan = build_upload_plan(_publish_trial(tmp_path / "fixture"))
     readable_trial = (
-        data_root / "T" / "001" / "WALK_LEVEL" / "session1_20260719_070112"
+        data_root / "001" / "T" / "WALK_LEVEL" / "session1_20260719_070112"
     )
     readable_trial.mkdir(parents=True)
     plan = replace(plan, trial_directory=readable_trial)
@@ -495,7 +495,7 @@ def test_readable_project_subject_condition_session_path_is_preserved(
     remote = build_remote_trial_directory("/srv/archive/data", plan, data_root)
 
     assert remote == (
-        "/srv/archive/data/T/001/WALK_LEVEL/session1_20260719_070112"
+        "/srv/archive/data/001/T/WALK_LEVEL/session1_20260719_070112"
     )
 
 

@@ -133,7 +133,7 @@ def test_finalization_rejects_mixed_case_unpublished_descendant(tmp_path) -> Non
     "partition",
     ["F", "T", "F_BASE", "F_STEADY", "F_TRANSIENT"],
 )
-def test_project_partition_is_a_readable_top_level_folder(
+def test_project_partition_is_a_readable_folder(
     tmp_path, partition: str
 ) -> None:
     layout = TrialLayout.build(
@@ -145,7 +145,11 @@ def test_project_partition_is_a_readable_top_level_folder(
         project_partition=partition,
     )
 
-    assert layout.final_directory.relative_to(tmp_path).parts[0] == partition
+    relative = layout.final_directory.relative_to(tmp_path)
+    # Hierarchy is {subject}/{project}/{condition}/session... — with no subject
+    # code supplied, the subject level falls back to its UUID, so the project
+    # partition is the second segment.
+    assert relative.parts[1] == partition
     assert str(layout.project_uuid) not in layout.final_directory.parts
 
 
@@ -163,8 +167,10 @@ def test_subject_code_is_the_readable_folder_without_becoming_the_primary_key(
         subject_code="001",
     )
 
-    relative = layout.session_directory.relative_to(tmp_path)
-    assert relative.parts[:2] == ("F", "001")
+    relative = layout.subject_directory.relative_to(tmp_path)
+    # Hierarchy is {subject}/{project}: the subject code is the first,
+    # human-readable folder and the subject UUID never appears in the path.
+    assert relative.parts == ("001", "F")
     assert str(subject_uuid) not in relative.parts
 
 
