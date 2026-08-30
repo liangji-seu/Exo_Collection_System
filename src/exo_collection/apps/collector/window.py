@@ -97,6 +97,7 @@ from exo_collection.apps.collector.preflight import (
 )
 from exo_collection.apps.collector.elapsed_timer import ElapsedTimerPanel
 from exo_collection.apps.collector.preview_workspace import PreviewWorkspace
+from exo_collection.apps.collector.xingying_recording import XingYingRecordingPanel
 from exo_collection.apps.collector.theme import COLLECTOR_STYLESHEET
 from exo_collection.configuration import (
     SharedAppSettings,
@@ -224,7 +225,6 @@ ENCODER_PREVIEW_LABELS = (
 )
 # Noraxon EMG runs at 4000 Hz; 4 s of signal = 16 000 samples per ring window.
 EMG_PREVIEW_RING_CAPACITY = 16_000
-FORCE_PLATE_PREVIEW_LABELS = ("fx", "fy", "fz", "mx", "my", "mz")
 _SIGNAL_COLORS = (
     "#0d6efd", "#dc3545", "#198754", "#d97706",
     "#6f42c1", "#0dcaf0", "#fd7e14", "#20c997",
@@ -236,11 +236,6 @@ _ENCODER_METRICS = (
 )
 # Five-times magnification relative to the original +/-65 rad preview range.
 _ENCODER_SHARED_Y_RANGE = (-13.0, 13.0)
-# Force plate (N / N·m) preview range.  A still-standing ~80 kg subject reads
-# roughly Fz ≈ -800 N, so a fixed +/-1000 span keeps the trace readable.
-_FORCE_PLATE_SHARED_Y_RANGE = (-1000.0, 1000.0)
-# Moment axes (Mx/My/Mz) stay in single digits; keep a tighter fixed span.
-_FORCE_PLATE_MOMENT_Y_RANGE = (-10.0, 10.0)
 DEFAULT_OPERATOR = "not_recorded"
 DEFAULT_CONTROLLED_STOP_TIMEOUT_S = 30.0
 
@@ -1208,8 +1203,7 @@ class CollectorWindow(QMainWindow):
         self._emg_traces: dict[str, RingTrace] = {}
         self._emg_grid_layout: QVBoxLayout | None = None
         self._emg_grid_content: QWidget | None = None
-        self._force_plate_traces: dict[str, RingTrace] = {}
-        self._mocap_table: QTableWidget | None = None
+        self._xingying_status_panel: XingYingRecordingPanel | None = None
         self.preview_workspace: PreviewWorkspace | None = None
         self._elapsed_timer: ElapsedTimerPanel | None = None
         self._preview_focus_previous_sizes: list[int] | None = None
@@ -1407,7 +1401,6 @@ class CollectorWindow(QMainWindow):
             *self._imu_traces.values(),
             *self._enc_traces.values(),
             *self._emg_traces.values(),
-            *self._force_plate_traces.values(),
         ):
             plot_identity = id(trace.plot)
             if plot_identity in marked_plots:
@@ -1998,71 +1991,11 @@ class CollectorWindow(QMainWindow):
             enc_grid,
         )
 
-        mocap_grid = QGroupBox("动捕 Marker · 当前坐标")
-        mocap_grid.setMinimumHeight(120)
-        mocap_layout = QVBoxLayout(mocap_grid)
-        mocap_layout.setContentsMargins(0, 0, 0, 0)
-        mocap_table = QTableWidget(0, 4, mocap_grid)
-        mocap_table.setObjectName("mocap_marker_table")
-        mocap_table.setHorizontalHeaderLabels(["Marker", "X (mm)", "Y (mm)", "Z (mm)"])
-        mocap_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        mocap_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
-        mocap_table.setAlternatingRowColors(True)
-        mocap_table.verticalHeader().setVisible(False)
-        mocap_header = mocap_table.horizontalHeader()
-        mocap_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for column in range(1, 4):
-            mocap_header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
-        self._mocap_table = mocap_table
-        mocap_layout.addWidget(mocap_table)
-        preview_workspace.register_panel("mocap", "动捕 Marker 数据", mocap_grid)
-
-        force_grid = QGroupBox("测力台 · 三轴力 / 力矩")
-        force_grid.setObjectName("force_plate_grid")
-        force_grid.setMinimumHeight(120)
-        force_layout = QHBoxLayout(force_grid)
-        force_layout.setContentsMargins(0, 0, 0, 0)
-        force_groups = (
-            ("force", "三轴力", ("fx", "fy", "fz"), "N", _FORCE_PLATE_SHARED_Y_RANGE),
-            ("moment", "力矩", ("mx", "my", "mz"), "N·m", _FORCE_PLATE_MOMENT_Y_RANGE),
-        )
-        for group_key, title, labels, unit, y_range in force_groups:
-            plot = HoverDetailsPlotWidget(title=title)
-            plot.setObjectName(f"force_plate_{group_key}")
-            legend = plot.addLegend(offset=(5, 5))
-            shared_cursor = None
-            for index, label in enumerate(labels):
-                trace = RingTrace(
-                    plot,
-                _SIGNAL_COLORS[index],
-                    title,
-                    capacity=500,
-                )
-                if shared_cursor is None:
-                    shared_cursor = trace.cursor_line
-                else:
-                    plot.removeItem(trace.cursor_line)
-                    trace.cursor_line = shared_cursor
-                legend.addItem(trace.curve, label.upper())
-                self._force_plate_traces[label] = trace
-            plot.setLabel("left", title, units=unit)
-            lower, upper = y_range
-            span = upper - lower
-            plot.setYRange(lower, upper, padding=0)
-            plot.setLimits(
-                yMin=lower,
-                yMax=upper,
-                minYRange=span,
-                maxYRange=span,
-            )
-            plot.setMouseEnabled(x=False, y=False)
-            force_layout.addWidget(plot, 1)
-        # Pre-register the force-plate Y range so auto-scale does not override it.
-        self._preview_y_ranges["force_plate"] = _FORCE_PLATE_SHARED_Y_RANGE
+        self._xingying_status_panel = XingYingRecordingPanel()
         preview_workspace.register_panel(
-            "force_plate",
-            "测力台数据",
-            force_grid,
+            "xingying",
+            "动捕 + 测力台（XINGYING）",
+            self._xingying_status_panel,
         )
 
         emg_grid = QGroupBox("表面肌电 EMG · 每通道一个窗口")
@@ -2843,7 +2776,9 @@ class CollectorWindow(QMainWindow):
                 ),
             )
             if self.preview_workspace is not None:
-                self.preview_workspace.set_stream_state(modality, "connected")
+                self.preview_workspace.set_stream_state("xingying", "connected")
+        if self._xingying_status_panel is not None:
+            self._xingying_status_panel.set_connected(True)
         self._update_connect_button_state()
         self._update_start_button()
         self._append_alert(
@@ -2865,7 +2800,10 @@ class CollectorWindow(QMainWindow):
             device_id, simulated = self._get_modality_info(modality)
             self._set_preview_status(modality, "未连接", device_id, simulated)
             if self.preview_workspace is not None:
-                self.preview_workspace.set_stream_state(modality, "disconnected")
+                self.preview_workspace.set_stream_state("xingying", "disconnected")
+        if self._xingying_status_panel is not None:
+            self._xingying_status_panel.set_connected(False)
+            self._xingying_status_panel.set_recording(False)
         self._xingying_remote = None
         self._xingying_capture_name = None
         self._update_connect_button_state()
@@ -2988,6 +2926,8 @@ class CollectorWindow(QMainWindow):
             LOG.error("XINGYING CaptureStart 失败: %s", exc)
             return
         self._xingying_capture_name = name
+        if self._xingying_status_panel is not None:
+            self._xingying_status_panel.set_recording(True)
         self._append_alert(f"已触发 XINGYING 录制：{name} → {database_path}")
         LOG.info("XINGYING CaptureStart name=%s path=%s", name, database_path)
 
@@ -2996,6 +2936,8 @@ class CollectorWindow(QMainWindow):
         remote = self._xingying_remote
         name = self._xingying_capture_name
         self._xingying_capture_name = None
+        if self._xingying_status_panel is not None:
+            self._xingying_status_panel.set_recording(False)
         if remote is None or not name:
             return
         # XINGYING 的 7061「捕获--触发」在停止时可能不广播 CaptureStop（实测只
@@ -4313,27 +4255,6 @@ class CollectorWindow(QMainWindow):
             for label, values in prepared_series:
                 self._enc_traces[label].append(values)
             return
-        if modality == "mocap":
-            self._update_mocap_table(event.payload)
-            return
-        if modality == "force_plate":
-            prepared_series = []
-            for label, values in self._preview_series(
-                event.payload,
-                FORCE_PLATE_PREVIEW_LABELS,
-            ):
-                numeric = self._numeric_values(values)
-                normalized_label = label.strip().lower()
-                if normalized_label in self._force_plate_traces and numeric:
-                    prepared_series.append((normalized_label, numeric))
-            self._lock_preview_y_axis(
-                "force_plate",
-                [values for _, values in prepared_series],
-                [trace.plot for trace in self._force_plate_traces.values()],
-            )
-            for label, values in prepared_series:
-                self._force_plate_traces[label].append(values)
-            return
         if modality == "emg":
             channels = event.payload.get("channels")
             if not isinstance(channels, (list, tuple)):
@@ -4405,62 +4326,6 @@ class CollectorWindow(QMainWindow):
             self._emg_traces[text] = trace
         grid_layout.addWidget(container)
         self._emg_grid_content = container
-
-    def _update_mocap_table(self, payload: Mapping[str, Any]) -> None:
-        """Render every latest marker coordinate without chart downsampling."""
-
-        table = self._mocap_table
-        if table is None:
-            return
-        raw_names = payload.get("marker_names")
-        if not isinstance(raw_names, (list, tuple)):
-            raw_names = payload.get("labels")
-        names = (
-            [str(item) for item in raw_names]
-            if isinstance(raw_names, (list, tuple))
-            else []
-        )
-        raw_xyz = payload.get("latest_xyz_mm")
-        xyz_rows = raw_xyz if isinstance(raw_xyz, (list, tuple)) else ()
-        channels = payload.get("channels")
-        marker_count = max(
-            len(names),
-            len(xyz_rows),
-            int(payload.get("marker_count") or 0),
-        )
-        if marker_count <= 0 and isinstance(channels, (list, tuple)):
-            marker_count = len(channels)
-        table.setRowCount(marker_count)
-        for row in range(marker_count):
-            name = names[row] if row < len(names) else f"marker_{row + 1:02d}"
-            values: list[float | None] = [None, None, None]
-            if row < len(xyz_rows):
-                raw_row = xyz_rows[row]
-                if isinstance(raw_row, (list, tuple)):
-                    for axis in range(min(3, len(raw_row))):
-                        try:
-                            number = float(raw_row[axis])
-                        except (TypeError, ValueError):
-                            continue
-                        if math.isfinite(number):
-                            values[axis] = number
-            elif isinstance(channels, (list, tuple)) and row < len(channels):
-                z_values = self._numeric_values(channels[row])
-                if z_values:
-                    values[2] = z_values[-1]
-            cells = [
-                name,
-                *[
-                    "—" if value is None else f"{value:.3f}"
-                    for value in values
-                ],
-            ]
-            for column, text in enumerate(cells):
-                item = table.item(row, column)
-                if item is None:
-                    item = QTableWidgetItem()
-                    table.setItem(row, column, item)
-                item.setText(text)
 
     def _lock_preview_y_axis(self, modality: str, series: list[list[float]],
                               plots: list["pg.PlotWidget"]) -> None:

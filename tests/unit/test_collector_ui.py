@@ -48,6 +48,7 @@ from exo_collection.apps.collector.window import (
     XINGYING_GROUP_KEY,
     XINGYING_LINKED_MODALITIES,
 )
+from exo_collection.apps.collector.xingying_recording import XingYingRecordingPanel
 from exo_collection.configuration import (
     SharedAppSettings,
 )
@@ -1121,18 +1122,12 @@ def test_preview_y_axes_lock_once_and_are_shared_per_modality(tmp_path: Path) ->
         "encoder": [trace.plot for trace in window._enc_traces.values()],
     }
     locked = dict(window._preview_y_ranges)
-    assert set(locked) == {"ultrasound", "imu", "encoder", "force_plate"}
+    assert set(locked) == {"ultrasound", "imu", "encoder"}
     for modality, plots in plot_groups.items():
         expected = locked[modality]
         for plot in plots:
             assert np.allclose(plot.getViewBox().viewRange()[1], expected)
             assert plot.getViewBox().state["mouseEnabled"] == [False, False]
-    # The force plate locks its two groups at different fixed spans: force axes
-    # at ±1000 and moment axes at ±10.
-    for label, trace in window._force_plate_traces.items():
-        expected = (-10.0, 10.0) if label in ("mx", "my", "mz") else locked["force_plate"]
-        assert np.allclose(trace.plot.getViewBox().viewRange()[1], expected)
-        assert trace.plot.getViewBox().state["mouseEnabled"] == [False, False]
 
     # Later out-of-range samples must not silently rescale any vertical axis.
     window._handle_worker_event(
@@ -1293,8 +1288,7 @@ def test_preview_workspace_registers_all_dynamic_windows(
     workspace = window.preview_workspace
     assert workspace is not None
     assert set(workspace.modalities) == {
-        "mocap",
-        "force_plate",
+        "xingying",
         "emg",
         "ultrasound",
         "imu",
@@ -1372,58 +1366,13 @@ def test_emg_preview_builds_one_window_per_channel(tmp_path: Path) -> None:
     window.close()
 
 
-def test_mocap_preview_table_displays_every_marker_xyz(tmp_path: Path) -> None:
-    _app, window, _created = _window_with_fake(tmp_path)
-    names = [f"M{index + 1}" for index in range(12)]
-    xyz = [[index + 0.1, index + 0.2, index + 0.3] for index in range(12)]
-    window._handle_worker_event(
-        WorkerEvent(
-            event_type=WorkerEventType.PREVIEW,
-            modality="mocap",
-            payload={
-                "marker_names": names,
-                "marker_count": len(names),
-                "latest_xyz_mm": xyz,
-            },
-        )
-    )
-    table = window._mocap_table
-    assert table is not None
-    assert table.rowCount() == 12
-    assert table.item(11, 0).text() == "M12"
-    assert table.item(11, 1).text() == "11.100"
-    assert table.item(11, 2).text() == "11.200"
-    assert table.item(11, 3).text() == "11.300"
-    window.close()
-
-
-def test_force_plate_window_binds_six_axis_force_preview(
-    tmp_path: Path,
-) -> None:
-    _app, window, _created = _window_with_fake(tmp_path)
-    window._handle_worker_event(
-        WorkerEvent(
-            event_type=WorkerEventType.PREVIEW,
-            modality="force_plate",
-            payload={
-                "labels": ["fx", "fy", "fz", "mx", "my", "mz"],
-                "channels": [[index, index + 0.5] for index in range(6)],
-            },
-        )
-    )
-    assert window._force_plate_traces["fx"]._buffer[1] == 0.5
-    assert window._force_plate_traces["fz"]._buffer[1] == 2.5
-    assert window._force_plate_traces["mz"]._buffer[1] == 5.5
-    window.close()
-
-
 def test_preview_workspace_layout_is_persisted(tmp_path: Path) -> None:
     app, window, _created = _window_with_fake(tmp_path)
     window.show()
     app.processEvents()
     workspace = window.preview_workspace
     assert workspace is not None
-    workspace.hide_panel("force_plate")
+    workspace.hide_panel("xingying")
     window._save_preview_workspace_layout()
     assert not window._settings.preview_workspace_state.isEmpty()
     window.close()
@@ -1433,8 +1382,8 @@ def test_preview_workspace_layout_is_persisted(tmp_path: Path) -> None:
     app.processEvents()
     restored = restored_window.preview_workspace
     assert restored is not None
-    assert restored.dock_for("force_plate") is not None
-    assert not restored.dock_for("force_plate").isVisible()  # type: ignore[union-attr]
+    assert restored.dock_for("xingying") is not None
+    assert not restored.dock_for("xingying").isVisible()  # type: ignore[union-attr]
     assert restored.dock_for("ultrasound").isVisible()  # type: ignore[union-attr]
     restored_window.close()
 
@@ -3057,7 +3006,7 @@ def test_preview_plot_text_is_hidden_until_hover(tmp_path: Path) -> None:
     app.processEvents()
 
     plots = window.findChildren(HoverDetailsPlotWidget)
-    assert len(plots) == 11
+    assert len(plots) == 9
     for plot in plots:
         plot_item = plot.getPlotItem()
         assert not plot_item.titleLabel.isVisible()
@@ -3095,6 +3044,64 @@ def test_preview_plot_text_is_hidden_until_hover(tmp_path: Path) -> None:
     assert not emg_item.getAxis("bottom").label.isVisible()
     assert not emg_item.getAxis("left").label.isVisible()
     assert not emg_item.legend.isVisible()
+    window.close()
+
+
+# ── XINGYING 录制状态面板（走马灯） ──
+
+
+def test_xingying_recording_panel_idle_and_connected_states() -> None:
+    panel = XingYingRecordingPanel()
+    assert panel._status_label.text() == "未连接"
+    assert not panel.recording
+
+    panel.set_connected(True)
+    assert panel._status_label.text() == "已连接 · 等待采集"
+    assert not panel.recording
+
+    panel.set_connected(False)
+    assert panel._status_label.text() == "未连接"
+
+
+def test_xingying_recording_panel_recording_animation_advances() -> None:
+    panel = XingYingRecordingPanel()
+    panel.set_connected(True)
+    panel.set_recording(True)
+    assert panel.recording
+    assert panel._status_label.text() == "● 正在录制 .cap"
+    assert panel._timer.isActive()
+
+    positions = [panel._position]
+    for _ in range(4):
+        panel._tick()
+        positions.append(panel._position)
+    # 流水灯来回扫动：位置应随时间变化，且始终在点阵范围内。
+    assert len(set(positions)) > 1
+    assert all(0 <= position < len(panel._dots) for position in positions)
+
+    panel.set_recording(False)
+    assert not panel.recording
+    assert not panel._timer.isActive()
+    # 停止录制后回到已连接状态，而不是未连接。
+    assert panel._status_label.text() == "已连接 · 等待采集"
+
+
+def test_xingying_recording_panel_is_registered_as_single_dock(
+    tmp_path: Path,
+) -> None:
+    app, window, _created = _window_with_fake(tmp_path)
+    window.show()
+    app.processEvents()
+
+    panel = window._xingying_status_panel
+    assert panel is not None
+    workspace = window.preview_workspace
+    assert workspace is not None
+    assert workspace.dock_for("xingying") is not None
+    assert "xingying" in set(workspace.modalities)
+    # 旧的动捕 Marker 与测力台预览 dock 已移除。
+    assert "mocap" not in set(workspace.modalities)
+    assert "force_plate" not in set(workspace.modalities)
     window.close()
 
 
