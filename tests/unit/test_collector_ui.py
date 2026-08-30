@@ -1240,7 +1240,7 @@ def test_trial_start_preserves_all_live_preview_curves(tmp_path: Path) -> None:
     window.close()
 
 
-def test_preview_workspace_registers_six_dynamic_modality_windows(
+def test_preview_workspace_registers_all_dynamic_windows(
     tmp_path: Path,
 ) -> None:
     app, window, _created = _window_with_fake(tmp_path)
@@ -1256,6 +1256,7 @@ def test_preview_workspace_registers_six_dynamic_modality_windows(
         "ultrasound",
         "imu",
         "encoder",
+        "timer",
     }
     for modality in workspace.modalities:
         dock = window.findChild(QDockWidget, f"preview_dock_{modality}")

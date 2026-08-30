@@ -95,6 +95,7 @@ from exo_collection.apps.collector.preflight import (
     CollectorPreflightWorker,
     run_simulated_preflight,
 )
+from exo_collection.apps.collector.elapsed_timer import ElapsedTimerPanel
 from exo_collection.apps.collector.preview_workspace import PreviewWorkspace
 from exo_collection.apps.collector.theme import COLLECTOR_STYLESHEET
 from exo_collection.configuration import (
@@ -1209,6 +1210,7 @@ class CollectorWindow(QMainWindow):
         self._force_plate_traces: dict[str, RingTrace] = {}
         self._mocap_table: QTableWidget | None = None
         self.preview_workspace: PreviewWorkspace | None = None
+        self._elapsed_timer: ElapsedTimerPanel | None = None
         self._preview_focus_previous_sizes: list[int] | None = None
         self._preview_y_ranges: dict[str, tuple[float, float]] = {}
         self._timeline_started_at = time.monotonic()
@@ -2091,6 +2093,14 @@ class CollectorWindow(QMainWindow):
             plot.setLabel("left", "幅值")
             emg_layout.addWidget(plot, 1)
         preview_workspace.register_panel("emg", "EMG 数据", emg_grid)
+
+        self._elapsed_timer = ElapsedTimerPanel()
+        preview_workspace.register_panel(
+            "timer",
+            "计时器",
+            self._elapsed_timer,
+            visible_by_default=False,
+        )
 
         body.addWidget(preview_workspace)
         body.setStretchFactor(0, 0)
@@ -4652,8 +4662,14 @@ class CollectorWindow(QMainWindow):
             )
 
     def _set_trial_state(self, state: str) -> None:
+        previous = self._worker_state
         normalized = state.strip().upper() or "UNKNOWN"
         self._worker_state = normalized
+        if self._elapsed_timer is not None:
+            if normalized == "RECORDING" and previous != "RECORDING":
+                self._elapsed_timer.start_recording()
+            elif previous == "RECORDING" and normalized != "RECORDING":
+                self._elapsed_timer.set_recording(False)
         display = {
             "IDLE": "未连接",
             "DISCONNECTED": "未连接",
