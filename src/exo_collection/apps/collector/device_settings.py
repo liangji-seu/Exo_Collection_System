@@ -724,28 +724,22 @@ class EmgDeviceSettingsDialog(ModalityDeviceSettingsDialog):
         channels = self._resolve_channels(current)
         self._channel_name_edits: list[QLineEdit] = []
         self._channel_unit_combos: list[QComboBox] = []
+        self._channel_rows: list[QWidget] = []
         channel_box = QWidget()
-        channel_layout = QVBoxLayout(channel_box)
-        channel_layout.setContentsMargins(0, 0, 0, 0)
-        channel_layout.setSpacing(6)
-        for index, (name, unit_id) in enumerate(channels, start=1):
-            row = QHBoxLayout()
-            row.setSpacing(8)
-            name_edit = QLineEdit(name)
-            name_edit.setObjectName(f"emg_channel_name_{index}")
-            name_edit.setPlaceholderText(f"肌肉 {index} 名称")
-            row.addWidget(QLabel(f"通道 {index}："))
-            row.addWidget(name_edit, 1)
-            unit_combo = QComboBox()
-            unit_combo.setObjectName(f"emg_channel_unit_id_{index}")
-            unit_combo.setPlaceholderText("unit ID（未分配，记录 NaN）")
-            if unit_id:
-                unit_combo.addItem(unit_id)
-                unit_combo.setCurrentIndex(0)
-            row.addWidget(unit_combo, 2)
-            channel_layout.addLayout(row)
-            self._channel_name_edits.append(name_edit)
-            self._channel_unit_combos.append(unit_combo)
+        channel_box_layout = QVBoxLayout(channel_box)
+        channel_box_layout.setContentsMargins(0, 0, 0, 0)
+        channel_box_layout.setSpacing(6)
+        self._channel_list_layout = QVBoxLayout()
+        self._channel_list_layout.setContentsMargins(0, 0, 0, 0)
+        self._channel_list_layout.setSpacing(6)
+        channel_box_layout.addLayout(self._channel_list_layout)
+        for name, unit_id in channels:
+            self._add_channel_row(name, unit_id)
+        add_button = QPushButton("＋ 添加通道")
+        add_button.setObjectName("emg_add_channel")
+        add_button.setToolTip("新增一个自定义肌肉通道")
+        add_button.clicked.connect(lambda: self._add_channel_row("", ""))
+        channel_box_layout.addWidget(add_button, 0, Qt.AlignmentFlag.AlignLeft)
         form.addRow("肌肉通道：", channel_box)
         outer.addLayout(form)
         outer.addWidget(self._button_box())
@@ -772,6 +766,60 @@ class EmgDeviceSettingsDialog(ModalityDeviceSettingsDialog):
         while len(resolved) < 4:
             resolved.append(("", ""))
         return resolved
+
+    def _add_channel_row(self, name: str = "", unit_id: str = "") -> None:
+        """Append one editable muscle-channel row to the dialog."""
+        index = len(self._channel_name_edits) + 1
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(8)
+        name_edit = QLineEdit(name)
+        name_edit.setObjectName(f"emg_channel_name_{index}")
+        name_edit.setPlaceholderText(f"肌肉 {index} 名称")
+        row_layout.addWidget(QLabel(f"通道 {index}："))
+        row_layout.addWidget(name_edit, 1)
+        unit_combo = QComboBox()
+        unit_combo.setObjectName(f"emg_channel_unit_id_{index}")
+        unit_combo.setPlaceholderText("unit ID（未分配，记录 NaN）")
+        if self._detected_serials:
+            # 已扫描过传感器：直接填入检测结果，并按归一化序列号选中当前 unit；
+            # 未分配 unit 的新行保持「未分配」占位（currentIndex = -1）。
+            unit_combo.addItems(self._detected_serials)
+            if unit_id:
+                unit_combo.setCurrentIndex(
+                    unit_combo.findText(_normalise_unit_id(unit_id))
+                )
+            else:
+                unit_combo.setCurrentIndex(-1)
+        elif unit_id:
+            unit_combo.addItem(unit_id)
+            unit_combo.setCurrentIndex(0)
+        row_layout.addWidget(unit_combo, 2)
+        remove_button = QPushButton("−")
+        remove_button.setObjectName(f"emg_channel_remove_{index}")
+        remove_button.setFixedWidth(28)
+        remove_button.setToolTip("移除该通道")
+        remove_button.clicked.connect(
+            lambda _=False, w=row: self._remove_channel_row(w)
+        )
+        row_layout.addWidget(remove_button)
+        self._channel_list_layout.addWidget(row)
+        self._channel_name_edits.append(name_edit)
+        self._channel_unit_combos.append(unit_combo)
+        self._channel_rows.append(row)
+
+    def _remove_channel_row(self, row: QWidget) -> None:
+        """Remove a muscle-channel row (name edit + unit combo) from the dialog."""
+        try:
+            index = self._channel_rows.index(row)
+        except ValueError:
+            return
+        self._channel_list_layout.removeWidget(row)
+        row.deleteLater()
+        self._channel_rows.pop(index)
+        self._channel_name_edits.pop(index)
+        self._channel_unit_combos.pop(index)
 
     def _start_unit_scan(self) -> None:
         if self._scan_worker is not None:

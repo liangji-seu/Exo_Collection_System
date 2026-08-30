@@ -17,6 +17,8 @@ from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QDockWidget,
+    QLabel,
+    QPushButton,
     QScrollArea,
     QSplitter,
     QWidget,
@@ -308,6 +310,47 @@ def test_emg_dialog_accept_reads_combo_and_keeps_empty_unit_slot() -> None:
         {"name": "股外侧肌", "unit_id": ""},
         {"name": "股中肌", "unit_id": ""},
     ]
+    dialog.close()
+    app.processEvents()
+
+
+def test_emg_dialog_add_channel_creates_row() -> None:
+    app = QApplication.instance() or QApplication(["test-emg-add-channel"])
+    dialog = EmgDeviceSettingsDialog({})
+    add_button = dialog.findChild(QPushButton, "emg_add_channel")
+    assert add_button is not None
+    assert len(dialog._channel_name_edits) == 4
+
+    add_button.click()
+    assert len(dialog._channel_name_edits) == 5
+    assert len(dialog._channel_unit_combos) == 5
+
+    dialog._channel_name_edits[-1].setText("股二头肌")
+    dialog.accept()
+
+    assert len(dialog.validated_override["channels"]) == 5
+    assert dialog.validated_override["channels"][-1] == {
+        "name": "股二头肌",
+        "unit_id": "",
+    }
+    dialog.close()
+    app.processEvents()
+
+
+def test_emg_dialog_remove_channel_removes_row() -> None:
+    app = QApplication.instance() or QApplication(["test-emg-remove-channel"])
+    dialog = EmgDeviceSettingsDialog({})
+    add_button = dialog.findChild(QPushButton, "emg_add_channel")
+    add_button.click()
+    assert len(dialog._channel_name_edits) == 5
+
+    remove_button = dialog.findChild(QPushButton, "emg_channel_remove_5")
+    assert remove_button is not None
+    remove_button.click()
+
+    assert len(dialog._channel_name_edits) == 4
+    assert len(dialog._channel_unit_combos) == 4
+    assert len(dialog._channel_rows) == 4
     dialog.close()
     app.processEvents()
 
@@ -1295,6 +1338,37 @@ def test_closed_preview_window_can_be_added_again_without_losing_binding(
     assert dock.isVisible()
     assert id(dock.widget()) == identity
     assert window._emg_traces["emg_01"]._buffer[1] == 2.5
+    window.close()
+
+
+def test_emg_preview_builds_one_window_per_channel(tmp_path: Path) -> None:
+    app, window, _created = _window_with_fake(tmp_path)
+    window.show()
+    app.processEvents()
+    window._handle_worker_event(
+        WorkerEvent(
+            event_type=WorkerEventType.PREVIEW,
+            modality="emg",
+            payload={
+                "channels": [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],
+                "labels": ["股直肌", "股内侧肌", "股外侧肌"],
+            },
+        )
+    )
+    app.processEvents()
+
+    assert list(window._emg_traces.keys()) == ["股直肌", "股内侧肌", "股外侧肌"]
+    emg_plots = [
+        plot
+        for plot in window.findChildren(HoverDetailsPlotWidget)
+        if plot.objectName().startswith("emg_ring_")
+    ]
+    assert len(emg_plots) == 3
+
+    container = window._emg_grid_content
+    assert container is not None
+    name_labels = [label.text() for label in container.findChildren(QLabel)]
+    assert set(name_labels) == {"股直肌", "股内侧肌", "股外侧肌"}
     window.close()
 
 
@@ -2983,7 +3057,7 @@ def test_preview_plot_text_is_hidden_until_hover(tmp_path: Path) -> None:
     app.processEvents()
 
     plots = window.findChildren(HoverDetailsPlotWidget)
-    assert len(plots) == 13
+    assert len(plots) == 11
     for plot in plots:
         plot_item = plot.getPlotItem()
         assert not plot_item.titleLabel.isVisible()
@@ -2994,6 +3068,15 @@ def test_preview_plot_text_is_hidden_until_hover(tmp_path: Path) -> None:
         if plot_item.legend is not None:
             assert not plot_item.legend.isVisible()
 
+    # EMG 预览改为按通道懒建：先注入一条单通道事件，再验证其 hover 行为。
+    window._handle_worker_event(
+        WorkerEvent(
+            event_type=WorkerEventType.PREVIEW,
+            modality="emg",
+            payload={"channels": [[1.0, 2.0, 3.0]]},
+        )
+    )
+    app.processEvents()
     emg_plot = window._emg_traces["emg_01"].plot
     app.sendEvent(emg_plot, QEvent(QEvent.Type.Enter))
     emg_item = emg_plot.getPlotItem()

@@ -14,7 +14,7 @@ import math
 import time
 import traceback
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -222,7 +222,6 @@ ENCODER_PREVIEW_LABELS = (
     "right_velocity",
     "right_torque",
 )
-EMG_PREVIEW_LABELS = tuple(f"emg_{index + 1:02d}" for index in range(16))
 # Noraxon EMG runs at 4000 Hz; 4 s of signal = 16 000 samples per ring window.
 EMG_PREVIEW_RING_CAPACITY = 16_000
 FORCE_PLATE_PREVIEW_LABELS = ("fx", "fy", "fz", "mx", "my", "mz")
@@ -1207,6 +1206,8 @@ class CollectorWindow(QMainWindow):
         self._imu_traces: dict[str, RingTrace] = {}
         self._enc_traces: dict[str, RingTrace] = {}
         self._emg_traces: dict[str, RingTrace] = {}
+        self._emg_grid_layout: QVBoxLayout | None = None
+        self._emg_grid_content: QWidget | None = None
         self._force_plate_traces: dict[str, RingTrace] = {}
         self._mocap_table: QTableWidget | None = None
         self.preview_workspace: PreviewWorkspace | None = None
@@ -2064,34 +2065,15 @@ class CollectorWindow(QMainWindow):
             force_grid,
         )
 
-        emg_grid = QGroupBox("表面肌电 EMG · 前 16 通道循环帧")
+        emg_grid = QGroupBox("表面肌电 EMG · 每通道一个窗口")
         emg_grid.setMinimumHeight(120)
-        emg_layout = QHBoxLayout(emg_grid)
-        emg_layout.setContentsMargins(0, 0, 0, 0)
-        for group_index in range(2):
-            plot = HoverDetailsPlotWidget()
-            plot.setObjectName(f"emg_ring_{group_index + 1}")
-            legend = plot.addLegend(offset=(5, 5))
-            shared_cursor = None
-            for local_index in range(8):
-                channel_index = group_index * 8 + local_index
-                label = EMG_PREVIEW_LABELS[channel_index]
-                trace = RingTrace(
-                    plot,
-                    _SIGNAL_COLORS[local_index],
-                    f"EMG 通道 {group_index * 8 + 1}–{group_index * 8 + 8}",
-                    capacity=EMG_PREVIEW_RING_CAPACITY,
-                    render_stride=4,
-                )
-                if shared_cursor is None:
-                    shared_cursor = trace.cursor_line
-                else:
-                    plot.removeItem(trace.cursor_line)
-                    trace.cursor_line = shared_cursor
-                legend.addItem(trace.curve, label)
-                self._emg_traces[label] = trace
-            plot.setLabel("left", "幅值")
-            emg_layout.addWidget(plot, 1)
+        self._emg_grid_layout = QVBoxLayout(emg_grid)
+        self._emg_grid_layout.setContentsMargins(0, 0, 0, 0)
+        placeholder = QLabel("等待 EMG 数据…（通道窗口将随配置自动生成）")
+        placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        placeholder.setStyleSheet("QLabel { color: #6b7280; padding: 16px; }")
+        self._emg_grid_layout.addWidget(placeholder)
+        self._emg_grid_content = placeholder
         preview_workspace.register_panel("emg", "EMG 数据", emg_grid)
 
         self._elapsed_timer = ElapsedTimerPanel()
@@ -4354,12 +4336,75 @@ class CollectorWindow(QMainWindow):
             return
         if modality == "emg":
             channels = event.payload.get("channels")
-            if isinstance(channels, (list, tuple)):
-                for index, raw_values in enumerate(channels[: len(EMG_PREVIEW_LABELS)]):
-                    values = self._numeric_values(raw_values)
-                    if values:
-                        self._emg_traces[EMG_PREVIEW_LABELS[index]].append(values)
+            if not isinstance(channels, (list, tuple)):
+                return
+            labels = self._emg_preview_labels(event.payload, len(channels))
+            if tuple(labels) != tuple(self._emg_traces.keys()):
+                self._build_emg_preview(labels)
+            for index, raw_values in enumerate(channels):
+                values = self._numeric_values(raw_values)
+                if values:
+                    self._emg_traces[labels[index]].append(values)
             return
+
+    @staticmethod
+    def _emg_preview_labels(payload: Mapping[str, Any], count: int) -> list[str]:
+        """Resolve per-channel preview labels, falling back to ``emg_XX``.
+
+        Muscle names only become dict keys when they are non-empty and unique;
+        otherwise (or when the payload omits ``labels``) we use stable synthetic
+        labels so ``_build_emg_preview`` can address each trace deterministically.
+        """
+        raw = payload.get("labels")
+        if isinstance(raw, (list, tuple)) and len(raw) == count:
+            labels = [str(item) for item in raw]
+            if all(labels) and len(set(labels)) == count:
+                return labels
+        return [f"emg_{index + 1:02d}" for index in range(count)]
+
+    def _build_emg_preview(self, labels: Sequence[str]) -> None:
+        """Rebuild the EMG preview as one window (plot) per configured channel."""
+        grid_layout = self._emg_grid_layout
+        if grid_layout is None:
+            return
+        if self._emg_grid_content is not None:
+            grid_layout.removeWidget(self._emg_grid_content)
+            self._emg_grid_content.deleteLater()
+            self._emg_grid_content = None
+        self._emg_traces = {}
+        container = QWidget()
+        layout = QGridLayout(container)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(8)
+        columns = 4
+        for index, label in enumerate(labels):
+            text = str(label)
+            cell = QWidget()
+            cell_layout = QVBoxLayout(cell)
+            cell_layout.setContentsMargins(0, 0, 0, 0)
+            cell_layout.setSpacing(2)
+            name_label = QLabel(text)
+            name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            name_label.setStyleSheet("QLabel { font-weight: 700; color: #374151; }")
+            cell_layout.addWidget(name_label)
+            plot = HoverDetailsPlotWidget()
+            plot.setObjectName(f"emg_ring_{index + 1}")
+            plot.setMinimumHeight(110)
+            legend = plot.addLegend(offset=(5, 5))
+            trace = RingTrace(
+                plot,
+                _SIGNAL_COLORS[index % len(_SIGNAL_COLORS)],
+                text,
+                capacity=EMG_PREVIEW_RING_CAPACITY,
+                render_stride=4,
+            )
+            legend.addItem(trace.curve, text)
+            plot.setLabel("left", "幅值")
+            cell_layout.addWidget(plot, 1)
+            layout.addWidget(cell, index // columns, index % columns)
+            self._emg_traces[text] = trace
+        grid_layout.addWidget(container)
+        self._emg_grid_content = container
 
     def _update_mocap_table(self, payload: Mapping[str, Any]) -> None:
         """Render every latest marker coordinate without chart downsampling."""

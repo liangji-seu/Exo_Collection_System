@@ -222,7 +222,7 @@ def build_preview_event(
                 labels = [
                     f"emg_{index + 1:02d}" for index in range(values.shape[1])
                 ]
-            visible_count = min(16, values.shape[1])
+            visible_count = values.shape[1]
             channels = [
                 values[:, index].astype(float).tolist()
                 for index in range(visible_count)
