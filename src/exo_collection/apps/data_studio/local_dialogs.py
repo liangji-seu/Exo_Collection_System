@@ -55,14 +55,10 @@ _PLOT_COLORS = (
     "#F0E442",
 )
 
-def _safe_colormap() -> np.ndarray | None:
-    """Return a viridis-ish lookup table that works across pyqtgraph versions."""
-    try:
-        import pyqtgraph as _pg
-        cmap = _pg.colormap.get("viridis")
-        return cmap.getLookupTable(nPts=256, alpha=False)
-    except Exception:
-        return None  # fall back to grayscale
+def _grayscale_lut() -> np.ndarray:
+    """Return a black→white grayscale lookup table for the ultrasound waterfall."""
+    ramp = np.linspace(0, 255, 256, dtype=np.uint8)
+    return np.column_stack((ramp, ramp, ramp))
 
 
 def _empty_tab(message: str) -> QWidget:
@@ -503,9 +499,7 @@ class _SweepWaterfallPlot(pg.PlotWidget):
         # as X and turns each A-scan into a horizontal stripe.  Row-major makes
         # columns advance left-to-right in time while rows remain depth 0..999.
         self.image = pg.ImageItem(axisOrder="row-major")
-        lookup = _safe_colormap()
-        if lookup is not None:
-            self.image.setLookupTable(lookup)
+        self.image.setLookupTable(_grayscale_lut())
         self.addItem(self.image)
         self.invertY(True)
         flattened = self._data.reshape(-1)

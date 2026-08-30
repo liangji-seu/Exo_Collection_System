@@ -235,6 +235,7 @@ def test_both_windows_confirm_changes_to_the_same_persistent_root(
     collector = CollectorWindow(
         tmp_path / "initial",
         settings=_file_settings(settings_path),
+        button_marker_factory=None,
     )
     collector.data_root_edit.setText(str(collector_root))
     assert collector.build_request().data_root == collector_root.resolve()

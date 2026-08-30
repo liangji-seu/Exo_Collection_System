@@ -253,16 +253,65 @@ def test_tree_groups_session_directories_under_one_condition(tmp_path: Path) -> 
         repository.index_manifest(second, second_path)
         tree = repository.tree()
 
-    subject_node = tree[0]["children"][0]
+    subject_node = tree[0]
     assert subject_node["label"] == "001"
     assert len(subject_node["children"]) == 1
-    condition_node = subject_node["children"][0]
+    project_node = subject_node["children"][0]
+    assert project_node["label"] == "F"
+    assert len(project_node["children"]) == 1
+    condition_node = project_node["children"][0]
     assert condition_node["label"] == "WALK_LEVEL"
     assert [node["label"] for node in condition_node["children"]] == [
         "session1_20260715_120000",
         "session2_20260715_120500",
     ]
     assert [node["modality_count"] for node in condition_node["children"]] == [1, 1]
+
+
+def test_tree_groups_one_subject_across_multiple_projects(tmp_path: Path) -> None:
+    first = make_manifest()  # project_code="F", subject_code="001"
+
+    second_payload = first.model_dump(mode="python")
+    second_payload["project_uuid"] = uuid4()
+    second_payload["project_code"] = "T"
+    second_payload["project_name"] = "Test"
+    second_payload["subject_uuid"] = uuid4()  # per-project identity
+    # subject_code stays "001"
+    second_payload["session_uuid"] = uuid4()
+    second_payload["trial_uuid"] = uuid4()
+    second_payload["condition"]["repeat_index"] = 2
+    for artifact in second_payload["artifacts"]:
+        artifact["artifact_uuid"] = uuid4()
+        artifact["trial_uuid"] = second_payload["trial_uuid"]
+    second = TrialManifest.model_validate(second_payload)
+
+    first_path = (
+        tmp_path / "001" / "F" / "WALK_LEVEL" /
+        "session_f_20260715_120000" / ".exo" / "manifest.json"
+    )
+    second_path = (
+        tmp_path / "001" / "T" / "WALK_LEVEL" /
+        "session_t_20260715_120500" / ".exo" / "manifest.json"
+    )
+    with Catalog(tmp_path / "catalog.sqlite3") as catalog:
+        repository = CatalogRepository(catalog)
+        repository.index_manifest(first, first_path)
+        repository.index_manifest(second, second_path)
+        tree = repository.tree()
+
+    # One subject ("001") who took part in two projects shows once at the top,
+    # with both projects nested beneath it — mirroring the on-disk Data/ layout.
+    assert len(tree) == 1
+    subject_node = tree[0]
+    assert subject_node["type"] == "subject"
+    assert subject_node["label"] == "001"
+    assert subject_node["uuid"] == "001"
+    assert [node["label"] for node in subject_node["children"]] == ["F", "T"]
+    for project_node in subject_node["children"]:
+        assert project_node["type"] == "project"
+        assert len(project_node["children"]) == 1
+        assert project_node["children"][0]["label"] == "WALK_LEVEL"
+        assert len(project_node["children"][0]["children"]) == 1
 
 
 @pytest.mark.parametrize(

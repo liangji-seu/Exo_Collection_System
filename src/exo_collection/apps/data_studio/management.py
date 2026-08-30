@@ -372,9 +372,9 @@ def _duration_s(manifest: TrialManifest) -> float:
 
 def _catalog_manifest_paths(snapshot: DataStudioSnapshot) -> tuple[Path, ...]:
     paths: list[Path] = []
-    for project in snapshot.tree:
-        for subject in project.get("children", []):
-            for session in subject.get("children", []):
+    for subject in snapshot.tree:
+        for project in subject.get("children", []):
+            for session in project.get("children", []):
                 for trial in session.get("children", []):
                     value = trial.get("manifest_path")
                     if value:

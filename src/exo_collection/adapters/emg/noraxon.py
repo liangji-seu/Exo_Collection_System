@@ -17,7 +17,7 @@ import logging
 import threading
 from dataclasses import asdict, dataclass, fields, is_dataclass
 from time import perf_counter_ns, time_ns
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 import numpy as np
 
@@ -67,6 +67,20 @@ def _serial_from_tags(tags: list[str]) -> str | None:
         if tag.startswith(_SERIAL_TAG_PREFIX):
             return tag[len(_SERIAL_TAG_PREFIX):]
     return None
+
+
+def _ultium_serials_from_components(
+    tags_per_component: Iterable[list[str]],
+) -> list[str]:
+    """Return sorted, deduplicated Ultium serials across component tag lists."""
+    serials: list[str] = []
+    for tags in tags_per_component:
+        if not any(tag.startswith(_ULTIUM_TAG_PREFIX) for tag in tags):
+            continue
+        serial = _serial_from_tags(tags)
+        if serial is not None:
+            serials.append(serial)
+    return sorted(set(serials))
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,6 +208,13 @@ class _NoraxonSampler(threading.Thread):
             dm = comtypes.client.CreateObject(sdk.DeviceManager._reg_clsid_)
             dm.Initialize("")
             dm.ClearLastErrorText()
+
+            def _sdk_error() -> str:
+                try:
+                    return str(dm.GetLastErrorText()).strip()
+                except Exception:
+                    return ""
+
             device = dm.GetCurrentDevice()
             if device is None:
                 raise AdapterError(
@@ -240,10 +261,29 @@ class _NoraxonSampler(threading.Thread):
                 )
 
             for ain in matched_ains:
-                ain.Enable()
-                ain.RecoveryEnable()
+                try:
+                    ain.Enable()
+                except Exception as exc:
+                    detail = _sdk_error()
+                    raise AdapterError(
+                        f"Noraxon EMG 启用传感器失败（Enable）：{exc}"
+                        + (f"；SDK 错误：{detail}" if detail else "")
+                    ) from exc
+                try:
+                    ain.RecoveryEnable()
+                except Exception:
+                    # 数据丢失恢复是可选项（仅对丢包恢复有意义）；不支持的
+                    # 传感器不应因此导致整个连接失败。
+                    pass
 
-            device.Activate()
+            try:
+                device.Activate()
+            except Exception as exc:
+                detail = _sdk_error()
+                raise AdapterError(
+                    f"Noraxon EMG 激活设备失败（Activate）：{exc}"
+                    + (f"；SDK 错误：{detail}" if detail else "")
+                ) from exc
 
             for ain in matched_ains:
                 try:
@@ -294,6 +334,63 @@ class _NoraxonSampler(threading.Thread):
         # hook only exists so the thread never leaks the apartment on a fatal
         # import error before ``CoInitializeEx``.
         pass
+
+
+def scan_ultium_units(timeout_s: float = 10.0) -> list[str]:
+    """Enumerate the online Noraxon Ultium sensors as bare serials.
+
+    Runs the AcquireCom COM enumeration on a dedicated apartment (STA) thread
+    and blocks until it completes or ``timeout_s`` elapses.  Returns the sorted
+    serials (e.g. ``["234f5", "234fc"]``); raises :class:`AdapterError` if the
+    receiver is unavailable or no Ultium sensor is present.
+    """
+
+    outcome: dict[str, Any] = {}
+
+    def _scan() -> None:
+        try:
+            import comtypes
+            import comtypes.client
+            from comtypes.safearray import safearray_as_ndarray
+
+            comtypes.CoInitializeEx(comtypes.COINIT_APARTMENTTHREADED)
+            try:
+                try:
+                    import comtypes.gen.Easy2AcquireCom as sdk
+                except ImportError:
+                    comtypes.client.GetModule(_NORAXON_TYPELIB)
+                    import comtypes.gen.Easy2AcquireCom as sdk
+
+                dm = comtypes.client.CreateObject(sdk.DeviceManager._reg_clsid_)
+                dm.Initialize("")
+                dm.ClearLastErrorText()
+                device = dm.GetCurrentDevice()
+                if device is None:
+                    raise AdapterError(
+                        "Noraxon 未找到当前设备：请先在 myoRESEARCH 中选定 Ultium 接收器"
+                    )
+                device.SetComponentFilterTags(_EMG_FILTER_TAG)
+                tags_per_component: list[list[str]] = []
+                with safearray_as_ndarray:
+                    for index in range(device.GetComponentCount()):
+                        component = device.GetComponent(index)
+                        tags_per_component.append(list(component.GetTags()))
+                outcome["serials"] = _ultium_serials_from_components(
+                    tags_per_component
+                )
+            finally:
+                comtypes.CoUninitialize()
+        except BaseException as exc:
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=_scan, name="noraxon-emg-scan", daemon=True)
+    thread.start()
+    thread.join(timeout=timeout_s)
+    if thread.is_alive():
+        raise AdapterError("Noraxon EMG 传感器扫描超时")
+    if "error" in outcome:
+        raise AdapterError(f"Noraxon EMG 传感器扫描失败：{outcome['error']}")
+    return list(outcome.get("serials", []))
 
 
 class NoraxonEmgAdapter(QueuedHardwareAdapter):
@@ -480,4 +577,5 @@ __all__ = [
     "NoraxonEmgAdapter",
     "NoraxonEmgChannel",
     "NoraxonEmgConfig",
+    "scan_ultium_units",
 ]

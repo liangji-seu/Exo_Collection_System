@@ -24,6 +24,8 @@ WM_SYSKEYDOWN = 0x0104
 WM_KEYUP = 0x0101
 WM_SYSKEYUP = 0x0105
 BUTTON_VK = 0xBC  # VK_OEM_COMMA — the LinTx button's comma key
+START_STOP_VK = 0xBE  # VK_OEM_PERIOD — the start/stop toggle button's period key
+VK_SHIFT = 0x10
 
 
 class _KBDLLHOOKSTRUCT(ctypes.Structure):
@@ -57,13 +59,22 @@ _user32.CallNextHookEx.argtypes = (
 )
 _user32.UnhookWindowsHookEx.restype = wintypes.BOOL
 _user32.UnhookWindowsHookEx.argtypes = (ctypes.c_void_p,)
+_user32.GetAsyncKeyState.restype = ctypes.c_short
+_user32.GetAsyncKeyState.argtypes = (ctypes.c_int,)
 
 
 class ButtonMarkerListener:
     """Thread-safe listener delivering one timestamp pair per comma key-down."""
 
-    def __init__(self, *, vk: int = BUTTON_VK, queue_size: int = 256) -> None:
+    def __init__(
+        self,
+        *,
+        vk: int = BUTTON_VK,
+        queue_size: int = 256,
+        ignore_shift: bool = False,
+    ) -> None:
         self._vk = vk
+        self._ignore_shift = ignore_shift
         self._queue: queue.Queue[tuple[int, int]] = queue.Queue(maxsize=queue_size)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -125,6 +136,13 @@ class ButtonMarkerListener:
             if wParam in (WM_KEYDOWN, WM_SYSKEYDOWN):
                 kb = ctypes.cast(lParam, ctypes.POINTER(_KBDLLHOOKSTRUCT)).contents
                 if kb.vkCode == self._vk and not self._down:
+                    if self._ignore_shift and (
+                        _user32.GetAsyncKeyState(VK_SHIFT) & 0x8000
+                    ):
+                        # Shift held → this is the ">" operator label, not the
+                        # bare "." toggle key.  Skip so it stays available to
+                        # the Collector's prompt-label event filter.
+                        return _user32.CallNextHookEx(None, nCode, wParam, lParam)
                     self._down = True
                     try:
                         self._queue.put_nowait((time.perf_counter_ns(), time.time_ns()))
@@ -137,4 +155,4 @@ class ButtonMarkerListener:
         return _user32.CallNextHookEx(None, nCode, wParam, lParam)
 
 
-__all__ = ["ButtonMarkerListener", "BUTTON_VK"]
+__all__ = ["ButtonMarkerListener", "BUTTON_VK", "START_STOP_VK"]

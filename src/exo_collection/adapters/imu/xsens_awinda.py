@@ -16,6 +16,7 @@ from exo_collection.adapters.base import AdapterError, ModalityDescriptor
 from exo_collection.adapters.hardware_base import QueuedHardwareAdapter
 from exo_collection.adapters.imu.simulated import IMU_CHANNELS, IMU_UNITS
 from exo_collection.domain.events import SampleBatch
+from exo_collection.timing.clock_model import DeviceClockMapper
 
 
 # ──────────────────────────────────────────────────────────────
@@ -624,6 +625,7 @@ class XsensAwindaImuAdapter(QueuedHardwareAdapter):
         self._accepting_packets = False
         self._alignment_mode = "packet_counter_or_per_device_arrival_index"
         self._last_common_counter: dict[str, int] = {}
+        self._clock_mapper: DeviceClockMapper | None = None
 
     # ── descriptor / snapshot ──────────────────────────────
 
@@ -722,6 +724,10 @@ class XsensAwindaImuAdapter(QueuedHardwareAdapter):
         self._counter_has_data = False
         self._time_has_data = False
         self._last_common_counter = {}
+        rate_hz = float(
+            getattr(self._backend, "actual_rate_hz", self._config.sample_rate_hz)
+        )
+        self._clock_mapper = DeviceClockMapper(1e9 / rate_hz)
         while not self._packet_queue.empty():
             try:
                 self._packet_queue.get_nowait()
@@ -950,7 +956,12 @@ class XsensAwindaImuAdapter(QueuedHardwareAdapter):
         )
 
         host_times_list = [group.host_times[device_id] for device_id in self._use_device_ids]
-        host_ns = min(host_times_list)
+        arrival_ns = min(host_times_list)
+        counters = [c for c in group.device_counters.values() if c is not None]
+        if self._clock_mapper is not None and counters:
+            host_ns = self._clock_mapper.map(counters[0], arrival_ns)
+        else:
+            host_ns = arrival_ns
 
         # Track spreads for health
         arrival_spread = max(host_times_list) - min(host_times_list)

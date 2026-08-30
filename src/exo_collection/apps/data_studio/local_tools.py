@@ -33,6 +33,7 @@ from exo_collection.readers.binary_block import BlockBinaryReader
 from exo_collection.storage.activity import read_activity
 from exo_collection.storage.layout import path_has_unpublished_component
 from exo_collection.storage.manifest import TrialManifest, load_manifest
+from exo_collection.timing.clock_model import fit_affine_clock
 from exo_collection.writers.binary_block import companion_paths
 
 from .service import load_catalog_snapshot
@@ -373,6 +374,30 @@ def _flatten_channel_labels(
     )
 
 
+def _unwrap_device_clock(values: NDArray[np.float64]) -> NDArray[np.float64] | None:
+    """Unwrap a uint16 PacketCounter (or uint32 SampleTimeFine) sequence.
+
+    Returns ``values`` unchanged when already monotonic.  Detects wrap points
+    (negative jumps) and accumulates the wrap modulus so the result is strictly
+    non-decreasing.  The modulus is inferred from the value range: counter
+    values are < 65536 (mod 65536); larger values are treated as SampleTimeFine
+    (mod 2^32), which in practice never wraps within a trial.
+    """
+    if values.size < 2:
+        return values if values.size == 1 else None
+    diffs = np.diff(values)
+    if not np.any(diffs < 0):
+        return values
+    mod = 65536.0 if float(np.max(values)) < 65536.0 else 4294967296.0
+    correction = np.zeros(values.shape, dtype=np.float64)
+    acc = 0.0
+    for index in range(1, values.size):
+        if diffs[index - 1] < 0:
+            acc += mod
+        correction[index] = acc
+    return values + correction
+
+
 def _read_hdf5_signal(
     path: Path,
     *,
@@ -392,6 +417,17 @@ def _read_hdf5_signal(
         host_ns = np.asarray(
             handle["samples/host_monotonic_ns"][selector], dtype=np.float64
         )
+        if "samples/device_time" in handle:
+            device_time = np.asarray(
+                handle["samples/device_time"][selector], dtype=np.float64
+            )
+            if device_time.size >= 2 and np.all(np.isfinite(device_time)):
+                source = _unwrap_device_clock(device_time)
+                if source is not None and np.all(np.diff(source) > 0):
+                    try:
+                        host_ns = fit_affine_clock(source, host_ns).map(source)
+                    except ValueError:
+                        pass  # fall back to raw host_ns on a degenerate fit
         channels = (
             _decode_strings(handle["metadata/channels"][:])
             if "metadata/channels" in handle
@@ -881,16 +917,16 @@ def compute_full_statistics(data_root: str | Path) -> FullStatistics:
     _require_idle(root)
     snapshot = load_catalog_snapshot(root)
     _require_idle(root)
-    project_count = len(snapshot.tree)
-    subject_count = session_count = trial_count = artifact_count = artifact_bytes = 0
+    subject_count = len(snapshot.tree)
+    project_count = session_count = trial_count = artifact_count = artifact_bytes = 0
     by_quality: dict[str, int] = {}
     by_modality: dict[str, dict[str, int]] = {}
     finalized_count = 0
-    for project in snapshot.tree:
-        subjects = project.get("children", [])
-        subject_count += len(subjects)
-        for subject in subjects:
-            sessions = subject.get("children", [])
+    for subject in snapshot.tree:
+        projects = subject.get("children", [])
+        project_count += len(projects)
+        for project in projects:
+            sessions = project.get("children", [])
             session_count += len(sessions)
             for session in sessions:
                 trials = session.get("children", [])

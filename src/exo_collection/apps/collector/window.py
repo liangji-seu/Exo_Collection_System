@@ -72,7 +72,10 @@ from PySide6.QtWidgets import (
 from exo_collection.acquisition.messages import WorkerEvent, WorkerEventType
 from exo_collection.acquisition.recording_stream import RecordingStreamEndpoint
 from exo_collection.acquisition.workers import CollectorWorker
-from exo_collection.apps.collector.button_marker import ButtonMarkerListener
+from exo_collection.apps.collector.button_marker import (
+    ButtonMarkerListener,
+    START_STOP_VK,
+)
 from exo_collection.apps.collector.device_preview import (
     AdapterFactory,
     ModalityPreviewHandle,
@@ -1123,6 +1126,7 @@ class CollectorWindow(QMainWindow):
         worker_factory: WorkerFactory = CollectorWorker,
         preflight_worker_factory: PreflightWorkerFactory = simulated_preflight_worker_factory,
         preview_worker_factory: AdapterFactory | None = None,
+        button_marker_factory: Callable[..., ButtonMarkerListener] | None = ButtonMarkerListener,
         poll_interval_ms: int = 20,
         controlled_stop_timeout_s: float = DEFAULT_CONTROLLED_STOP_TIMEOUT_S,
         parent: QWidget | None = None,
@@ -1135,6 +1139,7 @@ class CollectorWindow(QMainWindow):
         self._settings = settings if settings is not None else SharedAppSettings()
         self._worker_factory = worker_factory
         self._preflight_worker_factory = preflight_worker_factory
+        self._button_marker_factory = button_marker_factory
         self._controlled_stop_timeout_s = float(controlled_stop_timeout_s)
         self._worker: WorkerHandle | None = None
         self._active_trial_uuid: str | None = None
@@ -1175,6 +1180,9 @@ class CollectorWindow(QMainWindow):
 
         # 按钮标签（USB HID 键盘，逗号键）：全局钩子监听，连接时启用。
         self._button_marker: ButtonMarkerListener | None = None
+
+        # 开始/停止 USB 按钮（句号键）：全局钩子监听，启动即启用。
+        self._start_stop_button: ButtonMarkerListener | None = None
 
         self._experiment_metadata = TrialExperimentMetadata()
         self._experiment_metadata_by_identity: dict[tuple[str, str], TrialExperimentMetadata] = {}
@@ -1245,8 +1253,12 @@ class CollectorWindow(QMainWindow):
         self._button_poll_timer = QTimer(self)
         self._button_poll_timer.setInterval(50)
         self._button_poll_timer.timeout.connect(self._poll_button_marker)
+        self._start_stop_poll_timer = QTimer(self)
+        self._start_stop_poll_timer.setInterval(50)
+        self._start_stop_poll_timer.timeout.connect(self._poll_start_stop_button)
         self._set_trial_state("IDLE")
         self._update_start_button()
+        self._start_start_stop_listener()
 
         LOG.info(
             "CollectorWindow 已初始化 data_root=%s profile=%s",
@@ -3190,6 +3202,28 @@ class CollectorWindow(QMainWindow):
                 host_utc_ns=host_utc_ns,
             )
 
+    def _start_start_stop_listener(self) -> None:
+        """启动开始/停止 USB 按钮监听（句号键，启动即始终启用）。"""
+        if self._button_marker_factory is None:
+            return
+        marker = self._button_marker_factory(
+            vk=START_STOP_VK,
+            ignore_shift=True,
+        )
+        marker.start()
+        self._start_stop_button = marker
+        self._start_stop_poll_timer.start()
+        LOG.info("开始/停止按钮监听已启用（句号键）")
+
+    @Slot()
+    def _poll_start_stop_button(self) -> None:
+        """主线程定时器：句号键按下 → 切换开始/停止写盘。"""
+        marker = self._start_stop_button
+        if marker is None:
+            return
+        if marker.drain():
+            self._toggle_write()
+
     @Slot()
     @Slot()
     def _toggle_connect_all(self) -> None:
@@ -4844,6 +4878,16 @@ class CollectorWindow(QMainWindow):
                 button_marker.stop()
             except Exception as exc:
                 LOG.warning("关闭窗口时停止按钮标签监听出错: %s", exc)
+
+        # ── Stop start/stop toggle marker ──
+        self._start_stop_poll_timer.stop()
+        start_stop_button = self._start_stop_button
+        self._start_stop_button = None
+        if start_stop_button is not None:
+            try:
+                start_stop_button.stop()
+            except Exception as exc:
+                LOG.warning("关闭窗口时停止开始/停止按钮监听出错: %s", exc)
 
         self._poll_timer.stop()
         self._close_started_at = None

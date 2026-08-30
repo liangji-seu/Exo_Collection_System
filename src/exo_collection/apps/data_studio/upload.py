@@ -261,8 +261,54 @@ class RemoteTrialStatusRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class RemoteOnlyTrial:
+    """A remote sync-index entry with no matching local finalized Trial."""
+
+    index_key: str
+    trial_uuid: str | None
+    remote_trial_directory: str
+
+
+@dataclass(frozen=True, slots=True)
 class RemoteStatusSyncResult:
     records: tuple[RemoteTrialStatusRecord, ...]
+    remote_only: tuple[RemoteOnlyTrial, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class OneClickUploadDecision:
+    """Result of deciding whether a one-click incremental upload is safe."""
+
+    is_subset: bool
+    incremental_manifest_paths: tuple[Path, ...]
+    conflict_manifest_paths: tuple[Path, ...]
+
+
+def decide_one_click_upload(result: RemoteStatusSyncResult) -> OneClickUploadDecision:
+    """Classify a remote-status scan for the one-click upload flow.
+
+    The remote dataset is a subset of the local dataset when every cloud entry
+    has a matching local finalized Trial and no local Trial conflicts with its
+    remote mirror.  In that case the missing/partial local Trials can be
+    uploaded directly; otherwise the operator must choose a specific update.
+    """
+
+    incremental: list[Path] = []
+    conflicts: list[Path] = []
+    for record in result.records:
+        if record.status is RemoteTrialStatus.CONFLICT:
+            conflicts.append(record.manifest_path)
+        elif record.status in (
+            RemoteTrialStatus.NOT_UPLOADED,
+            RemoteTrialStatus.PARTIAL,
+        ):
+            incremental.append(record.manifest_path)
+    is_subset = not result.remote_only and not conflicts
+    return OneClickUploadDecision(
+        is_subset=is_subset,
+        incremental_manifest_paths=tuple(incremental),
+        conflict_manifest_paths=tuple(conflicts),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1580,6 +1626,7 @@ class RemoteDatasetStatusScanner:
         report(UploadProgress(UploadPhase.CONNECTING, "正在连接服务器并读取云端 data/ 状态…"))
         session = self._session_factory(request)
         records: list[RemoteTrialStatusRecord] = []
+        local_index_keys: set[str] = set()
         try:
             _index_path, remote_entries = _read_remote_sync_index(
                 session, request.remote_workdir
@@ -1602,6 +1649,7 @@ class RemoteDatasetStatusScanner:
                         "TRIAL_OUTSIDE_DATA_ROOT",
                         "Manifest 不在当前 data 根目录内。",
                     ) from exc
+                local_index_keys.add(index_key)
                 remote_dir = _remote_join(
                     request.remote_workdir, *PurePosixPath(index_key).parts
                 )
@@ -1674,8 +1722,19 @@ class RemoteDatasetStatusScanner:
                         detail=detail,
                     )
                 )
+            remote_only = tuple(
+                RemoteOnlyTrial(
+                    index_key=key,
+                    trial_uuid=str(entry.get("trial_uuid", "")) or None,
+                    remote_trial_directory=_remote_join(
+                        request.remote_workdir, *PurePosixPath(key).parts
+                    ),
+                )
+                for key, entry in sorted(remote_entries.items())
+                if key not in local_index_keys
+            )
             report(UploadProgress(UploadPhase.COMPLETED, "云端状态同步完成。", total, total))
-            return RemoteStatusSyncResult(tuple(records))
+            return RemoteStatusSyncResult(tuple(records), remote_only)
         finally:
             session.close()
 
@@ -1974,7 +2033,9 @@ __all__ = [
     "HostKeyInfo",
     "OfflineUploadRequest",
     "OfflineUploadResult",
+    "OneClickUploadDecision",
     "ParamikoScpSession",
+    "RemoteOnlyTrial",
     "SshScpTrialUploader",
     "TrialUploadFile",
     "TrialUploadPlan",
@@ -1987,6 +2048,7 @@ __all__ = [
     "UploadWorkerHandle",
     "build_remote_trial_directory",
     "build_upload_plan",
+    "decide_one_click_upload",
     "validate_finalized_trial",
     "validate_remote_directory",
 ]

@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from exo_collection.adapters.emg.noraxon import _normalise_unit_id, scan_ultium_units
 from exo_collection.adapters.ultrasound.raw_ethernet import (
     enumerate_network_interfaces,
     scan_ultrasound_interface,
@@ -113,6 +114,24 @@ class UltrasoundInterfaceScanWorker(QThread):
                 continue
             LOG.info("扫描 %s 完成: %d 帧", interface_name, count)
             self.result_ready.emit(interface_name, count)
+
+
+class NoraxonUnitScanWorker(QThread):
+    """Enumerate online Noraxon Ultium sensors without blocking the GUI."""
+
+    result_ready = Signal(list)
+    scan_failed = Signal(str)
+
+    def run(self) -> None:
+        LOG.debug("检测 Noraxon Ultium 传感器…")
+        try:
+            serials = scan_ultium_units()
+        except Exception as exc:
+            LOG.error("Noraxon 传感器检测失败: %s", exc)
+            self.scan_failed.emit(str(exc))
+            return
+        LOG.info("Noraxon 传感器检测完成: %s", serials)
+        self.result_ready.emit(serials)
 
 
 class UltrasoundDeviceSettingsDialog(ModalityDeviceSettingsDialog):
@@ -666,6 +685,8 @@ class EmgDeviceSettingsDialog(ModalityDeviceSettingsDialog):
         super().__init__(parent)
         self.setWindowTitle("EMG 设备设置（Noraxon）")
         self.setMinimumWidth(640)
+        self._scan_worker: NoraxonUnitScanWorker | None = None
+        self._detected_serials: list[str] = []
         outer = QVBoxLayout(self)
         intro = QLabel(
             "Noraxon Ultium/G3 表面肌电。每块肌肉对应一个传感器 unit ID"
@@ -674,6 +695,18 @@ class EmgDeviceSettingsDialog(ModalityDeviceSettingsDialog):
         )
         intro.setWordWrap(True)
         outer.addWidget(intro)
+
+        scan_row = QHBoxLayout()
+        scan_row.setSpacing(8)
+        self.scan_button = QPushButton("检测传感器")
+        self.scan_button.setObjectName("emg_scan_units")
+        self.scan_button.clicked.connect(self._start_unit_scan)
+        scan_row.addWidget(self.scan_button)
+        self.scan_status = QLabel("点击「检测传感器」扫描接收盒上在线的 unit。")
+        self.scan_status.setWordWrap(True)
+        scan_row.addWidget(self.scan_status, 1)
+        outer.addLayout(scan_row)
+
         form = QFormLayout()
 
         self.rate_spin = QDoubleSpinBox()
@@ -690,7 +723,7 @@ class EmgDeviceSettingsDialog(ModalityDeviceSettingsDialog):
 
         channels = self._resolve_channels(current)
         self._channel_name_edits: list[QLineEdit] = []
-        self._channel_unit_edits: list[QLineEdit] = []
+        self._channel_unit_combos: list[QComboBox] = []
         channel_box = QWidget()
         channel_layout = QVBoxLayout(channel_box)
         channel_layout.setContentsMargins(0, 0, 0, 0)
@@ -703,13 +736,16 @@ class EmgDeviceSettingsDialog(ModalityDeviceSettingsDialog):
             name_edit.setPlaceholderText(f"肌肉 {index} 名称")
             row.addWidget(QLabel(f"通道 {index}："))
             row.addWidget(name_edit, 1)
-            unit_edit = QLineEdit(unit_id)
-            unit_edit.setObjectName(f"emg_channel_unit_id_{index}")
-            unit_edit.setPlaceholderText("unit ID（留空=未分配，记录 NaN）")
-            row.addWidget(unit_edit, 2)
+            unit_combo = QComboBox()
+            unit_combo.setObjectName(f"emg_channel_unit_id_{index}")
+            unit_combo.setPlaceholderText("unit ID（未分配，记录 NaN）")
+            if unit_id:
+                unit_combo.addItem(unit_id)
+                unit_combo.setCurrentIndex(0)
+            row.addWidget(unit_combo, 2)
             channel_layout.addLayout(row)
             self._channel_name_edits.append(name_edit)
-            self._channel_unit_edits.append(unit_edit)
+            self._channel_unit_combos.append(unit_combo)
         form.addRow("肌肉通道：", channel_box)
         outer.addLayout(form)
         outer.addWidget(self._button_box())
@@ -737,16 +773,84 @@ class EmgDeviceSettingsDialog(ModalityDeviceSettingsDialog):
             resolved.append(("", ""))
         return resolved
 
+    def _start_unit_scan(self) -> None:
+        if self._scan_worker is not None:
+            return
+        self._scan_worker = NoraxonUnitScanWorker(self)
+        worker = self._scan_worker
+        worker.result_ready.connect(self._on_scan_result)
+        worker.scan_failed.connect(self._on_scan_failed)
+        worker.finished.connect(self._on_scan_finished)
+        self.scan_button.setEnabled(False)
+        self.scan_status.setText("正在检测接收盒上在线的 Noraxon 传感器…")
+        LOG.info("开始检测 Noraxon Ultium 传感器")
+        worker.start()
+
+    def _on_scan_result(self, serials: list[str]) -> None:
+        self._detected_serials = list(serials)
+        for combo in self._channel_unit_combos:
+            current = combo.currentText().strip()
+            combo.blockSignals(True)
+            combo.clear()
+            for serial in serials:
+                combo.addItem(serial)
+            # 只读下拉框：把当前通道的 unit ID 归一化后匹配到裸序列号并选中；
+            # 匹配不到（如旧配置串号有误）则清空，让用户从检测结果里重新选择。
+            combo.setCurrentIndex(combo.findText(_normalise_unit_id(current)))
+            combo.blockSignals(False)
+        if serials:
+            self.scan_status.setText(
+                f"检测到 {len(serials)} 个在线传感器：{', '.join(serials)}"
+            )
+        else:
+            self.scan_status.setText("未检测到在线传感器，请确认接收器已连接并上电。")
+
+    def _on_scan_failed(self, message: str) -> None:
+        self.scan_status.setText(f"检测失败：{message}")
+        LOG.error("Noraxon 传感器检测失败: %s", message)
+
+    def _on_scan_finished(self) -> None:
+        self._scan_worker = None
+        self.scan_button.setEnabled(True)
+
+    def _stop_scan_worker(self) -> bool:
+        worker = self._scan_worker
+        if worker is None:
+            return True
+        if worker.isRunning():
+            worker.requestInterruption()
+            if not worker.wait(2_500):
+                self.scan_status.setText("正在停止传感器检测，请稍后再关闭或保存。")
+                return False
+        self._scan_worker = None
+        self.scan_button.setEnabled(True)
+        worker.deleteLater()
+        return True
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if not self._stop_scan_worker():
+            event.ignore()
+            return
+        super().closeEvent(event)
+
+    @Slot()
+    def reject(self) -> None:
+        if not self._stop_scan_worker():
+            return
+        super().reject()
+
     @Slot()
     def accept(self) -> None:
+        if not self._stop_scan_worker():
+            return
         channels: list[dict[str, str]] = []
-        for name_edit, unit_edit in zip(
-            self._channel_name_edits, self._channel_unit_edits
+        for name_edit, unit_combo in zip(
+            self._channel_name_edits, self._channel_unit_combos
         ):
             name = name_edit.text().strip()
             if not name:
                 continue
-            channels.append({"name": name, "unit_id": unit_edit.text().strip()})
+            channels.append({"name": name, "unit_id": unit_combo.currentText().strip()})
         self._finish_accept(
             {
                 "sample_rate_hz": self.rate_spin.value(),

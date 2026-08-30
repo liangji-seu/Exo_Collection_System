@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from pathlib import Path
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -17,6 +17,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QProgressBar,
     QPushButton,
     QSpinBox,
@@ -27,7 +29,14 @@ from PySide6.QtWidgets import (
 from exo_collection.configuration import SharedAppSettings
 
 from .credential_store import delete_password, load_password, save_password
-from .upload import OfflineUploadRequest, UploadOperation, UploadProgress
+from .upload import (
+    OfflineUploadRequest,
+    RemoteOnlyTrial,
+    RemoteTrialStatus,
+    RemoteTrialStatusRecord,
+    UploadOperation,
+    UploadProgress,
+)
 
 
 class OfflineUploadDialog(QDialog):
@@ -268,6 +277,82 @@ class OfflineUploadDialog(QDialog):
         super().reject()
 
 
+class SelectiveUploadDialog(QDialog):
+    """Let the operator pick specific Trials when the cloud is not a subset."""
+
+    _STATUS_LABELS = {
+        RemoteTrialStatus.UPLOADED: "已上传",
+        RemoteTrialStatus.NOT_UPLOADED: "未上传",
+        RemoteTrialStatus.PARTIAL: "部分缺失",
+        RemoteTrialStatus.CONFLICT: "内容冲突",
+    }
+
+    def __init__(
+        self,
+        records: Sequence[RemoteTrialStatusRecord],
+        remote_only: Sequence[RemoteOnlyTrial] = (),
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._records = tuple(records)
+        self.setWindowTitle("选择要上传的 Trial")
+        self.setModal(True)
+        self.resize(680, 480)
+
+        outer = QVBoxLayout(self)
+        explanation = QLabel(
+            "云端存在本地没有的数据，无法安全地自动增量更新。\n"
+            "请勾选要上传的本地 Trial；只会补传所选 Trial，不会删除或覆盖云端已有内容。"
+        )
+        explanation.setWordWrap(True)
+        outer.addWidget(explanation)
+
+        if remote_only:
+            warning = QLabel(
+                f"⚠ 云端有 {len(remote_only)} 个本地没有的 Trial，"
+                "本次操作不会处理它们。"
+            )
+            warning.setStyleSheet("QLabel { color: #842029; }")
+            warning.setWordWrap(True)
+            outer.addWidget(warning)
+
+        self.trial_list = QListWidget()
+        self.trial_list.setObjectName("selective_upload_list")
+        self._checkbox_items: list[tuple[QListWidgetItem, Path]] = []
+        for record in self._records:
+            status_text = self._STATUS_LABELS.get(record.status, record.status.value)
+            item = QListWidgetItem(f"[{status_text}] {record.manifest_path}")
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setData(Qt.ItemDataRole.UserRole, str(record.manifest_path))
+            item.setCheckState(
+                Qt.CheckState.Checked
+                if record.status
+                in (RemoteTrialStatus.NOT_UPLOADED, RemoteTrialStatus.PARTIAL)
+                else Qt.CheckState.Unchecked
+            )
+            self.trial_list.addItem(item)
+            self._checkbox_items.append((item, record.manifest_path))
+        outer.addWidget(self.trial_list)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Cancel
+            | QDialogButtonBox.StandardButton.Ok
+        )
+        self.upload_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self.upload_button.setText("上传所选")
+        self.upload_button.setObjectName("confirm_selective_upload")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        outer.addWidget(buttons)
+
+    def selected_manifest_paths(self) -> tuple[Path, ...]:
+        selected: list[Path] = []
+        for item, path in self._checkbox_items:
+            if item.checkState() == Qt.CheckState.Checked:
+                selected.append(path)
+        return tuple(selected)
+
+
 class UploadProgressDialog(QDialog):
     """Non-blocking upload status view with a controlled cancel request."""
 
@@ -323,4 +408,4 @@ class UploadProgressDialog(QDialog):
             event.accept()  # type: ignore[attr-defined]
 
 
-__all__ = ["OfflineUploadDialog", "UploadProgressDialog"]
+__all__ = ["OfflineUploadDialog", "SelectiveUploadDialog", "UploadProgressDialog"]

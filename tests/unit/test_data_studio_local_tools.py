@@ -40,7 +40,9 @@ from exo_collection.apps.data_studio.local_tools import (
     TrialInspection,
     TrialPlayback,
     _inspect_hdf5,
+    _read_hdf5_signal,
     _read_ultrasound,
+    _unwrap_device_clock,
     compute_full_statistics,
     inspect_trial_artifacts,
     load_quality_audit,
@@ -886,3 +888,62 @@ def test_inspect_hdf5_handles_multidimensional_sample_shape(
     assert len(artifact.hdf5.preview_columns) == 48
     assert len(artifact.hdf5.stats) == 48
     assert artifact.hdf5.preview_rows[0][0] == 0.0
+
+
+# ──────────────────────────────────────────────────────────────
+#  IMU host-timestamp reconstruction from device_time
+# ──────────────────────────────────────────────────────────────
+
+
+def test_unwrap_device_clock_handles_uint16_wrap() -> None:
+    values = np.array([65534.0, 65535.0, 0.0, 1.0, 2.0])
+    out = _unwrap_device_clock(values)
+    np.testing.assert_array_equal(
+        out, np.array([65534.0, 65535.0, 65536.0, 65537.0, 65538.0])
+    )
+
+
+def test_unwrap_device_clock_returns_unchanged_when_monotonic() -> None:
+    values = np.array([1.0, 2.0, 3.0])
+    out = _unwrap_device_clock(values)
+    np.testing.assert_array_equal(out, values)
+
+
+def test_read_hdf5_signal_reconstructs_uniform_time_from_device_clock(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "imu.h5"
+    columns = 3
+    count = 40
+    period_ns = 10_000_000  # 100 Hz
+    # Bursty host arrival: strictly increasing but clustered (1 µs within a
+    # burst of 3, then a ~30 ms gap) — far from the nominal 10 ms spacing.
+    bursty_host = np.asarray(
+        [(i // 3) * 3 * period_ns + (i % 3) * 1000 for i in range(count)],
+        dtype=np.uint64,
+    )
+    clean_device = np.arange(count, dtype=np.float64)
+
+    with Hdf5SignalWriter(
+        path,
+        channels=tuple(f"ch_{index + 1}" for index in range(columns)),
+        units=("a.u.",) * columns,
+        device_metadata={"device_id": "imu_sim"},
+        sample_shape=(columns,),
+        nominal_rate_hz=100.0,
+    ) as writer:
+        writer.append(
+            np.zeros((count, columns), dtype=np.float32),
+            sample_index=0,
+            host_monotonic_ns=bursty_host,
+            device_time=clean_device,
+        )
+
+    series, _ = _read_hdf5_signal(path, formal_t0_ns=0, max_points=1000)
+    assert series.time_s.size == count
+    # The raw host axis is bursty (std far exceeds one nominal period)…
+    assert np.diff(bursty_host.astype(np.float64)).std() > period_ns / 1e9
+    # …while the reconstructed axis is essentially uniform and near-nominal.
+    diffs = np.diff(series.time_s)
+    assert diffs.std() < 1e-9
+    assert abs(diffs[0] - period_ns / 1e9) < 0.01 * (period_ns / 1e9)

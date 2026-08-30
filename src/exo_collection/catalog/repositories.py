@@ -454,15 +454,20 @@ class CatalogRepository:
         return trials[0].condition_code or "?"
 
     def tree(self) -> list[dict[str, object]]:
-        """Return a deterministic Project→Subject→Session→Trial→Artifact tree.
+        """Return a Subject→Project→Condition→Session→Artifact tree.
 
-        Labels are derived from the filesystem directory names (via
-        ``manifest_path``) so the tree mirrors what the operator sees in
-        ``data/`` rather than internal UUIDs.
+        The top level is the human subject code, so a subject who participated
+        in several projects appears exactly once with every project nested
+        beneath it — mirroring the on-disk ``data/`` layout
+        (``<subject>/<project>/<condition>/<session>/...``) rather than internal
+        UUIDs.  Labels are derived from the filesystem directory names (via
+        ``manifest_path``).
         """
 
         with self.catalog.session() as db:
-            projects = db.scalars(select(ProjectRow).order_by(ProjectRow.name)).all()
+            projects = db.scalars(
+                select(ProjectRow).order_by(ProjectRow.project_code, ProjectRow.name)
+            ).all()
             subjects = db.scalars(select(SubjectRow).order_by(SubjectRow.subject_code)).all()
             trials = db.scalars(select(TrialRow).order_by(TrialRow.started_utc)).all()
             artifacts = db.scalars(select(ArtifactRow).order_by(ArtifactRow.relative_path)).all()
@@ -474,71 +479,102 @@ class CatalogRepository:
             trials_by_subject_condition.setdefault(
                 (item.subject_uuid, item.condition_code), []
             ).append(item)
-        subjects_by_project: dict[str, list[SubjectRow]] = {}
-        for item in subjects:
-            subjects_by_project.setdefault(item.project_uuid, []).append(item)
-        return [
-            {
-                "type": "project",
-                "uuid": project.project_uuid,
-                "label": project.project_code or project.name,
-                "children": [
+        project_by_uuid: dict[str, ProjectRow] = {
+            item.project_uuid: item for item in projects
+        }
+
+        def _condition_nodes(subject_uuid: str) -> list[dict[str, object]]:
+            nodes: list[dict[str, object]] = []
+            for (_subject_uuid, _condition), condition_trials in sorted(
+                trials_by_subject_condition.items(),
+                key=lambda item: item[0][1],
+            ):
+                if _subject_uuid != subject_uuid or not condition_trials:
+                    continue
+                nodes.append(
                     {
-                        "type": "subject",
-                        "uuid": subject.subject_uuid,
-                        "label": subject.subject_code or subject.subject_uuid[:8],
+                        "type": "session",
+                        "uuid": condition_trials[0].condition_uuid,
+                        "label": self._condition_label(condition_trials),
                         "children": [
                             {
-                                "type": "session",
-                                "uuid": condition_trials[0].condition_uuid,
-                                "label": self._condition_label(condition_trials),
+                                "type": "trial",
+                                "uuid": trial.trial_uuid,
+                                "label": self._trial_leaf_label(trial.manifest_path),
+                                "state": trial.state,
+                                "quality_grade": trial.quality_grade,
+                                "duration_s": trial.duration_s,
+                                "manifest_path": trial.manifest_path,
+                                "modality_count": len(
+                                    {
+                                        artifact.modality
+                                        for artifact in artifacts_by_trial.get(
+                                            trial.trial_uuid, []
+                                        )
+                                        if artifact.modality
+                                        not in {"trial", "prompt_label"}
+                                    }
+                                ),
                                 "children": [
                                     {
-                                        "type": "trial",
-                                        "uuid": trial.trial_uuid,
-                                        "label": self._trial_leaf_label(trial.manifest_path),
-                                        "state": trial.state,
-                                        "quality_grade": trial.quality_grade,
-                                        "duration_s": trial.duration_s,
-                                        "manifest_path": trial.manifest_path,
-                                        "modality_count": len(
-                                            {
-                                                artifact.modality
-                                                for artifact in artifacts_by_trial.get(
-                                                    trial.trial_uuid, []
-                                                )
-                                                if artifact.modality
-                                                not in {"trial", "prompt_label"}
-                                            }
-                                        ),
-                                        "children": [
-                                            {
-                                                "type": "artifact",
-                                                "uuid": artifact.artifact_uuid,
-                                                "label": artifact.relative_path,
-                                                "modality": artifact.modality,
-                                                "size_bytes": artifact.size_bytes,
-                                                "sha256": artifact.sha256,
-                                                "children": [],
-                                            }
-                                            for artifact in artifacts_by_trial.get(trial.trial_uuid, [])
-                                        ],
+                                        "type": "artifact",
+                                        "uuid": artifact.artifact_uuid,
+                                        "label": artifact.relative_path,
+                                        "modality": artifact.modality,
+                                        "size_bytes": artifact.size_bytes,
+                                        "sha256": artifact.sha256,
+                                        "children": [],
                                     }
-                                    for trial in condition_trials
+                                    for artifact in artifacts_by_trial.get(trial.trial_uuid, [])
                                 ],
                             }
-                            for (_subject_uuid, _condition), condition_trials in sorted(
-                                trials_by_subject_condition.items(),
-                                key=lambda item: item[0][1],
-                            )
-                            if _subject_uuid == subject.subject_uuid and condition_trials
+                            for trial in condition_trials
                         ],
                     }
-                    for subject in subjects_by_project.get(project.project_uuid, [])
-                ],
+                )
+            return nodes
+
+        # A subject may take part in several projects; each project yields its
+        # own SubjectRow (the schema keys subjects by project_uuid + code).  Group
+        # those rows by human subject code so the subject shows up once.
+        subjects_by_code: dict[str, list[SubjectRow]] = {}
+        for subject in subjects:
+            code = subject.subject_code or subject.subject_uuid[:8]
+            subjects_by_code.setdefault(code, []).append(subject)
+
+        tree: list[dict[str, object]] = []
+        for code, subject_rows in subjects_by_code.items():
+            subject_uuid_by_project = {
+                row.project_uuid: row.subject_uuid for row in subject_rows
             }
-            for project in projects
-        ]
+            project_rows: list[ProjectRow] = []
+            seen: set[str] = set()
+            for row in subject_rows:
+                project = project_by_uuid.get(row.project_uuid)
+                if project is not None and project.project_uuid not in seen:
+                    seen.add(project.project_uuid)
+                    project_rows.append(project)
+            project_rows.sort(key=lambda p: (p.project_code or "", p.name))
+
+            tree.append(
+                {
+                    "type": "subject",
+                    "uuid": code,
+                    "label": code,
+                    "children": [
+                        {
+                            "type": "project",
+                            "uuid": project.project_uuid,
+                            "label": project.project_code or project.name,
+                            "children": _condition_nodes(
+                                subject_uuid_by_project[project.project_uuid]
+                            ),
+                        }
+                        for project in project_rows
+                    ],
+                }
+            )
+        return tree
 
     def statistics(self) -> dict[str, object]:
         with self.catalog.session() as db:

@@ -19,6 +19,63 @@ class ClockResiduals:
     max_absolute_ns: float
 
 
+class DeviceClockMapper:
+    """Streaming device-counter → host-monotonic-ns mapper.
+
+    Reconstructs a uniform per-sample host timestamp from a device clock
+    (e.g. an Xsens PacketCounter that increments by one per sample and wraps
+    at ``wrap_mod``) instead of the bursty host packet-arrival time.  The
+    scale is fixed to the nominal period ``period_ns``; the offset is a
+    running mean of ``arrival_ns - period_ns * unwrapped_counter`` that is
+    frozen once ``warmup`` anchors have been seen.
+
+    - The first sample's offset is seeded from its own residual, so the first
+      ``map`` call returns ``arrival_ns`` exactly (no discontinuity).
+    - After ``warmup`` samples the offset is frozen, so every subsequent
+      mapped value is spaced exactly ``period_ns`` apart regardless of bursty
+      arrival jitter (the jitter is averaged away during warm-up).
+    - Fixed scale (rather than a streaming least-squares slope) avoids wild
+      early fits dominated by jitter; crystal drift (~20 ppm) is negligible
+      over a single trial.  Extend here for drift tracking if ever needed.
+    """
+
+    def __init__(
+        self, period_ns: float, wrap_mod: int = 65536, warmup: int = 16
+    ) -> None:
+        if period_ns <= 0 or not np.isfinite(period_ns):
+            raise ValueError("period_ns must be positive and finite")
+        if wrap_mod <= 0:
+            raise ValueError("wrap_mod must be positive")
+        if warmup <= 0:
+            raise ValueError("warmup must be positive")
+        self._period_ns = float(period_ns)
+        self._wrap_mod = int(wrap_mod)
+        self._warmup = int(warmup)
+        self._n = 0
+        self._last_raw: int | None = None
+        self._unwrapped: int | None = None
+        self._offset = 0.0
+
+    def map(self, raw_counter: int, arrival_ns: int) -> int:
+        """Record one anchor and return the reconstructed host ns for it."""
+        self._n += 1
+        if self._unwrapped is None:
+            self._unwrapped = int(raw_counter)
+        else:
+            delta = int(raw_counter) - int(self._last_raw)
+            if delta < -self._wrap_mod // 2:
+                delta += self._wrap_mod
+            elif delta > self._wrap_mod // 2:
+                delta -= self._wrap_mod
+            self._unwrapped += delta
+        self._last_raw = int(raw_counter)
+
+        if self._n <= self._warmup:
+            residual = float(arrival_ns) - self._period_ns * float(self._unwrapped)
+            self._offset += (residual - self._offset) / self._n
+        return int(round(self._period_ns * float(self._unwrapped) + self._offset))
+
+
 @dataclass(frozen=True, slots=True)
 class AffineClockModel:
     """Mapping ``t_global_ns = scale_a * t_source + offset_b_ns``."""

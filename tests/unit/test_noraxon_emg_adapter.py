@@ -15,6 +15,8 @@ from exo_collection.adapters.emg.noraxon import (
     NoraxonEmgChannel,
     NoraxonEmgConfig,
     _normalise_unit_id,
+    _serial_from_tags,
+    _ultium_serials_from_components,
 )
 
 
@@ -24,6 +26,35 @@ def test_normalise_unit_id_strips_tag_prefixes() -> None:
     assert _normalise_unit_id("234fc") == "234fc"
     assert _normalise_unit_id("") == ""
     assert _normalise_unit_id(None) == ""
+
+
+def test_serial_from_tags_returns_bare_serial() -> None:
+    assert _serial_from_tags(["line.noraxon_g3_abc12", "type.input.analog.emg"]) == "abc12"
+    assert _serial_from_tags(["type.input.analog.emg"]) is None
+
+
+def test_ultium_serials_from_components_extracts_and_dedupes() -> None:
+    tags_per_component = [
+        ["type.input.analog.emg", "device.noraxon.ultium", "line.noraxon_g3_234fc"],
+        ["type.input.analog.emg", "device.noraxon.ultium", "line.noraxon_g3_234f5"],
+        ["type.input.analog.emg", "device.noraxon.ultium", "line.noraxon_g3_234fc"],
+        ["device.player.player.record", "line.noraxon_g3_99999"],
+        ["type.input.analog.emg", "device.noraxon.ultium"],
+    ]
+    assert _ultium_serials_from_components(tags_per_component) == ["234f5", "234fc"]
+
+
+def test_ultium_serials_from_components_ignores_non_ultium() -> None:
+    # A replay/player channel carries a g3 tag but no ultium device tag, so it
+    # must be excluded from the scan results.
+    assert (
+        _ultium_serials_from_components(
+            [
+                ["type.input.analog.emg", "device.player.player.record", "line.noraxon_g3_12345"],
+            ]
+        )
+        == []
+    )
 
 
 def test_config_rejects_empty_channels() -> None:

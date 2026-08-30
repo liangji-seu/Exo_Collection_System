@@ -2402,3 +2402,37 @@ def test_discovery_deadline_rejects_present_but_not_stable_set(
     with pytest.raises(AdapterError, match="stable identity set"):
         backend.connect(lambda *args: None)
     backend.close()
+
+
+# ──────────────────────────────────────────────────────────────
+#  Host timestamp reconstruction from device clock
+# ──────────────────────────────────────────────────────────────
+
+
+def test_bursty_arrivals_reconstruct_uniform_host_timestamps() -> None:
+    """Bursty packet arrival must not leak into emitted host timestamps:
+    after the mapper warm-up, consecutive samples are spaced exactly one
+    nominal period apart."""
+    backend = FakeAwindaBackend()
+    adapter = XsensAwindaImuAdapter(backend=backend, config={"queue_capacity": 512})
+    adapter.connect()
+    adapter.prepare(context())
+    adapter.start()
+
+    period_ns = 1_000_000_000 // backend.actual_rate_hz  # 200 Hz → 5 ms
+    count = 40
+    # Bursty arrivals: 3 counters land together, then a 15 ms gap, repeating.
+    for counter in range(count):
+        burst_start = (counter // 3) * 3 * period_ns
+        for slot, device in enumerate(("A", "B", "C")):
+            backend.emit(device, Packet(counter), burst_start + slot)
+
+    events = _drain_events(adapter, timeout=1.0)
+    assert len(events) == count
+    events.sort(key=lambda e: e.device_timestamp)
+    host_times = [e.host_monotonic_ns for e in events]
+    # After the 16-sample warm-up the spacing is exactly one nominal period.
+    assert np.all(np.diff(host_times[16:]) == period_ns)
+
+    adapter.stop()
+    adapter.close()

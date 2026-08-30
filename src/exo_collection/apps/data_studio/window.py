@@ -93,8 +93,13 @@ from .upload import (
     UploadOperation,
     UploadWorkerEventType,
     UploadWorkerHandle,
+    decide_one_click_upload,
 )
-from .upload_dialog import OfflineUploadDialog, UploadProgressDialog
+from .upload_dialog import (
+    OfflineUploadDialog,
+    SelectiveUploadDialog,
+    UploadProgressDialog,
+)
 
 
 _TYPE_LABELS = {
@@ -202,6 +207,7 @@ class _UploadTaskContext:
     worker: UploadWorkerHandle
     progress_dialog: UploadProgressDialog
     silent: bool = False
+    one_click: bool = False
     terminal_handled: bool = False
     cancel_requested: bool = False
     empty_exit_polls: int = 0
@@ -357,6 +363,14 @@ class DataStudioWindow(QMainWindow):
         self.quick_upload_button.setObjectName("quick_upload_selected")
         self.quick_upload_button.clicked.connect(self.upload_selected_trial)
         root_row.addWidget(self.quick_upload_button)
+        self.one_click_upload_button = QPushButton("一键上传")
+        self.one_click_upload_button.setObjectName("one_click_upload")
+        self.one_click_upload_button.setToolTip(
+            "自动比对云端与本地的 Trial；若云端是本地子集则直接增量上传，"
+            "否则弹出选择框让你指定要上传的 Trial。"
+        )
+        self.one_click_upload_button.clicked.connect(self.one_click_upload)
+        root_row.addWidget(self.one_click_upload_button)
         self.remote_sync_button = QPushButton("同步云端状态")
         self.remote_sync_button.setObjectName("sync_remote_status")
         self.remote_sync_button.clicked.connect(self.sync_remote_status)
@@ -1221,7 +1235,10 @@ class DataStudioWindow(QMainWindow):
                     context.progress_dialog.mark_finished()
                     context.progress_dialog.close()
                     if isinstance(event.result, RemoteStatusSyncResult):
-                        self._remote_sync_succeeded(event.result, silent=context.silent)
+                        if context.one_click:
+                            self._one_click_scan_succeeded(event.result)
+                        else:
+                            self._remote_sync_succeeded(event.result, silent=context.silent)
                     elif isinstance(event.result, (OfflineUploadResult, BatchOfflineUploadResult)):
                         self._upload_succeeded(event.result)
                     else:
@@ -1547,6 +1564,31 @@ class DataStudioWindow(QMainWindow):
         self._start_remote_operation(manifest_paths, status_only=True)
 
     @Slot()
+    def one_click_upload(self) -> None:
+        """One-click: compare cloud vs local, then upload incrementally or prompt."""
+
+        self._apply_activity(read_activity(self._data_root))
+        if self._lightweight_mode:
+            QMessageBox.warning(
+                self,
+                "采集期间禁止上传",
+                "Collector 正在采集，Data Studio 已进入轻量模式。",
+            )
+            return
+        if self._active_upload is not None:
+            QMessageBox.information(self, "远程任务进行中", "请等待当前远程任务结束。")
+            return
+        manifest_paths = self._all_finalized_manifest_paths()
+        if not manifest_paths:
+            QMessageBox.warning(
+                self, "没有可上传数据", "请先刷新 Catalog；当前没有 FINALIZED Trial。"
+            )
+            return
+        self._start_remote_operation(
+            manifest_paths, status_only=True, one_click=True
+        )
+
+    @Slot()
     def _start_automatic_remote_sync(self) -> None:
         """Silently sync cloud state once after the initial Catalog scan."""
 
@@ -1640,6 +1682,7 @@ class DataStudioWindow(QMainWindow):
         status_only: bool,
         force_dialog: bool = False,
         silent: bool = False,
+        one_click: bool = False,
     ) -> None:
         """Collect ephemeral credentials and start one isolated remote worker."""
 
@@ -1682,13 +1725,17 @@ class DataStudioWindow(QMainWindow):
 
         worker = self._upload_worker_factory()
         progress_dialog = UploadProgressDialog(self)
-        if status_only:
+        if one_click:
+            progress_dialog.setWindowTitle("一键上传")
+            progress_dialog.cancel_button.setText("取消一键上传")
+        elif status_only:
             progress_dialog.setWindowTitle("同步云端状态")
             progress_dialog.cancel_button.setText("取消状态同步")
         context = _UploadTaskContext(
             worker=worker,
             progress_dialog=progress_dialog,
             silent=silent,
+            one_click=one_click,
         )
         progress_dialog.cancel_requested.connect(self._cancel_active_upload)
         self._active_upload = context
@@ -1870,6 +1917,59 @@ class DataStudioWindow(QMainWindow):
             counts[RemoteTrialStatus.CONFLICT],
         )
         self.upload_finished.emit(True)
+
+    def _one_click_scan_succeeded(self, result: RemoteStatusSyncResult) -> None:
+        """Decide one-click outcome: incremental upload or operator selection."""
+
+        # Reflect the scan on the tree first so the operator sees per-Trial
+        # status lights before any upload starts.
+        self._remote_status_by_manifest = {
+            str(record.manifest_path.expanduser().resolve()): (
+                record.status,
+                record.detail,
+            )
+            for record in result.records
+        }
+        visible_tree = self._catalog_tree
+        if self._management_index is not None:
+            visible_tree = self._filter_catalog_tree(
+                self._catalog_tree,
+                {record.trial_uuid for record in self._filtered_records},
+            )
+        self._render_tree(visible_tree)
+
+        decision = decide_one_click_upload(result)
+        if decision.is_subset:
+            if not decision.incremental_manifest_paths:
+                QMessageBox.information(
+                    self,
+                    "一键上传完成",
+                    "云端数据是本地的子集，且所有本地 FINALIZED Trial 均已上传到云端，无需增量更新。",
+                )
+                return
+            # Defer so the upload starts after the poll loop releases the
+            # just-finished scan worker.
+            QTimer.singleShot(
+                0,
+                lambda: self._start_remote_operation(
+                    decision.incremental_manifest_paths, status_only=False
+                ),
+            )
+            return
+
+        dialog = SelectiveUploadDialog(result.records, result.remote_only, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            dialog.deleteLater()
+            return
+        selected = dialog.selected_manifest_paths()
+        dialog.deleteLater()
+        if not selected:
+            QMessageBox.information(self, "未选择", "未选择任何要上传的 Trial。")
+            return
+        QTimer.singleShot(
+            0,
+            lambda: self._start_remote_operation(selected, status_only=False),
+        )
 
     def _upload_failed(
         self,
@@ -2186,6 +2286,9 @@ class DataStudioWindow(QMainWindow):
         self.browse_button.setEnabled(root_controls_enabled)
         self.refresh_button.setEnabled(root_controls_enabled)
         self.quick_upload_button.setEnabled(
+            root_controls_enabled and not self._lightweight_mode and bool(self._catalog_tree)
+        )
+        self.one_click_upload_button.setEnabled(
             root_controls_enabled and not self._lightweight_mode and bool(self._catalog_tree)
         )
         self.remote_sync_button.setEnabled(

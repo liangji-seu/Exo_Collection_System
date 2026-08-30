@@ -26,8 +26,10 @@ from PySide6.QtTest import QTest
 from exo_collection.acquisition.messages import WorkerEvent, WorkerEventType
 from exo_collection.acquisition.recording_stream import RecordingStreamEndpoint
 from exo_collection.apps.collector import CollectorWindow
+from exo_collection.apps.collector.button_marker import START_STOP_VK
 from exo_collection.apps.collector.device_settings import (
     DEVICE_SETTINGS_DIALOGS,
+    EmgDeviceSettingsDialog,
     EncoderDeviceSettingsDialog,
     ImuDeviceSettingsDialog,
     SyncPulseDeviceSettingsDialog,
@@ -249,6 +251,67 @@ def test_ultrasound_dialog_stops_active_interface_scan_before_exit() -> None:
     app.processEvents()
 
 
+def test_emg_dialog_scan_populates_channel_combos() -> None:
+    app = QApplication.instance() or QApplication(["test-emg-scan-populate"])
+    dialog = EmgDeviceSettingsDialog(
+        {
+            "channels": [
+                {"name": "股直肌", "unit_id": "noraxon_g3_234fc"},
+                {"name": "股内侧肌", "unit_id": "noraxon_g3_234f5"},
+            ]
+        }
+    )
+
+    assert len(dialog._channel_unit_combos) == 4
+    dialog._on_scan_result(["234f5", "234fc"])
+
+    for combo in dialog._channel_unit_combos:
+        assert combo.count() == 2
+        assert combo.itemText(0) == "234f5"
+        assert combo.itemText(1) == "234fc"
+    # 只读下拉框：扫描后按归一化序列号自动选中，无需手动填写
+    assert dialog._channel_unit_combos[0].currentText() == "234fc"
+    assert dialog._channel_unit_combos[1].currentText() == "234f5"
+    assert dialog._channel_unit_combos[2].currentText() == ""
+    assert dialog._channel_unit_combos[3].currentText() == ""
+    assert "检测到 2 个在线传感器" in dialog.scan_status.text()
+    dialog.close()
+    app.processEvents()
+
+
+def test_emg_dialog_accept_reads_combo_and_keeps_empty_unit_slot() -> None:
+    app = QApplication.instance() or QApplication(["test-emg-accept-combo"])
+    dialog = EmgDeviceSettingsDialog(
+        {
+            "channels": [
+                {"name": "股直肌", "unit_id": "noraxon_g3_234fc"},
+                {"name": "股内侧肌", "unit_id": "noraxon_g3_234f5"},
+                {"name": "股外侧肌", "unit_id": ""},
+                {"name": "股中肌", "unit_id": ""},
+            ]
+        }
+    )
+    dialog._on_scan_result(["234f5", "234fc"])
+    # 用户在下拉框里选择裸序列号（只读，不可手填）
+    dialog._channel_unit_combos[0].setCurrentIndex(
+        dialog._channel_unit_combos[0].findText("234fc")
+    )
+    dialog._channel_unit_combos[1].setCurrentIndex(
+        dialog._channel_unit_combos[1].findText("234f5")
+    )
+
+    dialog.accept()
+
+    assert dialog.validated_override["channels"] == [
+        {"name": "股直肌", "unit_id": "234fc"},
+        {"name": "股内侧肌", "unit_id": "234f5"},
+        {"name": "股外侧肌", "unit_id": ""},
+        {"name": "股中肌", "unit_id": ""},
+    ]
+    dialog.close()
+    app.processEvents()
+
+
 def test_each_modality_dialog_restores_its_own_settings() -> None:
     app = QApplication.instance() or QApplication(["test-modality-dialogs"])
     imu = ImuDeviceSettingsDialog(
@@ -327,6 +390,41 @@ def test_hardware_device_settings_dialog_preserves_empty_middle_slot() -> None:
 
     dialog.close()
     app.processEvents()
+
+
+class FakeButtonMarker:
+    """测试替身：模拟 ButtonMarkerListener，可手动注入按键事件。"""
+
+    def __init__(
+        self,
+        *,
+        vk: int = 0,
+        queue_size: int = 256,
+        ignore_shift: bool = False,
+    ) -> None:
+        self.vk = vk
+        self.ignore_shift = ignore_shift
+        self.started = False
+        self.stopped = False
+        self._events: list[tuple[int, int]] = []
+
+    def start(self) -> None:
+        self.started = True
+
+    def stop(self) -> None:
+        self.stopped = True
+
+    def drain(self) -> list[tuple[int, int]]:
+        events = self._events
+        self._events = []
+        return events
+
+    def inject_press(self) -> None:
+        self._events.append((0, 0))
+
+    @property
+    def is_running(self) -> bool:
+        return self.started and not self.stopped
 
 
 class FakePreviewHandle:
@@ -432,6 +530,7 @@ def _window_with_fake(
     tmp_path: Path,
     *,
     preflight: Callable[[], dict[str, str]] | None = None,
+    button_marker_factory: Callable[..., FakeButtonMarker] | None = None,
 ) -> tuple[QApplication, CollectorWindow, list[FakeCollectorWorker]]:
     app = QApplication.instance() or QApplication(["test-exo-collector"])
     created: list[FakeCollectorWorker] = []
@@ -502,6 +601,7 @@ def _window_with_fake(
         ),
         worker_factory=factory,
         preflight_worker_factory=preflight_factory,
+        button_marker_factory=button_marker_factory,
         poll_interval_ms=5,
         controlled_stop_timeout_s=0.05,
     )
@@ -1520,6 +1620,58 @@ def test_collector_locks_condition_polls_events_and_finalizes(
     assert worker.closed
     assert worker.join_timeouts == [0]
     window.close()
+
+
+def test_period_button_toggles_start_and_stop_write(tmp_path: Path) -> None:
+    app, window, created = _window_with_fake(
+        tmp_path,
+        button_marker_factory=FakeButtonMarker,
+    )
+    _connect_all_previews_for_trial(window)
+    assert window.subject_code_edit.text() == "001"
+
+    marker = window._start_stop_button
+    assert marker is not None
+    assert marker.started
+    assert marker.vk == START_STOP_VK
+    assert marker.ignore_shift is True
+
+    # 第一次按下句号键 → 开始写盘
+    marker.inject_press()
+    window._poll_start_stop_button()
+    assert len(created) == 1
+    worker = created[0]
+    assert worker.started
+
+    # 让 worker 进入 RECORDING，使后续按下走「停止」分支
+    worker.events.append(
+        WorkerEvent(
+            event_type=WorkerEventType.STATE,
+            payload={"state": "RECORDING"},
+        )
+    )
+    _wait_until(app, lambda: "采集中" in window.overall_status)
+
+    # 再次按下 → 停止写盘
+    marker.inject_press()
+    window._poll_start_stop_button()
+    assert worker.stop_requests == 1
+    assert window.overall_status == "保存中"
+
+    window.close()
+
+
+def test_closing_window_stops_start_stop_listener(tmp_path: Path) -> None:
+    _app, window, _created = _window_with_fake(
+        tmp_path,
+        button_marker_factory=FakeButtonMarker,
+    )
+    marker = window._start_stop_button
+    assert marker is not None and marker.started
+
+    window.show()
+    window.close()
+    assert marker.stopped
 
 
 def test_collector_shows_failed_worker_error_without_blocking_ui(

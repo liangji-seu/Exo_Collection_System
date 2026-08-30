@@ -17,7 +17,10 @@ from exo_collection.apps.data_studio.upload import (
     OfflineUploadRequest,
     ParamikoScpSession,
     RemoteDatasetStatusScanner,
+    RemoteOnlyTrial,
+    RemoteStatusSyncResult,
     RemoteTrialStatus,
+    RemoteTrialStatusRecord,
     SshScpTrialUploader,
     UnknownHostKeyError,
     UploadError,
@@ -31,6 +34,7 @@ from exo_collection.apps.data_studio.upload import (
     _remote_join,
     build_remote_trial_directory,
     build_upload_plan,
+    decide_one_click_upload,
     validate_finalized_trial,
     validate_remote_directory,
 )
@@ -361,6 +365,96 @@ def test_remote_status_scan_distinguishes_uploaded_missing_partial_and_conflict(
         RemoteTrialStatus.CONFLICT,
     ]
     assert session.closed
+
+
+def test_remote_status_scan_reports_remote_only_trials(tmp_path: Path) -> None:
+    manifest_path = _publish_trial(tmp_path)
+    request = _password_request(tmp_path, manifest_path)
+    plan = build_upload_plan(manifest_path)
+    session = _FakeRemoteSession()
+
+    local_key = _remote_index_key(plan, tmp_path)
+    cloud_only_key = "F/cloud-only-subject/cloud-only-session/trials/cloud-only-trial"
+    index_path = "/srv/exo-data/" + REMOTE_SYNC_INDEX_RELATIVE_PATH.as_posix()
+    session.ensure_directory(str(PurePosixPath(index_path).parent))
+    session.files[index_path] = json.dumps(
+        {
+            "schema": REMOTE_SYNC_INDEX_SCHEMA,
+            "trials": {
+                local_key: {
+                    "trial_uuid": str(plan.trial_uuid),
+                    "package_fingerprint": _package_fingerprint(plan),
+                    "file_count": len(plan.files),
+                },
+                cloud_only_key: {
+                    "trial_uuid": str(uuid4()),
+                    "package_fingerprint": "0" * 64,
+                    "file_count": 1,
+                },
+            },
+        }
+    ).encode("utf-8")
+    _update_local_sync_cache(
+        request,
+        plan,
+        {
+            "trial_uuid": str(plan.trial_uuid),
+            "package_fingerprint": _package_fingerprint(plan),
+            "file_count": len(plan.files),
+        },
+    )
+
+    result = RemoteDatasetStatusScanner(lambda _request: session).scan(request)
+
+    assert [entry.index_key for entry in result.remote_only] == [cloud_only_key]
+    assert result.remote_only[0].trial_uuid is not None
+    assert result.remote_only[0].remote_trial_directory == "/srv/exo-data/" + cloud_only_key
+    assert session.closed
+
+
+def test_decide_one_click_upload_classifies_subset_and_conflict() -> None:
+    def record(status: RemoteTrialStatus, name: str) -> RemoteTrialStatusRecord:
+        return RemoteTrialStatusRecord(
+            manifest_path=Path(f"/data/{name}/manifest.json"),
+            trial_uuid=uuid4(),
+            remote_trial_directory=f"/srv/exo-data/{name}",
+            status=status,
+            detail="",
+        )
+
+    uploaded = record(RemoteTrialStatus.UPLOADED, "a")
+    missing = record(RemoteTrialStatus.NOT_UPLOADED, "b")
+    partial = record(RemoteTrialStatus.PARTIAL, "c")
+    conflict = record(RemoteTrialStatus.CONFLICT, "d")
+
+    clean = RemoteStatusSyncResult((uploaded, missing, partial))
+    decision = decide_one_click_upload(clean)
+    assert decision.is_subset is True
+    assert decision.incremental_manifest_paths == (
+        missing.manifest_path,
+        partial.manifest_path,
+    )
+    assert decision.conflict_manifest_paths == ()
+
+    conflicted = RemoteStatusSyncResult((uploaded, conflict, missing))
+    decision = decide_one_click_upload(conflicted)
+    assert decision.is_subset is False
+    assert decision.conflict_manifest_paths == (conflict.manifest_path,)
+    assert decision.incremental_manifest_paths == (missing.manifest_path,)
+
+    remote_only = RemoteOnlyTrial(
+        index_key="F/ghost/trials/x",
+        trial_uuid=str(uuid4()),
+        remote_trial_directory="/srv/exo-data/F/ghost/trials/x",
+    )
+    divergent = RemoteStatusSyncResult((uploaded, missing), (remote_only,))
+    decision = decide_one_click_upload(divergent)
+    assert decision.is_subset is False
+
+    nothing = RemoteStatusSyncResult((uploaded,))
+    decision = decide_one_click_upload(nothing)
+    assert decision.is_subset is True
+    assert decision.incremental_manifest_paths == ()
 
 
 def test_remote_status_scan_recovers_legacy_verified_upload_as_green(
