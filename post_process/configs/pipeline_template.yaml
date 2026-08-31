@@ -1,0 +1,129 @@
+# =====================================================================
+# OpenSim 逆动力学流水线 config 模板
+# 约定：所有尚未实测/确认的信息一律 TODO / TODO_BLOCKING，
+#       validate_config 会把它们标成 BLOCKING，绝不让下游"假装能跑"。
+# =====================================================================
+
+subject:
+  id: TODO
+  mass_kg: TODO_BLOCKING            # 受试者体重（Scale/ID 必需）
+  height_m: TODO_RECOMMENDED        # 身高（部分缩放策略用）
+
+files:
+  static_c3d: TODO_BLOCKING         # 静态标定 trial（含 Knee.Medial / Ankle.Medial）
+  dynamic_c3d: TODO_BLOCKING        # 动态步态 trial
+  generic_model:
+    path: TODO_BLOCKING             # gait2392_generic.osim（用户后续提供官方文件）
+
+marker:
+  protocol: Helen_Hayes_19
+  input_unit: TODO_BLOCKING         # 通常 "mm"（以 inspection 的 POINT:UNITS 为准，不臆测）
+  use_virtual_joint_centers: false
+  use_virtual_sacral: TODO_BLOCKING # V.Sacral 是否参与 IK，需确认
+  mapping:                          # HH19 → OpenSim marker 映射（不可仅凭名字相似推导）
+    R.ASIS: TODO
+    L.ASIS: TODO
+    V.Sacral: TODO
+    R.Thigh: TODO
+    L.Thigh: TODO
+    R.Knee: TODO
+    L.Knee: TODO
+    R.Shank: TODO
+    L.Shank: TODO
+    R.Ankle: TODO
+    L.Ankle: TODO
+    R.Heel: TODO
+    L.Heel: TODO
+    R.Toe: TODO
+    L.Toe: TODO
+
+coordinate_systems:
+  mocap:                            # NOKOV/XINGYING 全局（待实测）
+    origin_definition: TODO_BLOCKING
+    x_axis: TODO_BLOCKING
+    y_axis: TODO_BLOCKING
+    z_axis: TODO_BLOCKING
+    vertical_axis: TODO_BLOCKING
+    forward_axis: TODO_BLOCKING
+    left_right_axis: TODO_BLOCKING
+  forceplate:                       # Gaitway 本地（待实测）
+    origin_definition: TODO_BLOCKING
+    x_axis: TODO_BLOCKING
+    y_axis: TODO_BLOCKING
+    z_axis: TODO_BLOCKING
+  opensim:
+    model_ground_definition: derive_from_model
+
+transforms:
+  forceplate_to_mocap:              # 力台 → 动捕（待标定）
+    status: TODO_BLOCKING_CALIBRATION
+    rotation_matrix: null
+    translation_m: null
+  mocap_to_opensim:                 # 动捕 → OpenSim ground（Z-up→Y-up 等，待确认）
+    status: TODO_BLOCKING_CONFIRM_AXES
+    rotation_matrix: null
+
+force:
+  source: TODO_BLOCKING             # Gaitway-3D 测力系统
+  mode: AUTO
+  convention: TODO_BLOCKING         # ground_on_foot 或 foot_on_ground（力符号）
+  unit_force: TODO_BLOCKING         # N
+  unit_cop: TODO_BLOCKING           # mm
+  unit_moment: TODO_BLOCKING        # Nmm
+  left_channels:
+    Fx: TODO
+    Fy: TODO
+    Fz: TODO
+    COPx: TODO
+    COPy: TODO
+    COPz: TODO
+    Tz: TODO_OPTIONAL
+  right_channels:
+    Fx: TODO
+    Fy: TODO
+    Fz: TODO
+    COPx: TODO
+    COPy: TODO
+    COPz: TODO
+    Tz: TODO_OPTIONAL
+  external_load_body:
+    right: TODO                     # 从 scaled model 自动解析（预期 calcn_r，不硬编码）
+    left: TODO
+
+treadmill:
+  slope_deg: TODO
+  treadmill_frame_rotates_with_slope: TODO_BLOCKING
+  force_data_already_gravity_aligned: TODO_BLOCKING
+
+sync:
+  method: TODO_BLOCKING
+  marker_time_offset_s: TODO
+  force_time_offset_s: TODO
+  external_sensor_time_offset_s: TODO
+
+filtering:
+  enabled: false
+  marker:
+    method: butterworth
+    cutoff_hz: TODO
+  grf:
+    method: butterworth
+    cutoff_hz: TODO
+  zero_phase: true
+
+opensim:
+  scale:
+    enabled: true
+  ik:
+    enabled: true
+    marker_weights:                 # TODO：DEFAULT_INITIAL_VALUE，非实验最终参数
+      R.ASIS: DEFAULT_INITIAL_VALUE
+      L.ASIS: DEFAULT_INITIAL_VALUE
+  id:
+    enabled: true
+  rra:
+    enabled: false
+
+output:
+  moment_unit: Nm
+  additionally_export_Nm_per_kg: true

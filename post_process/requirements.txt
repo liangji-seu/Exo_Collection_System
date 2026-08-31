@@ -1,0 +1,13 @@
+# 上游（无 OpenSim 也能跑）：C3D 解析 / 坐标变换 / TRC / MOT 写出
+numpy>=1.24
+scipy>=1.10
+pandas>=1.5
+ezc3d>=1.5
+PyYAML>=6.0
+matplotlib>=3.6
+
+# OpenSim 绑定（可选；未安装时 pipeline 仅执行到 C3D/预处理阶段，Scale/IK/ID 报 BLOCKING）
+# 注意：不是 `pip install opensim`。OpenSim 4.x 的 Python 绑定是官方 conda 包，
+# 安装方式见 environment_check.py 与 docs/MISSING_INFORMATION.md：
+#   conda install -c opensim-org opensim
+opensim

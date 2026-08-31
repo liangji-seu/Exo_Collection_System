@@ -1,0 +1,11 @@
+# 每个受试者一份（覆盖/复用 pipeline_template.yaml 的 subject 与 files 段）。
+subject:
+  id: TODO                 # 例：S01
+  mass_kg: TODO_BLOCKING
+  height_m: TODO_RECOMMENDED
+
+files:
+  static_c3d: TODO_BLOCKING
+  dynamic_c3d: TODO_BLOCKING
+  generic_model:
+    path: TODO_BLOCKING

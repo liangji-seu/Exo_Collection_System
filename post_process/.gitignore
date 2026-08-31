@@ -1,0 +1,7 @@
+# 运行时产物（inspection / intermediate / opensim / results / qc）
+outputs/
+
+# Python 缓存（根 .gitignore 已有，这里显式兜底）
+__pycache__/
+*.py[cod]
+.pytest_cache/
