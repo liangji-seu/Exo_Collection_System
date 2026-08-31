@@ -66,11 +66,13 @@ class TrialLayout:
 
     The operator-visible hierarchy is::
 
-        {data_root}/{subject}/{project}/{condition}/session{repeat}_{timestamp}/
+        {data_root}/{subject}/d{day}/{project}/{condition}/session{repeat}_{timestamp}/
 
-    All internal bookkeeping (manifest, checksums, logs, quality reports,
-    session metadata) lives under a single ``.exo/`` subdirectory inside the
-    trial folder so the operator sees only data files when browsing.
+    The ``d{day}`` segment groups one subject's trials by collection day
+    (``day=None`` omits it, preserving the pre-day layout).  All internal
+    bookkeeping (manifest, checksums, logs, quality reports, session metadata)
+    lives under a single ``.exo/`` subdirectory inside the trial folder so the
+    operator sees only data files when browsing.
     """
 
     dataset_root: Path
@@ -80,6 +82,7 @@ class TrialLayout:
     trial_uuid: UUID
     project_partition: str | None = None
     subject_code: str | None = None
+    day: int | None = None
     condition_code: str | None = None
     repeat_index: int | None = None
     started_at_utc: datetime | None = None
@@ -98,6 +101,7 @@ class TrialLayout:
         trial_uuid: UUID,
         project_partition: str | None = None,
         subject_code: str | None = None,
+        day: int | None = None,
         condition_code: str | None = None,
         repeat_index: int | None = None,
         started_at_utc: datetime | None = None,
@@ -113,6 +117,8 @@ class TrialLayout:
             readable_subject = subject_code.strip()
             if re.fullmatch(r"\d{3}", readable_subject) is None:
                 raise ValueError("subject_code must contain exactly three digits")
+        if day is not None and not (isinstance(day, int) and day >= 1):
+            raise ValueError("day must be a positive integer")
         safe_condition = None
         if condition_code is not None:
             safe_condition = _safe_path_segment(condition_code.strip())
@@ -126,6 +132,7 @@ class TrialLayout:
             trial_uuid,
             partition,
             readable_subject,
+            day,
             safe_condition,
             repeat_index,
             started_at_utc,
@@ -142,10 +149,13 @@ class TrialLayout:
 
     @property
     def subject_directory(self) -> Path:
-        """Top-level grouping: ``{root}/{subject}/{project}/``."""
+        """Top-level grouping: ``{root}/{subject}/d{day}/{project}/``."""
         project_dir = self.project_partition or str(self.project_uuid)
         subject_dir = self.subject_code or str(self.subject_uuid)
-        return self.dataset_root / subject_dir / project_dir
+        base = self.dataset_root / subject_dir
+        if self.day is not None:
+            base = base / f"d{self.day}"
+        return base / project_dir
 
     @property
     def _trial_leaf_name(self) -> str:

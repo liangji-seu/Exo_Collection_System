@@ -133,6 +133,7 @@ class TrialRunRequest(OrchestrationModel):
     project_name: str = "测试"
     principal_investigator: str = "Not specified"
     subject_code: str = "001"
+    day: int = Field(default=1, ge=1)
     subject_group: str | None = None
     # The current experiment workflow has no operator input.  The persisted
     # Session field remains for backward/schema compatibility and audit tools.

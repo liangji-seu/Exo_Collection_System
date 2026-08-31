@@ -17,6 +17,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--duration", type=float, default=3.0)
     parser.add_argument("--project", default="Exoskeleton Study")
     parser.add_argument("--subject", default="SIM-001")
+    parser.add_argument("--day", type=int, default=1)
     parser.add_argument("--operator", default="simulator")
     parser.add_argument("--condition", default="WALK_LEVEL")
     parser.add_argument("--repeat", type=int, default=1)
@@ -30,6 +31,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         duration_s=args.duration,
         project_name=args.project,
         subject_code=args.subject,
+        day=args.day,
         operator=args.operator,
         condition_code=args.condition,
         condition_name=args.condition.replace("_", " ").title(),

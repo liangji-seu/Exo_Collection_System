@@ -119,8 +119,9 @@ def test_simulated_trial_produces_complete_immutable_package(tmp_path) -> None:
 
     manifest = load_manifest(result.manifest_path)
     assert manifest.state is TrialState.FINALIZED
-    assert result.trial_directory.relative_to(tmp_path).parts[0] == "T"
-    assert result.trial_directory.relative_to(tmp_path).parts[1] == "001"
+    assert result.trial_directory.relative_to(tmp_path).parts[0] == "001"
+    assert result.trial_directory.relative_to(tmp_path).parts[1] == "d1"
+    assert result.trial_directory.relative_to(tmp_path).parts[2] == "T"
     assert manifest.project_code == "T"
     assert manifest.project_name == "测试"
     assert manifest.subject_code == "001"

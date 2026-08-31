@@ -227,6 +227,34 @@ def test_manifest_scan_rebuilds_tree_and_statistics(tmp_path) -> None:
     assert statistics["by_condition"]["WALK_LEVEL"]["trial_count"] == 1
 
 
+def test_manifest_scan_accepts_day_level_human_readable_layout(tmp_path) -> None:
+    manifest = make_manifest()  # project_code="F", subject_code="001"
+    path = (
+        tmp_path
+        / "001"
+        / "d2"
+        / "F"
+        / "WALK_LEVEL"
+        / "session1_20260715_120000"
+        / ".exo"
+        / "manifest.json"
+    )
+    save_manifest(path, manifest)
+
+    with Catalog(tmp_path / "catalog.sqlite3") as catalog:
+        repository = CatalogRepository(catalog)
+        report = repository.scan_dataset(tmp_path)
+        tree = repository.tree()
+
+    assert report.indexed == 1
+    assert not report.failures
+    assert len(tree) == 1
+    subject_node = tree[0]
+    assert subject_node["label"] == "001"
+    assert len(subject_node["children"]) == 1
+    assert subject_node["children"][0]["label"] == "F"
+
+
 def test_tree_groups_session_directories_under_one_condition(tmp_path: Path) -> None:
     first = make_manifest()
     second_payload = first.model_dump(mode="python")

@@ -659,6 +659,7 @@ def run_trial(
         request.trial_uuid,
         project_partition=request.project_code,
         subject_code=request.subject_code,
+        day=request.day,
         condition_code=request.condition_code,
         repeat_index=request.repeat_index,
         started_at_utc=utc_now(),

@@ -21,6 +21,13 @@ def test_default_request_uses_test_partition_and_stable_subject_identity(tmp_pat
     assert first.trial_uuid != second.trial_uuid
 
 
+def test_request_day_defaults_to_one_and_rejects_nonpositive(tmp_path) -> None:
+    assert TrialRunRequest(data_root=tmp_path).day == 1
+    assert TrialRunRequest(data_root=tmp_path, day=3).day == 3
+    with pytest.raises(ValueError):
+        TrialRunRequest(data_root=tmp_path, day=0)
+
+
 def test_formal_and_test_partitions_have_distinct_stable_project_ids(tmp_path) -> None:
     formal = TrialRunRequest(
         data_root=tmp_path,

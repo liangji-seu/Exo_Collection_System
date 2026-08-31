@@ -174,6 +174,41 @@ def test_subject_code_is_the_readable_folder_without_becoming_the_primary_key(
     assert str(subject_uuid) not in relative.parts
 
 
+def test_day_folder_sits_between_subject_and_project(tmp_path) -> None:
+    subject_uuid = uuid4()
+    layout = TrialLayout.build(
+        tmp_path,
+        uuid4(),
+        subject_uuid,
+        uuid4(),
+        uuid4(),
+        project_partition="F",
+        subject_code="001",
+        day=3,
+    )
+
+    relative = layout.subject_directory.relative_to(tmp_path)
+    # The d{day} segment groups a subject's trials by collection day, sitting
+    # between the subject and project folders.
+    assert relative.parts == ("001", "d3", "F")
+    assert str(subject_uuid) not in relative.parts
+
+
+@pytest.mark.parametrize("day", [0, -1])
+def test_day_folder_rejects_nonpositive_values(tmp_path, day: int) -> None:
+    with pytest.raises(ValueError, match="day"):
+        TrialLayout.build(
+            tmp_path,
+            uuid4(),
+            uuid4(),
+            uuid4(),
+            uuid4(),
+            project_partition="T",
+            subject_code="001",
+            day=day,
+        )
+
+
 @pytest.mark.parametrize("subject_code", ["1", "01", "0001", "A01", "../001"])
 def test_subject_code_folder_rejects_noncanonical_values(
     tmp_path, subject_code: str

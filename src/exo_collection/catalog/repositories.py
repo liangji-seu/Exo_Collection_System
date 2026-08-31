@@ -80,13 +80,21 @@ def _validate_scanned_manifest_location(
     Two canonical layouts are supported:
 
     * **Human-readable** (current):
-      ``{root}/{subject}/{project}/{condition}/session{repeat}_{ts}/.exo/manifest.json``
+      ``{root}/{subject}/d{day}/{project}/{condition}/session{repeat}_{ts}/.exo/manifest.json``
+      (the ``d{day}`` collection-day segment is optional)
     * **Legacy UUID** (pre-0.2.0):
       ``{root}/{project}/{subject}/trials/{trial_uuid}/manifest.json``
     """
 
     if path.name != "manifest.json" or len(path.parents) < 6:
         raise ValueError("Manifest is not in a canonical Trial directory")
+
+    accepted_subjects = {str(manifest.subject_uuid).casefold()}
+    if manifest.subject_code:
+        accepted_subjects.add(manifest.subject_code.casefold())
+    accepted_projects = {str(manifest.project_uuid).casefold()}
+    if manifest.project_code:
+        accepted_projects.add(manifest.project_code.casefold())
 
     _EXO = ".exo"
     if path.parent.name == _EXO:
@@ -100,6 +108,12 @@ def _validate_scanned_manifest_location(
         condition_directory = trial_directory.parent
         project_directory = condition_directory.parent
         subject_directory = project_directory.parent
+        # A collection-day folder (d1/d2/...) may sit between the subject and
+        # project folders.  Its name can never be a subject identity (subject
+        # codes are three digits, UUIDs are UUIDs), so when the project's
+        # parent is not the subject, step up one more level.
+        if project_directory.parent.name.casefold() not in accepted_subjects:
+            subject_directory = project_directory.parent.parent
         # The innermost condition directory merely groups trials — its name
         # is not an identity claim, so skip it.
         del condition_directory
@@ -120,14 +134,8 @@ def _validate_scanned_manifest_location(
         if session_directory.name.casefold() != str(manifest.session_uuid).casefold():
             raise ValueError("Session directory does not match Manifest session_uuid")
 
-    accepted_subjects = {str(manifest.subject_uuid).casefold()}
-    if manifest.subject_code:
-        accepted_subjects.add(manifest.subject_code.casefold())
     if subject_directory.name.casefold() not in accepted_subjects:
         raise ValueError("Subject directory does not match Manifest identity")
-    accepted_projects = {str(manifest.project_uuid).casefold()}
-    if manifest.project_code:
-        accepted_projects.add(manifest.project_code.casefold())
     if project_directory.name.casefold() not in accepted_projects:
         raise ValueError("Project directory does not match Manifest identity")
 

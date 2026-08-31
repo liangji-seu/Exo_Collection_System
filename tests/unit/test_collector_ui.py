@@ -2904,6 +2904,17 @@ def test_worker_request_uses_selected_profile(tmp_path: Path) -> None:
     window.close()
 
 
+def test_day_spinbox_flows_into_request(tmp_path: Path) -> None:
+    """The 第几天 spin defaults to 1 and its value lands in TrialRunRequest.day."""
+    _app, window, _created = _window_with_fake(tmp_path)
+    assert window.day_spin.value() == 1
+
+    window.day_spin.setValue(3)
+    request = window.build_request()
+    assert request.day == 3
+    window.close()
+
+
 # ── IMU preview: slot-based labels (two-device scenario) ──────
 
 

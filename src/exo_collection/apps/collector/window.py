@@ -1546,8 +1546,18 @@ class CollectorWindow(QMainWindow):
         self.subject_code_edit.textChanged.connect(self._update_start_button)
         row1.addWidget(QLabel("受试者编码："), 0, 2)
         row1.addWidget(self.subject_code_edit, 0, 3)
+
+        self.day_spin = QSpinBox()
+        self.day_spin.setObjectName("day")
+        self.day_spin.setRange(1, 9999)
+        self.day_spin.setValue(1)
+        self.day_spin.setMinimumWidth(78)
+        self.day_spin.setMaximumWidth(105)
+        row1.addWidget(QLabel("第几天："), 0, 4)
+        row1.addWidget(self.day_spin, 0, 5)
         row1.setColumnStretch(1, 1)
         row1.setColumnStretch(3, 1)
+        row1.setColumnStretch(5, 0)
         form.addRow(row1)
 
         # Row 2: 工况 + 重复轮次
@@ -1584,6 +1594,7 @@ class CollectorWindow(QMainWindow):
             self.data_root_edit,
             self.project_combo,
             self.subject_code_edit,
+            self.day_spin,
             self.condition_combo,
             self.repeat_spin,
         ):
@@ -3709,6 +3720,7 @@ class CollectorWindow(QMainWindow):
             "project_code": project_code,
             "project_name": project_name,
             "subject_code": subject_code,
+            "day": self.day_spin.value(),
             "operator": operator,
             "condition_code": str(condition["condition_code"]),
             "condition_name": str(condition["condition_name"]),
