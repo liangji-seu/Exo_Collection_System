@@ -671,8 +671,8 @@ class EmgDeviceSettingsDialog(ModalityDeviceSettingsDialog):
     modality = "emg"
 
     _DEFAULT_CHANNELS: tuple[tuple[str, str], ...] = (
-        ("股直肌", "noraxon_g3_234fc"),
-        ("股内侧肌", "noraxon_g3_234f5"),
+        ("股直肌", "noraxon_g3_234fd"),
+        ("股内侧肌", "noraxon_g3_234f2"),
         ("股外侧肌", ""),
         ("股中肌", ""),
     )

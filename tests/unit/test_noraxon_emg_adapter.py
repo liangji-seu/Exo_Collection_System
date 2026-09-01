@@ -15,8 +15,8 @@ from exo_collection.adapters.emg.noraxon import (
     NoraxonEmgChannel,
     NoraxonEmgConfig,
     _normalise_unit_id,
-    _serial_from_tags,
-    _ultium_serials_from_components,
+    _parse_offline_serials,
+    _read_mr4_ultium_serials,
 )
 
 
@@ -28,33 +28,54 @@ def test_normalise_unit_id_strips_tag_prefixes() -> None:
     assert _normalise_unit_id(None) == ""
 
 
-def test_serial_from_tags_returns_bare_serial() -> None:
-    assert _serial_from_tags(["line.noraxon_g3_abc12", "type.input.analog.emg"]) == "abc12"
-    assert _serial_from_tags(["type.input.analog.emg"]) is None
-
-
-def test_ultium_serials_from_components_extracts_and_dedupes() -> None:
-    tags_per_component = [
-        ["type.input.analog.emg", "device.noraxon.ultium", "line.noraxon_g3_234fc"],
-        ["type.input.analog.emg", "device.noraxon.ultium", "line.noraxon_g3_234f5"],
-        ["type.input.analog.emg", "device.noraxon.ultium", "line.noraxon_g3_234fc"],
-        ["device.player.player.record", "line.noraxon_g3_99999"],
-        ["type.input.analog.emg", "device.noraxon.ultium"],
+def test_read_mr4_ultium_serials_parses_sensor_nodes(tmp_path) -> None:
+    xml = """<?xml version="1.1" encoding="utf-8"?>
+<Acquire.Devices.Manager xmlns="noraxon.mr3,1">
+    <Struct id="devices">
+        <Acquire.Devices.Profile id="default">
+            <String id="name" value="默认" />
+            <Struct id="devices">
+                <Acquire.Noraxon.Ultium id="usb_88024074">
+                    <String id="serial" value="88024074" />
+                    <Struct id="sensors">
+                        <Acquire.Noraxon.Ultium.Sensor id="q4102jh1">
+                            <String id="id" value="234fd" />
+                            <String id="name" value="肌电图 7" />
+                        </Acquire.Noraxon.Ultium.Sensor>
+                        <Acquire.Noraxon.Ultium.Sensor id="sj1n2jh1">
+                            <String id="id" value="234f2" />
+                            <String id="name" value="肌电图 1" />
+                        </Acquire.Noraxon.Ultium.Sensor>
+                    </Struct>
+                </Acquire.Noraxon.Ultium>
+            </Struct>
+        </Acquire.Devices.Profile>
+    </Struct>
+</Acquire.Devices.Manager>
+"""
+    path = tmp_path / "device_manager.object"
+    path.write_text(xml, encoding="utf-8")
+    assert _read_mr4_ultium_serials(str(path)) == [
+        ("234fd", "肌电图 7"),
+        ("234f2", "肌电图 1"),
     ]
-    assert _ultium_serials_from_components(tags_per_component) == ["234f5", "234fc"]
 
 
-def test_ultium_serials_from_components_ignores_non_ultium() -> None:
-    # A replay/player channel carries a g3 tag but no ultium device tag, so it
-    # must be excluded from the scan results.
-    assert (
-        _ultium_serials_from_components(
-            [
-                ["type.input.analog.emg", "device.player.player.record", "line.noraxon_g3_12345"],
-            ]
-        )
-        == []
-    )
+def test_parse_offline_serials_extracts_hex_serials() -> None:
+    assert _parse_offline_serials(
+        "Could not find the following sensors: 234f2"
+    ) == {"234f2"}
+
+
+def test_parse_offline_serials_handles_multiple_and_whitespace() -> None:
+    assert _parse_offline_serials(
+        "Could not find the following sensors: 234fc, 234f5"
+    ) == {"234fc", "234f5"}
+
+
+def test_parse_offline_serials_returns_empty_for_other_errors() -> None:
+    assert _parse_offline_serials("(-2147467259, '未指定的错误')") == set()
+    assert _parse_offline_serials("") == set()
 
 
 def test_config_rejects_empty_channels() -> None:

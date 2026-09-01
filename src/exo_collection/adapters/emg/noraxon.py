@@ -14,10 +14,11 @@ project (including unit tests) never requires ``comtypes`` or the vendor DLL.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from dataclasses import asdict, dataclass, fields, is_dataclass
 from time import perf_counter_ns, time_ns
-from typing import Any, Iterable, Mapping
+from typing import Any, Mapping
 
 import numpy as np
 
@@ -31,10 +32,11 @@ _log = logging.getLogger(__name__)
 # STA sampler thread so it never runs at import time.
 _NORAXON_TYPELIB = ("{089FD02C-0456-4A18-BB0A-C34D001D93BD}", 1, 0)
 
-# A real Ultium EMG sensor is tagged ``line.noraxon_g3_<serial>`` in addition to
-# ``type.input.analog.emg`` and ``device.noraxon.ultium...``.  Replay "player"
-# channels carry ``device.player.player.record`` and must be excluded.
-_SERIAL_TAG_PREFIX = "line.noraxon_g3_"
+# Ultium EMG sensors are tagged ``device.noraxon.ultium...`` in addition to
+# ``type.input.analog.emg``; replay "player" channels carry
+# ``device.player.player.record`` and must be excluded.  Sensor *identity*
+# (the ``line.noraxon_g3_<serial>`` serial) is instead read from MR4's config,
+# because the SDK's own cache can go stale.
 _ULTIUM_TAG_PREFIX = "device.noraxon.ultium"
 _EMG_FILTER_TAG = "type.input.analog.emg"
 
@@ -62,25 +64,167 @@ def _normalise_unit_id(value: Any) -> str:
     return text
 
 
-def _serial_from_tags(tags: list[str]) -> str | None:
-    for tag in tags:
-        if tag.startswith(_SERIAL_TAG_PREFIX):
-            return tag[len(_SERIAL_TAG_PREFIX):]
-    return None
+# The myoRESEARCH 4 (MR4) application is the authoritative source of truth for
+# which Ultium sensors are currently paired with the receiver.  The AcquireCom
+# SDK ships its *own* config cache (``Easy2.Acquire.data#``) that can go stale,
+# so sensor identity must be read from MR4's ``device_manager.object`` rather
+# than from the SDK's ``GetCurrentDevice()`` component tags.
+_MR4_DATA_OBJECT_ENV = "NORAXON_MR4_DATA_OBJECT"
+_MR4_DATA_OBJECT_DEFAULT = (
+    r"C:\Program Files\Noraxon\MR 4.0\data\noraxon.mr.data#\device_manager.object"
+)
 
 
-def _ultium_serials_from_components(
-    tags_per_component: Iterable[list[str]],
-) -> list[str]:
-    """Return sorted, deduplicated Ultium serials across component tag lists."""
-    serials: list[str] = []
-    for tags in tags_per_component:
-        if not any(tag.startswith(_ULTIUM_TAG_PREFIX) for tag in tags):
+def _read_mr4_ultium_serials(path: str | None = None) -> list[tuple[str, str]]:
+    """Return MR4's authoritative Ultium sensor ``(serial, name)`` pairs.
+
+    Parses MR4's ``device_manager.object`` XML and returns the sensors in file
+    order.  Raises :class:`AdapterError` if the file is missing or unparseable.
+    """
+    import xml.etree.ElementTree as ET
+
+    resolved = (
+        path
+        or os.environ.get(_MR4_DATA_OBJECT_ENV)
+        or _MR4_DATA_OBJECT_DEFAULT
+    )
+    try:
+        tree = ET.parse(resolved)
+    except OSError as exc:
+        raise AdapterError(
+            f"无法读取 MR4 传感器配置（{resolved}）：{exc}"
+        ) from exc
+    except ET.ParseError as exc:
+        raise AdapterError(
+            f"MR4 传感器配置 XML 解析失败（{resolved}）：{exc}"
+        ) from exc
+
+    sensors: list[tuple[str, str]] = []
+    for node in tree.iter():
+        if not node.tag.endswith("Acquire.Noraxon.Ultium.Sensor"):
             continue
-        serial = _serial_from_tags(tags)
-        if serial is not None:
-            serials.append(serial)
-    return sorted(set(serials))
+        serial = ""
+        name = ""
+        for child in node:
+            key = child.get("id")
+            if key == "id":
+                serial = (child.get("value") or "").strip()
+            elif key == "name":
+                name = (child.get("value") or "").strip()
+        if serial:
+            sensors.append((serial, name))
+    return sensors
+
+
+# The SDK keeps its *own* ``device_manager.object`` cache (``Easy2.Acquire.data#``).
+# ``IDevice.Activate()`` passes that cached sensor list to the receiver, so a
+# stale cache makes activation fail with "Could not find the following sensors".
+# To fix this we mirror MR4's authoritative sensor list into the SDK cache before
+# the SDK initialises.
+_SDK_DATA_OBJECT_ENV = "NORAXON_SDK_DATA_OBJECT"
+_SDK_DATA_OBJECT_DEFAULT = (
+    r"G:\Noraxon.Acquire\binx64\easy2.acquire.data#\device_manager.object"
+)
+
+
+def _sync_sdk_sensor_cache(
+    mr4_sensors: list[tuple[str, str]],
+    path: str | None = None,
+) -> None:
+    """Mirror MR4's sensor list into the SDK's ``device_manager.object`` cache.
+
+    Only the ``id``/``name`` values of the cached sensor nodes are rewritten, in
+    file order, to match MR4's authoritative list; everything else (device
+    config, player nodes, node ids) is preserved.  Failures are logged as
+    warnings rather than raised, so a read-only SDK cache degrades to the SDK's
+    own (possibly stale) list instead of aborting acquisition.
+    """
+    import xml.etree.ElementTree as ET
+
+    resolved = (
+        path
+        or os.environ.get(_SDK_DATA_OBJECT_ENV)
+        or _SDK_DATA_OBJECT_DEFAULT
+    )
+    try:
+        tree = ET.parse(resolved)
+    except (OSError, ET.ParseError) as exc:
+        _log.warning(
+            "Noraxon EMG：无法读取/解析 SDK 缓存（%s），跳过传感器同步：%s",
+            resolved,
+            exc,
+        )
+        return
+
+    sensor_nodes = [
+        node for node in tree.iter()
+        if node.tag.endswith("Acquire.Noraxon.Ultium.Sensor")
+    ]
+    old_sensors: list[tuple[str, str]] = []
+    for node in sensor_nodes:
+        serial = ""
+        name = ""
+        for child in node:
+            key = child.get("id")
+            if key == "id":
+                serial = (child.get("value") or "").strip()
+            elif key == "name":
+                name = (child.get("value") or "").strip()
+        old_sensors.append((serial, name))
+
+    if len(old_sensors) != len(mr4_sensors):
+        _log.warning(
+            "Noraxon EMG：SDK 缓存有 %d 个传感器、MR4 有 %d 个，将按顺序同步前 %d 个",
+            len(old_sensors),
+            len(mr4_sensors),
+            min(len(old_sensors), len(mr4_sensors)),
+        )
+
+    try:
+        with open(resolved, encoding="utf-8") as handle:
+            text = handle.read()
+    except OSError as exc:
+        _log.warning("Noraxon EMG：读取 SDK 缓存失败（%s）：%s", resolved, exc)
+        return
+
+    changed = False
+    for (old_serial, old_name), (new_serial, new_name) in zip(
+        old_sensors, mr4_sensors
+    ):
+        if old_serial and new_serial and old_serial != new_serial:
+            text = text.replace(f'value="{old_serial}"', f'value="{new_serial}"')
+            changed = True
+        if old_name and new_name and old_name != new_name:
+            text = text.replace(f'value="{old_name}"', f'value="{new_name}"')
+            changed = True
+
+    if not changed:
+        return
+    try:
+        with open(resolved, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        _log.info(
+            "Noraxon EMG：已将 SDK 缓存传感器同步为 MR4 列表 %s",
+            [serial for serial, _ in mr4_sensors],
+        )
+    except OSError as exc:
+        _log.warning("Noraxon EMG：写入 SDK 缓存失败（%s）：%s", resolved, exc)
+
+
+def _parse_offline_serials(message: str) -> set[str]:
+    """Return the set of 5-hex serials named in an SDK "not found" error.
+
+    ``Activate()`` reports offline (unpowered/out-of-range) sensors as
+    ``Could not find the following sensors: <serial>, <serial>``.  Ultium
+    serial numbers are five hex digits.
+    """
+    import re
+
+    marker = "Could not find the following sensors:"
+    if marker not in message:
+        return set()
+    tail = message.split(marker, 1)[1]
+    return set(re.findall(r"[0-9a-fA-F]{5}", tail))
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,6 +349,11 @@ class _NoraxonSampler(threading.Thread):
                 comtypes.client.GetModule(_NORAXON_TYPELIB)
                 import comtypes.gen.Easy2AcquireCom as sdk
 
+            # 权威传感器身份来自 MR4；先把它同步进 SDK 的缓存文件，这样 SDK 的
+            # Activate() 才会用正确传感器（否则会用陈旧的 SDK 缓存导致激活失败）。
+            mr4_sensors = _read_mr4_ultium_serials()
+            _sync_sdk_sensor_cache(mr4_sensors)
+
             dm = comtypes.client.CreateObject(sdk.DeviceManager._reg_clsid_)
             dm.Initialize("")
             dm.ClearLastErrorText()
@@ -224,35 +373,44 @@ class _NoraxonSampler(threading.Thread):
             device.SetComponentFilterTags(_EMG_FILTER_TAG)
             component_count = device.GetComponentCount()
 
-            detected: dict[str, Any] = {}
+            # Sensor identity is authoritative from MR4's config, not the SDK's
+            # own (possibly stale) component tags.  The SDK still provides the
+            # data handles, so pair its Ultium analog inputs with MR4's serials
+            # in component order.
+            mr4_serials = [serial for serial, _ in mr4_sensors]
+            ultium_ains: list[Any] = []
             with safearray_as_ndarray:
                 for index in range(component_count):
                     component = device.GetComponent(index)
                     tags = list(component.GetTags())
                     if not any(tag.startswith(_ULTIUM_TAG_PREFIX) for tag in tags):
                         continue
-                    serial = _serial_from_tags(tags)
-                    if serial is None:
-                        continue
-                    detected[serial] = component.QueryInterface(sdk.IAnalogInput)
+                    ultium_ains.append(component.QueryInterface(sdk.IAnalogInput))
+
+            detected: dict[str, Any] = {}
+            for serial, ain in zip(mr4_serials, ultium_ains):
+                detected[serial] = ain
+            if len(ultium_ains) != len(mr4_serials):
+                _log.warning(
+                    "Noraxon EMG：MR4 配置 %d 个传感器，SDK 枚举到 %d 个 Ultium "
+                    "输入；将按顺序匹配，若数量不一致请检查 SDK 缓存是否过期",
+                    len(mr4_serials),
+                    len(ultium_ains),
+                )
 
             self.detected_unit_ids = sorted(detected)
 
-            matched_indices: list[int] = []
-            matched_ains: list[Any] = []
+            # 匹配配置通道到 SDK 句柄。每项为 (通道索引, 序列号, 句柄)。
+            matched: list[tuple[int, str, Any]] = []
             missing: list[tuple[str, str]] = []
             for index, channel in enumerate(self._config.channels):
                 serial = _normalise_unit_id(channel.unit_id)
                 if serial and serial in detected:
-                    matched_indices.append(index)
-                    matched_ains.append(detected[serial])
+                    matched.append((index, serial, detected[serial]))
                 else:
                     missing.append((channel.name, channel.unit_id))
 
-            self.missing = missing
-            self.matched_indices = matched_indices
-
-            if not matched_ains:
+            if not matched:
                 raise AdapterError(
                     "Noraxon EMG：未匹配到任何配置的传感器，无法采集（"
                     f"检测到 {len(detected)} 个 Ultium 传感器："
@@ -260,7 +418,7 @@ class _NoraxonSampler(threading.Thread):
                     + "）"
                 )
 
-            for ain in matched_ains:
+            for _, _, ain in matched:
                 try:
                     ain.Enable()
                 except Exception as exc:
@@ -276,14 +434,59 @@ class _NoraxonSampler(threading.Thread):
                     # 传感器不应因此导致整个连接失败。
                     pass
 
-            try:
-                device.Activate()
-            except Exception as exc:
-                detail = _sdk_error()
-                raise AdapterError(
-                    f"Noraxon EMG 激活设备失败（Activate）：{exc}"
-                    + (f"；SDK 错误：{detail}" if detail else "")
-                ) from exc
+            # Activate 会把所有已 Enable 的组件传给接收器校验；对离线（未开机）
+            # 的传感器会报 "Could not find the following sensors: ..."。这里禁用
+            # 离线传感器后重试，实现"跳过离线传感器、在线传感器照常采集"。
+            active = list(matched)
+            while True:
+                try:
+                    device.Activate()
+                    break
+                except Exception as exc:
+                    detail = _sdk_error()
+                    offline = _parse_offline_serials(detail)
+                    if not offline:
+                        raise AdapterError(
+                            f"Noraxon EMG 激活设备失败（Activate）：{exc}"
+                            + (f"；SDK 错误：{detail}" if detail else "")
+                        ) from exc
+                    remaining: list[tuple[int, str, Any]] = []
+                    for index, serial, ain in active:
+                        if serial in offline:
+                            try:
+                                ain.Disable()
+                            except Exception:
+                                pass
+                            missing.append(
+                                (
+                                    self._config.channels[index].name,
+                                    self._config.channels[index].unit_id,
+                                )
+                            )
+                        else:
+                            remaining.append((index, serial, ain))
+                    if not remaining:
+                        raise AdapterError(
+                            "Noraxon EMG：所有配置传感器均不在线，无法采集（"
+                            + ", ".join(sorted(offline))
+                            + "）"
+                        )
+                    if len(remaining) == len(active):
+                        # 报错命名的传感器都不在当前激活列表里，避免死循环。
+                        raise AdapterError(
+                            f"Noraxon EMG 激活设备失败（Activate）：{exc}"
+                            + (f"；SDK 错误：{detail}" if detail else "")
+                        ) from exc
+                    _log.warning(
+                        "Noraxon EMG：传感器 %s 不在线，已跳过（对应通道记为 NaN）",
+                        ", ".join(sorted(offline)),
+                    )
+                    active = remaining
+
+            self.missing = missing
+            matched_indices = [index for index, _, _ in active]
+            self.matched_indices = matched_indices
+            matched_ains = [ain for _, _, ain in active]
 
             for ain in matched_ains:
                 try:
@@ -337,60 +540,15 @@ class _NoraxonSampler(threading.Thread):
 
 
 def scan_ultium_units(timeout_s: float = 10.0) -> list[str]:
-    """Enumerate the online Noraxon Ultium sensors as bare serials.
+    """Return the paired Noraxon Ultium sensors as bare serials.
 
-    Runs the AcquireCom COM enumeration on a dedicated apartment (STA) thread
-    and blocks until it completes or ``timeout_s`` elapses.  Returns the sorted
-    serials (e.g. ``["234f5", "234fc"]``); raises :class:`AdapterError` if the
-    receiver is unavailable or no Ultium sensor is present.
+    Reads the authoritative sensor list from MR4's ``device_manager.object``
+    (never the AcquireCom SDK's own cache, which can go stale).  ``timeout_s``
+    is accepted for API compatibility but is unused.  Raises
+    :class:`AdapterError` if the MR4 config is unavailable.
     """
-
-    outcome: dict[str, Any] = {}
-
-    def _scan() -> None:
-        try:
-            import comtypes
-            import comtypes.client
-            from comtypes.safearray import safearray_as_ndarray
-
-            comtypes.CoInitializeEx(comtypes.COINIT_APARTMENTTHREADED)
-            try:
-                try:
-                    import comtypes.gen.Easy2AcquireCom as sdk
-                except ImportError:
-                    comtypes.client.GetModule(_NORAXON_TYPELIB)
-                    import comtypes.gen.Easy2AcquireCom as sdk
-
-                dm = comtypes.client.CreateObject(sdk.DeviceManager._reg_clsid_)
-                dm.Initialize("")
-                dm.ClearLastErrorText()
-                device = dm.GetCurrentDevice()
-                if device is None:
-                    raise AdapterError(
-                        "Noraxon 未找到当前设备：请先在 myoRESEARCH 中选定 Ultium 接收器"
-                    )
-                device.SetComponentFilterTags(_EMG_FILTER_TAG)
-                tags_per_component: list[list[str]] = []
-                with safearray_as_ndarray:
-                    for index in range(device.GetComponentCount()):
-                        component = device.GetComponent(index)
-                        tags_per_component.append(list(component.GetTags()))
-                outcome["serials"] = _ultium_serials_from_components(
-                    tags_per_component
-                )
-            finally:
-                comtypes.CoUninitialize()
-        except BaseException as exc:
-            outcome["error"] = exc
-
-    thread = threading.Thread(target=_scan, name="noraxon-emg-scan", daemon=True)
-    thread.start()
-    thread.join(timeout=timeout_s)
-    if thread.is_alive():
-        raise AdapterError("Noraxon EMG 传感器扫描超时")
-    if "error" in outcome:
-        raise AdapterError(f"Noraxon EMG 传感器扫描失败：{outcome['error']}")
-    return list(outcome.get("serials", []))
+    sensors = _read_mr4_ultium_serials()
+    return sorted(serial for serial, _ in sensors)
 
 
 class NoraxonEmgAdapter(QueuedHardwareAdapter):

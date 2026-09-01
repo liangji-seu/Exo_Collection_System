@@ -91,8 +91,8 @@
         "sample_rate_hz": 4000.0,
         "unit": "µV",
         "channels": [
-          {"name": "股直肌", "unit_id": "noraxon_g3_234fc"},
-          {"name": "股内侧肌", "unit_id": "noraxon_g3_234f5"},
+          {"name": "股直肌", "unit_id": "noraxon_g3_234fd"},
+          {"name": "股内侧肌", "unit_id": "noraxon_g3_234f2"},
           {"name": "股外侧肌", "unit_id": ""},
           {"name": "股中肌", "unit_id": ""}
         ],
