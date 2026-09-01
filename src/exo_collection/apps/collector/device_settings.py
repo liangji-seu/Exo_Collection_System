@@ -1007,9 +1007,9 @@ class MocapForcePlateDeviceSettingsDialog(ModalityDeviceSettingsDialog):
         self.setMinimumWidth(640)
         outer = QVBoxLayout(self)
         intro = QLabel(
-            "动捕 Marker 与测力台六维力由 XINGYING 原生录制为 .cap，"
-            "共享同一 Seeker 服务器。采集脚本不再从 SDK 读取原始数据，"
-            "而是在 Trial 开始/结束时通过「远程控制」端口触发录制。"
+            "动捕 Marker 与测力台共享同一 Seeker 服务器。采集脚本通过 SDK 流式接收"
+            "动捕 marker（带主机时间戳，与超声等模态同步写盘），同时经「远程控制」"
+            "端口在 Trial 开始/结束时触发 XINGYING 录制 .cap（含 marker 与测力台）。"
         )
         intro.setWordWrap(True)
         outer.addWidget(intro)

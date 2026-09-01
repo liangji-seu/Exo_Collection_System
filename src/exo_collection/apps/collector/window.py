@@ -84,6 +84,7 @@ from exo_collection.apps.collector.device_preview import (
 )
 from exo_collection.apps.collector.device_settings import (
     DEVICE_SETTINGS_DIALOGS,
+    MocapForcePlateDeviceSettingsDialog,
 )
 from exo_collection.apps.collector.xingying_remote import (
     XingYingRemoteCapture,
@@ -134,22 +135,35 @@ MODALITIES = (
 )
 # 测力台不再通过 SDK 流式读取：Trial 开始/结束时由 XINGYING 远程触发录制 .cap
 # （.cap 内同时含动捕 marker 与测力台，作为权威数据，供 OpenSim 与 c3d 软同步）。
-# 动捕 marker 改回 SDK 流式采集（带 host 时间戳），与 .cap 并行，用于和 c3d 对齐。
+# 动捕 marker 走 SDK 流式采集（带 host 时间戳），与 .cap 并行，用于和 c3d 对齐。
 XINGYING_LINKED_MODALITIES = ("force_plate",)
 
 
+# 动捕 Marker 与测力台绑定为一行（共享同一 Seeker 服务器）：连接时同时
+# 1) spawn mocap SDK 预览 worker 流式接收 marker 帧，2) 建立 XINGYING 7060/7061
+# 远程触发（.cap 录制）。仅测力台被 XINGYING_LINKED_MODALITIES 排除出流式落盘。
+XINGYING_GROUP = ("mocap", "force_plate")
+XINGYING_GROUP_KEY = "mocap_force_plate"
+XINGYING_GROUP_DISPLAY_NAME = "动捕 Marker + 六维力测力台"
 # 按钮标签行不是数据模态，仅作为「连接 = 启用按钮记录」的 UI 开关。
 BUTTON_ROW_KEY = "button_label"
 BUTTON_ROW_DISPLAY_NAME = "按钮标签（,）"
-# 设备连接表的显示行：每模态各占一行（动捕 marker 走 SDK，测力台走远程触发）。
+# 设备连接表的显示行：动捕+测力台合并为一项，其余模态各占一行。
 CONNECTION_ROWS: tuple[tuple[str, ...], ...] = (
     ("ultrasound",),
     ("imu",),
     ("encoder",),
-    ("mocap",),
-    ("force_plate",),
+    XINGYING_GROUP,
     ("emg",),
 )
+CONNECTION_ROW_DISPLAY_NAMES: dict[tuple[str, ...], str] = {
+    XINGYING_GROUP: XINGYING_GROUP_DISPLAY_NAME,
+}
+# 模态 → 设备连接表行键：合并组共用同一状态点与连接/断开按钮。
+_MODALITY_ROW_KEY = {
+    "mocap": XINGYING_GROUP_KEY,
+    "force_plate": XINGYING_GROUP_KEY,
+}
 PROMPT_HEALTH_ROWS = ("subject_prompt", "operator_prompt", "button_prompt")
 HEALTH_ROWS = MODALITIES + PROMPT_HEALTH_ROWS
 MODALITY_DISPLAY_NAMES = {
@@ -1680,19 +1694,26 @@ class CollectorWindow(QMainWindow):
         )
         self._connection_status_legend = connection_legend
 
-        # Per-row groups（每模态独立成行：动捕 marker 走 SDK，测力台走远程触发）
+        # Per-row groups（动捕 Marker 与六维力测力台合并为一项）
         for row_idx, group in enumerate(CONNECTION_ROWS, start=1):
-            row_key = group[0]
-            display_name = MODALITY_DISPLAY_NAMES[group[0]]
+            row_key = group[0] if len(group) == 1 else XINGYING_GROUP_KEY
+            display_name = CONNECTION_ROW_DISPLAY_NAMES.get(
+                group, MODALITY_DISPLAY_NAMES[group[0]]
+            )
             configure_btn = QPushButton(display_name)
             configure_btn.setObjectName(f"configure_{row_key}")
             configure_btn.setProperty("buttonRole", "deviceConfig")
             configure_btn.setFixedHeight(27)
             configure_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             configure_btn.setToolTip(f"设置{display_name}设备参数（自动保存）")
-            configure_btn.clicked.connect(
-                lambda _checked=False, selected=group[0]: self.edit_modality_device_settings(selected)
-            )
+            if len(group) == 1:
+                configure_btn.clicked.connect(
+                    lambda _checked=False, selected=group[0]: self.edit_modality_device_settings(selected)
+                )
+            else:
+                configure_btn.clicked.connect(
+                    lambda _checked=False: self._edit_xingying_group_settings()
+                )
             connection_layout.addWidget(configure_btn, row_idx, 0)
             self._configure_buttons[row_key] = configure_btn
 
@@ -2221,6 +2242,46 @@ class CollectorWindow(QMainWindow):
         LOG.info("%s 设备设置已保存并持久化", modality)
 
     @Slot()
+    def _edit_xingying_group_settings(self) -> None:
+        """配置合并后的「动捕 Marker + 六维力测力台」设备参数。"""
+        if (
+            "mocap" in self._preview_workers
+            or "force_plate" in self._preview_workers
+            or (
+                self._selected_device_profile_key() != "hardware"
+                and self._preview_workers
+            )
+        ):
+            QMessageBox.information(
+                self,
+                "请先断开设备",
+                "修改该设备设置前，请先断开对应预览连接；从模拟模式切换时需全部断开。",
+            )
+            return
+        if self._configuration_locked or self._preflight_busy:
+            QMessageBox.information(self, "当前不可修改", "采集或预检期间不能修改设备设置。")
+            return
+
+        current_mocap = self._settings.hardware_device_overrides.get("mocap", {})
+        current_force = self._settings.hardware_device_overrides.get("force_plate", {})
+        dialog = MocapForcePlateDeviceSettingsDialog(current_mocap, current_force, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        for modality, override in dialog.validated_override.items():
+            self._settings.set_hardware_device_override(modality, override)
+        # Saving any per-device settings is an explicit request to use the
+        # laboratory hardware profile. The choice and values are both synced
+        # immediately by SharedAppSettings and survive process restarts.
+        self._settings.set_device_profile_key("hardware")
+        self._invalidate_preflight()
+        self._render_device_profile()
+        self._populate_nominal_rates()
+        self.statusBar().showMessage(
+            "动捕与测力台设备设置已保存；下次启动将自动恢复。", 8000
+        )
+        LOG.info("mocap + force_plate 设备设置已保存并持久化")
+
+    @Slot()
     def choose_data_root(self) -> None:
         selected = QFileDialog.getExistingDirectory(
             self, "选择外骨骼数据根目录",
@@ -2648,7 +2709,7 @@ class CollectorWindow(QMainWindow):
         detail_lines: tuple[str, ...] = (),
     ) -> None:
         """Update the per-row UI status labels."""
-        row_key = modality
+        row_key = _MODALITY_ROW_KEY.get(modality, modality)
         if row_key in self._connect_status_labels:
             label = self._connect_status_labels[row_key]
             source = "模拟" if simulated else "真实"
@@ -2701,7 +2762,11 @@ class CollectorWindow(QMainWindow):
         }
 
     def _connect_xingying_remote(self) -> None:
-        """连接 XINGYING 远程触发端口（测力台；.cap 内同时含动捕 marker 与测力台）。"""
+        """连接 XINGYING 远程触发端口（测力台；.cap 内同时含动捕 marker 与测力台）。
+
+        仅负责 7060/7061 触发通道；动捕 marker 的 SDK 流式由 ``_connect_modality("mocap")``
+        单独建立，二者在合并行的 ``_connect_group`` 中一起触发。
+        """
         if self._xingying_remote is not None:
             self._append_alert("XINGYING 远程捕获已就绪，无需重复连接。")
             return
@@ -2955,8 +3020,13 @@ class CollectorWindow(QMainWindow):
 
     @Slot()
     def _connect_group(self, group: tuple[str, ...]) -> None:
-        """Connect every available modality in a device-connection display row."""
-        if self._xingying_linked_enabled() and group == XINGYING_LINKED_MODALITIES:
+        """Connect every available modality in a device-connection display row.
+
+        动捕+测力台合并行：同时 spawn mocap SDK 预览 worker（流式 marker）并建立
+        XINGYING 远程触发（7060/7061），二者并行，供写盘时同步记录 marker 与 .cap。
+        """
+        if self._xingying_linked_enabled() and group == XINGYING_GROUP:
+            self._connect_modality("mocap")
             self._connect_xingying_remote()
             return
         available = set(
@@ -2969,7 +3039,8 @@ class CollectorWindow(QMainWindow):
 
     def _disconnect_group(self, group: tuple[str, ...]) -> None:
         """Disconnect every modality in a device-connection display row."""
-        if self._xingying_linked_enabled() and group == XINGYING_LINKED_MODALITIES:
+        if self._xingying_linked_enabled() and group == XINGYING_GROUP:
+            self._disconnect_modality("mocap")
             self._disconnect_xingying_remote()
             return
         for modality in group:
@@ -3152,18 +3223,26 @@ class CollectorWindow(QMainWindow):
             load_device_profile(self._selected_device_profile_key()).by_modality()
         )
         for group in CONNECTION_ROWS:
-            modality = group[0]
-            row_key = modality
+            row_key = group[0] if len(group) == 1 else XINGYING_GROUP_KEY
             connect_button = self._connect_buttons.get(row_key)
             disconnect_button = self._disconnect_buttons.get(row_key)
             if connect_button is None or disconnect_button is None:
                 continue
-            if self._xingying_linked_enabled() and modality == "force_plate":
-                active = self._xingying_remote is not None
+            if row_key == XINGYING_GROUP_KEY:
+                # 合并行：连接 = mocap SDK 预览 worker + XINGYING 远程触发均已就绪。
+                if self._xingying_linked_enabled():
+                    active = (
+                        self._xingying_remote is not None
+                        or "mocap" in self._preview_workers
+                    )
+                else:
+                    active = any(m in self._preview_workers for m in group)
+                group_available = any(m in available for m in group)
             else:
+                modality = group[0]
                 active = modality in self._preview_workers
-            group_available = modality in available
-            stopping = modality in self._preview_disconnect_deadlines
+                group_available = modality in available
+            stopping = any(m in self._preview_disconnect_deadlines for m in group)
             connect_button.setText("连接")
             connect_button.setEnabled(can_change and not active and group_available)
             if not group_available:
