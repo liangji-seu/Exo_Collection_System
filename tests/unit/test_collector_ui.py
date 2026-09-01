@@ -45,7 +45,6 @@ from exo_collection.apps.collector.window import (
     MODALITIES,
     RingTrace,
     SIGNAL_RING_CAPACITY,
-    XINGYING_GROUP_KEY,
     XINGYING_LINKED_MODALITIES,
 )
 from exo_collection.apps.collector.xingying_recording import XingYingRecordingPanel
@@ -61,9 +60,10 @@ from exo_collection.orchestration.models import (
 )
 
 
-# 硬件模式下，mocap + force_plate 不再通过 SDK 流式读取，而是由 XINGYING 原生录制
-# （.cap），采集脚本仅通过 UDP 远程控制端口触发其开始/停止。因此 trial 录制时只有
-# 其余模态走预览 worker 的流式通道，本常量即这些「真正流式」的模态集合。
+# 硬件模式下，测力台不再通过 SDK 流式读取，而是由 XINGYING 原生录制（.cap），采集
+# 脚本仅通过 UDP 远程控制端口触发其开始/停止；动捕 marker 改回 SDK 流式采集（并行
+# 于 .cap）。因此 trial 录制时只有测力台不走预览 worker 的流式通道，本常量即这些
+# 「真正流式」的模态集合。
 STREAMING_MODALITIES = tuple(
     modality for modality in MODALITIES if modality not in XINGYING_LINKED_MODALITIES
 )
@@ -2125,7 +2125,15 @@ def test_condition_switch_clears_only_condition_and_trial_scoped_metadata(
 def test_independent_connect_buttons_exist(tmp_path: Path) -> None:
     """Each connection row (data modalities + button label) has its own connect button."""
     _app, window, _created = _window_with_fake(tmp_path)
-    for row_key in ("ultrasound", "imu", "encoder", XINGYING_GROUP_KEY, "emg", "button_label"):
+    for row_key in (
+        "ultrasound",
+        "imu",
+        "encoder",
+        "mocap",
+        "force_plate",
+        "emg",
+        "button_label",
+    ):
         btn = window.findChild(QWidget, f"connect_{row_key}")
         assert btn is not None, f"connect_{row_key} button not found"
     window.close()
@@ -2202,7 +2210,8 @@ def test_trial_form_has_no_global_device_config_and_modalities_are_clickable(
         "ultrasound",
         "imu",
         "encoder",
-        XINGYING_GROUP_KEY,
+        "mocap",
+        "force_plate",
         "emg",
         "button_label",
     }
@@ -2214,8 +2223,9 @@ def test_trial_form_has_no_global_device_config_and_modalities_are_clickable(
             assert "无需设置" in button.toolTip()
         else:
             assert "自动保存" in button.toolTip()
-    # 合并行以「动捕 Marker + 六维力测力台」为一项展示。
-    assert window._configure_buttons[XINGYING_GROUP_KEY].text() == "动捕 Marker + 六维力测力台"
+    # 动捕 marker 与测力台各自独立成行。
+    assert window._configure_buttons["mocap"].text() == "动捕 Marker"
+    assert window._configure_buttons["force_plate"].text() == "六维力测力台"
     window.close()
 
 
@@ -2239,35 +2249,31 @@ def test_connected_modality_enables_its_separate_disconnect_button(tmp_path: Pat
     window.close()
 
 
-def test_merged_mocap_force_plate_row_connects_and_disconnects_as_one(
-    tmp_path: Path,
-) -> None:
-    """合并后的「动捕 Marker + 六维力测力台」共用一个连接/断开按钮。"""
+def test_mocap_and_force_plate_are_independent_rows(tmp_path: Path) -> None:
+    """动捕 marker 与测力台拆分为独立行：mocap 走 SDK 预览，测力台不可用于模拟模式。"""
     _app, window, _created = _window_with_fake(tmp_path)
     window._settings.set_device_profile_key("simulated")
-    connect_button = window._connect_buttons[XINGYING_GROUP_KEY]
-    disconnect_button = window._disconnect_buttons[XINGYING_GROUP_KEY]
-    assert connect_button.text() == "连接"
-    assert disconnect_button.text() == "断开"
+    window._update_connect_button_state()
 
-    # 模拟模式下两者是独立预览 worker；合并行把它们当作一个整体。
+    mocap_connect = window._connect_buttons["mocap"]
+    mocap_disconnect = window._disconnect_buttons["mocap"]
+    force_connect = window._connect_buttons["force_plate"]
+    force_disconnect = window._disconnect_buttons["force_plate"]
+    assert mocap_connect.text() == "连接"
+    assert mocap_disconnect.text() == "断开"
+
+    # 模拟模式下无测力台设备，其连接按钮不可用（仅在真实设备配置中可用）。
+    assert not force_connect.isEnabled()
+    assert not force_disconnect.isEnabled()
+    assert force_connect.toolTip() == "该设备仅在真实设备配置中可用"
+
+    # 连接 mocap 预览后，mocap 行断开可用、连接禁用，与其它流式模态一致。
     window._preview_workers["mocap"] = object()
-    window._preview_workers["force_plate"] = object()
     window._update_connect_button_state()
-    assert not connect_button.isEnabled()
-    assert disconnect_button.isEnabled()
+    assert not mocap_connect.isEnabled()
+    assert mocap_disconnect.isEnabled()
 
-    # 只断开其中一个成员时，合并行仍视为已连接。
-    del window._preview_workers["mocap"]
-    window._update_connect_button_state()
-    assert not connect_button.isEnabled()
-    assert disconnect_button.isEnabled()
-
-    # 全部断开后，合并行恢复可连接。
     window._preview_workers.clear()
-    window._update_connect_button_state()
-    assert connect_button.isEnabled()
-    assert not disconnect_button.isEnabled()
     window.close()
 
 
