@@ -1289,6 +1289,7 @@ def test_preview_workspace_registers_all_dynamic_windows(
     assert workspace is not None
     assert set(workspace.modalities) == {
         "xingying",
+        "mocap",
         "emg",
         "ultrasound",
         "imu",
@@ -3142,9 +3143,43 @@ def test_xingying_recording_panel_is_registered_as_single_dock(
     assert workspace is not None
     assert workspace.dock_for("xingying") is not None
     assert "xingying" in set(workspace.modalities)
-    # 旧的动捕 Marker 与测力台预览 dock 已移除。
-    assert "mocap" not in set(workspace.modalities)
+    # 动捕 Marker 数据 dock 已恢复（实时坐标表）；测力台预览 dock 仍移除。
+    assert "mocap" in set(workspace.modalities)
     assert "force_plate" not in set(workspace.modalities)
+    window.close()
+
+
+def test_mocap_marker_table_renders_latest_coordinates(tmp_path: Path) -> None:
+    """动捕 Marker 数据面板把最新一帧的每个 marker 坐标实时填入表格。"""
+    _app, window, _created = _window_with_fake(tmp_path)
+    assert window._mocap_table is not None
+
+    window._handle_preview(
+        WorkerEvent(
+            event_type=WorkerEventType.PREVIEW,
+            modality="mocap",
+            trial_uuid=None,
+            payload={
+                "marker_names": ["V.Sacral", "R.ASIS", "L.ASIS"],
+                "latest_xyz_mm": [
+                    [1.0, 2.0, 3.0],
+                    [4.5, 5.5, 6.5],
+                    [7.25, 8.25, 9.25],
+                ],
+                "marker_count": 3,
+            },
+        )
+    )
+
+    table = window._mocap_table
+    assert table.rowCount() == 3
+    assert table.item(0, 0).text() == "V.Sacral"
+    assert table.item(0, 1).text() == "1.000"
+    assert table.item(0, 2).text() == "2.000"
+    assert table.item(0, 3).text() == "3.000"
+    assert table.item(1, 0).text() == "R.ASIS"
+    assert table.item(1, 1).text() == "4.500"
+    assert table.item(2, 3).text() == "9.250"
     window.close()
 
 

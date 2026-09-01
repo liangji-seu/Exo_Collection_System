@@ -1208,6 +1208,7 @@ class CollectorWindow(QMainWindow):
         self._emg_grid_layout: QVBoxLayout | None = None
         self._emg_grid_content: QWidget | None = None
         self._xingying_status_panel: XingYingRecordingPanel | None = None
+        self._mocap_table: QTableWidget | None = None
         self.preview_workspace: PreviewWorkspace | None = None
         self._elapsed_timer: ElapsedTimerPanel | None = None
         self._preview_focus_previous_sizes: list[int] | None = None
@@ -2011,6 +2012,30 @@ class CollectorWindow(QMainWindow):
             "xingying",
             "动捕 + 测力台（XINGYING）",
             self._xingying_status_panel,
+        )
+
+        mocap_grid = QGroupBox("动捕 Marker · 实时坐标")
+        mocap_grid.setObjectName("mocap_marker_grid")
+        mocap_grid.setMinimumHeight(120)
+        mocap_layout = QVBoxLayout(mocap_grid)
+        mocap_layout.setContentsMargins(0, 0, 0, 0)
+        mocap_table = QTableWidget(0, 4, mocap_grid)
+        mocap_table.setObjectName("mocap_marker_table")
+        mocap_table.setHorizontalHeaderLabels(["Marker", "X (mm)", "Y (mm)", "Z (mm)"])
+        mocap_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        mocap_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        mocap_table.setAlternatingRowColors(True)
+        mocap_table.verticalHeader().setVisible(False)
+        mocap_header = mocap_table.horizontalHeader()
+        mocap_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for column in range(1, 4):
+            mocap_header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        self._mocap_table = mocap_table
+        mocap_layout.addWidget(mocap_table)
+        preview_workspace.register_panel(
+            "mocap",
+            "动捕 Marker 数据",
+            mocap_grid,
         )
 
         emg_grid = QGroupBox("表面肌电 EMG · 每通道一个窗口")
@@ -4297,6 +4322,64 @@ class CollectorWindow(QMainWindow):
                 if values:
                     self._emg_traces[labels[index]].append(values)
             return
+        if modality == "mocap":
+            self._update_mocap_table(event.payload)
+            return
+
+    def _update_mocap_table(self, payload: Mapping[str, Any]) -> None:
+        """Render every latest marker coordinate without chart downsampling."""
+        table = self._mocap_table
+        if table is None:
+            return
+        raw_names = payload.get("marker_names")
+        if not isinstance(raw_names, (list, tuple)):
+            raw_names = payload.get("labels")
+        names = (
+            [str(item) for item in raw_names]
+            if isinstance(raw_names, (list, tuple))
+            else []
+        )
+        raw_xyz = payload.get("latest_xyz_mm")
+        xyz_rows = raw_xyz if isinstance(raw_xyz, (list, tuple)) else ()
+        channels = payload.get("channels")
+        marker_count = max(
+            len(names),
+            len(xyz_rows),
+            int(payload.get("marker_count") or 0),
+        )
+        if marker_count <= 0 and isinstance(channels, (list, tuple)):
+            marker_count = len(channels)
+        table.setRowCount(marker_count)
+        for row in range(marker_count):
+            name = names[row] if row < len(names) else f"marker_{row + 1:02d}"
+            values: list[float | None] = [None, None, None]
+            if row < len(xyz_rows):
+                raw_row = xyz_rows[row]
+                if isinstance(raw_row, (list, tuple)):
+                    for axis in range(min(3, len(raw_row))):
+                        try:
+                            number = float(raw_row[axis])
+                        except (TypeError, ValueError):
+                            continue
+                        if math.isfinite(number):
+                            values[axis] = number
+            elif isinstance(channels, (list, tuple)) and row < len(channels):
+                z_values = self._numeric_values(channels[row])
+                if z_values:
+                    values[2] = z_values[-1]
+            cells = [
+                name,
+                *[
+                    "—" if value is None else f"{value:.3f}"
+                    for value in values
+                ],
+            ]
+            for column, text in enumerate(cells):
+                item = table.item(row, column)
+                if item is None:
+                    item = QTableWidgetItem()
+                    table.setItem(row, column, item)
+                item.setText(text)
 
     @staticmethod
     def _emg_preview_labels(payload: Mapping[str, Any], count: int) -> list[str]:
