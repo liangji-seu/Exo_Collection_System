@@ -1,0 +1,56 @@
+subject:
+  id: "001_precision"
+  mass_kg: 80.0
+  height_m: 1.87
+
+files:
+  static_c3d: data/c3d/001_STAND_r2_c569f9001.c3d
+  dynamic_c3d: data/c3d/001_WALK_LEVEL_r1_5432165b1.c3d
+  generic_model: data/models/gait2392/gait2392_simbody.osim
+
+transforms:
+  forceplate_to_mocap:
+    status: PROVIDED
+    rotation_matrix:
+      - [0.009083, 0.999955, -0.002577]
+      - [-0.999809, 0.009037, -0.017309]
+      - [-0.017285, 0.002734, 0.999847]
+    translation_m: [-5.0785, 2.0865, -0.251]
+
+single_support:
+  enabled: true
+  double_support_policy: MASK_OUT
+  assign_total_force_to_single_contact_foot: true
+  allow_estimated_force_split_in_double_support: false
+  vertical_force_threshold_N: 50.0
+  foot_height_threshold_mm: 30.0
+  trim_boundary_ms: 150.0
+
+synchronization:
+  # 100--170 ms grid search; 160 ms minimized whole-body residual force.
+  force_advance_ms: 160.0
+
+# C3D 的水平力通道方向与“脚对台面/地面对脚”的竖直符号约定不一致。
+# 四种符号组合经 ID 残余力实测：X、Z 同时反转时残余最小。
+force_direction_correction:
+  opensim_x_sign: -1.0
+  opensim_z_sign: -1.0
+
+filtering:
+  enabled: true
+  marker_cutoff_hz: 6.0
+  grf_cutoff_hz: 20.0
+
+analysis:
+  time_range_s: [12.0, 30.0]
+
+opensim:
+  model: gait2392
+  scale: {enabled: true}
+  ik: {enabled: true}
+  id: {enabled: true}
+
+output:
+  export_Nm: true
+  export_Nm_per_kg: true
+  save_support_mask: true

@@ -7,6 +7,13 @@
 
 两者共享 `exo_collection` 核心包。架构和数据契约以 [ARCHITECTURE.md](ARCHITECTURE.md) 为准。
 
+## OpenSim 关节力矩离线解算
+
+`opensim_joint_moment_pipeline/` 保存 C3D → TRC/GRF → Scale → IK → ID 的独立离线流水线，
+包括 HH19 Marker 映射、单支撑掩码、滤波、同步延迟/测力方向审计、精度版关节力矩解算和
+OpenSim 三维叠加导出。原始 C3D 与生成结果默认忽略，不进入 Git。详细运行方法见
+[`opensim_joint_moment_pipeline/README.md`](opensim_joint_moment_pipeline/README.md)。
+
 ## 日常运行（推荐，无需命令行参数）
 
 完成系统 Python 初始化后，项目根目录提供两个不需要任何命令行参数的 Python 启动脚本：

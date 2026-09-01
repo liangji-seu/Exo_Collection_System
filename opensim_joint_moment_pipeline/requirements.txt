@@ -1,0 +1,10 @@
+# 上游阶段（inspection / 单支撑检测 / TRC / GRF）必需 —— EXO 环境
+numpy==1.26.4
+scipy
+pandas
+ezc3d>=1.7.0
+pyyaml
+matplotlib
+
+# OpenSim Scale/IK/ID —— 独立 `opensim` 环境（numpy 2.4，勿与 EXO 混装）
+# conda create -n opensim -c opensim-org -c conda-forge opensim=4.6 python=3.11 -y

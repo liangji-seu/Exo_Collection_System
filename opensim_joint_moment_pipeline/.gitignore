@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.log
+
+# Subject recordings and generated OpenSim results stay local.
+data/c3d/*
+!data/c3d/.gitkeep
+outputs/*
+!outputs/.gitkeep

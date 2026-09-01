@@ -1,0 +1,96 @@
+# 受试者 001 —— 单块跑步机测力台 · 下肢 HH19 marker set
+# 注意：C3D 里 marker 前缀是 "100_no_exo"（XINGYING 残留的 subject 名），
+#       与本配置的 subject.id="001" 不是一回事，见 README「已知坑」。
+
+subject:
+  id: "001"
+  mass_kg: 80.0
+  height_m: 1.87
+
+files:
+  static_c3d: data/c3d/001_STAND_r2_c569f9001.c3d
+  dynamic_c3d: data/c3d/001_WALK_LEVEL_r1_5432165b1.c3d
+  generic_model: data/models/gait2392/gait2392_simbody.osim
+
+marker:
+  protocol: Helen_Hayes_19
+  use_virtual_joint_centers: false   # XINGYING 的 V_*_JC 不当 IK marker
+  use_virtual_sacral: AUTO           # V.Sacral 检测到则保留（不自动删除）
+
+coordinate_systems:
+  mocap:
+    vertical_axis: AUTO             # 从静态 trial 自动推导（不硬编码 Z-up）
+    unit: mm
+
+  forceplate:
+    # 力台局部轴/原点：待你提供「测力台局部坐标系在全局坐标系的位姿」
+    status: TODO_BLOCKING
+
+transforms:
+  forceplate_to_mocap:
+    status: PROVIDED
+    # 源（你给的三个点，mocap 全局坐标，mm）：
+    #   原点（跑步机右下角）  O = (-5078.5,  2086.5, -251.0)
+    #   沿局部 +X（右上角）  Px = (-5065.1,   611.5, -276.5)
+    #   沿局部 +Y（左下角）  Py = (-4263.7,  2086.5, -248.9)
+    # 正交化：x_hat = X/|X|, z_hat = X×Y, y_hat = z×x（右手，det=1）
+    # 结果：局部 X≈-mocapY，局部 Y≈+mocapX，局部 Z≈+mocapZ（向上）
+    # 跑步机实测尺寸：长(X)=1475.3 mm，宽(Y)=814.8 mm
+    # COP 原点已确认 = 右下角（你实测：站右下角 COP=(0,0)，走向左下角仅 Y 变）。
+    # 因此 C3D 的 FORCE_PLATFORM 元数据（ORIGIN=[0,0,0]、CORNERS=±800/±390，中心原点/1600×780）
+    # 是 XINGYING 写入的通用占位值，不可信；真实 COP 帧即本配置描述的右下角原点帧。
+    rotation_matrix:
+      - [0.009083,  0.999955, -0.002577]
+      - [-0.999809,  0.009037, -0.017309]
+      - [-0.017285,  0.002734,  0.999847]
+    translation_m: [-5.0785, 2.0865, -0.251]   # = 原点 O 在 mocap 下的坐标（m）
+
+  mocap_to_opensim:
+    status: PROVIDED
+    # NOKOV mocap 全局轴（静态 trial 实测 marker 验证）：
+    #   +X = 人体左   L.Ankle.x - R.Ankle.x = +372.8 mm
+    #   +Y = 人体后   L.Toe.y  - L.Heel.y = -241.5 mm（脚尖朝 -Y）
+    #   +Z = 竖直向上  L.Knee.z - L.Ankle.z = +438.9 mm
+    # OpenSim ground 约定：+X 人体朝前、+Y 竖直向上、+Z 人体右侧（右手）。
+    #   OpenSim X(前) = -mocapY
+    #   OpenSim Y(上) = +mocapZ
+    #   OpenSim Z(右) = -mocapX
+    # 矩阵每行 = 对应 OpenSim 轴在 mocap 下的坐标；det=1（右手）。
+    rotation_matrix:
+      - [0.0, -1.0, 0.0]
+      - [0.0,  0.0, 1.0]
+      - [-1.0, 0.0, 0.0]
+
+force:
+  source: c3d_analog
+  physical_plate_mode: single_plate_total_force
+  force_convention: foot_on_plate      # 实测站立 Fz≈-785N≈-体重 → C3D 是「脚对台面」；OpenSim ID 需 ground-on-foot，用前取反 Fx/Fy/Fz/Tz
+  unit_force: N
+  unit_cop: mm
+  channels:
+    Fz: AUTO
+
+single_support:
+  enabled: true
+  double_support_policy: MASK_OUT
+  assign_total_force_to_single_contact_foot: true
+  allow_estimated_force_split_in_double_support: false
+  vertical_force_threshold_N: 50.0        # INITIAL_DEFAULT，后续可调
+  foot_height_threshold_mm: 30.0          # INITIAL_DEFAULT
+  trim_boundary_ms: 20.0                  # INITIAL_DEFAULT
+
+filtering:
+  enabled: false
+  marker_cutoff_hz: TODO
+  grf_cutoff_hz: TODO
+
+opensim:
+  model: gait2392
+  scale: { enabled: true }
+  ik: { enabled: true }
+  id: { enabled: true }
+
+output:
+  export_Nm: true
+  export_Nm_per_kg: true
+  save_support_mask: true
