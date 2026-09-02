@@ -72,7 +72,6 @@ from PySide6.QtWidgets import (
 from exo_collection.acquisition.messages import WorkerEvent, WorkerEventType
 from exo_collection.acquisition.recording_stream import RecordingStreamEndpoint
 from exo_collection.acquisition.workers import CollectorWorker
-from exo_collection.adapters.force_plate.gaitway_tcp import TYPE_II_CHANNELS
 from exo_collection.apps.collector.button_marker import (
     ButtonMarkerListener,
     START_STOP_VK,
@@ -132,7 +131,6 @@ MODALITIES = (
     "encoder",
     "mocap",
     "emg",
-    "force_plate",
 )
 # 测力台已从 XINGYING 拆出：本软件通过 TCP（默认 49500）直连 gaitway-3D，
 # 与超声/IMU 一起落盘；XINGYING 仅录制 .cap（动捕 marker + 模型）。
@@ -155,7 +153,6 @@ CONNECTION_ROWS: tuple[tuple[str, ...], ...] = (
     ("imu",),
     ("encoder",),
     XINGYING_GROUP,
-    ("force_plate",),
     ("emg",),
 )
 CONNECTION_ROW_DISPLAY_NAMES: dict[tuple[str, ...], str] = {
@@ -170,7 +167,6 @@ MODALITY_DISPLAY_NAMES = {
     "imu": "IMU",
     "encoder": "电机编码器",
     "mocap": "动捕 Marker",
-    "force_plate": "gaitway-3D 测力台",
     "emg": "表面肌电 EMG",
     "subject_prompt": "受试者标签（<）",
     "operator_prompt": "工作人员标签（>）",
@@ -239,24 +235,6 @@ _ENCODER_METRICS = (
 )
 # Five-times magnification relative to the original +/-65 rad preview range.
 _ENCODER_SHARED_Y_RANGE = (-13.0, 13.0)
-# gaitway-3D Type II 左右脚分解表的列标题（与 TYPE_II_CHANNELS 顺序一致）。
-FORCE_PLATE_TYPE2_HEADERS: dict[str, str] = {
-    "foot_contact": "接触相",
-    "digital_inputs": "数字IO",
-    "fx_l": "FxL (N)",
-    "fy_l": "FyL (N)",
-    "fz_l": "FzL (N)",
-    "cop_x_l": "COPxL (m)",
-    "cop_y_l": "COPyL (m)",
-    "fx_r": "FxR (N)",
-    "fy_r": "FyR (N)",
-    "fz_r": "FzR (N)",
-    "cop_x_r": "COPxR (m)",
-    "cop_y_r": "COPyR (m)",
-}
-_GAIT_TYPE_LABELS = {0: "步行", 1: "跑步", 2: "其他"}
-_CONTACT_SIDE_LABELS = {0: "左", 1: "右", 2: "其他"}
-_FOOT_CONTACT_LABELS = {0: "腾空", 1: "单支撑", 2: "双支撑"}
 DEFAULT_OPERATOR = "not_recorded"
 DEFAULT_CONTROLLED_STOP_TIMEOUT_S = 30.0
 
@@ -1226,8 +1204,6 @@ class CollectorWindow(QMainWindow):
         self._emg_grid_content: QWidget | None = None
         self._xingying_status_panel: XingYingRecordingPanel | None = None
         self._mocap_table: QTableWidget | None = None
-        self._force_plate_meta: QLabel | None = None
-        self._force_plate_table: QTableWidget | None = None
         self.preview_workspace: PreviewWorkspace | None = None
         self._elapsed_timer: ElapsedTimerPanel | None = None
         self._preview_focus_previous_sizes: list[int] | None = None
@@ -2055,40 +2031,6 @@ class CollectorWindow(QMainWindow):
             "mocap",
             "动捕 Marker 数据",
             mocap_grid,
-        )
-
-        fp_grid = QGroupBox("gaitway-3D 测力台 · Type II 左右脚分解")
-        fp_grid.setObjectName("force_plate_type2_grid")
-        fp_grid.setMinimumHeight(120)
-        fp_layout = QVBoxLayout(fp_grid)
-        fp_layout.setContentsMargins(0, 0, 0, 0)
-        force_plate_meta = QLabel("等待 gaitway-3D Type II 数据…")
-        force_plate_meta.setObjectName("force_plate_type2_meta")
-        force_plate_meta.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-        )
-        force_plate_meta.setStyleSheet(
-            "QLabel { color: #1f2937; padding: 6px; font-family: monospace; }"
-        )
-        self._force_plate_meta = force_plate_meta
-        fp_layout.addWidget(force_plate_meta)
-        fp_table = QTableWidget(0, len(TYPE_II_CHANNELS), fp_grid)
-        fp_table.setObjectName("force_plate_type2_table")
-        fp_table.setHorizontalHeaderLabels(
-            [FORCE_PLATE_TYPE2_HEADERS.get(ch, ch) for ch in TYPE_II_CHANNELS]
-        )
-        fp_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        fp_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
-        fp_table.setAlternatingRowColors(True)
-        fp_table.verticalHeader().setVisible(False)
-        fp_header = fp_table.horizontalHeader()
-        fp_header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self._force_plate_table = fp_table
-        fp_layout.addWidget(fp_table)
-        preview_workspace.register_panel(
-            "force_plate",
-            "gaitway-3D 测力台 Type II",
-            fp_grid,
         )
 
         emg_grid = QGroupBox("表面肌电 EMG · 每通道一个窗口")
@@ -4031,10 +3973,6 @@ class CollectorWindow(QMainWindow):
             trace.reset()
         for trace in self._enc_traces.values():
             trace.reset()
-        if self._force_plate_table is not None:
-            self._force_plate_table.setRowCount(0)
-        if self._force_plate_meta is not None:
-            self._force_plate_meta.setText("等待 gaitway-3D Type II 数据…")
 
     @Slot()
     def request_controlled_stop(self) -> None:
@@ -4382,68 +4320,6 @@ class CollectorWindow(QMainWindow):
         if modality == "mocap":
             self._update_mocap_table(event.payload)
             return
-        if modality == "force_plate":
-            if event.payload.get("packet_type") == 2:
-                self._update_force_plate_type2(event.payload)
-            return
-
-    def _update_force_plate_type2(self, payload: Mapping[str, Any]) -> None:
-        """Render the latest Type II per-step packet header and samples."""
-        table = self._force_plate_table
-        if table is None:
-            return
-
-        gait_type = int(payload.get("gait_type") or 0)
-        contact_side = int(payload.get("contact_side") or 0)
-        meta = self._force_plate_meta
-        if meta is not None:
-            meta.setText(
-                "包 #{packet_id} · 步态 {gait} · 触地侧 {side} · 步数 {step} · "
-                "样本 {samples}".format(
-                    packet_id=payload.get("packet_id"),
-                    gait=_GAIT_TYPE_LABELS.get(gait_type, str(gait_type)),
-                    side=_CONTACT_SIDE_LABELS.get(contact_side, str(contact_side)),
-                    step=payload.get("step_count"),
-                    samples=payload.get("sample_count"),
-                )
-            )
-
-        raw_rows = payload.get("samples")
-        rows = raw_rows if isinstance(raw_rows, (list, tuple)) else ()
-        table.setRowCount(len(rows))
-        for row_index, raw_row in enumerate(rows):
-            if not isinstance(raw_row, (list, tuple)):
-                continue
-            for col_index, value in enumerate(raw_row):
-                if col_index >= table.columnCount():
-                    break
-                item = table.item(row_index, col_index)
-                if item is None:
-                    item = QTableWidgetItem()
-                    table.setItem(row_index, col_index, item)
-                item.setText(self._format_force_plate_cell(col_index, value))
-
-    @staticmethod
-    def _format_force_plate_cell(col_index: int, value: object) -> str:
-        """Format one Type II cell: enum labels for the two U16 columns, fixed
-        precision for the ten SF32 force/COP columns."""
-        if col_index == 0:
-            try:
-                return _FOOT_CONTACT_LABELS.get(int(value), str(value))
-            except (TypeError, ValueError):
-                return str(value)
-        if col_index == 1:
-            try:
-                return str(int(value))
-            except (TypeError, ValueError):
-                return str(value)
-        try:
-            number = float(value)
-        except (TypeError, ValueError):
-            return str(value)
-        if not math.isfinite(number):
-            return "NaN"
-        return f"{number:.2f}"
 
     def _update_mocap_table(self, payload: Mapping[str, Any]) -> None:
         """Render every latest marker coordinate without chart downsampling."""

@@ -1296,7 +1296,6 @@ def test_preview_workspace_registers_all_dynamic_windows(
         "ultrasound",
         "imu",
         "encoder",
-        "force_plate",
         "timer",
     }
     for modality in workspace.modalities:
@@ -2134,7 +2133,6 @@ def test_independent_connect_buttons_exist(tmp_path: Path) -> None:
         "imu",
         "encoder",
         "mocap",
-        "force_plate",
         "emg",
         "button_label",
     ):
@@ -2215,7 +2213,6 @@ def test_trial_form_has_no_global_device_config_and_modalities_are_clickable(
         "imu",
         "encoder",
         "mocap",
-        "force_plate",
         "emg",
         "button_label",
     }
@@ -2227,9 +2224,7 @@ def test_trial_form_has_no_global_device_config_and_modalities_are_clickable(
             assert "无需设置" in button.toolTip()
         else:
             assert "自动保存" in button.toolTip()
-    # 动捕 marker 与测力台已拆分为两行：各自独立配置。
     assert window._configure_buttons["mocap"].text() == "动捕 Marker"
-    assert window._configure_buttons["force_plate"].text() == "gaitway-3D 测力台"
     window.close()
 
 
@@ -2253,8 +2248,8 @@ def test_connected_modality_enables_its_separate_disconnect_button(tmp_path: Pat
     window.close()
 
 
-def test_mocap_and_force_plate_are_separate_rows(tmp_path: Path) -> None:
-    """动捕 marker 与测力台已拆分为两行：mocap 与 force_plate 各自独立控制。"""
+def test_mocap_row_connectable_in_simulated_mode(tmp_path: Path) -> None:
+    """模拟模式下动捕行可连接、断开，与其它流式模态一致。"""
     _app, window, _created = _window_with_fake(tmp_path)
     window._settings.set_device_profile_key("simulated")
     window._update_connect_button_state()
@@ -2264,15 +2259,8 @@ def test_mocap_and_force_plate_are_separate_rows(tmp_path: Path) -> None:
     assert mocap_connect.text() == "连接"
     assert mocap_disconnect.text() == "断开"
 
-    # 模拟模式下仅有模拟 mocap（无测力台设备），故动捕行可连接、测力台行禁用。
     assert mocap_connect.isEnabled()
     assert not mocap_disconnect.isEnabled()
-
-    force_plate_connect = window._connect_buttons["force_plate"]
-    force_plate_disconnect = window._disconnect_buttons["force_plate"]
-    assert not force_plate_connect.isEnabled()
-    assert not force_plate_disconnect.isEnabled()
-    assert "真实设备" in force_plate_connect.toolTip()
 
     # 连接 mocap 预览后，动捕行断开可用、连接禁用，与其它流式模态一致。
     window._preview_workers["mocap"] = object()
@@ -2313,34 +2301,6 @@ def test_mocap_row_connect_routes_to_sdk_mocap_and_remote_trigger(
     )
     window._disconnect_group(("mocap",))
     assert calls == ["sdk:mocap", "remote"]
-    window.close()
-
-
-def test_force_plate_row_connect_routes_to_gaitway_only(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    """硬件模式下测力台行连接仅 spawn gaitway TCP 预览，不触发 XINGYING 远程。"""
-    _app, window, _created = _window_with_fake(tmp_path)
-    window._settings.set_device_profile_key("hardware")
-
-    calls: list[str] = []
-    monkeypatch.setattr(
-        window, "_connect_modality", lambda modality: calls.append(f"sdk:{modality}")
-    )
-    monkeypatch.setattr(
-        window, "_connect_xingying_remote", lambda: calls.append("remote")
-    )
-
-    window._connect_group(("force_plate",))
-    assert calls == ["sdk:force_plate"]
-
-    calls.clear()
-    monkeypatch.setattr(
-        window, "_disconnect_modality", lambda modality: calls.append(f"sdk:{modality}")
-    )
-    window._disconnect_group(("force_plate",))
-    assert calls == ["sdk:force_plate"]
     window.close()
 
 
@@ -2835,7 +2795,7 @@ def test_connection_lamp_combines_connection_data_and_health_states(
 def test_health_table_has_modalities_and_prompt_label_counters(tmp_path: Path) -> None:
     """Compact table includes both keyboard-label counters."""
     _app, window, _created = _window_with_fake(tmp_path)
-    assert window.health_table.rowCount() == 9
+    assert window.health_table.rowCount() == 8
     assert window.health_table.columnCount() == 6
     assert [
         window.health_table.horizontalHeaderItem(column).text()
@@ -2849,7 +2809,6 @@ def test_health_table_has_modalities_and_prompt_label_counters(tmp_path: Path) -
         "IMU",
         "电机编码器",
         "动捕 Marker",
-        "gaitway-3D 测力台",
         "表面肌电 EMG",
         "按钮标签（,）",
         "受试者标签（<）",
@@ -3183,9 +3142,7 @@ def test_xingying_recording_panel_is_registered_as_single_dock(
     assert workspace is not None
     assert workspace.dock_for("xingying") is not None
     assert "xingying" in set(workspace.modalities)
-    # 动捕 Marker 数据 dock 与测力台 Type II 预览 dock 均为独立面板。
     assert "mocap" in set(workspace.modalities)
-    assert "force_plate" in set(workspace.modalities)
     window.close()
 
 

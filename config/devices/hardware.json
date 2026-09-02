@@ -1,6 +1,6 @@
 {
   "profile_kind": "hardware",
-  "display_name": "超声 + Xsens MTw + Teensy + XING 动捕 + gaitway-3D 测力台 + Noraxon EMG",
+  "display_name": "超声 + Xsens MTw + Teensy + XING 动捕 + Noraxon EMG",
   "schema_version": "1.0.0",
   "laboratory_sync_ready": false,
   "devices": [
@@ -96,28 +96,6 @@
           {"name": "股外侧肌", "unit_id": ""},
           {"name": "股中肌", "unit_id": ""}
         ],
-        "queue_capacity": 512
-      }
-    },
-    {
-      "id": "force_plate_gaitway",
-      "modality": "force_plate",
-      "adapter": "exo_collection.adapters.force_plate.GaitwayForcePlateTcpAdapter",
-      "writer": "hdf5_signal",
-      "required": false,
-      "clock_domain": "force_plate_gaitway_clock",
-      "simulated": false,
-      "parameters": {
-        "server_host": "127.0.0.1",
-        "server_port": 49500,
-        "sample_rate_hz": 1000,
-        "trigger_mode": 0,
-        "sync_out_enabled": false,
-        "type_i_mode": 2,
-        "type_ii_mode": 2,
-        "save_raw_packets": true,
-        "save_parsed_csv": true,
-        "query_settings_on_connect": true,
         "queue_capacity": 512
       }
     }
