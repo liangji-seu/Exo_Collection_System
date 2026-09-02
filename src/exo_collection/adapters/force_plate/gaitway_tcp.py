@@ -9,6 +9,7 @@ length-prefixed binary packets.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import logging
 import socket
 from struct import Struct, unpack_from
 from threading import Event, Lock, Thread, current_thread
@@ -21,6 +22,8 @@ from exo_collection.adapters.base import AdapterError, ModalityDescriptor
 from exo_collection.adapters.hardware_base import QueuedHardwareAdapter
 from exo_collection.domain.events import GaitwayPacketEvent, SampleBatch
 
+
+_log = logging.getLogger(__name__)
 
 GAITWAY_DEFAULT_PORT = 49_500
 PACKET_SETTINGS = 0x0000
@@ -357,6 +360,7 @@ class GaitwayForcePlateTcpAdapter(QueuedHardwareAdapter):
         self._stop_ack = Event()
         self._settings_packet_hex: str | None = None
         self._settings_version: int | None = None
+        self._settings_query_error: str | None = None
         self._sample_index = 0
         self._last_packet_id: int | None = None
         self._packet_gaps = 0
@@ -402,6 +406,7 @@ class GaitwayForcePlateTcpAdapter(QueuedHardwareAdapter):
             **asdict(self._config),
             "settings_version": self._settings_version,
             "settings_packet_hex": self._settings_packet_hex,
+            "settings_query_error": self._settings_query_error,
             "baseline_reset_issued": False,
             "type_i_packet_mode": self._config.type_i_mode,
             "type_ii_packet_mode": self._config.type_ii_mode,
@@ -417,18 +422,40 @@ class GaitwayForcePlateTcpAdapter(QueuedHardwareAdapter):
         self._framer.reset()
         self._pending_packets.clear()
         if self._config.query_settings_on_connect:
+            self._query_settings_best_effort()
+
+    def _query_settings_best_effort(self) -> None:
+        """Capture the DS settings packet for provenance, without failing connect.
+
+        The settings packet (GRF range, COP threshold, filter cutoff, ...) is
+        metadata only.  The acquisition-critical handshake is ``startDS``; if the
+        server does not answer ``getDSsettings`` here the collector still connects
+        and ``startDS`` raises its own actionable error when the device is
+        genuinely unreachable.  This mirrors the field self-check, which skips
+        ``getDSsettings`` and streams via ``startDS`` alone.
+        """
+        try:
             self._send_command("getDSsettings")
             self._expect_ack("getDSsettings")
             settings = self._read_packet_until(
                 expected_type=PACKET_SETTINGS,
                 timeout_s=self._config.connect_timeout_s,
             )
-            self._settings_packet_hex = settings.hex()
-            self._settings_version = (
-                int(unpack_from("<H", settings, 4)[0])
-                if len(settings) >= 6
-                else None
+        except AdapterError as exc:
+            self._settings_query_error = str(exc)
+            _log.warning(
+                "gaitway getDSsettings failed (%s); continuing without settings "
+                "metadata — verify the gaitway-3D GUI is in STREAM DATA mode and "
+                "no other client holds the single connection",
+                exc,
             )
+            return
+        self._settings_packet_hex = settings.hex()
+        self._settings_version = (
+            int(unpack_from("<H", settings, 4)[0])
+            if len(settings) >= 6
+            else None
+        )
 
     def _reset_trial_state(self) -> None:
         self._stop_event.clear()
@@ -695,7 +722,17 @@ class GaitwayForcePlateTcpAdapter(QueuedHardwareAdapter):
                         f"{self._response_command(packet)!r}"
                     )
                 deferred.append(packet)
-            raise AdapterError("timed out waiting for gaitway protocol response")
+            expected = (
+                f"0x{expected_type:04X}" if expected_type is not None else "any"
+            )
+            raise AdapterError(
+                "timed out waiting for gaitway protocol response "
+                f"(expected type {expected} from "
+                f"{self._config.server_host}:{self._config.server_port}) — check "
+                "the gaitway-3D GUI is in STREAM DATA mode, that no other client "
+                "holds the single connection, and that server_host is the gaitway "
+                "PC address"
+            )
         finally:
             if deferred:
                 self._pending_packets[0:0] = deferred
@@ -739,6 +776,7 @@ class GaitwayForcePlateTcpAdapter(QueuedHardwareAdapter):
             "malformed_packets": self._malformed_packets,
             "framer_buffered_bytes": self._framer.buffered_bytes,
             "settings_version": self._settings_version,
+            "settings_query_error": self._settings_query_error,
             "type_ii_enabled": self._config.type_ii_mode > 0,
         }
 
