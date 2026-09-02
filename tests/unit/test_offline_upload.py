@@ -412,6 +412,30 @@ def test_remote_status_scan_reports_remote_only_trials(tmp_path: Path) -> None:
     assert session.closed
 
 
+def test_remote_status_scan_skips_invalid_manifest_without_aborting(
+    tmp_path: Path,
+) -> None:
+    """一个损坏/旧 schema 的 manifest 不应拖垮整次云端状态同步。"""
+    valid = tuple(_publish_trial(tmp_path) for _ in range(2))
+    bad_dir = tmp_path / "F" / str(uuid4()) / str(uuid4()) / "trials" / str(uuid4())
+    bad_dir.mkdir(parents=True)
+    bad_manifest = bad_dir / "manifest.json"
+    bad_manifest.write_text("{ not valid json", encoding="utf-8")
+
+    manifests = (valid[0], bad_manifest, valid[1])
+    request = replace(
+        _password_request(tmp_path, manifests[0]),
+        additional_manifest_paths=manifests[1:],
+    )
+    session = _FakeRemoteSession()
+
+    result = RemoteDatasetStatusScanner(lambda _request: session).scan(request)
+
+    assert [record.manifest_path for record in result.records] == [valid[0], valid[1]]
+    assert result.remote_only == ()
+    assert session.closed
+
+
 def test_decide_one_click_upload_classifies_subset_and_conflict() -> None:
     def record(status: RemoteTrialStatus, name: str) -> RemoteTrialStatusRecord:
         return RemoteTrialStatusRecord(

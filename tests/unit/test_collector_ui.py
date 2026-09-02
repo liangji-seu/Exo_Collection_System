@@ -3279,3 +3279,34 @@ def test_on_xingying_trigger_skips_without_live_worker(tmp_path: Path) -> None:
 
     assert worker.xingying_triggers == []
     window.close()
+
+
+def test_on_xingying_capture_start_updates_sync_filename_bar(tmp_path: Path) -> None:
+    _app, window, _created = _window_with_fake(tmp_path)
+
+    window._on_xingying_trigger(
+        "capture_start",
+        {"capture_name": "001_STAND_r1_65e399921"},
+        1,
+        2,
+    )
+
+    assert window._sync_filename_bar.filename() == "001_STAND_r1_65e399921"
+    window.close()
+
+
+def test_on_xingying_capture_stop_does_not_touch_sync_filename_bar(
+    tmp_path: Path,
+) -> None:
+    _app, window, _created = _window_with_fake(tmp_path)
+    window._sync_filename_bar.set_filename("001_STAND_r1_65e39992")
+
+    window._on_xingying_trigger(
+        "capture_stop",
+        {"capture_name": "001_STAND_r1_65e399921"},
+        1,
+        2,
+    )
+
+    assert window._sync_filename_bar.filename() == "001_STAND_r1_65e39992"
+    window.close()

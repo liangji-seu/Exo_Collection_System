@@ -1112,6 +1112,8 @@ class CollectorWindow(QMainWindow):
     trial_finished = Signal(bool)
     # XINGYING 起停通知来自后台监听线程；经此信号 queued 到 GUI 线程再弹 toast。
     xingying_alert_requested = Signal(str)
+    # XINGYING 广播的真实录制名（含 take 序号），用于回填「同步文件名」条。
+    xingying_capture_name_observed = Signal(str)
 
     def __init__(
         self,
@@ -1226,6 +1228,7 @@ class CollectorWindow(QMainWindow):
         self._create_ui(Path(data_root).expanduser().resolve())
         self._populate_nominal_rates()
         self.xingying_alert_requested.connect(self._append_alert)
+        self.xingying_capture_name_observed.connect(self._on_xingying_capture_name_observed)
         self._prompt_event_filter_installed = False
         application = QApplication.instance()
         if application is not None:
@@ -2906,6 +2909,10 @@ class CollectorWindow(QMainWindow):
         name = str(payload.get("capture_name") or "")
         display = "开始" if trigger_kind is XingYingTriggerKind.CAPTURE_START else "停止"
         self.xingying_alert_requested.emit(f"收到 XINGYING {display}通知：{name}")
+        if trigger_kind is XingYingTriggerKind.CAPTURE_START and name:
+            # XINGYING 的真实录制名（含 take 序号）此时才确定，回填「同步文件名」
+            # 条，保证操作员复制的名字与最终导出的 .c3d/.cap 完全一致。
+            self.xingying_capture_name_observed.emit(name)
         LOG.info(
             "收到 XINGYING %s name=%s host_monotonic_ns=%d",
             kind,
@@ -2932,6 +2939,12 @@ class CollectorWindow(QMainWindow):
                 f"写入 XINGYING 触发事件失败：{type(exc).__name__}: {exc}"
             )
             LOG.error("写入 XINGYING 触发事件失败: %s", exc)
+
+    def _on_xingying_capture_name_observed(self, name: str) -> None:
+        """XINGYING 广播真实录制名后，回填「同步文件名」条（GUI 线程）。"""
+        clean = str(name or "").strip()
+        if clean:
+            self._sync_filename_bar.set_filename(clean)
 
     def _build_xingying_capture_name(self, request: TrialRunRequest) -> str:
         """生成 XINGYING 录制文件名（.cap 前缀，XINGYING 会追加 take 序号）。"""

@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import base64
 import json
+import logging
 import multiprocessing
 import os
 import re
@@ -37,6 +38,8 @@ from exo_collection.storage.layout import (
     path_has_unpublished_component,
 )
 from exo_collection.storage.manifest import TrialManifest, load_manifest
+
+LOG = logging.getLogger(__name__)
 
 
 _COPY_BUFFER_SIZE = 1024 * 1024
@@ -1636,7 +1639,6 @@ class RemoteDatasetStatusScanner:
             for index, manifest_path in enumerate(request.manifest_paths, start=1):
                 if is_cancelled():
                     raise UploadCancelled()
-                manifest = validate_finalized_trial(manifest_path)
                 trial_directory = manifest_path.parent
                 if trial_directory.name == ".exo":
                     trial_directory = trial_directory.parent
@@ -1650,6 +1652,17 @@ class RemoteDatasetStatusScanner:
                         "Manifest 不在当前 data 根目录内。",
                     ) from exc
                 local_index_keys.add(index_key)
+                try:
+                    manifest = validate_finalized_trial(manifest_path)
+                except UploadError as exc:
+                    # 单个损坏/旧 schema 的 manifest 不应拖垮整次云端状态同步；
+                    # 跳过它并把其余 FINALIZED Trial 正常核对。
+                    LOG.warning(
+                        "云端状态同步跳过无法验证的 Manifest %s: %s",
+                        manifest_path,
+                        exc,
+                    )
+                    continue
                 remote_dir = _remote_join(
                     request.remote_workdir, *PurePosixPath(index_key).parts
                 )
