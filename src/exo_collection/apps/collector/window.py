@@ -97,6 +97,7 @@ from exo_collection.apps.collector.preflight import (
 )
 from exo_collection.apps.collector.elapsed_timer import ElapsedTimerPanel
 from exo_collection.apps.collector.preview_workspace import PreviewWorkspace
+from exo_collection.apps.collector.sync_filename import SyncFilenameBar
 from exo_collection.apps.collector.xingying_recording import XingYingRecordingPanel
 from exo_collection.apps.collector.theme import COLLECTOR_STYLESHEET
 from exo_collection.configuration import (
@@ -1869,6 +1870,11 @@ class CollectorWindow(QMainWindow):
         )
         controls_layout.addWidget(health_box)
         controls_layout.addStretch(1)
+
+        # ── 同步文件名条（左下角空档）：开始写盘时生成文件名主干，供复制命名 txt ──
+        self._sync_filename_bar = SyncFilenameBar()
+        self._sync_filename_bar.setFixedHeight(28)
+        controls_layout.addWidget(self._sync_filename_bar)
 
         # ── Toast overlay for alerts ──
         self._toast_label = DismissibleToastLabel(self)
@@ -3818,6 +3824,9 @@ class CollectorWindow(QMainWindow):
         # Recording attaches to their raw IPC endpoints without stopping or
         # reconnecting a single device.
         self._active_request = request
+        self._sync_filename_bar.set_filename(
+            self._build_xingying_capture_name(request)
+        )
         self._set_configuration_locked(True)
         self._launch_trial_worker(request)
 
