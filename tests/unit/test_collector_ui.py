@@ -2130,7 +2130,8 @@ def test_independent_connect_buttons_exist(tmp_path: Path) -> None:
         "ultrasound",
         "imu",
         "encoder",
-        "mocap_force_plate",
+        "mocap",
+        "force_plate",
         "emg",
         "button_label",
     ):
@@ -2210,7 +2211,8 @@ def test_trial_form_has_no_global_device_config_and_modalities_are_clickable(
         "ultrasound",
         "imu",
         "encoder",
-        "mocap_force_plate",
+        "mocap",
+        "force_plate",
         "emg",
         "button_label",
     }
@@ -2222,8 +2224,9 @@ def test_trial_form_has_no_global_device_config_and_modalities_are_clickable(
             assert "无需设置" in button.toolTip()
         else:
             assert "自动保存" in button.toolTip()
-    # 动捕 marker 与测力台折叠为同一行（合并键 mocap_force_plate）。
-    assert window._configure_buttons["mocap_force_plate"].text() == "动捕 Marker + 六维力测力台"
+    # 动捕 marker 与测力台已拆分为两行：各自独立配置。
+    assert window._configure_buttons["mocap"].text() == "动捕 Marker"
+    assert window._configure_buttons["force_plate"].text() == "gaitway-3D 测力台"
     window.close()
 
 
@@ -2247,36 +2250,42 @@ def test_connected_modality_enables_its_separate_disconnect_button(tmp_path: Pat
     window.close()
 
 
-def test_mocap_and_force_plate_are_merged_row(tmp_path: Path) -> None:
-    """动捕 marker 与测力台折叠为一行：合并键「mocap_force_plate」同时控制两者。"""
+def test_mocap_and_force_plate_are_separate_rows(tmp_path: Path) -> None:
+    """动捕 marker 与测力台已拆分为两行：mocap 与 force_plate 各自独立控制。"""
     _app, window, _created = _window_with_fake(tmp_path)
     window._settings.set_device_profile_key("simulated")
     window._update_connect_button_state()
 
-    group_connect = window._connect_buttons["mocap_force_plate"]
-    group_disconnect = window._disconnect_buttons["mocap_force_plate"]
-    assert group_connect.text() == "连接"
-    assert group_disconnect.text() == "断开"
+    mocap_connect = window._connect_buttons["mocap"]
+    mocap_disconnect = window._disconnect_buttons["mocap"]
+    assert mocap_connect.text() == "连接"
+    assert mocap_disconnect.text() == "断开"
 
-    # 模拟模式下仅有模拟 mocap（无测力台），合并行仍可连接模拟动捕预览。
-    assert group_connect.isEnabled()
-    assert not group_disconnect.isEnabled()
+    # 模拟模式下仅有模拟 mocap（无测力台设备），故动捕行可连接、测力台行禁用。
+    assert mocap_connect.isEnabled()
+    assert not mocap_disconnect.isEnabled()
 
-    # 连接 mocap 预览后，合并行断开可用、连接禁用，与其它流式模态一致。
+    force_plate_connect = window._connect_buttons["force_plate"]
+    force_plate_disconnect = window._disconnect_buttons["force_plate"]
+    assert not force_plate_connect.isEnabled()
+    assert not force_plate_disconnect.isEnabled()
+    assert "真实设备" in force_plate_connect.toolTip()
+
+    # 连接 mocap 预览后，动捕行断开可用、连接禁用，与其它流式模态一致。
     window._preview_workers["mocap"] = object()
     window._update_connect_button_state()
-    assert not group_connect.isEnabled()
-    assert group_disconnect.isEnabled()
+    assert not mocap_connect.isEnabled()
+    assert mocap_disconnect.isEnabled()
 
     window._preview_workers.clear()
     window.close()
 
 
-def test_merged_row_connect_routes_to_sdk_mocap_and_remote_trigger(
+def test_mocap_row_connect_routes_to_sdk_mocap_and_remote_trigger(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    """硬件模式下合并行连接同时建立 mocap SDK 预览与 XINGYING 远程触发。"""
+    """硬件模式下动捕行连接同时建立 mocap SDK 预览与 XINGYING 远程触发。"""
     _app, window, _created = _window_with_fake(tmp_path)
     window._settings.set_device_profile_key("hardware")
 
@@ -2288,10 +2297,10 @@ def test_merged_row_connect_routes_to_sdk_mocap_and_remote_trigger(
         window, "_connect_xingying_remote", lambda: calls.append("remote")
     )
 
-    window._connect_group(("mocap", "force_plate"))
+    window._connect_group(("mocap",))
     assert calls == ["sdk:mocap", "remote"]
 
-    # 断开合并行：先停 mocap SDK 预览，再断开远程触发。
+    # 断开动捕行：先停 mocap SDK 预览，再断开远程触发。
     calls.clear()
     monkeypatch.setattr(
         window, "_disconnect_modality", lambda modality: calls.append(f"sdk:{modality}")
@@ -2299,8 +2308,36 @@ def test_merged_row_connect_routes_to_sdk_mocap_and_remote_trigger(
     monkeypatch.setattr(
         window, "_disconnect_xingying_remote", lambda: calls.append("remote")
     )
-    window._disconnect_group(("mocap", "force_plate"))
+    window._disconnect_group(("mocap",))
     assert calls == ["sdk:mocap", "remote"]
+    window.close()
+
+
+def test_force_plate_row_connect_routes_to_gaitway_only(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """硬件模式下测力台行连接仅 spawn gaitway TCP 预览，不触发 XINGYING 远程。"""
+    _app, window, _created = _window_with_fake(tmp_path)
+    window._settings.set_device_profile_key("hardware")
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        window, "_connect_modality", lambda modality: calls.append(f"sdk:{modality}")
+    )
+    monkeypatch.setattr(
+        window, "_connect_xingying_remote", lambda: calls.append("remote")
+    )
+
+    window._connect_group(("force_plate",))
+    assert calls == ["sdk:force_plate"]
+
+    calls.clear()
+    monkeypatch.setattr(
+        window, "_disconnect_modality", lambda modality: calls.append(f"sdk:{modality}")
+    )
+    window._disconnect_group(("force_plate",))
+    assert calls == ["sdk:force_plate"]
     window.close()
 
 
@@ -2809,7 +2846,7 @@ def test_health_table_has_modalities_and_prompt_label_counters(tmp_path: Path) -
         "IMU",
         "电机编码器",
         "动捕 Marker",
-        "六维力测力台",
+        "gaitway-3D 测力台",
         "表面肌电 EMG",
         "按钮标签（,）",
         "受试者标签（<）",

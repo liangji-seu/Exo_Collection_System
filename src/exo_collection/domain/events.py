@@ -109,8 +109,33 @@ class MetricEvent(BaseEvent):
     tags: dict[str, JsonValue] = Field(default_factory=dict)
 
 
+class GaitwayPacketEvent(BaseEvent):
+    """One raw gaitway-3D streaming packet, preserved byte-for-byte.
+
+    Carries the exact bytes received from the TCP stream so a recording-side
+    writer can re-parse them offline (or fix a parser bug without re-running the
+    subject).  ``packet_type`` is the ICD packet type (1 = Type I total GRF/COP,
+    2 = Type II left/right decomposition); ``packet_id`` is the per-type sample
+    counter from the packet header; ``sample_index`` is the global index of the
+    first sample in this packet within the current Trial.
+    """
+
+    event_type: Literal["gaitway_packet"] = "gaitway_packet"
+    packet_type: int = Field(ge=0, le=65535)
+    packet_id: int = Field(ge=0)
+    sample_index: int = Field(ge=0)
+    raw_bytes: bytes = Field(repr=False)
+
+
 DomainEvent = Annotated[
-    Union[SampleBatch, FrameBatch, SyncPulseEvent, DeviceStatusEvent, MetricEvent],
+    Union[
+        SampleBatch,
+        FrameBatch,
+        SyncPulseEvent,
+        DeviceStatusEvent,
+        MetricEvent,
+        GaitwayPacketEvent,
+    ],
     Field(discriminator="event_type"),
 ]
 

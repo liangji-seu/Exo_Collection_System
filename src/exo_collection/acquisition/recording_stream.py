@@ -16,9 +16,14 @@ from time import perf_counter_ns
 from typing import Any, Union
 from uuid import UUID
 
-from exo_collection.domain.events import FrameBatch, SampleBatch, SyncPulseEvent
+from exo_collection.domain.events import (
+    FrameBatch,
+    GaitwayPacketEvent,
+    SampleBatch,
+    SyncPulseEvent,
+)
 
-RawRecordingEvent = Union[FrameBatch, SampleBatch, SyncPulseEvent]
+RawRecordingEvent = Union[FrameBatch, SampleBatch, SyncPulseEvent, GaitwayPacketEvent]
 """Type alias for any domain event that can be forwarded to a recording queue."""
 
 
@@ -170,7 +175,7 @@ class RecordingStreamProducer:
         trial_uuid = self._active_trial_uuid
         if trial_uuid is None:
             return False
-        if not isinstance(event, (FrameBatch, SampleBatch, SyncPulseEvent)):
+        if not isinstance(event, (FrameBatch, SampleBatch, SyncPulseEvent, GaitwayPacketEvent)):
             return False
         wrapped = RecordedRawEvent(
             trial_uuid=trial_uuid,

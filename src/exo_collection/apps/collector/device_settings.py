@@ -986,6 +986,104 @@ class ForcePlateDeviceSettingsDialog(ModalityDeviceSettingsDialog):
         )
 
 
+class GaitwayForcePlateDeviceSettingsDialog(ModalityDeviceSettingsDialog):
+    """h/p/cosmos gaitway-3D 测力台（TCP）设备设置。
+
+    测力台从 XINGYING 拆分后，本软件通过 TCP（默认 49500）直连 gaitway-3D，
+    同时请求 Type I（总 GRF/COP/Tz/跑步机状态）与 Type II（左右脚分解）数据，
+    与超声/IMU 一起由本软件落盘。
+    """
+
+    modality = "force_plate"
+
+    def __init__(
+        self,
+        current: Mapping[str, Any],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("gaitway-3D 测力台设备设置")
+        self.setMinimumWidth(640)
+        outer = QVBoxLayout(self)
+        intro = QLabel(
+            "本软件通过 TCP 直连 h/p/cosmos gaitway-3D 测力台，独立于 XINGYING 采集"
+            " .cap。同时请求 Type I（总力/COP/Tz/跑步机状态）与 Type II（左右脚分解）。"
+        )
+        intro.setWordWrap(True)
+        outer.addWidget(intro)
+        form = QFormLayout()
+
+        self.host_edit = QLineEdit(str(current.get("server_host", "127.0.0.1")))
+        self.host_edit.setObjectName("gaitway_server_host")
+        form.addRow("测力台 IP / 主机名：", self.host_edit)
+
+        self.port_spin = QSpinBox()
+        self.port_spin.setRange(1, 65535)
+        self.port_spin.setValue(int(current.get("server_port", 49500)))
+        form.addRow("TCP 端口：", self.port_spin)
+
+        self.rate_combo = QComboBox()
+        for rate in (100, 200, 250, 400, 500, 1000, 2000):
+            self.rate_combo.addItem(f"{rate} Hz", rate)
+        self._select_combo_value(self.rate_combo, int(current.get("sample_rate_hz", 1000)))
+        form.addRow("采样率：", self.rate_combo)
+
+        self.trigger_combo = QComboBox()
+        for mode, label in ((0, "0（默认）"), (1, "1"), (2, "2"), (3, "3")):
+            self.trigger_combo.addItem(label, mode)
+        self._select_combo_value(self.trigger_combo, int(current.get("trigger_mode", 0)))
+        form.addRow("触发模式（trigger）：", self.trigger_combo)
+
+        self.syncout_check = QCheckBox("启用同步输出（syncout）")
+        self.syncout_check.setChecked(bool(current.get("sync_out_enabled", False)))
+        form.addRow("", self.syncout_check)
+
+        self.type_i_combo = QComboBox()
+        for mode, label in ((0, "0 — 关闭"), (1, "1 — 仅包头"), (2, "2 — 包头 + 采样")):
+            self.type_i_combo.addItem(label, mode)
+        self._select_combo_value(self.type_i_combo, int(current.get("type_i_mode", 2)))
+        form.addRow("Type I（总力/COP）模式：", self.type_i_combo)
+
+        self.type_ii_combo = QComboBox()
+        for mode, label in ((0, "0 — 关闭"), (1, "1 — 仅包头"), (2, "2 — 包头 + 采样")):
+            self.type_ii_combo.addItem(label, mode)
+        self._select_combo_value(self.type_ii_combo, int(current.get("type_ii_mode", 2)))
+        form.addRow("Type II（左右脚分解）模式：", self.type_ii_combo)
+
+        self.save_raw_check = QCheckBox("保存原始 TCP 字节流（gaitway_raw.bin）")
+        self.save_raw_check.setChecked(bool(current.get("save_raw_packets", True)))
+        form.addRow("", self.save_raw_check)
+
+        self.save_csv_check = QCheckBox("保存解析后的 CSV（gaitway_type1/type2.csv）")
+        self.save_csv_check.setChecked(bool(current.get("save_parsed_csv", True)))
+        form.addRow("", self.save_csv_check)
+
+        outer.addLayout(form)
+        outer.addWidget(self._button_box())
+
+    @staticmethod
+    def _select_combo_value(combo: QComboBox, value: int) -> None:
+        index = combo.findData(value)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+
+    @Slot()
+    def accept(self) -> None:
+        self._finish_accept(
+            {
+                "server_host": self.host_edit.text().strip(),
+                "server_port": self.port_spin.value(),
+                "sample_rate_hz": self.rate_combo.currentData(),
+                "trigger_mode": self.trigger_combo.currentData(),
+                "sync_out_enabled": self.syncout_check.isChecked(),
+                "type_i_mode": self.type_i_combo.currentData(),
+                "type_ii_mode": self.type_ii_combo.currentData(),
+                "save_raw_packets": self.save_raw_check.isChecked(),
+                "save_parsed_csv": self.save_csv_check.isChecked(),
+            }
+        )
+
+
 class MocapForcePlateDeviceSettingsDialog(ModalityDeviceSettingsDialog):
     """合并「动捕 Marker + 六维力测力台」的设置对话框。
 
@@ -1156,7 +1254,7 @@ DEVICE_SETTINGS_DIALOGS: dict[str, type[ModalityDeviceSettingsDialog]] = {
     "encoder": EncoderDeviceSettingsDialog,
     "mocap": MocapDeviceSettingsDialog,
     "emg": EmgDeviceSettingsDialog,
-    "force_plate": ForcePlateDeviceSettingsDialog,
+    "force_plate": GaitwayForcePlateDeviceSettingsDialog,
     "sync_pulse": SyncPulseDeviceSettingsDialog,
 }
 
@@ -1168,6 +1266,7 @@ __all__ = [
     "MocapDeviceSettingsDialog",
     "EmgDeviceSettingsDialog",
     "ForcePlateDeviceSettingsDialog",
+    "GaitwayForcePlateDeviceSettingsDialog",
     "ModalityDeviceSettingsDialog",
     "MocapForcePlateDeviceSettingsDialog",
     "SyncPulseDeviceSettingsDialog",

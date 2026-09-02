@@ -417,6 +417,11 @@ class HardwareForcePlateParameters(ProfileModel):
     sample_rate_hz: Literal[100, 200, 250, 400, 500, 1000, 2000] = 1000
     trigger_mode: int = Field(default=0, ge=0, le=3)
     sync_out_enabled: bool = False
+    # startDS packet-mode selectors: 0 = off, 1 = header only, 2 = header + samples.
+    type_i_mode: int = Field(default=2, ge=0, le=2)
+    type_ii_mode: int = Field(default=2, ge=0, le=2)
+    save_raw_packets: bool = True
+    save_parsed_csv: bool = True
     queue_capacity: int = Field(default=512, gt=0)
     connect_timeout_s: float = Field(default=5.0, gt=0)
     socket_timeout_s: float = Field(default=0.2, gt=0)

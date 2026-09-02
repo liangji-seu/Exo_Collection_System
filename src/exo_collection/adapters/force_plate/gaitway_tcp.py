@@ -19,18 +19,27 @@ import numpy as np
 
 from exo_collection.adapters.base import AdapterError, ModalityDescriptor
 from exo_collection.adapters.hardware_base import QueuedHardwareAdapter
-from exo_collection.domain.events import SampleBatch
+from exo_collection.domain.events import GaitwayPacketEvent, SampleBatch
 
 
 GAITWAY_DEFAULT_PORT = 49_500
 PACKET_SETTINGS = 0x0000
 PACKET_TYPE_I = 0x0001
+PACKET_TYPE_II = 0x0002
 PACKET_ACK = 0x0006
 PACKET_NAK = 0x0015
 TYPE_I_HEADER_SIZE = 16
 TYPE_I_SAMPLE_SIZE = 36
+TYPE_II_HEADER_SIZE = 32
+TYPE_II_SAMPLE_SIZE = 44
 _TYPE_I_HEADER = Struct("<HHI8x")
 _TYPE_I_SAMPLE = Struct("<8fHH")
+# Type-II header: size(U16) type(U16) id(U32) gait_type(U16) contact_side(U16)
+# step_count(U32) + 16 padding bytes.  No timestamp field exists in the ICD.
+_TYPE_II_HEADER = Struct("<HHIHHI16x")
+# Type-II sample: foot_contact(U16) digital_inputs(U16) then
+# FzL FyL FxL COPyL COPxL FzR FyR FxR COPyR COPxR (10 little-endian floats).
+_TYPE_II_SAMPLE = Struct("<HH10f")
 _VALID_SAMPLE_RATES = frozenset({100, 200, 250, 400, 500, 1000, 2000})
 
 FORCE_PLATE_CHANNELS = (
@@ -57,6 +66,164 @@ FORCE_PLATE_UNITS = (
     "bpm",
     "bitmask",
 )
+
+# Type II is NOT a second physical plate: it is gaitway's internal left/right
+# decomposition of the single instrumented treadmill.  ``grf_source_type`` is
+# recorded verbatim in the CSV/meta provenance so OpenSim keeps that fact.
+TYPE_II_CHANNELS = (
+    "foot_contact",
+    "digital_inputs",
+    "fx_l",
+    "fy_l",
+    "fz_l",
+    "cop_x_l",
+    "cop_y_l",
+    "fx_r",
+    "fy_r",
+    "fz_r",
+    "cop_x_r",
+    "cop_y_r",
+)
+TYPE_II_UNITS = (
+    "",  # foot_contact is an enum: 0 aerial / 1 single / 2 double
+    "bitmask",  # digital_inputs
+    "N",
+    "N",
+    "N",
+    "m",
+    "m",
+    "N",
+    "N",
+    "N",
+    "m",
+    "m",
+)
+GRF_SOURCE_TYPE_DECOMPOSED = "gaitway_single_platform_decomposed_left_right"
+
+
+def build_start_ds_command(
+    *,
+    sample_rate_hz: int,
+    trigger_mode: int,
+    sync_out_enabled: bool,
+    type_i_mode: int,
+    type_ii_mode: int,
+    seconds: int = 0,
+) -> str:
+    """Build the ``startDS`` command per TM-ICD-0004-ARS A5.
+
+    Argument order is fixed by the ICD::
+
+        startDS <freq> <seconds> <trigger> <syncout> <typeI> <typeII>
+
+    - ``freq``       sample frequency in Hz (must be one of ``_VALID_SAMPLE_RATES``)
+    - ``seconds``    acquisition duration; ``0`` means continuous until ``stopDS``
+    - ``trigger``    0..3 external trigger mode
+    - ``syncout``    0/1 enable the sync output
+    - ``typeI``      0=off / 1=header-only / 2=header+samples (total GRF/COP)
+    - ``typeII``     0=off / 1=header-only / 2=header+samples (left/right decomposition)
+    """
+
+    return (
+        f"startDS {int(sample_rate_hz)} {int(seconds)} {int(trigger_mode)} "
+        f"{int(bool(sync_out_enabled))} {int(type_i_mode)} {int(type_ii_mode)}"
+    )
+
+
+def parse_type_i_packet(packet: bytes) -> tuple[dict[str, int], np.ndarray]:
+    """Parse a raw Type-I packet into ``(header, samples)``.
+
+    ``header`` holds ``packet_size``/``packet_type``/``packet_id``.  ``samples``
+    is a ``(count, 10)`` float32 array in canonical channel order
+    (``FORCE_PLATE_CHANNELS``).  Raises :class:`GaitwayPacketError` on a
+    malformed packet.
+    """
+
+    if len(packet) < TYPE_I_HEADER_SIZE:
+        raise GaitwayPacketError("Type-I packet shorter than its header")
+    packet_size, packet_type, packet_id = _TYPE_I_HEADER.unpack_from(packet)
+    if packet_size != len(packet) or packet_type != PACKET_TYPE_I:
+        raise GaitwayPacketError("invalid Type-I packet header")
+    payload_size = packet_size - TYPE_I_HEADER_SIZE
+    if payload_size <= 0 or payload_size % TYPE_I_SAMPLE_SIZE:
+        raise GaitwayPacketError(
+            f"Type-I payload size {payload_size} is not a multiple of "
+            f"{TYPE_I_SAMPLE_SIZE}"
+        )
+    count = payload_size // TYPE_I_SAMPLE_SIZE
+    data = np.empty((count, len(FORCE_PLATE_CHANNELS)), dtype=np.float32)
+    offset = TYPE_I_HEADER_SIZE
+    for index in range(count):
+        fz, fy, fx, cop_y, cop_x, tz, speed, elevation, heart, digital = (
+            _TYPE_I_SAMPLE.unpack_from(packet, offset)
+        )
+        data[index] = (fx, fy, fz, cop_x, cop_y, tz, speed, elevation, heart, digital)
+        offset += TYPE_I_SAMPLE_SIZE
+    return {
+        "packet_size": packet_size,
+        "packet_type": packet_type,
+        "packet_id": packet_id,
+    }, data
+
+
+def parse_type_ii_packet(packet: bytes) -> tuple[dict[str, int], np.ndarray]:
+    """Parse a raw Type-II packet into ``(header, samples)``.
+
+    ``header`` adds ``gait_type``/``contact_side``/``step_count`` on top of the
+    shared ``packet_size``/``packet_type``/``packet_id``.  ``samples`` is a
+    ``(count, 12)`` float32 array in canonical channel order
+    (``TYPE_II_CHANNELS``).  Per the ICD, Type-II packets are emitted per step
+    and are NOT a uniform sample stream — no sample-rate assumption is made.
+    """
+
+    if len(packet) < TYPE_II_HEADER_SIZE:
+        raise GaitwayPacketError("Type-II packet shorter than its header")
+    (
+        packet_size,
+        packet_type,
+        packet_id,
+        gait_type,
+        contact_side,
+        step_count,
+    ) = _TYPE_II_HEADER.unpack_from(packet)
+    if packet_size != len(packet) or packet_type != PACKET_TYPE_II:
+        raise GaitwayPacketError("invalid Type-II packet header")
+    payload_size = packet_size - TYPE_II_HEADER_SIZE
+    if payload_size <= 0 or payload_size % TYPE_II_SAMPLE_SIZE:
+        raise GaitwayPacketError(
+            f"Type-II payload size {payload_size} is not a multiple of "
+            f"{TYPE_II_SAMPLE_SIZE}"
+        )
+    count = payload_size // TYPE_II_SAMPLE_SIZE
+    data = np.empty((count, len(TYPE_II_CHANNELS)), dtype=np.float32)
+    offset = TYPE_II_HEADER_SIZE
+    for index in range(count):
+        foot_contact, digital, fz_l, fy_l, fx_l, cop_y_l, cop_x_l, fz_r, fy_r, fx_r, cop_y_r, cop_x_r = (
+            _TYPE_II_SAMPLE.unpack_from(packet, offset)
+        )
+        data[index] = (
+            foot_contact,
+            digital,
+            fx_l,
+            fy_l,
+            fz_l,
+            cop_x_l,
+            cop_y_l,
+            fx_r,
+            fy_r,
+            fz_r,
+            cop_x_r,
+            cop_y_r,
+        )
+        offset += TYPE_II_SAMPLE_SIZE
+    return {
+        "packet_size": packet_size,
+        "packet_type": packet_type,
+        "packet_id": packet_id,
+        "gait_type": gait_type,
+        "contact_side": contact_side,
+        "step_count": step_count,
+    }, data
 
 
 class GaitwayPacketError(AdapterError):
@@ -107,6 +274,13 @@ class GaitwayForcePlateConfig:
     sample_rate_hz: int = 1000
     trigger_mode: int = 0
     sync_out_enabled: bool = False
+    # startDS packet-mode selectors: 0 = off, 1 = header only, 2 = header + samples.
+    type_i_mode: int = 2
+    type_ii_mode: int = 2
+    # Recording-side storage switches (raw binary is always captured for offline
+    # re-parse; these gate the additional per-Trial gaitway/ artefacts).
+    save_raw_packets: bool = True
+    save_parsed_csv: bool = True
     queue_capacity: int = 512
     connect_timeout_s: float = 5.0
     socket_timeout_s: float = 0.2
@@ -127,6 +301,10 @@ class GaitwayForcePlateConfig:
             )
         if self.trigger_mode not in {0, 1, 2, 3}:
             raise ValueError("trigger_mode must be in [0, 3]")
+        if self.type_i_mode not in {0, 1, 2}:
+            raise ValueError("type_i_mode must be in [0, 2]")
+        if self.type_ii_mode not in {0, 1, 2}:
+            raise ValueError("type_ii_mode must be in [0, 2]")
         if self.queue_capacity <= 0:
             raise ValueError("queue_capacity must be positive")
         if min(
@@ -155,11 +333,13 @@ class GaitwayForcePlateConfig:
 
 
 class GaitwayForcePlateTcpAdapter(QueuedHardwareAdapter):
-    """Loss-intolerant Type-I gaitway stream adapter.
+    """Loss-intolerant gaitway stream adapter requesting Type I + Type II.
 
-    Type-II per-step packets are deliberately disabled in ``startDS``. The
-    continuous Type-I packet already contains the combined force-plate signal
-    required for synchronized preview and raw recording.
+    Type I is a continuous uniform stream of total GRF/COP/Tz/treadmill status
+    and is published both as a :class:`SampleBatch` (for synchronized preview
+    and HDF5 recording) and as a byte-preserving :class:`GaitwayPacketEvent`.
+    Type II is gaitway's per-step left/right decomposition and is published
+    only as a :class:`GaitwayPacketEvent`; it is NOT a physical second plate.
     """
 
     def __init__(
@@ -182,6 +362,10 @@ class GaitwayForcePlateTcpAdapter(QueuedHardwareAdapter):
         self._packet_gaps = 0
         self._malformed_packets = 0
         self._type_i_packets = 0
+        self._type_ii_sample_index = 0
+        self._type_ii_last_packet_id: int | None = None
+        self._type_ii_packet_gaps = 0
+        self._type_ii_packets = 0
 
     def descriptor(self) -> ModalityDescriptor:
         return ModalityDescriptor(
@@ -201,7 +385,10 @@ class GaitwayForcePlateTcpAdapter(QueuedHardwareAdapter):
                 "server_host": self._config.server_host,
                 "server_port": self._config.server_port,
                 "packet_type": "Type I",
-                "type_ii_enabled": False,
+                "type_i_mode": self._config.type_i_mode,
+                "type_ii_enabled": self._config.type_ii_mode > 0,
+                "type_ii_mode": self._config.type_ii_mode,
+                "grf_source_type": GRF_SOURCE_TYPE_DECOMPOSED,
                 "trigger_mode": self._config.trigger_mode,
                 "sync_out_enabled": self._config.sync_out_enabled,
                 "settings_version": self._settings_version,
@@ -216,8 +403,8 @@ class GaitwayForcePlateTcpAdapter(QueuedHardwareAdapter):
             "settings_version": self._settings_version,
             "settings_packet_hex": self._settings_packet_hex,
             "baseline_reset_issued": False,
-            "type_i_packet_mode": 2,
-            "type_ii_packet_mode": 0,
+            "type_i_packet_mode": self._config.type_i_mode,
+            "type_ii_packet_mode": self._config.type_ii_mode,
         }
 
     def _connect_hardware(self) -> None:
@@ -251,13 +438,20 @@ class GaitwayForcePlateTcpAdapter(QueuedHardwareAdapter):
         self._packet_gaps = 0
         self._malformed_packets = 0
         self._type_i_packets = 0
+        self._type_ii_sample_index = 0
+        self._type_ii_last_packet_id = None
+        self._type_ii_packet_gaps = 0
+        self._type_ii_packets = 0
 
     def _start_hardware(self) -> None:
         if self._socket is None:
             raise AdapterError("gaitway TCP socket is not connected")
-        command = (
-            f"startDS {self._config.sample_rate_hz} 0 "
-            f"{self._config.trigger_mode} {int(self._config.sync_out_enabled)} 2 0"
+        command = build_start_ds_command(
+            sample_rate_hz=self._config.sample_rate_hz,
+            trigger_mode=self._config.trigger_mode,
+            sync_out_enabled=self._config.sync_out_enabled,
+            type_i_mode=self._config.type_i_mode,
+            type_ii_mode=self._config.type_ii_mode,
         )
         self._send_command(command)
         self._expect_ack(command)
@@ -312,6 +506,8 @@ class GaitwayForcePlateTcpAdapter(QueuedHardwareAdapter):
                 packet_type = int(unpack_from("<H", packet, 2)[0])
                 if packet_type == PACKET_TYPE_I:
                     self._accept_type_i(packet, perf_counter_ns())
+                elif packet_type == PACKET_TYPE_II:
+                    self._accept_type_ii(packet, perf_counter_ns())
                 elif packet_type == PACKET_ACK:
                     command = self._response_command(packet)
                     if command == "stopDS":
@@ -332,37 +528,13 @@ class GaitwayForcePlateTcpAdapter(QueuedHardwareAdapter):
             self._stop_ack.set()
 
     def _accept_type_i(self, packet: bytes, received_ns: int) -> None:
-        packet_size, packet_type, packet_id = _TYPE_I_HEADER.unpack_from(packet)
-        if packet_size != len(packet) or packet_type != PACKET_TYPE_I:
+        try:
+            header, data = parse_type_i_packet(packet)
+        except GaitwayPacketError:
             self._malformed_packets += 1
-            raise GaitwayPacketError("invalid Type-I packet header")
-        payload_size = packet_size - TYPE_I_HEADER_SIZE
-        if payload_size <= 0 or payload_size % TYPE_I_SAMPLE_SIZE:
-            self._malformed_packets += 1
-            raise GaitwayPacketError(
-                f"Type-I payload size {payload_size} is not a multiple of "
-                f"{TYPE_I_SAMPLE_SIZE}"
-            )
-        count = payload_size // TYPE_I_SAMPLE_SIZE
-        data = np.empty((count, len(FORCE_PLATE_CHANNELS)), dtype=np.float32)
-        offset = TYPE_I_HEADER_SIZE
-        for index in range(count):
-            fz, fy, fx, cop_y, cop_x, tz, speed, elevation, heart, digital = (
-                _TYPE_I_SAMPLE.unpack_from(packet, offset)
-            )
-            data[index] = (
-                fx,
-                fy,
-                fz,
-                cop_x,
-                cop_y,
-                tz,
-                speed,
-                elevation,
-                heart,
-                digital,
-            )
-            offset += TYPE_I_SAMPLE_SIZE
+            raise
+        packet_id = header["packet_id"]
+        count = data.shape[0]
 
         if self._last_packet_id is not None:
             expected = (self._last_packet_id + 1) & 0xFFFF_FFFF
@@ -378,31 +550,99 @@ class GaitwayForcePlateTcpAdapter(QueuedHardwareAdapter):
             received_ns
             - round((count - 1) * 1_000_000_000 / self._config.sample_rate_hz),
         )
-        event = SampleBatch(
-            session_uuid=(
-                str(self._trial.session_uuid)
-                if self._trial is not None and self._trial.session_uuid is not None
-                else None
-            ),
-            trial_uuid=str(self._trial.trial_uuid) if self._trial is not None else None,
-            device_id=self._config.device_id,
-            modality="force_plate",
-            clock_domain=self._config.clock_domain,
-            host_monotonic_ns=first_host_ns,
-            host_utc_ns=time_ns(),
-            first_sample_index=self._sample_index,
-            sample_count=count,
-            sequence_number=packet_id,
-            device_timestamp=None,
-            sample_rate_hz=float(self._config.sample_rate_hz),
-            data=np.ascontiguousarray(data),
-        )
         self._publish_raw(
-            event,
+            SampleBatch(
+                session_uuid=self._session_uuid(),
+                trial_uuid=self._trial_uuid(),
+                device_id=self._config.device_id,
+                modality="force_plate",
+                clock_domain=self._config.clock_domain,
+                host_monotonic_ns=first_host_ns,
+                host_utc_ns=time_ns(),
+                first_sample_index=self._sample_index,
+                sample_count=count,
+                sequence_number=packet_id,
+                device_timestamp=None,
+                sample_rate_hz=float(self._config.sample_rate_hz),
+                data=np.ascontiguousarray(data),
+            ),
             item_count=count,
             host_monotonic_ns=first_host_ns,
         )
+        self._publish_packet_event(
+            packet_type=PACKET_TYPE_I,
+            packet_id=packet_id,
+            sample_index=self._sample_index,
+            raw_bytes=packet,
+            received_ns=received_ns,
+        )
         self._sample_index += count
+
+    def _accept_type_ii(self, packet: bytes, received_ns: int) -> None:
+        """Accept one per-step Type-II packet (left/right decomposition)."""
+        try:
+            header, _data = parse_type_ii_packet(packet)
+        except GaitwayPacketError:
+            self._malformed_packets += 1
+            raise
+        packet_id = header["packet_id"]
+
+        if self._type_ii_last_packet_id is not None:
+            expected = (self._type_ii_last_packet_id + 1) & 0xFFFF_FFFF
+            if packet_id != expected:
+                self._type_ii_packet_gaps += (
+                    (packet_id - expected) & 0xFFFF_FFFF
+                ) or 1
+        self._type_ii_last_packet_id = packet_id
+        self._type_ii_packets += 1
+
+        self._publish_packet_event(
+            packet_type=PACKET_TYPE_II,
+            packet_id=packet_id,
+            sample_index=self._type_ii_sample_index,
+            raw_bytes=packet,
+            received_ns=received_ns,
+        )
+        # Type II samples are per-step; index counts packets (steps), not Hz.
+        self._type_ii_sample_index += 1
+
+    def _publish_packet_event(
+        self,
+        *,
+        packet_type: int,
+        packet_id: int,
+        sample_index: int,
+        raw_bytes: bytes,
+        received_ns: int,
+    ) -> None:
+        """Emit a byte-preserving :class:`GaitwayPacketEvent` for recording."""
+        self._publish_raw(
+            GaitwayPacketEvent(
+                session_uuid=self._session_uuid(),
+                trial_uuid=self._trial_uuid(),
+                device_id=self._config.device_id,
+                modality="force_plate",
+                clock_domain=self._config.clock_domain,
+                host_monotonic_ns=received_ns,
+                host_utc_ns=time_ns(),
+                packet_type=packet_type,
+                packet_id=packet_id,
+                sample_index=sample_index,
+                raw_bytes=bytes(raw_bytes),
+            ),
+            item_count=1,
+            host_monotonic_ns=received_ns,
+        )
+
+    def _session_uuid(self) -> str | None:
+        return (
+            str(self._trial.session_uuid)
+            if self._trial is not None and self._trial.session_uuid is not None
+            else None
+        )
+
+    def _trial_uuid(self) -> str | None:
+        return str(self._trial.trial_uuid) if self._trial is not None else None
 
     def _send_command(self, command: str) -> None:
         sock = self._socket
@@ -494,16 +734,27 @@ class GaitwayForcePlateTcpAdapter(QueuedHardwareAdapter):
             "server_port": self._config.server_port,
             "type_i_packets": self._type_i_packets,
             "packet_id_gaps": self._packet_gaps,
+            "type_ii_packets": self._type_ii_packets,
+            "type_ii_packet_id_gaps": self._type_ii_packet_gaps,
             "malformed_packets": self._malformed_packets,
             "framer_buffered_bytes": self._framer.buffered_bytes,
             "settings_version": self._settings_version,
-            "type_ii_enabled": False,
+            "type_ii_enabled": self._config.type_ii_mode > 0,
         }
 
 
 __all__ = [
     "FORCE_PLATE_CHANNELS",
     "FORCE_PLATE_UNITS",
+    "TYPE_II_CHANNELS",
+    "TYPE_II_UNITS",
+    "GRF_SOURCE_TYPE_DECOMPOSED",
+    "GAITWAY_DEFAULT_PORT",
+    "PACKET_TYPE_I",
+    "PACKET_TYPE_II",
+    "build_start_ds_command",
+    "parse_type_i_packet",
+    "parse_type_ii_packet",
     "GaitwayForcePlateConfig",
     "GaitwayForcePlateTcpAdapter",
     "GaitwayPacketError",

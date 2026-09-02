@@ -19,7 +19,7 @@ from exo_collection.adapters.encoder.teensy_serial import TeensySerialEncoderAda
 from exo_collection.adapters.imu.xsens_awinda import XsensAwindaImuAdapter
 from exo_collection.adapters.mocap import XingNokovMocapAdapter
 from exo_collection.adapters.emg import NoraxonEmgAdapter
-from exo_collection.adapters.force_plate import XingNokovForcePlateAdapter
+from exo_collection.adapters.force_plate import GaitwayForcePlateTcpAdapter
 from exo_collection.adapters.ultrasound.raw_ethernet import RawEthernetUltrasoundAdapter
 from exo_collection.orchestration.models import TrialRunRequest
 from exo_collection.orchestration.simulated import _make_adapters
@@ -120,11 +120,13 @@ def test_hardware_profile_is_strict() -> None:
     force_plate = devices["force_plate"]
     assert force_plate.required is False
     assert force_plate.writer == "hdf5_signal"
-    assert force_plate.parameters.server_ip == "10.1.1.198"
-    assert force_plate.parameters.channel_count == 6
-    assert force_plate.parameters.channel_names == ("fx", "fy", "fz", "mx", "my", "mz")
-    assert force_plate.parameters.units == ("N", "N", "N", "N*m", "N*m", "N*m")
-    assert force_plate.parameters.sample_rate_hz == 100.0
+    assert force_plate.parameters.server_host == "127.0.0.1"
+    assert force_plate.parameters.server_port == 49500
+    assert force_plate.parameters.sample_rate_hz == 1000
+    assert force_plate.parameters.type_i_mode == 2
+    assert force_plate.parameters.type_ii_mode == 2
+    assert force_plate.parameters.save_raw_packets is True
+    assert force_plate.parameters.save_parsed_csv is True
     assert devices["ultrasound"].parameters.interface_name is None
     assert devices["imu"].parameters.sensor_ids == ()
     assert devices["encoder"].parameters.port is None
@@ -137,7 +139,7 @@ def test_hardware_registry_constructs_without_loading_vendor_sdks() -> None:
     assert isinstance(adapters["encoder"], TeensySerialEncoderAdapter)
     assert isinstance(adapters["mocap"], XingNokovMocapAdapter)
     assert isinstance(adapters["emg"], NoraxonEmgAdapter)
-    assert isinstance(adapters["force_plate"], XingNokovForcePlateAdapter)
+    assert isinstance(adapters["force_plate"], GaitwayForcePlateTcpAdapter)
     assert adapters["ultrasound"].descriptor().metadata["simulated"] is False
 
 

@@ -41,10 +41,12 @@ from exo_collection.configuration.device_profiles import (
     load_device_profile,
 )
 from exo_collection.configuration.adapter_registry import build_adapters
+from exo_collection.adapters.force_plate.gaitway_tcp import GRF_SOURCE_TYPE_DECOMPOSED
 from exo_collection.adapters.ultrasound.raw_ethernet import encode_raw_ethernet_flags
 from exo_collection.domain.events import (
     EdgeType,
     FrameBatch,
+    GaitwayPacketEvent,
     HealthStatus,
     SampleBatch,
     SyncPulseEvent,
@@ -117,6 +119,14 @@ from exo_collection.storage.package import (
 )
 from exo_collection.timing.clock_model import fit_affine_clock
 from exo_collection.writers.block_binary_process import BlockBinaryWriterProcess
+from exo_collection.writers.gaitway_packet import (
+    LOG_TXT_RELATIVE,
+    META_JSON_RELATIVE,
+    RAW_BIN_RELATIVE,
+    TYPE1_CSV_RELATIVE,
+    TYPE2_CSV_RELATIVE,
+    GaitwayPacketWriter,
+)
 from exo_collection.writers.hdf5_signal import Hdf5SignalWriter
 from exo_collection.writers.hdf5_signal import HDF5_SIGNAL_VERSION
 
@@ -487,6 +497,28 @@ def _create_block_binary_writer(
     )
 
 
+def _create_gaitway_writer(
+    layout: TrialLayout,
+    adapter: ModalityAdapter | None,
+) -> GaitwayPacketWriter | None:
+    """Create the byte-preserving gaitway recorder when the force plate is gaitway.
+
+    Only the h/p/cosmos gaitway-3D adapter (identified by its
+    ``grf_source_type``) produces :class:`GaitwayPacketEvent`; the legacy
+    XINGYING C3D force plate has no such packets, so nothing is built for it.
+    """
+    if adapter is None:
+        return None
+    descriptor = adapter.descriptor()
+    if descriptor.metadata.get("grf_source_type") != GRF_SOURCE_TYPE_DECOMPOSED:
+        return None
+    return GaitwayPacketWriter(
+        layout,
+        config=dict(adapter.configuration_snapshot()),
+        metadata=dict(descriptor.metadata),
+    )
+
+
 def _preview_event(
     event: FrameBatch | SampleBatch,
     trial_uuid: UUID,
@@ -768,6 +800,7 @@ def run_trial(
     xingying_trigger_writer: _XingYingTriggerWriter | None = None
     xingying_trigger_events_list: list[XingYingTriggerEvent] = []
     writers: dict[str, Any] = {}
+    gaitway_writer: GaitwayPacketWriter | None = None
     stop_reports: dict[str, Any] = {}
     counts = {name: 0 for name in adapters}
     pulse_event_count = 0
@@ -921,6 +954,15 @@ def run_trial(
                     adapters[modality],
                     trial_metadata=hdf5_trial_metadata,
                 )
+
+            # The gaitway-3D force plate keeps its continuous Type-I totals in
+            # force_plate.h5 via the SampleBatch path above, and additionally
+            # records byte-preserving TCP packets (raw + parsed CSV + meta +
+            # log) in a gaitway/ subdirectory.  Built only when force_plate is
+            # the gaitway adapter; the legacy XINGYING C3D plate has none.
+            gaitway_writer = _create_gaitway_writer(
+                layout, adapters.get("force_plate")
+            )
 
             transition(TrialState.READY, "all required devices are ready")
             start_token = StartToken()
@@ -1226,6 +1268,13 @@ def run_trial(
                                 ),
                             )
                     return
+                elif isinstance(event, GaitwayPacketEvent):
+                    if gaitway_writer is None:
+                        raise TypeError(
+                            "received GaitwayPacketEvent without a gaitway writer"
+                        )
+                    gaitway_writer.append_event(event)
+                    return
                 else:
                     raise TypeError(f"Unsupported raw event: {type(event).__name__}")
 
@@ -1524,6 +1573,8 @@ def run_trial(
             )
             for writer in writers.values():
                 writer.close()
+            if gaitway_writer is not None:
+                gaitway_writer.close()
             for adapter in adapters.values():
                 adapter.close()
             assert prompt_writer is not None
@@ -2101,6 +2152,20 @@ def run_trial(
             xingying_trigger_artifact_uuid = (
                 uuid4() if xingying_trigger_events_list else None
             )
+            gaitway_artifact_uuids = (
+                {
+                    key: uuid4()
+                    for key in (
+                        "gaitway_raw",
+                        "gaitway_type1",
+                        "gaitway_type2",
+                        "gaitway_meta",
+                        "gaitway_log",
+                    )
+                }
+                if gaitway_writer is not None
+                else {}
+            )
             raw_artifact_uuids = tuple(
                 raw_artifact_uuid_by_modality[modality]
                 for modality in adapters
@@ -2112,7 +2177,7 @@ def run_trial(
                 (xingying_trigger_artifact_uuid,)
                 if xingying_trigger_artifact_uuid is not None
                 else ()
-            )
+            ) + tuple(gaitway_artifact_uuids.values())
             draft_by_key: dict[str, ArtifactDraft] = {}
             for modality in adapters:
                 if profiles_by_modality[modality].writer == "block_binary":
@@ -2163,6 +2228,73 @@ def run_trial(
                     artifact_uuid=raw_artifact_uuid_by_modality[modality],
                     created_at_utc=started_at_utc,
                     metadata=metadata,
+                )
+            if gaitway_writer is not None:
+                # The gaitway subdirectory records the byte-preserving TCP
+                # stream plus parsed CSVs/meta/log.  Everything is attributed
+                # to ``force_plate`` so the Manifest keeps one modality row and
+                # the Type-II decomposition stays labeled as gaitway's internal
+                # left/right result, not two physical plates.
+                gaitway_metadata = {
+                    "grf_source_type": GRF_SOURCE_TYPE_DECOMPOSED,
+                    "primary_clock": "host_monotonic_ns",
+                    "packet_count_type_i": gaitway_writer.packet_count_type_i,
+                    "packet_count_type_ii": gaitway_writer.packet_count_type_ii,
+                    "malformed_packet_count": gaitway_writer.malformed_packet_count,
+                }
+                draft_by_key.update(
+                    {
+                        "gaitway_raw": ArtifactDraft(
+                            request.trial_uuid,
+                            "force_plate",
+                            ArtifactKind.RAW,
+                            "application/octet-stream",
+                            RAW_BIN_RELATIVE,
+                            artifact_uuid=gaitway_artifact_uuids["gaitway_raw"],
+                            created_at_utc=started_at_utc,
+                            metadata=gaitway_metadata,
+                        ),
+                        "gaitway_type1": ArtifactDraft(
+                            request.trial_uuid,
+                            "force_plate",
+                            ArtifactKind.DERIVED,
+                            "text/csv; charset=utf-8",
+                            TYPE1_CSV_RELATIVE,
+                            artifact_uuid=gaitway_artifact_uuids["gaitway_type1"],
+                            created_at_utc=started_at_utc,
+                            metadata=gaitway_metadata,
+                        ),
+                        "gaitway_type2": ArtifactDraft(
+                            request.trial_uuid,
+                            "force_plate",
+                            ArtifactKind.DERIVED,
+                            "text/csv; charset=utf-8",
+                            TYPE2_CSV_RELATIVE,
+                            artifact_uuid=gaitway_artifact_uuids["gaitway_type2"],
+                            created_at_utc=started_at_utc,
+                            metadata=gaitway_metadata,
+                        ),
+                        "gaitway_meta": ArtifactDraft(
+                            request.trial_uuid,
+                            "force_plate",
+                            ArtifactKind.RAW,
+                            "application/json",
+                            META_JSON_RELATIVE,
+                            artifact_uuid=gaitway_artifact_uuids["gaitway_meta"],
+                            created_at_utc=started_at_utc,
+                            metadata=gaitway_metadata,
+                        ),
+                        "gaitway_log": ArtifactDraft(
+                            request.trial_uuid,
+                            "force_plate",
+                            ArtifactKind.LOG,
+                            "text/plain; charset=utf-8",
+                            LOG_TXT_RELATIVE,
+                            artifact_uuid=gaitway_artifact_uuids["gaitway_log"],
+                            created_at_utc=started_at_utc,
+                            metadata=gaitway_metadata,
+                        ),
+                    }
                 )
             if prompt_label_artifact_uuid is not None:
                 draft_by_key["prompt_labels"] = ArtifactDraft(
@@ -2412,11 +2544,12 @@ def run_trial(
             modalities: list[ModalityManifest] = []
             for modality, descriptor in descriptors.items():
                 is_block_binary = profiles_by_modality[modality].writer == "block_binary"
-                keys = (
-                    (modality, f"{modality}_meta", f"{modality}_index")
-                    if is_block_binary
-                    else (modality,)
-                )
+                if is_block_binary:
+                    keys = (modality, f"{modality}_meta", f"{modality}_index")
+                elif modality == "force_plate" and gaitway_writer is not None:
+                    keys = (modality, *gaitway_artifact_uuids.keys())
+                else:
+                    keys = (modality,)
                 kwargs: dict[str, Any] = {
                     "modality": modality,
                     "required": profiles_by_modality[modality].required,
@@ -2666,6 +2799,11 @@ def run_trial(
                     writer.close(clean=False)
                 else:
                     writer.close()
+            except BaseException:
+                pass
+        if gaitway_writer is not None:
+            try:
+                gaitway_writer.close()
             except BaseException:
                 pass
         for adapter in adapters.values():

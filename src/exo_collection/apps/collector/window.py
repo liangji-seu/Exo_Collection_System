@@ -133,37 +133,35 @@ MODALITIES = (
     "emg",
     "force_plate",
 )
-# 测力台不再通过 SDK 流式读取：Trial 开始/结束时由 XINGYING 远程触发录制 .cap
-# （.cap 内同时含动捕 marker 与测力台，作为权威数据，供 OpenSim 与 c3d 软同步）。
-# 动捕 marker 走 SDK 流式采集（带 host 时间戳），与 .cap 并行，用于和 c3d 对齐。
-XINGYING_LINKED_MODALITIES = ("force_plate",)
+# 测力台已从 XINGYING 拆出：本软件通过 TCP（默认 49500）直连 gaitway-3D，
+# 与超声/IMU 一起落盘；XINGYING 仅录制 .cap（动捕 marker + 模型）。
+# 因此不再有「被 XINGYING 远程触发排除出流式」的模态。
+XINGYING_LINKED_MODALITIES = ()
 
 
-# 动捕 Marker 与测力台绑定为一行（共享同一 Seeker 服务器）：连接时同时
+# 动捕 Marker 单独一行（XINGYING）：连接时同时
 # 1) spawn mocap SDK 预览 worker 流式接收 marker 帧，2) 建立 XINGYING 7060/7061
-# 远程触发（.cap 录制）。仅测力台被 XINGYING_LINKED_MODALITIES 排除出流式落盘。
-XINGYING_GROUP = ("mocap", "force_plate")
-XINGYING_GROUP_KEY = "mocap_force_plate"
-XINGYING_GROUP_DISPLAY_NAME = "动捕 Marker + 六维力测力台"
+# 远程触发（.cap 录制）。测力台拆为独立的 gaitway TCP 行。
+XINGYING_GROUP = ("mocap",)
+XINGYING_GROUP_KEY = "mocap"
+XINGYING_GROUP_DISPLAY_NAME = "动捕 Marker"
 # 按钮标签行不是数据模态，仅作为「连接 = 启用按钮记录」的 UI 开关。
 BUTTON_ROW_KEY = "button_label"
 BUTTON_ROW_DISPLAY_NAME = "按钮标签（,）"
-# 设备连接表的显示行：动捕+测力台合并为一项，其余模态各占一行。
+# 设备连接表的显示行：动捕与测力台各占一行，其余模态各占一行。
 CONNECTION_ROWS: tuple[tuple[str, ...], ...] = (
     ("ultrasound",),
     ("imu",),
     ("encoder",),
     XINGYING_GROUP,
+    ("force_plate",),
     ("emg",),
 )
 CONNECTION_ROW_DISPLAY_NAMES: dict[tuple[str, ...], str] = {
     XINGYING_GROUP: XINGYING_GROUP_DISPLAY_NAME,
 }
-# 模态 → 设备连接表行键：合并组共用同一状态点与连接/断开按钮。
-_MODALITY_ROW_KEY = {
-    "mocap": XINGYING_GROUP_KEY,
-    "force_plate": XINGYING_GROUP_KEY,
-}
+# 模态 → 设备连接表行键：拆分后每行即单一模态，无需合并映射。
+_MODALITY_ROW_KEY: dict[str, str] = {}
 PROMPT_HEALTH_ROWS = ("subject_prompt", "operator_prompt", "button_prompt")
 HEALTH_ROWS = MODALITIES + PROMPT_HEALTH_ROWS
 MODALITY_DISPLAY_NAMES = {
@@ -171,7 +169,7 @@ MODALITY_DISPLAY_NAMES = {
     "imu": "IMU",
     "encoder": "电机编码器",
     "mocap": "动捕 Marker",
-    "force_plate": "六维力测力台",
+    "force_plate": "gaitway-3D 测力台",
     "emg": "表面肌电 EMG",
     "subject_prompt": "受试者标签（<）",
     "operator_prompt": "工作人员标签（>）",
@@ -2010,7 +2008,7 @@ class CollectorWindow(QMainWindow):
         self._xingying_status_panel = XingYingRecordingPanel()
         preview_workspace.register_panel(
             "xingying",
-            "动捕 + 测力台（XINGYING）",
+            "动捕 Marker（XINGYING）",
             self._xingying_status_panel,
         )
 
@@ -2216,7 +2214,7 @@ class CollectorWindow(QMainWindow):
             )
             self._device_profile_label.setToolTip(
                 "Raw Ethernet 超声 + Xsens MTw IMU + Teensy 编码器 + "
-                "XING/Nokov 动捕 Marker、EMG 与六维力测力台；"
+                "XING/Nokov 动捕 Marker、EMG 与 gaitway-3D 测力台；"
                 "同步脉冲仍为模拟台架信号。"
             )
             self._device_profile_label.setStyleSheet("color:#842029;font-weight:600;")
@@ -2787,10 +2785,10 @@ class CollectorWindow(QMainWindow):
         }
 
     def _connect_xingying_remote(self) -> None:
-        """连接 XINGYING 远程触发端口（测力台；.cap 内同时含动捕 marker 与测力台）。
+        """连接 XINGYING 远程触发端口（仅 .cap 录制动捕 marker）。
 
         仅负责 7060/7061 触发通道；动捕 marker 的 SDK 流式由 ``_connect_modality("mocap")``
-        单独建立，二者在合并行的 ``_connect_group`` 中一起触发。
+        单独建立，二者在动捕行的 ``_connect_group`` 中一起触发。
         """
         if self._xingying_remote is not None:
             self._append_alert("XINGYING 远程捕获已就绪，无需重复连接。")
@@ -2827,7 +2825,7 @@ class CollectorWindow(QMainWindow):
         self._update_start_button()
         self._append_alert(
             f"XINGYING 远程捕获已就绪（{remote.ip}:{remote.port}），"
-            "开始采集时将触发 .cap 录制（含动捕 marker 与测力台）。"
+            "开始采集时将触发 .cap 录制（仅动捕 marker）。"
         )
         LOG.info("XINGYING 远程捕获已就绪 ip=%s port=%s", remote.ip, remote.port)
 
@@ -2950,8 +2948,8 @@ class CollectorWindow(QMainWindow):
         XINGYING 加载刚体/人体模板后，``DatabasePath`` 必须与其工作目录（工程
         目录）一致，否则现场会弹「录制失败」。因此 .cap 直接录到操作员指定的
         XINGYING 工程目录（.cap / 标定 / .mars 模型资产全部在此），本系统绝不
-        搬移文件；Data/ 下除超声/IMU/编码器/肌电/动捕 marker（SDK 流式）外，
-        测力台仅记录对应的 .cap 文件名（由 7061 触发监听写入 raw/xingying_trigger.jsonl）。
+        搬移文件；.cap 内只含动捕 marker（测力台已拆出，由本软件走 gaitway TCP
+        落盘）。Data/ 下记录超声/IMU/编码器/肌电/动捕 marker/测力台流数据。
         """
         remote = self._xingying_remote
         if remote is None:
@@ -3253,8 +3251,8 @@ class CollectorWindow(QMainWindow):
             disconnect_button = self._disconnect_buttons.get(row_key)
             if connect_button is None or disconnect_button is None:
                 continue
-            if row_key == XINGYING_GROUP_KEY:
-                # 合并行：连接 = mocap SDK 预览 worker + XINGYING 远程触发均已就绪。
+            if group == XINGYING_GROUP:
+                # 动捕行：连接 = mocap SDK 预览 worker + XINGYING 远程触发均已就绪。
                 if self._xingying_linked_enabled():
                     active = (
                         self._xingying_remote is not None
@@ -3798,10 +3796,10 @@ class CollectorWindow(QMainWindow):
             return
 
         # Pass enabled modalities to the trial worker so only connected
-        # devices are recorded.  在真实硬件模式下，测力台不产生流数据，由远程
-        # 触发录制 .cap（.cap 内同时含动捕 marker 与测力台），因此仅把测力台从
-        # Worker 的流模态集合中排除；动捕 marker 改回 SDK 流式采集（并行于 .cap），
-        # 模拟模式下动捕与其它模态一样是正常流模态，保持不变。
+        # devices are recorded.  测力台已拆出 XINGYING，走 gaitway TCP 流式
+        # 采集（与超声/IMU 同属本软件落盘）；XINGYING 仅远程触发录制 .cap
+        # （含动捕 marker）。XINGYING_LINKED_MODALITIES 现已为空，故所有
+        # 已连接的流模态都进入 Worker；保留该过滤逻辑以兼容未来再次绑定。
         connected = frozenset(self._preview_connected_modalities)
         streaming = frozenset(
             modality
@@ -3813,7 +3811,7 @@ class CollectorWindow(QMainWindow):
         )
         if not streaming:
             self.statusBar().showMessage(
-                "请至少连接一个数据模态（超声/IMU/编码器/动捕/EMG）。"
+                "请至少连接一个数据模态（超声/IMU/编码器/动捕/测力台/EMG）。"
             )
             self._update_start_button()
             return

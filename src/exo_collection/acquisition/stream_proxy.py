@@ -31,6 +31,7 @@ from exo_collection.adapters.base import (
 from exo_collection.domain.events import (
     DeviceStatus,
     FrameBatch,
+    GaitwayPacketEvent,
     HealthSnapshot,
     HealthStatus,
     SampleBatch,
@@ -38,7 +39,7 @@ from exo_collection.domain.events import (
 )
 
 
-RawDomainEvent = FrameBatch | SampleBatch | SyncPulseEvent
+RawDomainEvent = FrameBatch | SampleBatch | SyncPulseEvent | GaitwayPacketEvent
 
 
 class RecordingStreamProtocolError(AdapterError):
@@ -230,6 +231,8 @@ class StreamProxyAdapter:
             item_count = int(event.frame_count)
         elif isinstance(event, SampleBatch):
             item_count = int(event.sample_count)
+        elif isinstance(event, GaitwayPacketEvent):
+            item_count = 1
         else:
             item_count = 1
         self._items_consumed += item_count
@@ -325,7 +328,7 @@ class StreamProxyAdapter:
             self._fail("raw event modality mismatch")
         if wrapped.device_id != self._descriptor.device_id:
             self._fail("raw event device mismatch")
-        if not isinstance(wrapped.event, (FrameBatch, SampleBatch, SyncPulseEvent)):
+        if not isinstance(wrapped.event, (FrameBatch, SampleBatch, SyncPulseEvent, GaitwayPacketEvent)):
             self._fail("recording wrapper contains an unsupported raw event")
 
     def _stop_report(self) -> StopReport:
