@@ -728,8 +728,10 @@ def test_1080p_layout_fits_controls_without_scrolling_or_crushing_them(
 
     # A maximized 1080p Windows desktop commonly has about 991 physical pixels
     # after taskbar and frame margins.  The main window minimum must remain well
-    # below that, otherwise Windows rejects showMaximized() geometry.
-    assert window.minimumSizeHint().height() < 700
+    # below that, otherwise Windows rejects showMaximized() geometry.  The bound
+    # accounts for the default-visible preview panels (including the gaitway-3D
+    # Type II table), which add a docked-panel row to the minimum size hint.
+    assert window.minimumSizeHint().height() < 760
     assert 610 <= controls_scroll.width() <= 650
     assert controls_content.height() >= controls_content.minimumSizeHint().height()
     assert controls_scroll.widgetResizable()
@@ -1294,6 +1296,7 @@ def test_preview_workspace_registers_all_dynamic_windows(
         "ultrasound",
         "imu",
         "encoder",
+        "force_plate",
         "timer",
     }
     for modality in workspace.modalities:
@@ -3180,9 +3183,9 @@ def test_xingying_recording_panel_is_registered_as_single_dock(
     assert workspace is not None
     assert workspace.dock_for("xingying") is not None
     assert "xingying" in set(workspace.modalities)
-    # 动捕 Marker 数据 dock 已恢复（实时坐标表）；测力台预览 dock 仍移除。
+    # 动捕 Marker 数据 dock 与测力台 Type II 预览 dock 均为独立面板。
     assert "mocap" in set(workspace.modalities)
-    assert "force_plate" not in set(workspace.modalities)
+    assert "force_plate" in set(workspace.modalities)
     window.close()
 
 

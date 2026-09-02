@@ -45,6 +45,7 @@ from exo_collection.adapters.base import (
 from exo_collection.domain.events import (
     DeviceStatusEvent,
     FrameBatch,
+    GaitwayPacketEvent,
     SampleBatch,
     SyncPulseEvent,
 )
@@ -54,6 +55,10 @@ _log = logging.getLogger(__name__)
 DEFAULT_PREVIEW_QUEUE_SIZE = 128
 DEFAULT_HEALTH_POLL_INTERVAL_S = 0.5
 DEFAULT_PREVIEW_DOWNSAMPLE_MAX_S = 1.0 / 30.0  # ~30 fps max
+# Cap the number of per-step Type II sample rows forwarded to the UI.  One step
+# can span hundreds of samples; preview is a monitor, not the authoritative
+# recording, so keeping the payload bounded keeps the GUI responsive.
+_GAITWAY_PREVIEW_MAX_SAMPLES = 200
 
 
 def _preview_rate_limit_key(event: WorkerEvent) -> tuple[str, int | None]:
@@ -75,6 +80,15 @@ def _preview_rate_limit_key(event: WorkerEvent) -> tuple[str, int | None]:
                 channel_index = None
             if channel_index is not None and 0 <= channel_index <= 3:
                 return modality, channel_index
+    if modality == "force_plate":
+        # Type I (total GRF/COP, published as SampleBatch) and Type II (per-step
+        # left/right decomposition, published as GaitwayPacketEvent) share the
+        # "force_plate" modality.  Give each its own stream key so the rare
+        # Type II packet is never overwritten by the continuous Type I preview
+        # inside one acquisition-loop pass.
+        if event.payload.get("packet_type") == 2:
+            return modality, 2
+        return modality, 1
     return modality, None
 
 
@@ -588,6 +602,8 @@ def _build_preview_event(
                 "host_monotonic_ns": raw.host_monotonic_ns,
             },
         )
+    if isinstance(raw, GaitwayPacketEvent):
+        return _build_gaitway_preview_event(raw, modality, device_id, simulated)
     if isinstance(raw, DeviceStatusEvent):
         return WorkerEvent(
             event_type=WorkerEventType.STATE,
@@ -598,6 +614,55 @@ def _build_preview_event(
             message=raw.message or "",
         )
     return None
+
+
+def _build_gaitway_preview_event(
+    raw: GaitwayPacketEvent,
+    modality: str,
+    device_id: str,
+    simulated: bool,
+) -> WorkerEvent | None:
+    """Convert a raw gaitway packet into a displayable preview event.
+
+    Type II packets carry the per-step left/right GRF decomposition and are the
+    only packet type with a human-meaningful table.  Type I packets are already
+    previewed through their :class:`SampleBatch` twin, so their byte-preserving
+    twin is skipped here to avoid a duplicate stream.
+    """
+    from exo_collection.adapters.force_plate.gaitway_tcp import (
+        GaitwayPacketError,
+        PACKET_TYPE_II,
+        parse_type_ii_packet,
+    )
+
+    if raw.packet_type != PACKET_TYPE_II:
+        return None
+    try:
+        header, data = parse_type_ii_packet(raw.raw_bytes)
+    except GaitwayPacketError:
+        return None
+
+    samples = data.tolist()
+    if len(samples) > _GAITWAY_PREVIEW_MAX_SAMPLES:
+        samples = samples[-_GAITWAY_PREVIEW_MAX_SAMPLES:]
+    return WorkerEvent(
+        event_type=WorkerEventType.PREVIEW,
+        modality=modality,
+        trial_uuid=None,
+        payload={
+            "modality": modality,
+            "device_id": device_id,
+            "simulated": simulated,
+            "packet_type": int(raw.packet_type),
+            "packet_id": int(header["packet_id"]),
+            "gait_type": int(header["gait_type"]),
+            "contact_side": int(header["contact_side"]),
+            "step_count": int(header["step_count"]),
+            "sample_count": int(data.shape[0]),
+            "host_monotonic_ns": int(raw.host_monotonic_ns),
+            "samples": samples,
+        },
+    )
 
 
 def _send_event(

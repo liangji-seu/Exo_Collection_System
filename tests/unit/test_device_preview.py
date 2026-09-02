@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 import os
 import pickle
+import struct
 from pathlib import Path
 from queue import Empty, Queue
 import time
@@ -43,6 +44,7 @@ from exo_collection.apps.collector.device_preview import (
 from exo_collection.domain.events import (
     DeviceStatusEvent,
     FrameBatch,
+    GaitwayPacketEvent,
     HealthSnapshot,
     HealthStatus,
     DeviceStatus,
@@ -745,6 +747,106 @@ def test_build_preview_event_none_for_unknown_type() -> None:
     # Pass something that isn't a SampleBatch or FrameBatch
     event = _build_preview_event("not_a_batch", "imu", "test", desc, True)
     assert event is None
+
+
+def _make_type_ii_packet(
+    *,
+    packet_id: int = 7,
+    gait_type: int = 0,
+    contact_side: int = 1,
+    step_count: int = 3,
+    n_samples: int = 2,
+) -> bytes:
+    """Build a byte-valid gaitway Type II packet (32 B header + 44 B samples)."""
+    header = struct.pack(
+        "<HHIHHI16x",
+        32 + 44 * n_samples,  # packet size (includes the 2 size bytes)
+        2,                    # packet type = Type II
+        packet_id,
+        gait_type,
+        contact_side,
+        step_count,
+    )
+    samples = b"".join(
+        struct.pack(
+            "<HH10f",
+            1,       # foot_contact = single contact
+            0,       # digital inputs
+            600.0,   # fz_l
+            10.0,    # fy_l
+            5.0,     # fx_l
+            0.05,    # cop_y_l
+            0.02,    # cop_x_l
+            20.0,    # fz_r
+            1.0,     # fy_r
+            0.5,     # fx_r
+            0.06,    # cop_y_r
+            0.03,    # cop_x_r
+        )
+        for _ in range(n_samples)
+    )
+    return header + samples
+
+
+def test_build_preview_event_gaitway_type_ii() -> None:
+    desc = ModalityDescriptor(
+        device_id="gaitway", modality="force_plate", display_name="gaitway-3D",
+        clock_domain="gaitway_stream_clock", event_kind="sample_batch",
+        nominal_rate_hz=1000.0, channels=("fx",), units=("N",),
+        sample_shape=(10,), dtype="float32", metadata={},
+    )
+    raw = GaitwayPacketEvent(
+        device_id="gaitway", modality="force_plate", clock_domain="gaitway_stream_clock",
+        packet_type=2, packet_id=7, sample_index=0,
+        raw_bytes=_make_type_ii_packet(),
+        host_monotonic_ns=12_345,
+    )
+    event = _build_preview_event(raw, "force_plate", "gaitway", desc, False)
+    assert event is not None
+    assert event.event_type == WorkerEventType.PREVIEW
+    assert event.modality == "force_plate"
+    assert event.payload["packet_type"] == 2
+    assert event.payload["packet_id"] == 7
+    assert event.payload["gait_type"] == 0
+    assert event.payload["contact_side"] == 1
+    assert event.payload["step_count"] == 3
+    assert event.payload["sample_count"] == 2
+    assert event.payload["host_monotonic_ns"] == 12_345
+    samples = event.payload["samples"]
+    assert isinstance(samples, list)
+    assert len(samples) == 2
+    assert all(len(row) == 12 for row in samples)
+
+
+def test_build_preview_event_gaitway_type_i_is_skipped() -> None:
+    """The Type I byte-preserving twin is dropped; its SampleBatch twin previews."""
+    desc = ModalityDescriptor(
+        device_id="gaitway", modality="force_plate", display_name="gaitway-3D",
+        clock_domain="gaitway_stream_clock", event_kind="sample_batch",
+        nominal_rate_hz=1000.0, channels=("fx",), units=("N",),
+        sample_shape=(10,), dtype="float32", metadata={},
+    )
+    raw = GaitwayPacketEvent(
+        device_id="gaitway", modality="force_plate", clock_domain="gaitway_stream_clock",
+        packet_type=1, packet_id=3, sample_index=0, raw_bytes=b"\x10\x00\x01\x00\x03\x00\x00\x00" + b"\x00" * 8,
+    )
+    assert _build_preview_event(raw, "force_plate", "gaitway", desc, False) is None
+
+
+def test_preview_rate_limit_key_separates_force_plate_type_i_and_ii() -> None:
+    """Type I and Type II must be independent UI streams under one modality."""
+    type_i = WorkerEvent(
+        event_type=WorkerEventType.PREVIEW,
+        modality="force_plate",
+        payload={"channels": [[600.0]]},
+    )
+    type_ii = WorkerEvent(
+        event_type=WorkerEventType.PREVIEW,
+        modality="force_plate",
+        payload={"packet_type": 2, "samples": [[1, 0, 5.0, 10.0, 600.0, 0.02, 0.05, 0.5, 1.0, 20.0, 0.03, 0.06]]},
+    )
+    assert _preview_rate_limit_key(type_i) == ("force_plate", 1)
+    assert _preview_rate_limit_key(type_ii) == ("force_plate", 2)
 
 
 # ── Per-channel preview rate limiting ──
