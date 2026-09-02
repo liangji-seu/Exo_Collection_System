@@ -82,6 +82,7 @@ from .process_workers import DataStudioProcessWorker, ProcessOperation
 from .quality_reviews import append_quality_review
 from .recovery_dialog import RecoveryDialog
 from .service import DataStudioSnapshot
+from .sync_data import SyncDataStatus, check_trial_sync_data, sync_sidecar_files
 from .credential_store import load_password
 from .upload import (
     BatchOfflineUploadResult,
@@ -262,6 +263,7 @@ class DataStudioWindow(QMainWindow):
         self._automatic_remote_sync_pending = autostart_refresh
         self._management_index: ManagementIndex | None = None
         self._annex_scan: AnnexScanResult | None = None
+        self._sync_status_by_manifest: dict[str, SyncDataStatus] = {}
         self._filtered_records: tuple[TrialManagementRecord, ...] = ()
         self._populating_filters = False
         self._catalog_summary_text = "尚未刷新。"
@@ -311,6 +313,8 @@ class DataStudioWindow(QMainWindow):
         self.upload_action = QAction("人工 SSH/SCP 上传", self)
         self.management_summary_action = QAction("管理摘要", self)
         self.export_inventory_action = QAction("导出筛选清单", self)
+        self.sync_mocap_action = QAction("同步动捕数据", self)
+        self.sync_force_plate_action = QAction("同步测力台数据", self)
         self._restricted_actions = (
             self.playback_action,
             self.full_statistics_action,
@@ -324,6 +328,10 @@ class DataStudioWindow(QMainWindow):
             self.management_summary_action,
             self.export_inventory_action,
         )
+        self._sync_actions = (
+            self.sync_mocap_action,
+            self.sync_force_plate_action,
+        )
         self.playback_action.triggered.connect(self.playback_selected_trial)
         self.full_statistics_action.triggered.connect(self.run_full_statistics)
         self.checksum_action.triggered.connect(self.verify_selected_trial)
@@ -333,6 +341,8 @@ class DataStudioWindow(QMainWindow):
         self.upload_action.triggered.connect(self.upload_selected_trial)
         self.management_summary_action.triggered.connect(self.show_management_summary)
         self.export_inventory_action.triggered.connect(self.export_filtered_inventory)
+        self.sync_mocap_action.triggered.connect(self.sync_mocap_data)
+        self.sync_force_plate_action.triggered.connect(self.sync_force_plate_data)
 
         toolbar = self.addToolBar("数据工具")
         toolbar.setObjectName("data_tools_toolbar")
@@ -341,6 +351,9 @@ class DataStudioWindow(QMainWindow):
             toolbar.addAction(action)
         toolbar.addSeparator()
         for action in self._management_actions:
+            toolbar.addAction(action)
+        toolbar.addSeparator()
+        for action in self._sync_actions:
             toolbar.addAction(action)
 
     def _create_ui(self) -> None:
@@ -498,7 +511,7 @@ class DataStudioWindow(QMainWindow):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         self.tree_widget = QTreeWidget()
         self.tree_widget.setObjectName("catalog_tree")
-        self.tree_widget.setHeaderLabels(["名称", "类型", "模态", "详情"])
+        self.tree_widget.setHeaderLabels(["名称", "类型", "模态", "详情", "同步数据"])
         self.tree_widget.setIconSize(QSize(16, 16))
         self.tree_widget.setItemDelegateForColumn(
             2, _ModalityBadgeDelegate(self.tree_widget)
@@ -687,6 +700,14 @@ class DataStudioWindow(QMainWindow):
         self._catalog_tree = self._attach_annex_nodes(
             self._catalog_tree,
             result.annex_scan,
+        )
+        self._sync_status_by_manifest = {
+            str(Path(status.manifest_path).expanduser().resolve()): status
+            for status in result.sync_statuses
+        }
+        self._catalog_tree = self._attach_sync_status(
+            self._catalog_tree,
+            self._sync_status_by_manifest,
         )
         self._populate_filter_options(result.index.records)
         self._apply_management_filters()
@@ -955,6 +976,43 @@ class DataStudioWindow(QMainWindow):
                         ],
                     }
                     node.setdefault("children", []).append(annex_node)
+            for child in node.get("children", []):
+                if isinstance(child, dict) and child.get("type") != "external_annex":
+                    visit(child)
+
+        for root_node in result:
+            visit(root_node)
+        return result
+
+    @staticmethod
+    def _attach_sync_status(
+        tree: list[dict[str, Any]],
+        status_by_manifest: dict[str, SyncDataStatus],
+    ) -> list[dict[str, Any]]:
+        """Inject per-trial sync-sidecar fields into the catalog tree."""
+        result = deepcopy(tree)
+
+        def visit(node: dict[str, Any]) -> None:
+            if str(node.get("type")) == "trial":
+                manifest_path = node.get("manifest_path")
+                status = (
+                    status_by_manifest.get(
+                        str(Path(str(manifest_path)).expanduser().resolve())
+                    )
+                    if manifest_path
+                    else None
+                )
+                node["sync_cap_names"] = (
+                    tuple(status.cap_names) if status is not None else ()
+                )
+                node["sync_c3d_present"] = (
+                    bool(status.c3d_present) if status is not None else False
+                )
+                node["sync_txt_present"] = (
+                    bool(status.txt_present) if status is not None else False
+                )
+                node["sync_c3d_missing"] = status.c3d_missing if status is not None else None
+                node["sync_txt_missing"] = status.txt_missing if status is not None else None
             for child in node.get("children", []):
                 if isinstance(child, dict) and child.get("type") != "external_annex":
                     visit(child)
@@ -1534,6 +1592,8 @@ class DataStudioWindow(QMainWindow):
         manifest_paths = self._selected_finalized_manifest_paths()
         if not manifest_paths:
             return
+        if self._block_incomplete_sync_upload(manifest_paths):
+            return
         self._start_remote_operation(manifest_paths, status_only=False)
 
     @Slot()
@@ -1564,6 +1624,101 @@ class DataStudioWindow(QMainWindow):
         self._start_remote_operation(manifest_paths, status_only=True)
 
     @Slot()
+    def sync_mocap_data(self) -> None:
+        """选择扫描文件夹，递归拷贝匹配的 .c3d 到各 session 文件夹。"""
+        self._pick_and_sync_sidecar(".c3d", "同步动捕数据")
+
+    @Slot()
+    def sync_force_plate_data(self) -> None:
+        """选择扫描文件夹，递归拷贝匹配的 .txt 到各 session 文件夹。"""
+        self._pick_and_sync_sidecar(".txt", "同步测力台数据")
+
+    def _pick_and_sync_sidecar(self, extension: str, title: str) -> None:
+        self._apply_activity(read_activity(self._data_root))
+        if self._lightweight_mode:
+            QMessageBox.warning(
+                self, "采集期间已禁用", "Collector 正在采集，Data Studio 已进入轻量模式。"
+            )
+            return
+        manifest_paths = self._all_finalized_manifest_paths()
+        if not manifest_paths:
+            QMessageBox.warning(
+                self, "没有可同步数据", "请先刷新 Catalog；当前没有 FINALIZED Trial。"
+            )
+            return
+        scan_root = QFileDialog.getExistingDirectory(self, f"{title}：选择扫描文件夹")
+        if not scan_root:
+            return
+        self._start_local_tool(
+            title,
+            lambda: sync_sidecar_files(Path(scan_root), manifest_paths, extension),
+            self._show_sync_copy_result,
+        )
+
+    def _show_sync_copy_result(self, result: object) -> None:
+        if not isinstance(result, SyncCopyResult):
+            raise TypeError("sync worker returned an invalid result")
+        lines = [
+            f"扩展名：{result.extension}",
+            f"扫描到文件：{result.scanned_files} 个",
+            f"匹配到 Trial：{result.matched_files} 个",
+            f"已拷贝：{result.copied_files} 个",
+            f"已存在跳过：{result.skipped_existing} 个",
+        ]
+        if result.unmatched_files:
+            preview = "\n".join(result.unmatched_files[:10])
+            more = (
+                f"\n… 共 {len(result.unmatched_files)} 个未匹配"
+                if len(result.unmatched_files) > 10
+                else ""
+            )
+            lines.append(f"未匹配文件：\n{preview}{more}")
+        if result.targets_without_cap:
+            lines.append(
+                f"无 cap 记录的 Trial：{len(result.targets_without_cap)} 个"
+            )
+        QMessageBox.information(self, f"{result.extension} 同步完成", "\n\n".join(lines))
+        self._schedule_catalog_refresh()
+
+    def _incomplete_sync_descriptions(
+        self, manifest_paths: tuple[Path, ...]
+    ) -> tuple[str, ...]:
+        """Return descriptions of trials whose .c3d/.txt sync data is incomplete."""
+        descriptions: list[str] = []
+        for manifest_path in manifest_paths:
+            try:
+                status = check_trial_sync_data(manifest_path)
+            except Exception as exc:
+                descriptions.append(f"{manifest_path}: 检查失败（{exc}）")
+                continue
+            if status.complete:
+                continue
+            label = status.trial_root.name or str(status.trial_root)
+            if not status.has_cap:
+                descriptions.append(f"{label}：无 cap 记录")
+                continue
+            missing = []
+            if status.c3d_missing:
+                missing.append(status.c3d_missing)
+            if status.txt_missing:
+                missing.append(status.txt_missing)
+            descriptions.append(f"{label}：缺少 " + "、".join(missing))
+        return tuple(descriptions)
+
+    def _block_incomplete_sync_upload(self, manifest_paths: tuple[Path, ...]) -> bool:
+        incomplete = self._incomplete_sync_descriptions(manifest_paths)
+        if not incomplete:
+            return False
+        QMessageBox.warning(
+            self,
+            "同步数据不完整，禁止上传",
+            "以下 Trial 缺少 .c3d 动捕或 .txt 测力台同步数据，不能上传：\n\n"
+            + "\n".join(incomplete)
+            + "\n\n请先用「同步动捕数据」/「同步测力台数据」补齐。",
+        )
+        return True
+
+    @Slot()
     def one_click_upload(self) -> None:
         """One-click: compare cloud vs local, then upload incrementally or prompt."""
 
@@ -1583,6 +1738,8 @@ class DataStudioWindow(QMainWindow):
             QMessageBox.warning(
                 self, "没有可上传数据", "请先刷新 Catalog；当前没有 FINALIZED Trial。"
             )
+            return
+        if self._block_incomplete_sync_upload(manifest_paths):
             return
         self._start_remote_operation(
             manifest_paths, status_only=True, one_click=True
@@ -2320,6 +2477,7 @@ class DataStudioWindow(QMainWindow):
                 _TYPE_LABELS.get(node_type, node_type),
                 "",
                 details,
+                "",
             ]
         )
         item.setData(0, Qt.ItemDataRole.UserRole, node.get("uuid"))
@@ -2376,6 +2534,7 @@ class DataStudioWindow(QMainWindow):
                 item.setToolTip(column, tooltip)
                 item.setBackground(column, QBrush(QColor(row_backgrounds[status])))
             item.setText(3, f"{details} · 云端：{labels[status]}")
+            self._apply_sync_column(item, node)
         elif node_type == "external_annex":
             item.setData(
                 0,
@@ -2404,6 +2563,39 @@ class DataStudioWindow(QMainWindow):
         painter.drawEllipse(2, 2, 12, 12)
         painter.end()
         return QIcon(pixmap)
+
+    @staticmethod
+    def _apply_sync_column(item: QTreeWidgetItem, node: dict[str, Any]) -> None:
+        """Render the 同步数据 column for a trial node (green=齐全, gray=缺失)."""
+        has_cap = bool(node.get("sync_cap_names"))
+        missing: list[str] = []
+        if not has_cap:
+            text = "无 cap"
+            background = "#f1f3f5"
+            foreground = "#9aa3ad"
+            detail = "无 cap 记录，无需校验"
+        else:
+            c3d_missing = node.get("sync_c3d_missing")
+            txt_missing = node.get("sync_txt_missing")
+            if c3d_missing:
+                missing.append(str(c3d_missing))
+            if txt_missing:
+                missing.append(str(txt_missing))
+            if missing:
+                text = "缺 " + "、".join(missing)
+                background = "#f1f3f5"
+                foreground = "#b42318"
+                detail = "缺少：" + "、".join(missing)
+            else:
+                text = "齐全"
+                background = "#e3f5e9"
+                foreground = "#20a35a"
+                detail = "动捕 .c3d 与测力台 .txt 均已就位"
+        item.setText(4, text)
+        item.setTextAlignment(4, Qt.AlignmentFlag.AlignCenter)
+        item.setBackground(4, QBrush(QColor(background)))
+        item.setForeground(4, QBrush(QColor(foreground)))
+        item.setToolTip(4, f"动捕/测力台同步数据：{detail}")
 
     @staticmethod
     def _group_trial_artifacts(children: object) -> list[dict[str, Any]]:

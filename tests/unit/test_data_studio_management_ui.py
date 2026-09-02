@@ -458,6 +458,8 @@ def test_management_refresh_operation_runs_through_spawn_worker(tmp_path: Path) 
     assert status == "completed"
     assert isinstance(result, ManagementRefreshResult)
     assert len(result.index.records) == 3
+    assert len(result.sync_statuses) == 3
+    assert all(not status.has_cap for status in result.sync_statuses)
     worker.join(5.0)
     assert worker.exitcode == 0
     worker.close()
