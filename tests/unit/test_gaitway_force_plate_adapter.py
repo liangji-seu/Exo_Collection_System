@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from struct import pack
+from unittest.mock import Mock
 
 import numpy as np
 
 from exo_collection.acquisition.preview import build_preview_event
-from exo_collection.adapters.base import AdapterState, TrialContext
+from exo_collection.adapters.base import AdapterError, AdapterState, TrialContext
 from exo_collection.adapters.force_plate import (
     FORCE_PLATE_CHANNELS,
     GaitwayForcePlateTcpAdapter,
@@ -67,3 +68,45 @@ def test_type_i_packet_is_reordered_to_canonical_force_plate_channels() -> None:
         "tz",
     ]
     assert preview.payload["latest"]["digital_inputs"] == 8.0
+
+
+def test_stop_stream_best_effort_sends_stopds() -> None:
+    adapter = GaitwayForcePlateTcpAdapter({"device_id": "force"})
+    adapter._socket = object()
+    adapter._send_command = Mock()  # type: ignore[method-assign]
+    adapter._expect_ack = Mock()  # type: ignore[method-assign]
+
+    adapter._stop_stream_best_effort()
+
+    adapter._send_command.assert_called_once_with("stopDS")
+    adapter._expect_ack.assert_called_once_with("stopDS", timeout_s=1.0)
+
+
+def test_stop_stream_best_effort_swallows_adapter_error() -> None:
+    adapter = GaitwayForcePlateTcpAdapter({"device_id": "force"})
+    adapter._socket = object()
+    adapter._send_command = Mock()  # type: ignore[method-assign]
+    adapter._expect_ack = Mock(side_effect=AdapterError("no ack"))  # type: ignore[method-assign]
+
+    # Must not raise: a NAK/timeout here only means there was nothing to stop.
+    adapter._stop_stream_best_effort()
+
+
+def test_stop_stream_best_effort_noop_without_socket() -> None:
+    adapter = GaitwayForcePlateTcpAdapter({"device_id": "force"})
+    adapter._socket = None
+    adapter._send_command = Mock()  # type: ignore[method-assign]
+
+    adapter._stop_stream_best_effort()
+
+    adapter._send_command.assert_not_called()
+
+
+def test_stop_hardware_sends_stopds_when_thread_is_none() -> None:
+    adapter = GaitwayForcePlateTcpAdapter({"device_id": "force"})
+    adapter._thread = None
+    adapter._stop_stream_best_effort = Mock()  # type: ignore[method-assign]
+
+    adapter._stop_hardware()
+
+    adapter._stop_stream_best_effort.assert_called_once()

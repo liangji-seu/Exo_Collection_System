@@ -421,6 +421,9 @@ class GaitwayForcePlateTcpAdapter(QueuedHardwareAdapter):
         self._socket = sock
         self._framer.reset()
         self._pending_packets.clear()
+        # A leftover indefinite stream swallows getDSsettings/startDS (only
+        # stopDS is accepted while streaming); clear it before the handshake.
+        self._stop_stream_best_effort()
         if self._config.query_settings_on_connect:
             self._query_settings_best_effort()
 
@@ -493,6 +496,11 @@ class GaitwayForcePlateTcpAdapter(QueuedHardwareAdapter):
     def _stop_hardware(self) -> None:
         thread = self._thread
         if thread is None:
+            # start may have failed after the gaitway already began streaming
+            # (the read thread is created only once startDS is acknowledged);
+            # ensure any stream it opened is stopped so the next attempt starts
+            # from a clean state.
+            self._stop_stream_best_effort()
             return
         if thread.is_alive():
             self._stop_ack.clear()
@@ -679,10 +687,14 @@ class GaitwayForcePlateTcpAdapter(QueuedHardwareAdapter):
         with self._socket_lock:
             sock.sendall(payload)
 
-    def _expect_ack(self, command: str) -> None:
+    def _expect_ack(self, command: str, *, timeout_s: float | None = None) -> None:
         packet = self._read_packet_until(
             expected_type=PACKET_ACK,
-            timeout_s=self._config.connect_timeout_s,
+            timeout_s=(
+                timeout_s
+                if timeout_s is not None
+                else self._config.connect_timeout_s
+            ),
         )
         packet_type = int(unpack_from("<H", packet, 2)[0])
         response_command = self._response_command(packet)
@@ -699,6 +711,24 @@ class GaitwayForcePlateTcpAdapter(QueuedHardwareAdapter):
                 f"ACK command mismatch: expected {command!r}, got "
                 f"{response_command!r}"
             )
+
+    def _stop_stream_best_effort(self) -> None:
+        """Send stopDS and swallow the outcome to clear a stuck stream.
+
+        A previous ``startDS`` that was not stopped cleanly leaves the gaitway
+        streaming indefinitely.  While streaming it accepts only ``stopDS``
+        (ICD §6.3.2) and silently drops ``getDSsettings``/``startDS``, so a
+        leftover stream surfaces as a connect/start ACK timeout *even though
+        data is flowing*.  Issuing ``stopDS`` (ACK, NAK, or silence) returns the
+        device to a state where the next command is acknowledged normally.
+        """
+        if self._socket is None:
+            return
+        try:
+            self._send_command("stopDS")
+            self._expect_ack("stopDS", timeout_s=1.0)
+        except AdapterError:
+            pass
 
     def _read_packet_until(
         self,
