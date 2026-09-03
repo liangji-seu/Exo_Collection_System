@@ -1461,6 +1461,37 @@ def test_download_redownloads_when_remote_content_changes(tmp_path: Path) -> Non
     assert (local_trial / "raw" / "imu.h5").read_bytes() == new_payload
 
 
+def test_download_skips_stale_index_entry_with_missing_remote_dir(tmp_path: Path) -> None:
+    manifest_path = _publish_trial(tmp_path)
+    plan = build_upload_plan(manifest_path)
+    target = tmp_path / "pull"
+    request = _download_request(tmp_path, manifest_path, target)
+    session = _FakeRemoteSession()
+    key, _remote_dir = _publish_remote_trial(session, request, plan, tmp_path)
+    # 索引里混入一个旧布局残留的条目，其远端目录并不存在，下载应跳过而非中断。
+    stale_key = "T/001/WALK_LEVEL/session1_20260822_031944"
+    _write_remote_index(
+        session,
+        request,
+        {
+            key: _index_entry(plan),
+            stale_key: {
+                "trial_uuid": str(plan.trial_uuid),
+                "package_fingerprint": "0" * 64,
+                "file_count": 1,
+                "total_bytes": 1,
+            },
+        },
+    )
+
+    result = RemoteDatasetDownloader(lambda _request: session).download(request, target)
+
+    assert result.downloaded_trials == 1
+    assert result.skipped_trials == 0
+    assert (target.joinpath(*PurePosixPath(key).parts) / "manifest.json").is_file()
+    assert not (target / stale_key).exists()
+
+
 def test_download_request_validation(tmp_path: Path) -> None:
     manifest_path = _publish_trial(tmp_path)
 

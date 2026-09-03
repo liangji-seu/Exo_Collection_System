@@ -1988,6 +1988,11 @@ class RemoteDatasetDownloader:
                 ):
                     skipped_trials += 1
                     continue
+                if not session.exists(remote_dir):
+                    # 云端同步索引里可能残留旧布局/已清理的 Trial 条目，其远端
+                    # 目录已不存在。跳过它而不是让一次缺失拖垮整次拉取。
+                    LOG.warning("下载跳过云端已不存在的 Trial 目录：%s", key)
+                    continue
                 report(
                     UploadProgress(
                         UploadPhase.UPLOADING,
