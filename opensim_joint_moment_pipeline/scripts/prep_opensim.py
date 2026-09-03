@@ -30,6 +30,9 @@ from pipeline.c3d.reader import read_c3d  # noqa: E402
 from pipeline.gait.detect_contact import detect_contacts  # noqa: E402
 from pipeline.opensim_io.build_trc import build_trc  # noqa: E402
 from pipeline.opensim_io.grf import build_grf  # noqa: E402
+from pipeline.opensim_io.grf import write_external_loads_xml  # noqa: E402
+from pipeline.opensim_io.write_grf_mot import write_grf_mot  # noqa: E402
+from pipeline.gaitway import read_gaitway_ascii, build_bilateral_grf  # noqa: E402
 from pipeline.transforms import R_MOCAP_TO_OPENSIM  # noqa: E402
 
 
@@ -71,8 +74,16 @@ def main() -> int:
     R_fp = _fp_to_mocap(config)
     filtering = config.get("filtering", {})
     filtering_enabled = bool(filtering.get("enabled", False))
-    marker_cutoff = float(filtering["marker_cutoff_hz"]) if filtering_enabled else None
-    grf_cutoff = float(filtering["grf_cutoff_hz"]) if filtering_enabled else None
+    marker_cutoff_value = filtering.get("marker_cutoff_hz")
+    grf_cutoff_value = filtering.get("grf_cutoff_hz")
+    marker_cutoff = (
+        float(marker_cutoff_value)
+        if filtering_enabled and marker_cutoff_value is not None else None
+    )
+    grf_cutoff = (
+        float(grf_cutoff_value)
+        if filtering_enabled and grf_cutoff_value is not None else None
+    )
     force_advance_ms = float(config.get("synchronization", {}).get("force_advance_ms", 0.0))
     force_direction = config.get("force_direction_correction", {})
     force_x_sign = float(force_direction.get("opensim_x_sign", 1.0))
@@ -81,13 +92,16 @@ def main() -> int:
     static_data = read_c3d(static_path)
     dynamic_data = read_c3d(dynamic_path)
 
-    # 1. 接触检测（动态，供 GRF 单支撑分配）
+    gaitway_txt = files.get("gaitway_txt")
+
+    # 1. 接触检测（旧的 C3D 总力路径用于单支撑分配；Gaitway 原生导出直接用左右力）
     ss_cfg = config.get("single_support", {})
     contact = detect_contacts(
         dynamic_data,
         vertical_axis=None,
         force_threshold_N=float(ss_cfg.get("vertical_force_threshold_N", 50.0)),
         foot_height_threshold_mm=float(ss_cfg.get("foot_height_threshold_mm", 30.0)),
+        total_fz=(np.ones(dynamic_data.n_frames) * mass_kg * 9.80665 if gaitway_txt else None),
     )
 
     # 单支撑有效性掩码：单块跑台只能拿到 total 合力，双支撑期无法拆左右脚，
@@ -98,7 +112,6 @@ def main() -> int:
     trim_frames = int(round(trim_boundary_ms / 1000.0 * dynamic_data.point_rate_hz))
     right_valid = _trim_boolean_runs(right_single, trim_frames)
     left_valid = _trim_boolean_runs(left_single, trim_frames)
-    np.save(out / "support_mask.npy", np.column_stack([right_valid, left_valid]))
 
     # 2. 静态 / 动态 TRC（OpenSim ground 帧）
     static_names, _ = build_trc(
@@ -107,19 +120,40 @@ def main() -> int:
         dynamic_data, out / "dynamic.trc", opensim_frame=True, cutoff_hz=marker_cutoff)
 
     # 3. GRF + ExternalLoads
-    grf = build_grf(
-        dynamic_data,
-        contact.right_contact,
-        contact.left_contact,
-        R_fp,
-        out,
-        mot_name="grf.mot",
-        include_free_moment=False,
-        cutoff_hz=grf_cutoff,
-        advance_ms=force_advance_ms,
-        force_x_sign=force_x_sign,
-        force_z_sign=force_z_sign,
-    )
+    gaitway_qc = None
+    if gaitway_txt:
+        gaitway = read_gaitway_ascii(gaitway_txt)
+        offset_s = float(config.get("synchronization", {}).get("gaitway_time_offset_s", 0.0))
+        feet, decomposed_valid, gaitway_qc = build_bilateral_grf(
+            gaitway, dynamic_data.time_s, offset_s, R_fp,
+            force_threshold_N=float(ss_cfg.get("vertical_force_threshold_N", 50.0)),
+            cutoff_hz=grf_cutoff,
+            opensim_x_sign=force_x_sign,
+            opensim_z_sign=force_z_sign,
+        )
+        write_grf_mot(out / "grf.mot", dynamic_data.time_s, feet)
+        write_external_loads_xml(out / "external_loads.xml", "grf.mot")
+        # With true bilateral forces, both limbs' ID results are valid throughout
+        # the decomposed walking interval (including swing and double support).
+        right_valid = decomposed_valid.copy()
+        left_valid = decomposed_valid.copy()
+        grf = {"mot": str(out / "grf.mot"), "xml": str(out / "external_loads.xml"),
+               "feet": ["right", "left"]}
+    else:
+        grf = build_grf(
+            dynamic_data,
+            contact.right_contact,
+            contact.left_contact,
+            R_fp,
+            out,
+            mot_name="grf.mot",
+            include_free_moment=False,
+            cutoff_hz=grf_cutoff,
+            advance_ms=force_advance_ms,
+            force_x_sign=force_x_sign,
+            force_z_sign=force_z_sign,
+        )
+    np.save(out / "support_mask.npy", np.column_stack([right_valid, left_valid]))
 
     # 4. manifest（供 opensim 环境）
     manifest = {
@@ -142,6 +176,7 @@ def main() -> int:
             "opensim_force_z_sign": force_z_sign,
             "support_trim_boundary_ms": trim_boundary_ms,
         },
+        "gaitway": gaitway_qc,
         "out_dir": str(out),
         "mocap_to_opensim_R": R_MOCAP_TO_OPENSIM.tolist(),
         "contact": {

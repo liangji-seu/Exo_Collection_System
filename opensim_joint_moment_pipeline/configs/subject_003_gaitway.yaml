@@ -1,0 +1,67 @@
+subject:
+  id: "003"
+  mass_kg: 80.0
+  height_m: 1.87
+
+files:
+  static_c3d: data/c3d/003_STAND_r1.c3d
+  dynamic_c3d: data/c3d/003_WALK_STEADY_1P00_r1.c3d
+  gaitway_txt: data/c3d/003_WALK_STEADY_1P00_r1.txt
+  generic_model: data/models/gait2392/gait2392_simbody.osim
+
+transforms:
+  forceplate_to_mocap:
+    status: PROVIDED
+    rotation_matrix:
+      - [0.009083, 0.999955, -0.002577]
+      - [-0.999809, 0.009037, -0.017309]
+      - [-0.017285, 0.002734, 0.999847]
+    translation_m: [-5.0785, 2.0865, -0.251]
+
+force:
+  source: gaitway_ascii_bilateral
+  physical_plate_mode: single_platform_vendor_decomposed_left_right
+  force_convention: ground_on_foot
+  unit_force: N
+  unit_cop: m
+
+# Gaitway native horizontal components use the opposite action convention to
+# OpenSim's ground-on-foot force; vertical force is already positive upward.
+force_direction_correction:
+  opensim_x_sign: -1.0
+  opensim_z_sign: -1.0
+
+single_support:
+  enabled: false
+  double_support_policy: USE_NATIVE_BILATERAL
+  vertical_force_threshold_N: 50.0
+  foot_height_threshold_mm: 30.0
+  trim_boundary_ms: 0.0
+
+synchronization:
+  # C3D frame 0 exactly matches mocap.h5 frame 183. The shared H5 host clock then
+  # maps right-leg IMU impacts to C3D time; five stomp pairs give median 5.834848 s.
+  # A narrow inverse-dynamics residual scan selects +20 ms, within stomp variability.
+  # Convention: gaitway_time = mocap_time + this offset.
+  gaitway_time_offset_s: 5.854848067
+  force_advance_ms: 0.0
+
+filtering:
+  enabled: true
+  marker_cutoff_hz: 6.0
+  # Native file is already zero-lag Butterworth filtered (Z/Y/X = 30/20/10 Hz).
+  grf_cutoff_hz: null
+
+analysis:
+  time_range_s: [16.0, 52.0]
+
+opensim:
+  model: gait2392
+  scale: {enabled: true}
+  ik: {enabled: true}
+  id: {enabled: true}
+
+output:
+  export_Nm: true
+  export_Nm_per_kg: true
+  save_support_mask: true
