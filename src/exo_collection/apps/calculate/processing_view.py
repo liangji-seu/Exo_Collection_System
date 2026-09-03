@@ -260,6 +260,15 @@ class ProcessingView(QWidget):
         start.setEnabled(enabled)
         end.setEnabled(enabled)
 
+    def apply_patient_info(self, info: dict) -> None:
+        """用测力台头部读到的受试者信息预填体重/身高（用户仍可手动覆盖）。"""
+        weight = info.get("weight_kg")
+        if isinstance(weight, (int, float)):
+            self._mass.setValue(float(weight))
+        height = info.get("height_m")
+        if isinstance(height, (int, float)):
+            self._height.setValue(float(height))
+
     def _request_process(self) -> None:
         analysis_range = None
         if not self._analysis_auto.isChecked():

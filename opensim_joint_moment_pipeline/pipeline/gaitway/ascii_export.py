@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -32,20 +33,30 @@ class GaitwayAsciiData:
         return float(1.0 / np.median(np.diff(self.time_s)))
 
 
-def read_gaitway_ascii(path: str | Path) -> GaitwayAsciiData:
-    source = Path(path)
-    lines = source.read_text(encoding="utf-8-sig").splitlines()
-    header_index = next(
+def _find_header_index(lines: list[str]) -> int | None:
+    """定位列名行（以 ``Time (s)\t`` 开头）；找不到返回 None。"""
+    return next(
         (i for i, line in enumerate(lines) if line.startswith("Time (s)\t")), None
     )
-    if header_index is None:
-        raise ValueError(f"gaitway column header not found in {source}")
 
+
+def _header_metadata(lines: list[str], header_index: int) -> dict[str, str]:
+    """把列名行之前的 ``key<TAB>value`` 头部逐行解析成字典。"""
     metadata: dict[str, str] = {}
     for line in lines[:header_index]:
         parts = line.split("\t", 1)
         if len(parts) == 2:
             metadata[parts[0].strip()] = parts[1].strip()
+    return metadata
+
+
+def read_gaitway_ascii(path: str | Path) -> GaitwayAsciiData:
+    source = Path(path)
+    lines = source.read_text(encoding="utf-8-sig").splitlines()
+    header_index = _find_header_index(lines)
+    if header_index is None:
+        raise ValueError(f"gaitway column header not found in {source}")
+    metadata = _header_metadata(lines, header_index)
 
     frame = pd.read_csv(
         source, sep="\t", skiprows=header_index, encoding="utf-8-sig", low_memory=False
@@ -64,6 +75,52 @@ def read_gaitway_ascii(path: str | Path) -> GaitwayAsciiData:
         for name in required
     }
     return GaitwayAsciiData(source, metadata, columns.pop("Time (s)"), columns)
+
+
+def read_gaitway_patient_info(path: str | Path) -> dict[str, Any]:
+    """只读 gaitway ASCII 头部的受试者个人信息，不加载整份力数据。
+
+    返回键：``name`` / ``sex`` / ``birth_date`` / ``weight_kg`` / ``height_m``，
+    缺失的字段不出现。注意 gaitway 的 ``Patient height (m)`` 字段实际以**厘米**存储
+    （如 ``187.000`` 表示 1.87 m），这里按量级归一：> 3.0 m 不可能是人身高，一律视为
+    厘米 ÷ 100。读不到列名行（非 gaitway 文件）时返回空 dict。
+    """
+    source = Path(path)
+    lines = source.read_text(encoding="utf-8-sig").splitlines()
+    header_index = _find_header_index(lines)
+    if header_index is None:
+        return {}
+    metadata = _header_metadata(lines, header_index)
+
+    info: dict[str, Any] = {}
+    for key, out in (
+        ("Patient name", "name"),
+        ("Patient sex", "sex"),
+        ("Patient birth date", "birth_date"),
+    ):
+        value = metadata.get(key)
+        if value:
+            info[out] = value
+
+    def _number(key: str) -> float | None:
+        raw = metadata.get(key)
+        if raw is None:
+            return None
+        try:
+            value = float(raw)
+        except ValueError:
+            return None
+        return value if np.isfinite(value) else None
+
+    weight = _number("Patient weight (kg)")
+    if weight is not None:
+        info["weight_kg"] = weight
+    height = _number("Patient height (m)")
+    if height is not None:
+        if height > 3.0:  # gaitway 把厘米误标为米
+            height /= 100.0
+        info["height_m"] = height
+    return info
 
 
 def _interp(time: np.ndarray, values: np.ndarray, query: np.ndarray, *, fill: float) -> np.ndarray:

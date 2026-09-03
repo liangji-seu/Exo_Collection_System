@@ -204,6 +204,34 @@ class CalculateWindow(QMainWindow):
         self._controller.set_dynamic(record)
         self._sync_view.reset()
         self._refresh_history()
+        self._apply_patient_info(record)
+
+    def _apply_patient_info(self, record: SessionRecord | None) -> None:
+        """从测力台 TXT 头部读取身高/体重等个人信息并预填解算参数（失败不致命）。"""
+        if record is None or record.files.txt_path is None:
+            return
+        try:
+            from exo_collection.apps.calculate._pipeline import ensure_pipeline_on_path
+
+            ensure_pipeline_on_path()
+            from pipeline.gaitway import read_gaitway_patient_info
+
+            info = read_gaitway_patient_info(record.files.txt_path)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("读取测力台个人信息失败：%s", exc)
+            return
+        if not info:
+            return
+        self._processing_view.apply_patient_info(info)
+        parts = []
+        if info.get("weight_kg") is not None:
+            parts.append(f"体重 {info['weight_kg']:.1f} kg")
+        if info.get("height_m") is not None:
+            parts.append(f"身高 {info['height_m']:.2f} m")
+        if info.get("name"):
+            parts.append(f"姓名 {info['name']}")
+        if parts:
+            self.statusBar().showMessage("已从测力台读取：" + "，".join(parts))
 
     def _on_static(self, record: SessionRecord | None) -> None:
         self._controller.set_static(record)
