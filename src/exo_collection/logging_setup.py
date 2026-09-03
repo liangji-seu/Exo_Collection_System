@@ -156,6 +156,13 @@ def data_studio_log_path() -> Path:
     )
 
 
+def calculate_log_path() -> Path:
+    """Return this Exo Calculate process launch's absolute log path."""
+    return _default_log_dir() / (
+        f"ExoCalculate_{_PROCESS_LAUNCH_TOKEN}_pid{os.getpid()}.log"
+    )
+
+
 def setup_collector_logging(
     *,
     level: int = logging.INFO,
@@ -233,6 +240,25 @@ def setup_data_studio_logging(
         level=level,
         console=console,
         log_path=log_path or data_studio_log_path(),
+        max_bytes=max_bytes,
+        backup_count=backup_count,
+    )
+
+
+def setup_calculate_logging(
+    *,
+    level: int = logging.INFO,
+    console: bool = False,
+    log_path: Path | None = None,
+    max_bytes: int = DEFAULT_MAX_BYTES,
+    backup_count: int = DEFAULT_BACKUP_COUNT,
+) -> None:
+    """Configure Exo Calculate logging using the shared protected handler."""
+
+    setup_collector_logging(
+        level=level,
+        console=console,
+        log_path=log_path or calculate_log_path(),
         max_bytes=max_bytes,
         backup_count=backup_count,
     )

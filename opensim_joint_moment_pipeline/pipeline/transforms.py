@@ -39,6 +39,19 @@ R_MOCAP_TO_OPENSIM = np.array(
 # 选它作平移参考，使台面（mocap Z=-251）映射到 OpenSim Y=0、原点→(0,0,0)。
 O_MOCAP_MM = np.array([-5078.5, 2086.5, -251.0], dtype=np.float64)
 
+# 测力台标定旋转矩阵（实验室标定，**非受试者相关**）：把测力台标定局部帧
+# （X=行走向、Y=侧向、Z=上）映射到 mocap 全局。与 configs/*.yaml 里
+# ``transforms.forceplate_to_mocap.rotation_matrix`` 一致，作为 App 侧默认值。
+# 换测力台/重新标定台面位姿时更新此处，而非每个 session 单独改。
+R_FP_TO_MOCAP_DEFAULT = np.array(
+    [
+        [0.009083, 0.999955, -0.002577],
+        [-0.999809, 0.009037, -0.017309],
+        [-0.017285, 0.002734, 0.999847],
+    ],
+    dtype=np.float64,
+)
+
 # 测力台表面在 mocap 下的 Z 高度（mm），用于「台面 → Y=0」的竖直平移（等价于用 O 平移）。
 _TREADMILL_SURFACE_Z_MM = -251.0
 
@@ -138,6 +151,7 @@ def combine_transform(R_fp_to_mocap: np.ndarray) -> np.ndarray:
 __all__ = [
     "R_MOCAP_TO_OPENSIM",
     "O_MOCAP_MM",
+    "R_FP_TO_MOCAP_DEFAULT",
     "mocap_to_opensim_points",
     "force_plate_native_to_opensim",
     "cop_plate_native_to_opensim",

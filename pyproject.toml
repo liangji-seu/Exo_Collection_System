@@ -40,6 +40,7 @@ hardware = [
 [project.scripts]
 exo-collector = "exo_collection.apps.collector.main:main"
 exo-data-studio = "exo_collection.apps.data_studio.main:main"
+exo-calculate = "exo_collection.apps.calculate.main:main"
 exo-simulate-trial = "exo_collection.orchestration.cli:main"
 
 [tool.setuptools]

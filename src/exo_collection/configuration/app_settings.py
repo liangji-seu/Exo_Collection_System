@@ -20,6 +20,7 @@ DEVICE_PROFILE_KEY = "collector/device_profile"
 HARDWARE_OVERRIDES_KEY = "collector/hardware_device_overrides_json"
 PREVIEW_LAYOUT_KEY = "collector/preview_workspace_state"
 UPLOAD_ENDPOINT_KEY = "data_studio/upload_endpoint_json"
+OPENSIM_PYTHON_KEY = "calculate/opensim_python_executable"
 ELONXI_RUNTIME_RELATIVE_PATH = (
     Path("SDK_Transfer")
     / "Exo_Hardware_Runtime_Windows_Python311_x64"
@@ -266,6 +267,29 @@ class SharedAppSettings:
         )
         self._sync_checked("Data Studio upload endpoint")
         return payload
+
+    @property
+    def opensim_python_executable(self) -> Path | None:
+        """Return the persisted OpenSim sub-env ``python.exe`` (or ``None``).
+
+        The main Exo Calculate process never imports ``opensim`` itself; it only
+        launches this executable in a controlled subprocess for Scale/IK/ID.
+        """
+        stored = self._backend.value(OPENSIM_PYTHON_KEY)
+        if isinstance(stored, str) and stored.strip():
+            return Path(stored).expanduser().resolve()
+        return None
+
+    def set_opensim_python_executable(self, value: str | Path | None) -> Path | None:
+        """Persist the OpenSim sub-env ``python.exe`` (``None`` clears it)."""
+        if value is None or not str(value).strip():
+            self._backend.remove(OPENSIM_PYTHON_KEY)
+            self._sync_checked("OpenSim Python executable")
+            return None
+        normalized = Path(str(value)).expanduser().resolve()
+        self._backend.setValue(OPENSIM_PYTHON_KEY, str(normalized))
+        self._sync_checked("OpenSim Python executable")
+        return normalized
 
     def _sync_checked(self, subject: str) -> None:
         self._backend.sync()

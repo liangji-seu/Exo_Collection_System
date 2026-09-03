@@ -1,4 +1,4 @@
-"""一键编译 ExoCollector.exe 和 ExoDataStudio.exe"""
+"""一键编译 ExoCollector.exe / ExoDataStudio.exe / ExoCalculate.exe"""
 import subprocess
 import sys
 from pathlib import Path
@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parent
 SPEC_DIR = ROOT / "packaging"
 COLLECTOR_SPEC = SPEC_DIR / "collector.spec"
 DATA_STUDIO_SPEC = SPEC_DIR / "data_studio.spec"
+CALCULATE_SPEC = SPEC_DIR / "calculate.spec"
 
 
 def run_pyinstaller(spec: Path, label: str) -> None:
@@ -29,9 +30,11 @@ def run_pyinstaller(spec: Path, label: str) -> None:
 def main() -> int:
     COLLECTOR_SPEC.resolve(strict=True)
     DATA_STUDIO_SPEC.resolve(strict=True)
+    CALCULATE_SPEC.resolve(strict=True)
 
     run_pyinstaller(COLLECTOR_SPEC, "ExoCollector")
     run_pyinstaller(DATA_STUDIO_SPEC, "ExoDataStudio")
+    run_pyinstaller(CALCULATE_SPEC, "ExoCalculate")
 
     print()
     print("编译完成。产物在 dist/ 目录下:")

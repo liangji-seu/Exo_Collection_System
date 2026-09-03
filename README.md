@@ -3,7 +3,8 @@
 外骨骼多模态数据采集系统的第二版实现。一个仓库提供两个桌面应用：
 
 - **Exo Collector**：设备检查、工况锁定、采集、实时预览与 Trial 最终化；
-- **Exo Data Studio**：本地数据树、统计、质量审核、离线回放和人工离线上传入口。
+- **Exo Data Studio**：本地数据树、统计、质量审核、离线回放和人工离线上传入口；
+- **Exo Calculate**：标定、时间同步、OpenSim 关节力矩解算、3D 回放与 QC（见 [docs/calculate.md](docs/calculate.md)）。
 
 两者共享 `exo_collection` 核心包。架构和数据契约以 [ARCHITECTURE.md](ARCHITECTURE.md) 为准。
 
@@ -19,7 +20,8 @@ OpenSim 三维叠加导出。原始 C3D 与生成结果默认忽略，不进入 
 完成系统 Python 初始化后，项目根目录提供两个不需要任何命令行参数的 Python 启动脚本：
 
 - `run_collector.py`：启动采集端；
-- `run_data_studio.py`：启动数据管理端。
+- `run_data_studio.py`：启动数据管理端；
+- `run_calculate.py`：启动关节力矩解算端。
 
 在 PowerShell 中直接使用系统 CPython 3.11 运行：
 
@@ -83,11 +85,12 @@ python -m pytest
 ```powershell
 python run_collector.py
 python run_data_studio.py
+python run_calculate.py
 ```
 
 ## 编译打包 Windows 可执行文件
 
-项目根目录的 `build_exe.py` 会依次构建两个应用：
+项目根目录的 `build_exe.py` 会依次构建三个应用：
 
 ```powershell
 python build_exe.py
@@ -98,7 +101,13 @@ python build_exe.py
 ```text
 dist\ExoCollector.exe
 dist\ExoDataStudio.exe
+dist\ExoCalculate.exe
 ```
+
+`ExoCalculate.exe` 的主进程不含 OpenSim；Scale / IK / ID 仍由用户在「解算」页选定的
+opensim 环境 `python.exe` 以子进程执行。构建需在装有 PyInstaller 且含
+ezc3d / scipy / pandas / PySide6 / pyqtgraph 的 Python 环境中执行，详见
+[docs/calculate.md](docs/calculate.md)。
 
 构建成功只表明模拟设备、界面、存储、真实 Adapter 的依赖收集和冻结进程边界已通过检查。真实超声、Xsens IMU 和 Teensy 编码器仍必须在实验室设备上分别完成连接、持续预览、Trial 切换和长时间压力验收；不得因单元测试或打包通过就宣称物理硬件已验收。
 

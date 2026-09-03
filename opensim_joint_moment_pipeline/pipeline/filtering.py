@@ -40,4 +40,49 @@ def lowpass_zero_phase(
     return out.reshape(original_shape)
 
 
-__all__ = ["lowpass_zero_phase"]
+def lowpass_segmented(
+    values: np.ndarray,
+    valid: np.ndarray,
+    sample_rate_hz: float,
+    cutoff_hz: float,
+    *,
+    order: int = 4,
+    min_segment: int = 12,
+) -> np.ndarray:
+    """Zero-phase lowpass each contiguous ``valid`` segment independently.
+
+    用于接触开关信号（GRF）：只在接触段内滤波，非接触帧置 NaN，避免滤波器的
+    边界振铃跨过「接触→摆动」边界制造假力（prompt6 §3.8 第 5 条）。
+
+    ``values`` 可为 (n,) 或 (n, c)；``valid`` 为 (n,) bool。返回同 shape 数组，
+    非接触帧为 NaN。
+    """
+    data = np.asarray(values, dtype=np.float64)
+    valid = np.asarray(valid, dtype=bool)
+    squeeze = False
+    if data.ndim == 1:
+        data = data[:, None]
+        squeeze = True
+    out = np.full_like(data, np.nan)
+    idx = np.flatnonzero(valid)
+    if idx.size == 0:
+        return values.copy()
+
+    boundaries = np.where(np.diff(idx) > 1)[0]
+    starts = np.concatenate([[0], boundaries + 1])
+    ends = np.concatenate([boundaries, [idx.size - 1]])
+    for s, e in zip(starts, ends):
+        seg = idx[s:e + 1]
+        sub = data[seg]
+        if seg.size < min_segment or not np.isfinite(sub).any():
+            out[seg] = sub
+            continue
+        out[seg] = lowpass_zero_phase(
+            sub, sample_rate_hz, cutoff_hz, order=order, preserve_missing=True
+        )
+    if squeeze:
+        out = out[:, 0]
+    return out
+
+
+__all__ = ["lowpass_zero_phase", "lowpass_segmented"]
