@@ -348,14 +348,12 @@ def test_remote_status_scan_distinguishes_uploaded_missing_partial_and_conflict(
     )
     session = _FakeRemoteSession()
     plans = [build_upload_plan(path) for path in manifests]
-    remote_dirs = [
-        build_remote_trial_directory(request.remote_workdir, plan, tmp_path)
-        for plan in plans
-    ]
 
-    # Trial 1 has a matching index entry. Trial 2 is absent. Trial 3 is legacy
-    # remote data without an index entry. Trial 4 has a conflicting index entry.
-    session.ensure_directory(remote_dirs[2])
+    # Trial 1 has a matching index entry + real remote files. Trial 2 is absent.
+    # Trial 3 is legacy remote data (files, no index entry). Trial 4 has a
+    # conflicting index entry + real remote files.
+    for plan in (plans[0], plans[2], plans[3]):
+        _publish_remote_trial(session, request, plan, tmp_path)
     index_path = "/srv/exo-data/" + REMOTE_SYNC_INDEX_RELATIVE_PATH.as_posix()
     session.ensure_directory(str(PurePosixPath(index_path).parent))
     session.files[index_path] = json.dumps(
@@ -396,6 +394,48 @@ def test_remote_status_scan_distinguishes_uploaded_missing_partial_and_conflict(
         RemoteTrialStatus.NOT_UPLOADED,
         RemoteTrialStatus.PARTIAL,
         RemoteTrialStatus.CONFLICT,
+    ]
+    assert session.closed
+
+
+def test_remote_status_scan_reports_cleared_cloud_as_not_uploaded(
+    tmp_path: Path,
+) -> None:
+    manifest_path = _publish_trial(tmp_path)
+    request = _password_request(tmp_path, manifest_path)
+    plan = build_upload_plan(manifest_path)
+    session = _FakeRemoteSession()
+
+    # 云端 .exo 索引仍保留旧条目、本机验证缓存也一致，但实际数据文件已被清空。
+    key = _remote_index_key(plan, tmp_path)
+    index_path = "/srv/exo-data/" + REMOTE_SYNC_INDEX_RELATIVE_PATH.as_posix()
+    session.ensure_directory(str(PurePosixPath(index_path).parent))
+    session.files[index_path] = json.dumps(
+        {
+            "schema": REMOTE_SYNC_INDEX_SCHEMA,
+            "trials": {
+                key: {
+                    "trial_uuid": str(plan.trial_uuid),
+                    "package_fingerprint": _package_fingerprint(plan),
+                    "file_count": len(plan.files),
+                },
+            },
+        }
+    ).encode("utf-8")
+    _update_local_sync_cache(
+        request,
+        plan,
+        {
+            "trial_uuid": str(plan.trial_uuid),
+            "package_fingerprint": _package_fingerprint(plan),
+            "file_count": len(plan.files),
+        },
+    )
+
+    result = RemoteDatasetStatusScanner(lambda _request: session).scan(request)
+
+    assert [record.status for record in result.records] == [
+        RemoteTrialStatus.NOT_UPLOADED
     ]
     assert session.closed
 
