@@ -34,6 +34,7 @@ from exo_collection.quality import DiskSpaceEvidence, InsufficientDiskSpaceError
 from exo_collection.readers.binary_block import BlockBinaryReader
 from exo_collection.readers.binary_block import scan_binary_file
 from exo_collection.storage.activity import AcquisitionLock
+from exo_collection.storage.subject_lock import SubjectLockedError, lock_subject
 from exo_collection.storage.checksum import sha256_file, verify_checksum_manifest
 from exo_collection.storage.manifest import MANIFEST_SCHEMA_VERSION, load_manifest
 from exo_collection.writers.block_binary_process import BlockBinaryWriterProcess
@@ -660,6 +661,15 @@ def test_existing_activity_lock_causes_no_trial_side_effects(tmp_path) -> None:
     with AcquisitionLock(tmp_path):
         with pytest.raises(FileExistsError, match="collector lock"):
             run_simulated_trial(request)
+    assert not list(tmp_path.rglob("*.recording"))
+    assert not (tmp_path / "catalog.sqlite3").exists()
+
+
+def test_locked_subject_fails_before_trial_side_effects(tmp_path) -> None:
+    lock_subject(tmp_path, "001")
+    request = TrialRunRequest(data_root=tmp_path, duration_s=0.1)
+    with pytest.raises(SubjectLockedError):
+        run_simulated_trial(request)
     assert not list(tmp_path.rglob("*.recording"))
     assert not (tmp_path / "catalog.sqlite3").exists()
 

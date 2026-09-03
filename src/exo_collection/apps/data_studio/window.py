@@ -46,6 +46,11 @@ from PySide6.QtWidgets import (
 from exo_collection.configuration import SharedAppSettings
 from exo_collection.external import ExternalImportRequest, ExternalImportResult
 from exo_collection.storage.activity import AcquisitionActivity, read_activity
+from exo_collection.storage.subject_lock import (
+    is_subject_locked,
+    lock_subject,
+    unlock_subject,
+)
 
 from .data_view import DataViewWidget
 from .external_import_dialog import ExternalImportDialog
@@ -273,6 +278,7 @@ class DataStudioWindow(QMainWindow):
         self.resize(1120, 720)
         self._create_actions()
         self._create_ui()
+        self.tree_widget.currentItemChanged.connect(self._update_subject_lock_action)
 
         # Activity detection is a tiny lock-file read and is intentionally
         # immediate; the heavier catalog work starts on the worker pool.
@@ -401,6 +407,14 @@ class DataStudioWindow(QMainWindow):
         )
         self.download_button.clicked.connect(self.download_remote_data)
         root_row.addWidget(self.download_button)
+        self.lock_subject_button = QPushButton("锁定受试者")
+        self.lock_subject_button.setObjectName("lock_subject")
+        self.lock_subject_button.setEnabled(False)
+        self.lock_subject_button.setToolTip(
+            "锁定当前选中的受试者；锁定后采集端无法再向该受试者目录写入数据。"
+        )
+        self.lock_subject_button.clicked.connect(self.toggle_subject_lock)
+        root_row.addWidget(self.lock_subject_button)
         outer.addLayout(root_row)
 
         self.remote_status_legend = QLabel(
@@ -2516,7 +2530,15 @@ class DataStudioWindow(QMainWindow):
         )
         item.setData(0, Qt.ItemDataRole.UserRole, node.get("uuid"))
         item.setData(1, Qt.ItemDataRole.UserRole, node_type)
-        if node_type == "trial":
+        if node_type == "subject":
+            code = str(node.get("label") or node.get("uuid") or "")
+            try:
+                if is_subject_locked(self._data_root, code):
+                    item.setText(0, f"🔒 {item.text(0)}")
+                    item.setToolTip(0, "该受试者已锁定，采集端禁止写入")
+            except ValueError:
+                pass
+        elif node_type == "trial":
             item.setData(
                 0,
                 Qt.ItemDataRole.UserRole + 1,
@@ -2585,6 +2607,49 @@ class DataStudioWindow(QMainWindow):
             if isinstance(child, dict):
                 item.addChild(self._make_tree_item(child))
         return item
+
+    def _current_subject_code(self) -> str | None:
+        item = self.tree_widget.currentItem()
+        if item is None:
+            return None
+        if str(item.data(1, Qt.ItemDataRole.UserRole) or "") != "subject":
+            return None
+        code = str(item.data(0, Qt.ItemDataRole.UserRole) or "").strip()
+        return code or None
+
+    def _update_subject_lock_action(self, *_args: object) -> None:
+        code = self._current_subject_code()
+        if code is None:
+            self.lock_subject_button.setEnabled(False)
+            self.lock_subject_button.setText("锁定受试者")
+            return
+        try:
+            locked = is_subject_locked(self._data_root, code)
+        except ValueError:
+            locked = False
+        self.lock_subject_button.setEnabled(True)
+        self.lock_subject_button.setText(
+            f"解锁受试者 {code}" if locked else f"锁定受试者 {code}"
+        )
+
+    @Slot()
+    def toggle_subject_lock(self) -> None:
+        code = self._current_subject_code()
+        if code is None:
+            return
+        try:
+            locked = is_subject_locked(self._data_root, code)
+        except ValueError:
+            return
+        if locked:
+            unlock_subject(self._data_root, code)
+            self.statusBar().showMessage(f"已解锁受试者 {code}。")
+        else:
+            lock_subject(self._data_root, code)
+            self.statusBar().showMessage(f"已锁定受试者 {code}，采集端禁止写入。")
+        self._update_subject_lock_action()
+        if self._catalog_tree:
+            self._render_tree(self._catalog_tree)
 
     @staticmethod
     def _status_light_icon(color: str) -> QIcon:

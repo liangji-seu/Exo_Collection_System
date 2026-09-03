@@ -123,6 +123,7 @@ from exo_collection.domain.prompt_labels import PromptLabelEvent, PromptLabelSou
 from exo_collection.domain.xingying_trigger import XingYingTriggerKind
 from exo_collection.protocols import load_default_protocol
 from exo_collection.quality import load_storage_policy
+from exo_collection.storage.subject_lock import is_subject_locked
 
 LOG = logging.getLogger("exo_collection.collector.ui")
 
@@ -3803,6 +3804,19 @@ class CollectorWindow(QMainWindow):
         except Exception as exc:
             self._append_alert(f"无法构建 Trial 请求：{type(exc).__name__}: {exc}")
             self.statusBar().showMessage("Trial 请求构建失败。")
+            return
+
+        # Subject freeze lock: refuse to write into a subject directory that
+        # Data Studio has locked (prevents mixing data when the subject code
+        # was not updated between recordings).
+        if is_subject_locked(request.data_root, request.subject_code):
+            QMessageBox.warning(
+                self,
+                "受试者已锁定",
+                f"受试者 {request.subject_code} 已在 Data Studio 中被锁定，禁止写入数据。\n"
+                "请先在 Data Studio 中解锁该受试者。",
+            )
+            self.statusBar().showMessage(f"受试者 {request.subject_code} 已锁定，禁止写入。")
             return
 
         # Only require at least one connected modality.

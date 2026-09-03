@@ -1738,6 +1738,34 @@ def test_collector_shows_failed_worker_error_without_blocking_ui(
     window.close()
 
 
+def test_start_trial_rejects_locked_subject(tmp_path: Path, monkeypatch) -> None:
+    from PySide6.QtWidgets import QMessageBox
+
+    from exo_collection.storage.subject_lock import lock_subject
+
+    app, window, created = _window_with_fake(tmp_path)
+    _connect_all_previews_for_trial(window)
+    assert window.subject_code_edit.text() == "001"
+    lock_subject(tmp_path, "001")
+
+    warnings: list[tuple[str, str]] = []
+
+    def fake_warning(parent, title, text, *_args, **_kwargs):
+        del parent
+        warnings.append((str(title), str(text)))
+        return QMessageBox.StandardButton.Ok
+
+    monkeypatch.setattr(QMessageBox, "warning", fake_warning)
+
+    window.start_trial()
+
+    assert created == []
+    assert len(warnings) == 1
+    assert "已锁定" in warnings[0][0]
+    assert "001" in warnings[0][1]
+    window.close()
+
+
 def test_condition_combo_exposes_all_meeting_protocol_conditions(
     tmp_path: Path,
 ) -> None:
