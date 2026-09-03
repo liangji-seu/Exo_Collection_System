@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import json
 import logging
 from pathlib import Path
+import re
 import shutil
 from typing import Any, Iterable
 
@@ -97,6 +98,26 @@ def _stem_matches(stem: str, cap_name: str) -> bool:
     return folded_stem == folded_cap or folded_stem.startswith(folded_cap + "_")
 
 
+_TAKE_SUFFIX_RE = re.compile(r"(.*_[0-9a-fA-F]{8})\d+")
+
+
+def _base_capture_name(cap_name: str) -> str:
+    """Strip XINGYING's trailing take index from a recorded capture name.
+
+    The Collector sends ``{subject}_{condition}_r{repeat}_{uuid8}`` to XINGYING,
+    but XINGYING appends a take number to the real ``.cap``/``.c3d`` name (e.g.
+    ``..._248024cb1``).  The operator-named ``.txt`` keeps the bare ``uuid8`` form
+    (``..._248024cb``), so both variants must map to the same trial.  The ``uuid8``
+    is 8 hex chars and may itself end in a digit, so the take index is anchored on
+    the 8-char uuid rather than on "trailing digits".
+    """
+    name = str(cap_name or "").strip()
+    if not name:
+        return name
+    match = _TAKE_SUFFIX_RE.fullmatch(name)
+    return match.group(1) if match else name
+
+
 def load_cap_names(trial_root: Path) -> tuple[str, ...]:
     """Read the recorded XINGYING capture names for one finalized trial.
 
@@ -133,6 +154,13 @@ def load_cap_names(trial_root: Path) -> tuple[str, ...]:
         if clean and clean not in seen:
             seen.add(clean)
             result.append(clean)
+        # XINGYING appends a take index to the real capture name; the operator-
+        # named .txt uses the bare form.  Register both so a .c3d (with take)
+        # and a .txt (without take) resolve to the same trial.
+        base = _base_capture_name(clean)
+        if base and base != clean and base not in seen:
+            seen.add(base)
+            result.append(base)
     return tuple(result)
 
 
@@ -163,6 +191,7 @@ def check_trial_sync_data(manifest_path: Path) -> SyncDataStatus:
         for candidate in txt_files
     )
     primary = cap_names[0]
+    primary_base = _base_capture_name(primary)
     return SyncDataStatus(
         manifest_path=Path(manifest_path),
         trial_root=trial_root,
@@ -170,7 +199,7 @@ def check_trial_sync_data(manifest_path: Path) -> SyncDataStatus:
         c3d_present=c3d_present,
         txt_present=txt_present,
         c3d_missing=None if c3d_present else f"{primary}.c3d",
-        txt_missing=None if txt_present else f"{primary}.txt",
+        txt_missing=None if txt_present else f"{primary_base}.txt",
     )
 
 

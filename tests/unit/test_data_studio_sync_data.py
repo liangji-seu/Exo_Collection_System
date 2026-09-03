@@ -104,6 +104,23 @@ def test_load_cap_names_dedupes(tmp_path: Path) -> None:
     assert load_cap_names(trial_root) == (CAP_NAME,)
 
 
+def test_load_cap_names_adds_take_stripped_base(tmp_path: Path) -> None:
+    # XINGYING broadcasts the take-appended name (uuid8 + take index); the
+    # operator-named .txt uses the bare uuid8 form.  Both must be registered.
+    trial_root = tmp_path / "trial"
+    trial_root.mkdir()
+    _write_trigger(trial_root, f"{CAP_NAME}1")
+    assert load_cap_names(trial_root) == (f"{CAP_NAME}1", CAP_NAME)
+
+
+def test_load_cap_names_base_unchanged_when_uuid_ends_in_digit(tmp_path: Path) -> None:
+    # uuid8 may end in a decimal digit; the bare form must not be truncated.
+    trial_root = tmp_path / "trial"
+    trial_root.mkdir()
+    _write_trigger(trial_root, CAP_NAME)  # CAP_NAME ends in "abcd1234"
+    assert load_cap_names(trial_root) == (CAP_NAME,)
+
+
 # ── check_trial_sync_data ───────────────────────────────────────
 
 
@@ -159,6 +176,29 @@ def test_check_trial_sync_data_matches_take_suffix(tmp_path: Path) -> None:
     assert status.complete
 
 
+def test_check_trial_sync_data_matches_take_index_no_underscore(tmp_path: Path) -> None:
+    # Real XINGYING naming: .c3d carries the take index (no underscore), the
+    # operator-named .txt uses the bare uuid8 form.
+    trial_root = tmp_path / "trial"
+    trial_root.mkdir()
+    _write_trigger(trial_root, f"{CAP_NAME}1")
+    (trial_root / f"{CAP_NAME}1.c3d").write_text("x")
+    (trial_root / f"{CAP_NAME}.txt").write_text("y")
+    status = check_trial_sync_data(_manifest_path(trial_root))
+    assert status.complete
+    assert status.c3d_present and status.txt_present
+
+
+def test_check_trial_sync_data_missing_labels_use_base_for_txt(tmp_path: Path) -> None:
+    # The missing-txt label must point at the bare uuid8 name, not the take name.
+    trial_root = tmp_path / "trial"
+    trial_root.mkdir()
+    _write_trigger(trial_root, f"{CAP_NAME}1")
+    status = check_trial_sync_data(_manifest_path(trial_root))
+    assert status.c3d_missing == f"{CAP_NAME}1.c3d"
+    assert status.txt_missing == f"{CAP_NAME}.txt"
+
+
 def test_check_all_trial_sync_only_finalized(tmp_path: Path) -> None:
     trial_root = tmp_path / "trial"
     trial_root.mkdir()
@@ -204,6 +244,24 @@ def test_sync_sidecar_files_copies_take_suffix(tmp_path: Path) -> None:
 
     assert result.copied_files == 1
     assert (trial_root / f"{CAP_NAME}_001.c3d").exists()
+
+
+def test_sync_sidecar_files_copies_take_index_no_underscore(tmp_path: Path) -> None:
+    # Recorded capture name carries the take index; the scan dir holds the bare
+    # .txt name — the pair must still match and copy.
+    trial_root = tmp_path / "trial"
+    trial_root.mkdir()
+    _write_trigger(trial_root, f"{CAP_NAME}1")
+    scan = tmp_path / "scan"
+    scan.mkdir()
+    (scan / f"{CAP_NAME}.txt").write_text("x")
+
+    result = sync_sidecar_files(scan, [_manifest_path(trial_root)], ".txt")
+
+    assert result.matched_files == 1
+    assert result.copied_files == 1
+    assert result.unmatched_files == ()
+    assert (trial_root / f"{CAP_NAME}.txt").exists()
 
 
 def test_sync_sidecar_files_skips_existing(tmp_path: Path) -> None:
