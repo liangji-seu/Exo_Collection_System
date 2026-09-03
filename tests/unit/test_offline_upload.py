@@ -16,19 +16,24 @@ import pytest
 from exo_collection.apps.data_studio.upload import (
     OfflineUploadRequest,
     ParamikoScpSession,
+    RemoteDatasetDownloader,
     RemoteDatasetStatusScanner,
     RemoteOnlyTrial,
     RemoteStatusSyncResult,
     RemoteTrialStatus,
     RemoteTrialStatusRecord,
     SshScpTrialUploader,
+    TrialUploadPlan,
     UnknownHostKeyError,
     UploadError,
+    UploadOperation,
     UploadWorkerHandle,
     UploadWorkerEventType,
     REMOTE_SYNC_INDEX_RELATIVE_PATH,
     REMOTE_SYNC_INDEX_SCHEMA,
+    _endpoint_cache_key,
     _package_fingerprint,
+    _read_local_download_cache,
     _remote_index_key,
     _update_local_sync_cache,
     _remote_join,
@@ -170,6 +175,34 @@ class _FakeRemoteSession:
 
     def read_bytes(self, remote_path: str) -> bytes:
         return self.files[remote_path]
+
+    def list_directory(self, remote_path: str) -> list[tuple[str, bool]]:
+        base = str(PurePosixPath(remote_path))
+        prefix = "/" if base == "/" else base + "/"
+        entries: list[tuple[str, bool]] = []
+        for directory in self.directories:
+            if directory == base or not directory.startswith(prefix):
+                continue
+            remainder = directory[len(prefix) :]
+            if remainder and "/" not in remainder:
+                entries.append((remainder, True))
+        for path in self.files:
+            if str(PurePosixPath(path).parent) == base:
+                entries.append((PurePosixPath(path).name, False))
+        return entries
+
+    def download_file(
+        self,
+        remote_path: str,
+        local_path: Path,
+        *,
+        progress: object | None = None,
+    ) -> None:
+        payload = self.files[remote_path]
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        local_path.write_bytes(payload)
+        if callable(progress):
+            progress(len(payload), len(payload))
 
     def rename(self, source: str, destination: str) -> None:
         if source in self.files:
@@ -1231,3 +1264,203 @@ def test_real_spawn_worker_receives_credentials_by_pipe_and_honors_activity_guar
         if worker.is_alive:
             worker.terminate_for_shutdown()
         worker.close()
+
+
+# ── 从服务器拉取（下载） ─────────────────────────────────────────
+
+
+def _download_request(
+    root: Path,
+    manifest_path: Path,
+    target: Path,
+    secret: str = "S3cret!unique",
+) -> OfflineUploadRequest:
+    return OfflineUploadRequest(
+        dataset_root=root,
+        manifest_path=manifest_path,
+        host="example.internal",
+        port=22,
+        username="researcher",
+        remote_workdir="/srv/exo-data",
+        password=secret,
+        operation=UploadOperation.DOWNLOAD,
+        download_target_root=target,
+    )
+
+
+def _publish_remote_trial(
+    session: _FakeRemoteSession,
+    request: OfflineUploadRequest,
+    plan: TrialUploadPlan,
+    dataset_root: Path,
+) -> tuple[str, str]:
+    """Populate the fake remote with one trial's files; return (key, remote_dir)."""
+    key = _remote_index_key(plan, dataset_root)
+    remote_dir = build_remote_trial_directory(request.remote_workdir, plan, dataset_root)
+    for item in plan.files:
+        remote_path = f"{remote_dir}/{item.relative_path.as_posix()}"
+        session.ensure_directory(str(PurePosixPath(remote_path).parent))
+        session.files[remote_path] = item.local_path.read_bytes()
+    return key, remote_dir
+
+
+def _write_remote_index(
+    session: _FakeRemoteSession,
+    request: OfflineUploadRequest,
+    entries: dict[str, dict[str, object]],
+) -> None:
+    index_path = f"{request.remote_workdir}/{REMOTE_SYNC_INDEX_RELATIVE_PATH.as_posix()}"
+    session.ensure_directory(str(PurePosixPath(index_path).parent))
+    session.files[index_path] = json.dumps(
+        {"schema": REMOTE_SYNC_INDEX_SCHEMA, "trials": entries}
+    ).encode("utf-8")
+
+
+def _index_entry(plan: TrialUploadPlan) -> dict[str, object]:
+    return {
+        "trial_uuid": str(plan.trial_uuid),
+        "package_fingerprint": _package_fingerprint(plan),
+        "file_count": len(plan.files),
+        "total_bytes": plan.total_bytes,
+    }
+
+
+def _replace_plan_file(
+    plan: TrialUploadPlan, relative: str, payload: bytes
+) -> TrialUploadPlan:
+    files = tuple(
+        replace(
+            item,
+            size_bytes=len(payload),
+            sha256=hashlib.sha256(payload).hexdigest(),
+        )
+        if item.relative_path.as_posix() == relative
+        else item
+        for item in plan.files
+    )
+    return replace(plan, files=files)
+
+
+def test_download_pulls_full_trial_and_writes_cache(tmp_path: Path) -> None:
+    manifest_path = _publish_trial(tmp_path)
+    plan = build_upload_plan(manifest_path)
+    target = tmp_path / "pull"
+    request = _download_request(tmp_path, manifest_path, target)
+    session = _FakeRemoteSession()
+    key, _remote_dir = _publish_remote_trial(session, request, plan, tmp_path)
+    _write_remote_index(session, request, {key: _index_entry(plan)})
+
+    result = RemoteDatasetDownloader(lambda _request: session).download(request, target)
+
+    assert result.target_root == target.resolve()
+    assert result.downloaded_trials == 1
+    assert result.skipped_trials == 0
+    assert result.downloaded_files == len(plan.files)
+    assert result.total_bytes == plan.total_bytes
+    assert session.closed
+
+    local_trial = target.joinpath(*PurePosixPath(key).parts)
+    assert (local_trial / "manifest.json").is_file()
+    assert (local_trial / "raw" / "imu.h5").read_bytes() == b"immutable-imu-payload"
+
+    cache = _read_local_download_cache(target, _endpoint_cache_key(request))
+    assert cache[key]["package_fingerprint"] == _package_fingerprint(plan)
+    assert cache[key]["file_count"] == len(plan.files)
+
+
+def test_download_skips_unchanged_trial_on_second_run(tmp_path: Path) -> None:
+    manifest_path = _publish_trial(tmp_path)
+    plan = build_upload_plan(manifest_path)
+    target = tmp_path / "pull"
+    request = _download_request(tmp_path, manifest_path, target)
+
+    def publish() -> _FakeRemoteSession:
+        session = _FakeRemoteSession()
+        key, _remote_dir = _publish_remote_trial(session, request, plan, tmp_path)
+        _write_remote_index(session, request, {key: _index_entry(plan)})
+        return session
+
+    first = RemoteDatasetDownloader(lambda _request: publish()).download(request, target)
+    assert first.downloaded_trials == 1
+    assert first.skipped_trials == 0
+
+    second = RemoteDatasetDownloader(lambda _request: publish()).download(request, target)
+    assert second.downloaded_trials == 0
+    assert second.skipped_trials == 1
+    assert second.downloaded_files == 0
+
+
+def test_download_redownloads_when_remote_content_changes(tmp_path: Path) -> None:
+    manifest_path = _publish_trial(tmp_path)
+    plan = build_upload_plan(manifest_path)
+    target = tmp_path / "pull"
+    request = _download_request(tmp_path, manifest_path, target)
+    key = _remote_index_key(plan, tmp_path)
+
+    session = _FakeRemoteSession()
+    _remote_dir = _publish_remote_trial(session, request, plan, tmp_path)[1]
+    _write_remote_index(session, request, {key: _index_entry(plan)})
+    RemoteDatasetDownloader(lambda _request: session).download(request, target)
+
+    local_trial = target.joinpath(*PurePosixPath(key).parts)
+    assert (local_trial / "raw" / "imu.h5").read_bytes() == b"immutable-imu-payload"
+
+    new_payload = b"immutable-imu-payload-v2"
+    changed_plan = _replace_plan_file(plan, "raw/imu.h5", new_payload)
+
+    new_session = _FakeRemoteSession()
+    new_key, new_remote_dir = _publish_remote_trial(new_session, request, plan, tmp_path)
+    assert new_key == key
+    new_session.files[f"{new_remote_dir}/raw/imu.h5"] = new_payload
+    _write_remote_index(new_session, request, {key: _index_entry(changed_plan)})
+
+    result = RemoteDatasetDownloader(lambda _request: new_session).download(request, target)
+
+    assert result.downloaded_trials == 1
+    assert result.skipped_trials == 0
+    assert (local_trial / "raw" / "imu.h5").read_bytes() == new_payload
+
+
+def test_download_request_validation(tmp_path: Path) -> None:
+    manifest_path = _publish_trial(tmp_path)
+
+    with pytest.raises(ValueError, match="目标文件夹"):
+        OfflineUploadRequest(
+            dataset_root=tmp_path,
+            manifest_path=manifest_path,
+            host="example.internal",
+            port=22,
+            username="researcher",
+            remote_workdir="/srv/exo-data",
+            password="x",
+            operation=UploadOperation.DOWNLOAD,
+        )
+    with pytest.raises(ValueError, match="仅下载"):
+        OfflineUploadRequest(
+            dataset_root=tmp_path,
+            manifest_path=manifest_path,
+            host="example.internal",
+            port=22,
+            username="researcher",
+            remote_workdir="/srv/exo-data",
+            password="x",
+            download_target_root=tmp_path / "pull",
+        )
+
+
+def test_download_is_blocked_while_collector_active(tmp_path: Path) -> None:
+    manifest_path = _publish_trial(tmp_path)
+    target = tmp_path / "pull"
+    request = _download_request(tmp_path, manifest_path, target)
+    factory_called = False
+
+    def forbidden_factory(_request: OfflineUploadRequest) -> _FakeRemoteSession:
+        nonlocal factory_called
+        factory_called = True
+        raise AssertionError("network session must not be created")
+
+    with AcquisitionLock(tmp_path):
+        with pytest.raises(UploadError, match="拉取") as captured:
+            RemoteDatasetDownloader(forbidden_factory).download(request, target)
+    assert captured.value.code == "COLLECTOR_ACTIVE"
+    assert not factory_called

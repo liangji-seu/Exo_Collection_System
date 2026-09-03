@@ -82,10 +82,11 @@ from .process_workers import DataStudioProcessWorker, ProcessOperation
 from .quality_reviews import append_quality_review
 from .recovery_dialog import RecoveryDialog
 from .service import DataStudioSnapshot
-from .sync_data import SyncDataStatus, check_trial_sync_data, sync_sidecar_files
+from .sync_data import SyncCopyResult, SyncDataStatus, sync_sidecar_files
 from .credential_store import load_password
 from .upload import (
     BatchOfflineUploadResult,
+    DownloadResult,
     HostKeyInfo,
     OfflineUploadResult,
     OfflineUploadRequest,
@@ -392,6 +393,14 @@ class DataStudioWindow(QMainWindow):
         self.remote_settings_button.setObjectName("configure_remote_upload")
         self.remote_settings_button.clicked.connect(self.configure_remote_upload)
         root_row.addWidget(self.remote_settings_button)
+        self.download_button = QPushButton("从服务器拉取数据")
+        self.download_button.setObjectName("download_from_remote")
+        self.download_button.setToolTip(
+            "把服务器 data/ 全量拉取到所选本地文件夹；已下载且一致的 Trial 跳过，"
+            "其余覆盖下载（git pull 式）。"
+        )
+        self.download_button.clicked.connect(self.download_remote_data)
+        root_row.addWidget(self.download_button)
         outer.addLayout(root_row)
 
         self.remote_status_legend = QLabel(
@@ -1299,6 +1308,8 @@ class DataStudioWindow(QMainWindow):
                             self._remote_sync_succeeded(event.result, silent=context.silent)
                     elif isinstance(event.result, (OfflineUploadResult, BatchOfflineUploadResult)):
                         self._upload_succeeded(event.result)
+                    elif isinstance(event.result, DownloadResult):
+                        self._download_succeeded(event.result)
                     else:
                         self._upload_failed(
                             "INVALID_RESULT",
@@ -1592,8 +1603,6 @@ class DataStudioWindow(QMainWindow):
         manifest_paths = self._selected_finalized_manifest_paths()
         if not manifest_paths:
             return
-        if self._block_incomplete_sync_upload(manifest_paths):
-            return
         self._start_remote_operation(manifest_paths, status_only=False)
 
     @Slot()
@@ -1622,6 +1631,34 @@ class DataStudioWindow(QMainWindow):
             QMessageBox.warning(self, "没有可同步数据", "请先刷新 Catalog；当前没有 FINALIZED Trial。")
             return
         self._start_remote_operation(manifest_paths, status_only=True)
+
+    @Slot()
+    def download_remote_data(self) -> None:
+        """从服务器全量拉取 data/ 到所选本地文件夹（增量更新）。"""
+
+        self._apply_activity(read_activity(self._data_root))
+        if self._lightweight_mode:
+            QMessageBox.warning(
+                self,
+                "采集期间禁止拉取",
+                "Collector 正在采集，Data Studio 已进入轻量模式。",
+            )
+            return
+        if self._active_upload is not None:
+            QMessageBox.information(self, "远程任务进行中", "请等待当前远程任务结束。")
+            return
+        target = QFileDialog.getExistingDirectory(
+            self,
+            "从服务器拉取数据：选择目标文件夹",
+            str(self._data_root),
+        )
+        if not target:
+            return
+        self._start_remote_operation(
+            (self._data_root,),
+            status_only=False,
+            download_target_root=Path(target),
+        )
 
     @Slot()
     def sync_mocap_data(self) -> None:
@@ -1680,44 +1717,6 @@ class DataStudioWindow(QMainWindow):
         QMessageBox.information(self, f"{result.extension} 同步完成", "\n\n".join(lines))
         self._schedule_catalog_refresh()
 
-    def _incomplete_sync_descriptions(
-        self, manifest_paths: tuple[Path, ...]
-    ) -> tuple[str, ...]:
-        """Return descriptions of trials whose .c3d/.txt sync data is incomplete."""
-        descriptions: list[str] = []
-        for manifest_path in manifest_paths:
-            try:
-                status = check_trial_sync_data(manifest_path)
-            except Exception as exc:
-                descriptions.append(f"{manifest_path}: 检查失败（{exc}）")
-                continue
-            if status.complete:
-                continue
-            label = status.trial_root.name or str(status.trial_root)
-            if not status.has_cap:
-                descriptions.append(f"{label}：无 cap 记录")
-                continue
-            missing = []
-            if status.c3d_missing:
-                missing.append(status.c3d_missing)
-            if status.txt_missing:
-                missing.append(status.txt_missing)
-            descriptions.append(f"{label}：缺少 " + "、".join(missing))
-        return tuple(descriptions)
-
-    def _block_incomplete_sync_upload(self, manifest_paths: tuple[Path, ...]) -> bool:
-        incomplete = self._incomplete_sync_descriptions(manifest_paths)
-        if not incomplete:
-            return False
-        QMessageBox.warning(
-            self,
-            "同步数据不完整，禁止上传",
-            "以下 Trial 缺少 .c3d 动捕或 .txt 测力台同步数据，不能上传：\n\n"
-            + "\n".join(incomplete)
-            + "\n\n请先用「同步动捕数据」/「同步测力台数据」补齐。",
-        )
-        return True
-
     @Slot()
     def one_click_upload(self) -> None:
         """One-click: compare cloud vs local, then upload incrementally or prompt."""
@@ -1738,8 +1737,6 @@ class DataStudioWindow(QMainWindow):
             QMessageBox.warning(
                 self, "没有可上传数据", "请先刷新 Catalog；当前没有 FINALIZED Trial。"
             )
-            return
-        if self._block_incomplete_sync_upload(manifest_paths):
             return
         self._start_remote_operation(
             manifest_paths, status_only=True, one_click=True
@@ -1786,6 +1783,7 @@ class DataStudioWindow(QMainWindow):
         *,
         status_only: bool,
         quiet: bool = False,
+        download_target_root: Path | None = None,
     ) -> OfflineUploadRequest | None:
         endpoint = self._settings.upload_endpoint
         host = str(endpoint.get("host", "")).strip()
@@ -1818,9 +1816,13 @@ class DataStudioWindow(QMainWindow):
                 manifest_path=manifest_paths[0],
                 additional_manifest_paths=manifest_paths[1:],
                 operation=(
-                    UploadOperation.SYNC_REMOTE_STATUS
-                    if status_only
-                    else UploadOperation.UPLOAD
+                    UploadOperation.DOWNLOAD
+                    if download_target_root is not None
+                    else (
+                        UploadOperation.SYNC_REMOTE_STATUS
+                        if status_only
+                        else UploadOperation.UPLOAD
+                    )
                 ),
                 host=host,
                 port=int(endpoint.get("port", 22)),
@@ -1828,6 +1830,7 @@ class DataStudioWindow(QMainWindow):
                 remote_workdir=remote_workdir,
                 password=password,
                 private_key_path=private_key_path,
+                download_target_root=download_target_root,
             )
         except (TypeError, ValueError):
             return None
@@ -1840,11 +1843,15 @@ class DataStudioWindow(QMainWindow):
         force_dialog: bool = False,
         silent: bool = False,
         one_click: bool = False,
+        download_target_root: Path | None = None,
     ) -> None:
         """Collect ephemeral credentials and start one isolated remote worker."""
 
         request = None if force_dialog else self._saved_remote_request(
-            manifest_paths, status_only=status_only, quiet=silent
+            manifest_paths,
+            status_only=status_only,
+            quiet=silent,
+            download_target_root=download_target_root,
         )
         if request is None:
             if silent:
@@ -1854,6 +1861,7 @@ class DataStudioWindow(QMainWindow):
                 self,
                 status_only=status_only,
                 settings=self._settings,
+                download_target_root=download_target_root,
             )
             while dialog.exec() == QDialog.DialogCode.Accepted:
                 try:
@@ -1885,6 +1893,9 @@ class DataStudioWindow(QMainWindow):
         if one_click:
             progress_dialog.setWindowTitle("一键上传")
             progress_dialog.cancel_button.setText("取消一键上传")
+        elif download_target_root is not None:
+            progress_dialog.setWindowTitle("从服务器拉取数据")
+            progress_dialog.cancel_button.setText("取消拉取")
         elif status_only:
             progress_dialog.setWindowTitle("同步云端状态")
             progress_dialog.cancel_button.setText("取消状态同步")
@@ -1927,8 +1938,13 @@ class DataStudioWindow(QMainWindow):
         # window. UploadWorkerHandle has already sent it through its memory pipe.
         request = None
         self.statusBar().showMessage(
-            "已启动只读云端状态同步进程。" if status_only else
-            f"已启动批量 SSH/SCP 上传进程（{len(manifest_paths)} 个 Trial）。"
+            "已启动从服务器拉取数据进程。"
+            if download_target_root is not None
+            else (
+                "已启动只读云端状态同步进程。"
+                if status_only
+                else f"已启动批量 SSH/SCP 上传进程（{len(manifest_paths)} 个 Trial）。"
+            )
         )
 
     @Slot()
@@ -1999,6 +2015,24 @@ class DataStudioWindow(QMainWindow):
         self.statusBar().showMessage("人工 SSH/SCP 上传并逐文件校验完成。", 8000)
         self.upload_finished.emit(True)
         self._schedule_catalog_refresh()
+
+    def _download_succeeded(self, result: DownloadResult) -> None:
+        QMessageBox.information(
+            self,
+            "从服务器拉取完成",
+            f"目标文件夹：{result.target_root}\n"
+            f"新增/更新 Trial：{result.downloaded_trials} 个\n"
+            f"跳过（已一致）：{result.skipped_trials} 个\n"
+            f"文件：{result.downloaded_files} 个，{result.total_bytes:,} B",
+        )
+        self.statusBar().showMessage(
+            f"从服务器拉取完成：{result.downloaded_trials} 个新增/更新，"
+            f"{result.skipped_trials} 个跳过。",
+            8000,
+        )
+        self.upload_finished.emit(True)
+        if result.target_root == Path(self._data_root).expanduser().resolve():
+            self._schedule_catalog_refresh()
 
     def _mark_uploaded_results_verified(
         self, results: tuple[OfflineUploadResult, ...]

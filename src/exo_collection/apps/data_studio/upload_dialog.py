@@ -49,6 +49,7 @@ class OfflineUploadDialog(QDialog):
         *,
         status_only: bool = False,
         settings: SharedAppSettings | None = None,
+        download_target_root: Path | None = None,
     ) -> None:
         super().__init__(parent)
         raw_paths = (manifest_path,) if isinstance(manifest_path, Path) else tuple(manifest_path)
@@ -56,18 +57,36 @@ class OfflineUploadDialog(QDialog):
             raise ValueError("至少需要一个 FINALIZED Trial。")
         self._manifest_paths = tuple(Path(path).expanduser().resolve() for path in raw_paths)
         self._status_only = status_only
+        self._download_target_root = (
+            Path(download_target_root).expanduser().resolve()
+            if download_target_root is not None
+            else None
+        )
+        self._download = self._download_target_root is not None
         self._settings = settings if settings is not None else SharedAppSettings()
-        self.setWindowTitle("同步云端状态" if status_only else "人工离线 SSH/SCP 上传")
+        self.setWindowTitle(
+            "从服务器拉取数据"
+            if self._download
+            else ("同步云端状态" if status_only else "人工离线 SSH/SCP 上传")
+        )
         self.setModal(True)
         self.resize(560, 380)
 
         outer = QVBoxLayout(self)
         explanation = QLabel(
-            ("只读核对本地与云端 data/ 的同路径文件及 SHA-256；不会上传、下载、覆盖或删除文件。"
-             if status_only else
-             "同步所选层级下全部已最终化 Trial，并完整保留它们在本地 data/ 下的相对目录。"
-             "云端已有同内容文件会跳过，缺少文件会补传，云端额外文件不会删除；"
-             "同路径内容冲突时停止且不覆盖。")
+            (
+                "把服务器 data/ 全量拉取到所选本地文件夹：已下载且一致的 Trial 会跳过，"
+                "其余覆盖下载（git pull 式），并逐包校验 SHA-256。"
+                if self._download
+                else (
+                    "只读核对本地与云端 data/ 的同路径文件及 SHA-256；不会上传、下载、覆盖或删除文件。"
+                    if status_only
+                    else
+                    "同步所选层级下全部已最终化 Trial，并完整保留它们在本地 data/ 下的相对目录。"
+                    "云端已有同内容文件会跳过，缺少文件会补传，云端额外文件不会删除；"
+                    "同路径内容冲突时停止且不覆盖。"
+                )
+            )
             + "勾选记住密码时只保存到 Windows 凭据管理器，不写入配置或日志。"
         )
         explanation.setWordWrap(True)
@@ -75,10 +94,14 @@ class OfflineUploadDialog(QDialog):
 
         trial_group = QGroupBox("同步范围")
         trial_form = QFormLayout(trial_group)
-        trial_path = QLineEdit(f"{len(self._manifest_paths)} 个 FINALIZED Trial")
+        trial_path = QLineEdit(
+            "全部云端 Trial（全量拉取）"
+            if self._download
+            else f"{len(self._manifest_paths)} 个 FINALIZED Trial"
+        )
         trial_path.setReadOnly(True)
         trial_path.setObjectName("upload_trial_path")
-        trial_form.addRow("本地范围：", trial_path)
+        trial_form.addRow("拉取范围：" if self._download else "本地范围：", trial_path)
         outer.addWidget(trial_group)
 
         endpoint_group = QGroupBox("SSH/SCP 目标（每次手工输入）")
@@ -163,7 +186,11 @@ class OfflineUploadDialog(QDialog):
             | QDialogButtonBox.StandardButton.Ok
         )
         self.start_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
-        self.start_button.setText("开始同步状态" if status_only else "开始上传")
+        self.start_button.setText(
+            "开始拉取"
+            if self._download
+            else ("开始同步状态" if status_only else "开始上传")
+        )
         self.start_button.setObjectName("start_offline_upload")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -182,9 +209,13 @@ class OfflineUploadDialog(QDialog):
             manifest_path=self._manifest_paths[0],
             additional_manifest_paths=self._manifest_paths[1:],
             operation=(
-                UploadOperation.SYNC_REMOTE_STATUS
-                if self._status_only
-                else UploadOperation.UPLOAD
+                UploadOperation.DOWNLOAD
+                if self._download
+                else (
+                    UploadOperation.SYNC_REMOTE_STATUS
+                    if self._status_only
+                    else UploadOperation.UPLOAD
+                )
             ),
             host=self.host_edit.text(),
             port=self.port_spin.value(),
@@ -193,6 +224,7 @@ class OfflineUploadDialog(QDialog):
             password=(None if use_private_key else password),
             private_key_path=(Path(private_key_path) if use_private_key else None),
             private_key_passphrase=(passphrase or None if use_private_key else None),
+            download_target_root=self._download_target_root,
         )
         self._settings.set_upload_endpoint(
             {

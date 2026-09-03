@@ -49,6 +49,8 @@ REMOTE_SYNC_INDEX_RELATIVE_PATH = PurePosixPath(".exo/exo_sync_index.json")
 REMOTE_SYNC_INDEX_SCHEMA = "exo.remote-sync-index/v1"
 LOCAL_SYNC_CACHE_FILENAME = "exo_sync_cache.json"
 LOCAL_SYNC_CACHE_SCHEMA = "exo.local-sync-cache/v1"
+LOCAL_DOWNLOAD_CACHE_FILENAME = "exo_download_cache.json"
+LOCAL_DOWNLOAD_CACHE_SCHEMA = "exo.local-download-cache/v1"
 
 
 def _is_safe_remote_segment(value: str) -> bool:
@@ -104,6 +106,7 @@ class UploadPhase(StrEnum):
 class UploadOperation(StrEnum):
     UPLOAD = "UPLOAD"
     SYNC_REMOTE_STATUS = "SYNC_REMOTE_STATUS"
+    DOWNLOAD = "DOWNLOAD"
 
 
 class RemoteTrialStatus(StrEnum):
@@ -143,6 +146,9 @@ class OfflineUploadRequest:
     )
     transfer_batch_uuid: UUID = field(default_factory=uuid4)
     accepted_host_key: HostKeyInfo | None = field(
+        default=None, repr=False, compare=False
+    )
+    download_target_root: Path | None = field(
         default=None, repr=False, compare=False
     )
 
@@ -196,6 +202,16 @@ class OfflineUploadRequest:
         object.__setattr__(self, "password", password)
         object.__setattr__(self, "private_key_path", private_key_path)
         object.__setattr__(self, "private_key_passphrase", passphrase)
+        target_root = (
+            Path(self.download_target_root).expanduser().resolve()
+            if self.download_target_root is not None
+            else None
+        )
+        if self.operation is UploadOperation.DOWNLOAD and target_root is None:
+            raise ValueError("下载操作必须指定目标文件夹。")
+        if self.operation is not UploadOperation.DOWNLOAD and target_root is not None:
+            raise ValueError("仅下载操作支持指定目标文件夹。")
+        object.__setattr__(self, "download_target_root", target_root)
 
     @property
     def authentication_method(self) -> AuthenticationMethod:
@@ -276,6 +292,21 @@ class RemoteOnlyTrial:
 class RemoteStatusSyncResult:
     records: tuple[RemoteTrialStatusRecord, ...]
     remote_only: tuple[RemoteOnlyTrial, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class DownloadResult:
+    """One remote → local pull's aggregated outcome."""
+
+    target_root: Path
+    downloaded_trials: int
+    skipped_trials: int
+    downloaded_files: int
+    total_bytes: int
+
+    @property
+    def trial_count(self) -> int:
+        return self.downloaded_trials + self.skipped_trials
 
 
 @dataclass(frozen=True, slots=True)
@@ -361,6 +392,16 @@ class RemoteUploadSession(Protocol):
     ) -> str: ...
 
     def read_bytes(self, remote_path: str) -> bytes: ...
+
+    def list_directory(self, remote_path: str) -> list[tuple[str, bool]]: ...
+
+    def download_file(
+        self,
+        remote_path: str,
+        local_path: Path,
+        *,
+        progress: UploadByteProgress | None = None,
+    ) -> None: ...
 
     def rename(self, source: str, destination: str) -> None: ...
 
@@ -566,6 +607,31 @@ def _package_fingerprint(plan: TrialUploadPlan) -> str:
     return digest.hexdigest()
 
 
+def _directory_fingerprint(directory: Path) -> str:
+    """Fingerprint a downloaded Trial directory using the exact package algorithm.
+
+    Mirrors ``_package_fingerprint`` but rehashes the on-disk files instead of
+    reading a ``TrialUploadPlan``, so a freshly downloaded directory can be
+    compared against the remote sync-index ``package_fingerprint``.
+    """
+
+    digest = hashlib.sha256()
+    entries: list[tuple[str, int, str]] = []
+    for local_path in _iter_trial_paths(directory):
+        relative = local_path.relative_to(directory).as_posix()
+        entries.append(
+            (relative, local_path.stat().st_size, _sha256_file(local_path))
+        )
+    for relative, size_bytes, sha256 in sorted(entries):
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(str(size_bytes).encode("ascii"))
+        digest.update(b"\0")
+        digest.update(sha256.encode("ascii"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
 def _remote_index_key(plan: TrialUploadPlan, dataset_root: Path) -> str:
     return plan.trial_directory.relative_to(dataset_root).as_posix()
 
@@ -626,6 +692,68 @@ def _update_local_sync_cache(
         trials = {}
         endpoint["trials"] = trials
     trials[_remote_index_key(plan, request.dataset_root)] = dict(entry)
+    payload["updated_at_utc_ns"] = time.time_ns()
+    temporary = path.with_name(f".{path.name}.partial-{uuid4().hex}")
+    try:
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _local_download_cache_path(target_root: Path) -> Path:
+    return target_root / ".exo" / LOCAL_DOWNLOAD_CACHE_FILENAME
+
+
+def _read_local_download_cache(
+    target_root: Path, endpoint_key: str
+) -> dict[str, dict[str, Any]]:
+    path = _local_download_cache_path(target_root)
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict) or payload.get("schema") != LOCAL_DOWNLOAD_CACHE_SCHEMA:
+        return {}
+    endpoints = payload.get("endpoints", {})
+    endpoint = endpoints.get(endpoint_key, {}) if isinstance(endpoints, dict) else {}
+    trials = endpoint.get("trials", {}) if isinstance(endpoint, dict) else {}
+    return {
+        str(key): dict(value)
+        for key, value in trials.items()
+        if isinstance(key, str) and isinstance(value, dict)
+    } if isinstance(trials, dict) else {}
+
+
+def _update_local_download_cache(
+    target_root: Path, endpoint_key: str, key: str, entry: dict[str, Any]
+) -> None:
+    path = _local_download_cache_path(target_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+        payload = {}
+    if not isinstance(payload, dict) or payload.get("schema") != LOCAL_DOWNLOAD_CACHE_SCHEMA:
+        payload = {"schema": LOCAL_DOWNLOAD_CACHE_SCHEMA, "endpoints": {}}
+    endpoints = payload.setdefault("endpoints", {})
+    if not isinstance(endpoints, dict):
+        endpoints = {}
+        payload["endpoints"] = endpoints
+    endpoint = endpoints.setdefault(endpoint_key, {"trials": {}})
+    if not isinstance(endpoint, dict):
+        endpoint = {"trials": {}}
+        endpoints[endpoint_key] = endpoint
+    trials = endpoint.setdefault("trials", {})
+    if not isinstance(trials, dict):
+        trials = {}
+        endpoint["trials"] = trials
+    trials[key] = dict(entry)
     payload["updated_at_utc_ns"] = time.time_ns()
     temporary = path.with_name(f".{path.name}.partial-{uuid4().hex}")
     try:
@@ -996,6 +1124,31 @@ class ParamikoScpSession:
     def read_bytes(self, remote_path: str) -> bytes:
         with self.sftp.open(remote_path, "rb") as stream:
             return bytes(stream.read())
+
+    def list_directory(self, remote_path: str) -> list[tuple[str, bool]]:
+        entries: list[tuple[str, bool]] = []
+        for attribute in self.sftp.listdir_attr(remote_path):
+            name = getattr(attribute, "filename", "")
+            if name in {".", ".."}:
+                continue
+            entries.append((name, stat.S_ISDIR(int(attribute.st_mode))))
+        return entries
+
+    def download_file(
+        self,
+        remote_path: str,
+        local_path: Path,
+        *,
+        progress: UploadByteProgress | None = None,
+    ) -> None:
+        if progress is not None:
+
+            def callback(transferred_bytes: int, total_bytes: int) -> None:
+                progress(int(transferred_bytes), int(total_bytes))
+
+            self.sftp.get(remote_path, str(local_path), callback=callback)
+        else:
+            self.sftp.get(remote_path, str(local_path))
 
     def rename(self, source: str, destination: str) -> None:
         self.sftp.rename(source, destination)
@@ -1752,6 +1905,177 @@ class RemoteDatasetStatusScanner:
             session.close()
 
 
+class RemoteDatasetDownloader:
+    """Recursively mirror the remote data/ tree into a local target folder.
+
+    The remote ``.exo/exo_sync_index.json`` is the authoritative manifest of
+    what to pull.  A trial whose recorded ``package_fingerprint`` already
+    matches the local download cache is skipped (incremental); everything else
+    is downloaded overwriting any local bytes, like ``git pull``.  Each file is
+    written atomically, then the whole trial is verified against the remote
+    fingerprint before the local cache is advanced.
+    """
+
+    def __init__(self, session_factory: RemoteSessionFactory | None = None) -> None:
+        self._session_factory = session_factory or _default_remote_session
+
+    def download(
+        self,
+        request: OfflineUploadRequest,
+        target_root: Path,
+        *,
+        progress: ProgressCallback | None = None,
+        cancelled: CancelCheck | None = None,
+    ) -> DownloadResult:
+        report = progress or (lambda _update: None)
+        is_cancelled = cancelled or (lambda: False)
+        if read_activity(request.dataset_root) is not None:
+            raise UploadError("COLLECTOR_ACTIVE", "采集期间不能从服务器拉取数据。")
+        target = Path(target_root).expanduser().resolve()
+        report(UploadProgress(UploadPhase.CONNECTING, "正在连接服务器并读取云端同步索引…"))
+        session = self._session_factory(request)
+        endpoint_key = _endpoint_cache_key(request)
+        downloaded_trials = 0
+        skipped_trials = 0
+        downloaded_files = 0
+        total_bytes = 0
+        try:
+            _index_path, remote_entries = _read_remote_sync_index(
+                session, request.remote_workdir
+            )
+            local_cache = _read_local_download_cache(target, endpoint_key)
+            keys = sorted(remote_entries.keys())
+            total = len(keys)
+            for index, key in enumerate(keys, start=1):
+                if is_cancelled():
+                    raise UploadCancelled()
+                entry = remote_entries[key]
+                fingerprint = str(entry.get("package_fingerprint", ""))
+                remote_dir = _remote_join(
+                    request.remote_workdir, *PurePosixPath(key).parts
+                )
+                local_dir = target.joinpath(*PurePosixPath(key).parts)
+                cached = local_cache.get(key)
+                if (
+                    fingerprint
+                    and isinstance(cached, dict)
+                    and str(cached.get("package_fingerprint", "")) == fingerprint
+                    and (
+                        (local_dir / ".exo" / "manifest.json").is_file()
+                        or (local_dir / "manifest.json").is_file()
+                    )
+                ):
+                    skipped_trials += 1
+                    continue
+                report(
+                    UploadProgress(
+                        UploadPhase.UPLOADING,
+                        f"正在下载 Trial {index}/{total}：{key}",
+                        index - 1,
+                        total,
+                    )
+                )
+                file_count, byte_count = self._download_trial_tree(
+                    session,
+                    remote_dir,
+                    local_dir,
+                    report=report,
+                    cancelled=is_cancelled,
+                    index=index,
+                    total=total,
+                    label=key,
+                )
+                report(
+                    UploadProgress(
+                        UploadPhase.VERIFYING,
+                        f"正在校验 Trial {index}/{total}：{key}",
+                        index - 1,
+                        total,
+                    )
+                )
+                if _directory_fingerprint(local_dir) != fingerprint:
+                    raise UploadError(
+                        "DOWNLOAD_INTEGRITY_FAILED",
+                        f"下载后本地包指纹与云端不一致：{key}",
+                    )
+                _update_local_download_cache(target, endpoint_key, key, {
+                    "package_fingerprint": fingerprint,
+                    "file_count": int(entry.get("file_count", file_count)),
+                    "total_bytes": int(entry.get("total_bytes", byte_count)),
+                    "downloaded_at_utc_ns": time.time_ns(),
+                })
+                downloaded_trials += 1
+                downloaded_files += file_count
+                total_bytes += byte_count
+            report(
+                UploadProgress(
+                    UploadPhase.COMPLETED,
+                    f"从服务器拉取完成，共 {downloaded_trials} 个 Trial。",
+                    total,
+                    total,
+                )
+            )
+            return DownloadResult(
+                target_root=target,
+                downloaded_trials=downloaded_trials,
+                skipped_trials=skipped_trials,
+                downloaded_files=downloaded_files,
+                total_bytes=total_bytes,
+            )
+        finally:
+            session.close()
+
+    def _download_trial_tree(
+        self,
+        session: RemoteUploadSession,
+        remote_dir: str,
+        local_dir: Path,
+        *,
+        report: ProgressCallback,
+        cancelled: CancelCheck,
+        index: int,
+        total: int,
+        label: str,
+    ) -> tuple[int, int]:
+        file_count = 0
+        byte_count = 0
+
+        def walk(remote: str, local: Path) -> None:
+            nonlocal file_count, byte_count
+            if cancelled():
+                raise UploadCancelled()
+            local.mkdir(parents=True, exist_ok=True)
+            for name, is_directory in session.list_directory(remote):
+                if cancelled():
+                    raise UploadCancelled()
+                remote_child = _remote_join(remote, name)
+                local_child = local / name
+                if is_directory:
+                    walk(remote_child, local_child)
+                    continue
+                temporary = local_child.with_name(
+                    f".{local_child.name}.partial-{uuid4().hex}"
+                )
+                try:
+                    session.download_file(remote_child, temporary)
+                    os.replace(temporary, local_child)
+                finally:
+                    temporary.unlink(missing_ok=True)
+                file_count += 1
+                byte_count += local_child.stat().st_size
+                report(
+                    UploadProgress(
+                        UploadPhase.UPLOADING,
+                        f"正在下载 {index}/{total}：{name}",
+                        index - 1,
+                        total,
+                    )
+                )
+
+        walk(remote_dir, local_dir)
+        return file_count, byte_count
+
+
 def _remote_join(base: str, *parts: str) -> str:
     path = PurePosixPath(validate_remote_directory(base))
     for part in parts:
@@ -1782,7 +2106,7 @@ class UploadWorkerEventType(StrEnum):
 class UploadWorkerEvent:
     event_type: UploadWorkerEventType
     progress: UploadProgress | None = None
-    result: OfflineUploadResult | BatchOfflineUploadResult | RemoteStatusSyncResult | None = None
+    result: OfflineUploadResult | BatchOfflineUploadResult | RemoteStatusSyncResult | DownloadResult | None = None
     host_key: HostKeyInfo | None = None
     error_code: str | None = None
     message: str | None = None
@@ -1815,6 +2139,18 @@ def _upload_worker_main(command: Connection, events: Connection) -> None:
                 if request.operation is UploadOperation.SYNC_REMOTE_STATUS:
                     result = RemoteDatasetStatusScanner().scan(
                         request, progress=send_progress, cancelled=cancelled
+                    )
+                elif request.operation is UploadOperation.DOWNLOAD:
+                    target_root = request.download_target_root
+                    if target_root is None:
+                        raise UploadError(
+                            "INVALID_REQUEST", "下载请求缺少目标文件夹。"
+                        )
+                    result = RemoteDatasetDownloader().download(
+                        request,
+                        target_root,
+                        progress=send_progress,
+                        cancelled=cancelled,
                     )
                 else:
                     uploader = SshScpTrialUploader()
@@ -2043,11 +2379,13 @@ class UploadWorkerHandle:
 
 __all__ = [
     "AuthenticationMethod",
+    "DownloadResult",
     "HostKeyInfo",
     "OfflineUploadRequest",
     "OfflineUploadResult",
     "OneClickUploadDecision",
     "ParamikoScpSession",
+    "RemoteDatasetDownloader",
     "RemoteOnlyTrial",
     "SshScpTrialUploader",
     "TrialUploadFile",
