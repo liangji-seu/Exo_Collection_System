@@ -51,7 +51,7 @@ def _run_ui(
         app = QApplication(["exo-calculate", *arguments])
 
     window = CalculateWindow(data_root, settings=settings)
-    window.show()
+    window.showMaximized()
 
     if smoke_test:
         QTimer.singleShot(200, app.quit)

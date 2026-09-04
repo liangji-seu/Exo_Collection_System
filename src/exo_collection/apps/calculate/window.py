@@ -814,12 +814,8 @@ class CalculateWindow(QMainWindow):
             self._processing_view.append_log("尚未同步（无起始帧），无法导出真值。")
             return
 
-        path, _ = QFileDialog.getSaveFileName(
-            self, "导出真值数据", "ground_truth.csv", "CSV 文件 (*.csv)"
-        )
-        if not path:
-            return
-
+        # 直接写入当前 Session 文件夹，训练时按 session 直接读取。
+        out_path = dynamic.session_dir / "ground_truth.csv"
         try:
             import h5py
 
@@ -854,9 +850,10 @@ class CalculateWindow(QMainWindow):
                 data.time_s, data.moments, imu_time_s, imu_signal
             )
             write_ground_truth_csv(
-                Path(path), time_s, imu_aligned, moments, moment_names=data.moment_names
+                out_path, time_s, imu_aligned, moments, moment_names=data.moment_names
             )
-            self.statusBar().showMessage(f"已导出真值数据：{path}（{time_s.shape[0]} 帧）")
+            self.statusBar().showMessage(f"已导出真值数据：{out_path}（{time_s.shape[0]} 帧）")
+            self._processing_view.append_log(f"已导出真值数据：{out_path}")
         except Exception as exc:  # noqa: BLE001
             _log.exception("导出真值数据失败")
             QMessageBox.warning(self, "导出失败", f"导出真值数据失败：\n{exc}")
