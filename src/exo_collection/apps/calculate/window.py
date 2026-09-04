@@ -129,8 +129,6 @@ class CalculateWindow(QMainWindow):
 
         self._processing_view.process_requested.connect(self._on_process_requested)
         self._processing_view.cancel_requested.connect(self._on_cancel_requested)
-        self._processing_view.history_refresh_requested.connect(self._refresh_history)
-        self._processing_view.history_load_requested.connect(self._on_history_load)
 
         self._viewer.export_ground_truth_requested.connect(self._on_export_ground_truth)
 
@@ -205,7 +203,6 @@ class CalculateWindow(QMainWindow):
     def _on_dynamic(self, record: SessionRecord | None) -> None:
         self._controller.set_dynamic(record)
         self._sync_view.reset()
-        self._refresh_history()
         self._apply_patient_info(record)
 
     def _apply_patient_info(self, record: SessionRecord | None) -> None:
@@ -567,8 +564,6 @@ class CalculateWindow(QMainWindow):
         self._processing_view.set_running(False)
         status, detail = self._preliminary_qc(payload, self._controller.config)
         self._controller.mark_completed(status)
-        self._processing_view.set_qc_status(status, detail)
-        self._processing_view.set_qc_report(payload.get("qc"))
         self.statusBar().showMessage(f"解算完成（QC {status}）")
 
         # 自动载入回放数据并跳到回放页（阶段 E）。
@@ -577,7 +572,6 @@ class CalculateWindow(QMainWindow):
             viewer_dir = self._controller.run_dir / "viewer"
         self._load_viewer(viewer_dir)
         self._end_task(ctx)
-        self._refresh_history()
 
     def _on_opensim_cancelled(self, ctx: OperationContext) -> None:
         if not self._is_current(ctx):
@@ -587,7 +581,6 @@ class CalculateWindow(QMainWindow):
         self._controller.mark_cancelled()
         self.statusBar().showMessage("已取消")
         self._end_task(ctx)
-        self._refresh_history()
 
     def _on_process_failed(self, message: str, ctx: OperationContext) -> None:
         if not self._is_current(ctx):
@@ -597,7 +590,6 @@ class CalculateWindow(QMainWindow):
         self._controller.mark_failed()
         self.statusBar().showMessage("解算失败")
         self._end_task(ctx)
-        self._refresh_history()
 
     def _on_cancel_requested(self) -> None:
         self._processing_view.append_log("已请求取消（协作式，等待子进程退出…）")
@@ -684,43 +676,6 @@ class CalculateWindow(QMainWindow):
         if self._viewer.has_data:
             self._tabs.setCurrentWidget(self._viewer)
             self._processing_view.append_log("已载入回放页（3D + 力矩曲线）。")
-
-    # ------------------------------------------------------------------
-    # 历史 run 管理（prompt6 §3.10 第 2~6 条）
-    # ------------------------------------------------------------------
-    def _refresh_history(self) -> None:
-        """列出当前动态 Session 的历史 run，并判定 STALE；失败不致命。"""
-        dynamic = self._controller.dynamic
-        if dynamic is None:
-            self._processing_view.set_history_runs([])
-            return
-        current_inputs: dict[str, Path] = {}
-        if dynamic.files.c3d_path is not None:
-            current_inputs["dynamic_c3d"] = dynamic.files.c3d_path
-        if dynamic.files.txt_path is not None:
-            current_inputs["gaitway_txt"] = dynamic.files.txt_path
-        static = self._controller.static
-        if static is not None and static.files.c3d_path is not None:
-            current_inputs["static_c3d"] = static.files.c3d_path
-        try:
-            from exo_collection.apps.calculate.history import list_history_runs
-
-            runs = list_history_runs(
-                dynamic.session_dir / "derived" / "opensim", current_inputs
-            )
-        except Exception as exc:  # noqa: BLE001
-            _log.warning("扫描历史 run 失败：%s", exc)
-            self._processing_view.set_history_runs([])
-            return
-        self._processing_view.set_history_runs(runs)
-
-    def _on_history_load(self, run) -> None:
-        """载入某个历史 run 的回放（只读，不覆盖、不重新解算）。"""
-        if run is None or not getattr(run, "replayable", False):
-            self._processing_view.append_log("该 run 无回放数据。")
-            return
-        self._processing_view.append_log(f"载入历史 run 回放：{run.run_id}")
-        self._load_viewer(run.viewer_dir, load_imu=True)
 
     def _load_imu_trace(self) -> None:
         """把右腿 IMU 三轴加速度映射到 C3D 时间后接入回放页；失败不致命。

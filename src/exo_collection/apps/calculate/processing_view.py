@@ -9,8 +9,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QTextCursor
+from PySide6.QtCore import Signal
+from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox,
     QDoubleSpinBox,
@@ -20,8 +20,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
     QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
@@ -40,19 +38,16 @@ _log = logging.getLogger(__name__)
 
 
 class ProcessingView(QWidget):
-    """参数 + OpenSim 子环境 + 解算进度 + QC 状态。"""
+    """参数 + OpenSim 子环境 + 解算进度。"""
 
     process_requested = Signal(object)   # ProcessingConfig
     cancel_requested = Signal()
-    history_refresh_requested = Signal()
-    history_load_requested = Signal(object)   # HistoryRun
 
     def __init__(self, settings: SharedAppSettings, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._settings = settings
         self._running = False
         self._solve_allowed = False
-        self._history_runs: list = []
 
         layout = QVBoxLayout(self)
 
@@ -154,37 +149,6 @@ class ProcessingView(QWidget):
         run_row.addWidget(self._cancel_button)
         run_row.addStretch(1)
         layout.addLayout(run_row)
-
-        # QC 状态
-        self._qc_label = QLabel("QC：尚未运行")
-        self._qc_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        layout.addWidget(self._qc_label)
-
-        # QC 报告（逐项检查表）
-        self._qc_report = QPlainTextEdit()
-        self._qc_report.setReadOnly(True)
-        self._qc_report.setMaximumHeight(140)
-        self._qc_report.setPlaceholderText("解算完成后显示逐项 QC 检查表。")
-        layout.addWidget(self._qc_report)
-
-        # 历史 run（§3.10）：列出当前 Session 的 run_*，可回放，输入变化标 STALE。
-        history_group = QGroupBox("历史 run")
-        history_layout = QVBoxLayout(history_group)
-        history_row = QHBoxLayout()
-        self._history_refresh = QPushButton("刷新")
-        self._history_refresh.clicked.connect(self.history_refresh_requested.emit)
-        self._history_load = QPushButton("载入回放")
-        self._history_load.setEnabled(False)
-        self._history_load.clicked.connect(self._emit_history_load)
-        history_row.addWidget(self._history_refresh)
-        history_row.addWidget(self._history_load)
-        history_row.addStretch(1)
-        history_layout.addLayout(history_row)
-        self._history_list = QListWidget()
-        self._history_list.setMaximumHeight(150)
-        self._history_list.currentItemChanged.connect(self._on_history_selection)
-        history_layout.addWidget(self._history_list)
-        layout.addWidget(history_group)
 
         # 进度日志
         self._log = QPlainTextEdit()
@@ -307,88 +271,8 @@ class ProcessingView(QWidget):
     def _refresh_process_button(self) -> None:
         self._process_button.setEnabled(self._solve_allowed and not self._running)
 
-    def set_qc_status(self, status: str | None, detail: str | None = None) -> None:
-        if status is None:
-            self._qc_label.setText("QC：尚未运行")
-            return
-        colors = {
-            "PASS": "#3f7d5b",
-            "WARN": "#b8860b",
-            "FAIL": "#a53f3f",
-        }
-        color = colors.get(status.upper(), "#2d3330")
-        text = f"QC：{status.upper()}"
-        if detail:
-            text += f"  ——  {detail}"
-        self._qc_label.setText(text)
-        self._qc_label.setStyleSheet(f"color: {color}; font-weight: 700;")
-
-    def set_qc_report(self, verdict: dict | None) -> None:
-        """显示版本化 QC 检查表（``pipeline.qc`` 的 ``checks``）。"""
-        if not verdict or not verdict.get("checks"):
-            self._qc_report.setPlainText("")
-            return
-        lines = [f"schema {verdict.get('schema_version', '?')} · 状态 {verdict.get('status', '?')}"]
-        for c in verdict["checks"]:
-            value = "—" if c.get("value") is None else f"{c['value']} {c.get('unit', '')}".strip()
-            lines.append(
-                f"[{c['status']:>4}] {c['label']:<14} {value:<12} {c.get('threshold', '')}"
-            )
-        self._qc_report.setPlainText("\n".join(lines))
-
     def clear_log(self) -> None:
         self._log.clear()
-
-    # ------------------------------------------------------------------
-    # 历史 run（§3.10）
-    # ------------------------------------------------------------------
-    def set_history_runs(self, runs: list) -> None:
-        """用 ``history.list_history_runs`` 的结果刷新列表。"""
-        self._history_runs = list(runs)
-        self._history_list.clear()
-        for run in runs:
-            item = QListWidgetItem(self._history_label(run))
-            item.setData(Qt.ItemDataRole.UserRole, run)
-            item.setToolTip(self._history_tooltip(run))
-            self._history_list.addItem(item)
-        self._history_load.setEnabled(False)
-
-    @staticmethod
-    def _history_label(run) -> str:
-        status = run.qc_status if run.state == "completed" else run.state
-        stale = " [STALE]" if run.stale else ""
-        method = run.sync_method or "—"
-        offset = f"{run.sync_offset_s:.3f}s" if run.sync_offset_s is not None else "—"
-        static = run.static_session or "—"
-        return (
-            f"{run.created_utc or '?'}  {status}{stale}  "
-            f"sync={method}@{offset}  static={static}"
-        )
-
-    @staticmethod
-    def _history_tooltip(run) -> str:
-        parts = [f"run: {run.run_id}", f"状态: {run.state}"]
-        if run.qc_status:
-            parts.append(f"QC: {run.qc_status}")
-        if run.stale:
-            parts.append(f"STALE（{run.stale_reason}）")
-        if run.sync_method:
-            parts.append(f"同步: {run.sync_method} @ {run.sync_offset_s} s（{run.sync_confidence}）")
-        if run.analysis_window:
-            parts.append(f"分析区间: {run.analysis_window[0]:.2f}~{run.analysis_window[1]:.2f} s")
-        return "\n".join(parts)
-
-    def _on_history_selection(self, current: QListWidgetItem | None, _previous) -> None:
-        run = current.data(Qt.ItemDataRole.UserRole) if current is not None else None
-        self._history_load.setEnabled(bool(run and run.replayable))
-
-    def _emit_history_load(self) -> None:
-        item = self._history_list.currentItem()
-        if item is None:
-            return
-        run = item.data(Qt.ItemDataRole.UserRole)
-        if run is not None:
-            self.history_load_requested.emit(run)
 
 
 def _wrap(layout: QHBoxLayout) -> QWidget:
