@@ -12,7 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
 from PySide6.QtCore import QEvent, QSettings, Qt
-from PySide6.QtGui import QValidator
+from PySide6.QtGui import QColor, QValidator
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -1442,12 +1442,12 @@ def test_collector_locks_condition_polls_events_and_finalizes(
     window.subject_code_edit.setText("7")
     window.normalize_subject_code()
     assert window.subject_code_edit.text() == "007"
-    walk_index = next(
+    free_test_index = next(
         index
         for index in range(window.condition_combo.count())
-        if window.condition_combo.itemData(index)["condition_code"] == "WALK_LEVEL"
+        if window.condition_combo.itemData(index)["condition_code"] == "FREE_TEST"
     )
-    window.condition_combo.setCurrentIndex(walk_index)
+    window.condition_combo.setCurrentIndex(free_test_index)
     window.repeat_spin.setValue(3)
 
     # Connect all modality previews to satisfy Trial start requirements
@@ -1464,15 +1464,12 @@ def test_collector_locks_condition_polls_events_and_finalizes(
     assert request.project_code == "T"
     assert request.subject_code == "007"
     assert request.operator == "not_recorded"
-    assert request.condition_code == "WALK_LEVEL"
-    assert request.protocol_version == "1.1.0"
+    assert request.condition_code == "FREE_TEST"
+    assert request.protocol_version == "1.2.0"
     assert request.condition_parameters == {
-        "category": "baseline_standard",
+        "category": "test_free",
         "recommended_trial_count": 1,
-        "target_effective_duration_s": 30,
-        "speed_mps": 1.0,
-        "load_kg": 0,
-        "slope_deg": 0,
+        "description": "自由测试，无固定流程",
     }
     assert request.repeat_index == 3
     assert request.duration_s is None
@@ -1771,50 +1768,95 @@ def test_condition_combo_exposes_all_meeting_protocol_conditions(
 ) -> None:
     _app, window, _created = _window_with_fake(tmp_path)
     try:
-        assert window.condition_combo.count() == 19
+        # 默认主工况 T 只暴露 TEST 级工况（随意测试 / 静态标定）
+        assert window.condition_combo.count() == 2
         codes = [
             window.condition_combo.itemData(index)["condition_code"]
             for index in range(window.condition_combo.count())
         ]
-        assert codes[:5] == [
-            "STAND",
-            "STAND_LOAD_2P5",
-            "WALK_LEVEL",
-            "WALK_LEVEL_LOAD_2P5",
-            "SLOW_LEG_RAISE",
-        ]
-        assert codes[-4:] == [
-            "START_STOP_LEFT",
-            "START_STOP_RIGHT",
-            "SQUAT_STANDARD",
-            "SPEED_CHANGE_0P6_TO_0P9",
-        ]
-        assert window.condition_combo.currentData()["condition_code"] == "WALK_LEVEL"
-        assert window.condition_combo.currentText() == "1.0m/s行走30s（无负重）"
-        assert not window.condition_combo.currentText().startswith("WALK_LEVEL")
+        assert codes == ["FREE_TEST", "STATIC_CALIB"]
+        assert window.condition_combo.currentData()["condition_code"] == "FREE_TEST"
+        assert window.condition_combo.currentText() == "随意测试"
+        assert not window.condition_combo.currentText().startswith("FREE_TEST")
 
-        slope_index = codes.index("WALK_SLOPE_N15")
+        # 静态标定 hover 注释说明穿戴/不穿戴共用 Helen-Hayes 模型
+        calib_index = codes.index("STATIC_CALIB")
+        calib_tooltip = window.condition_combo.itemData(
+            calib_index, Qt.ItemDataRole.ToolTipRole
+        )
+        assert "Helen-Hayes 静态标定模型" in calib_tooltip
+        assert "建议 Trial：1" in calib_tooltip
+
+        # F_STEADY：验证坡度工况 tooltip 含穿戴/速度/坡度
+        steady_index = next(
+            index
+            for index in range(window.project_combo.count())
+            if window.project_combo.itemData(index)["project_code"] == "F_STEADY"
+        )
+        window.project_combo.setCurrentIndex(steady_index)
+        steady_codes = [
+            window.condition_combo.itemData(index)["condition_code"]
+            for index in range(window.condition_combo.count())
+        ]
+        # 不穿戴工况统一排在穿戴工况之前（分组显示，不交替）
+        noexo_positions = [
+            index for index, code in enumerate(steady_codes) if code.endswith("_NOEXO")
+        ]
+        exo_positions = [
+            index for index, code in enumerate(steady_codes) if code.endswith("_EXO")
+        ]
+        assert noexo_positions and exo_positions
+        assert max(noexo_positions) < min(exo_positions)
+        # 不穿戴浅蓝、穿戴浅橙，底色区分
+        noexo_bg = window.condition_combo.itemData(
+            steady_codes.index("WALK_0P6_NOEXO"), Qt.ItemDataRole.BackgroundRole
+        ).color()
+        exo_bg = window.condition_combo.itemData(
+            steady_codes.index("WALK_0P6_EXO"), Qt.ItemDataRole.BackgroundRole
+        ).color()
+        assert noexo_bg == QColor("#dbeafe")
+        assert exo_bg == QColor("#ffe4c8")
+        slope_index = steady_codes.index("WALK_5D_1P0_EXO")
         slope = window.condition_combo.itemData(slope_index)
         assert slope["parameters"]["speed_mps"] == 1.0
-        assert slope["parameters"]["slope_deg"] == -15
+        assert slope["parameters"]["slope_deg"] == 5
+        assert slope["parameters"]["exo"] is True
         slope_tooltip = window.condition_combo.itemData(
             slope_index, Qt.ItemDataRole.ToolTipRole
         )
+        assert "穿戴：是" in slope_tooltip
         assert "建议 Trial：5" in slope_tooltip
-        assert "目标有效时长：20 s" in slope_tooltip
-        assert "坡度：-15°" in slope_tooltip
+        assert "目标有效时长：30 s" in slope_tooltip
+        assert "坡度：5°" in slope_tooltip
 
-        start_index = codes.index("START_STOP_RIGHT")
+        # F_TRANSIENT：验证随机变速 hover 注释与 lead_foot
+        transient_index = next(
+            index
+            for index in range(window.project_combo.count())
+            if window.project_combo.itemData(index)["project_code"] == "F_TRANSIENT"
+        )
+        window.project_combo.setCurrentIndex(transient_index)
+        transient_codes = [
+            window.condition_combo.itemData(index)["condition_code"]
+            for index in range(window.condition_combo.count())
+        ]
+        speed_index = transient_codes.index("SPEED_RAMP_EXO")
+        speed_tooltip = window.condition_combo.itemData(
+            speed_index, Qt.ItemDataRole.ToolTipRole
+        )
+        assert "0.6m/s匀速" in speed_tooltip
+        assert "1.4m/s匀速" in speed_tooltip
+        assert "加速度1m/s²" in speed_tooltip
+
+        start_index = transient_codes.index("START_RIGHT_EXO")
         start_stop = window.condition_combo.itemData(start_index)
         assert start_stop["parameters"]["lead_foot"] == "right"
-        assert start_stop["parameters"]["effective_duration_s_min"] == 8
-        assert start_stop["parameters"]["effective_duration_s_max"] == 10
 
         expected_by_project = {
-            "T": 19,
-            "F_BASE": 5,
-            "F_STEADY": 10,
-            "F_TRANSIENT": 4,
+            "T": 2,
+            "F_BASE": 4,
+            "F_STEADY": 14,
+            "F_TRANSIENT": 6,
         }
         for project_index in range(window.project_combo.count()):
             window.project_combo.setCurrentIndex(project_index)
@@ -2106,7 +2148,7 @@ def test_experiment_metadata_is_scoped_by_project_and_subject(tmp_path: Path) ->
     window.project_combo.setCurrentIndex(1)
     assert window.project_combo.currentData()["project_code"] == "F_BASE"
     assert window.experiment_metadata == TrialExperimentMetadata()
-    assert "已清空以避免串写" in window.experiment_metadata_summary.text()
+    assert "已清空" in window.experiment_metadata_summary.text()
     window.project_combo.setCurrentIndex(0)
     assert window.experiment_metadata.subject.height_cm == 171
     assert window.experiment_metadata.ultrasound_probe.muscle == "vastus lateralis"

@@ -149,7 +149,7 @@ def _dataset(root: Path) -> dict[str, Path]:
             project_uuid=project_uuid,
             subject_uuid=subject_uuid,
             session_uuid=session_uuid,
-            condition_code="STAND",
+            condition_code="STAND_30S_NOEXO",
             condition_name="静止站立",
             repeat_index=1,
             quality=QualityGrade.A,
@@ -160,7 +160,7 @@ def _dataset(root: Path) -> dict[str, Path]:
             project_uuid=project_uuid,
             subject_uuid=subject_uuid,
             session_uuid=session_uuid,
-            condition_code="WALK_LEVEL",
+            condition_code="WALK_1P0_NOEXO",
             condition_name="平地行走",
             repeat_index=1,
             quality=QualityGrade.B,
@@ -171,7 +171,7 @@ def _dataset(root: Path) -> dict[str, Path]:
             project_uuid=project_uuid,
             subject_uuid=subject_uuid,
             session_uuid=session_uuid,
-            condition_code="WALK_LEVEL",
+            condition_code="WALK_1P0_NOEXO",
             condition_name="平地行走",
             repeat_index=2,
             quality=QualityGrade.A,
@@ -339,7 +339,7 @@ def test_management_filters_preserve_hierarchy_and_show_annex_integrity(
     assert window.project_filter.count() == 2
     assert window.subject_filter.count() == 2
     assert window.session_filter.count() == 2
-    walk_index = window.condition_filter.findData("WALK_LEVEL")
+    walk_index = window.condition_filter.findData("WALK_1P0_NOEXO")
     window.condition_filter.setCurrentIndex(walk_index)
     assert len(_trial_items(window)) == 2
     assert window.tree_widget.topLevelItemCount() == 1
@@ -358,7 +358,7 @@ def test_management_filters_preserve_hierarchy_and_show_annex_integrity(
     assert annex_items[0].child(0).data(1, Qt.ItemDataRole.UserRole) == "external_artifact"
 
     window.clear_management_filters()
-    stand_index = window.condition_filter.findData("STAND")
+    stand_index = window.condition_filter.findData("STAND_30S_NOEXO")
     window.condition_filter.setCurrentIndex(stand_index)
     invalid_annex = next(
         child
@@ -414,17 +414,17 @@ def test_management_summary_and_filtered_export_are_wired_to_workers(
     assert isinstance(dialog.result, ManagementSummaryResult)
     assert "FINALIZED：3" in dialog.state_summary_label.text()
     coverage = dialog.findChild(QTableWidget, "management_coverage_table")
-    assert coverage is not None and coverage.rowCount() == 19
+    assert coverage is not None and coverage.rowCount() == 26
     walk_rows = [
         row
         for row in range(coverage.rowCount())
-        if coverage.item(row, 3).text().startswith("WALK_LEVEL ·")
+        if coverage.item(row, 3).text().startswith("WALK_1P0_NOEXO ·")
     ]
     assert len(walk_rows) == 1
     assert coverage.item(walk_rows[0], 8).text() == "1, 2"
 
     window.condition_filter.setCurrentIndex(
-        window.condition_filter.findData("WALK_LEVEL")
+        window.condition_filter.findData("WALK_1P0_NOEXO")
     )
     destination = tmp_path / "exports" / "walk_inventory"
     monkeypatch.setattr(
@@ -436,7 +436,7 @@ def test_management_summary_and_filtered_export_are_wired_to_workers(
     _wait_until(app, lambda: destination.with_suffix(".json").is_file())
     payload = json.loads(destination.with_suffix(".json").read_text(encoding="utf-8"))
     assert payload["record_count"] == 2
-    assert {item["condition_code"] for item in payload["records"]} == {"WALK_LEVEL"}
+    assert {item["condition_code"] for item in payload["records"]} == {"WALK_1P0_NOEXO"}
     assert destination.with_suffix(".csv").is_file()
 
     window.close()
