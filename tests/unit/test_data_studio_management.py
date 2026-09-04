@@ -172,7 +172,7 @@ def dataset(tmp_path: Path) -> tuple[Path, dict[str, Path]]:
             subject_uuid=subject_1,
             subject_code="001",
             session_uuid=session_1,
-            condition_code="STAND",
+            condition_code="STAND_30S_NOEXO",
             condition_name="静止站立",
             repeat_index=1,
             quality=QualityGrade.A,
@@ -186,7 +186,7 @@ def dataset(tmp_path: Path) -> tuple[Path, dict[str, Path]]:
             subject_uuid=subject_1,
             subject_code="001",
             session_uuid=session_1,
-            condition_code="WALK_LEVEL",
+            condition_code="WALK_1P0_NOEXO",
             condition_name="平地行走",
             repeat_index=1,
             quality=QualityGrade.C,
@@ -200,7 +200,7 @@ def dataset(tmp_path: Path) -> tuple[Path, dict[str, Path]]:
             subject_uuid=subject_1,
             subject_code="001",
             session_uuid=session_2,
-            condition_code="WALK_LEVEL",
+            condition_code="WALK_1P0_NOEXO",
             condition_name="平地行走",
             repeat_index=2,
             quality=QualityGrade.B,
@@ -214,7 +214,7 @@ def dataset(tmp_path: Path) -> tuple[Path, dict[str, Path]]:
             subject_uuid=subject_2,
             subject_code="002",
             session_uuid=session_3,
-            condition_code="STAND",
+            condition_code="FREE_TEST",
             condition_name="静止站立",
             repeat_index=1,
             quality=QualityGrade.C,
@@ -278,7 +278,7 @@ def test_manifest_index_and_composable_filters(
     assert len(filter_trial_records(index.records, {"subjects": "001"})) == 3
     session_uuid = str(load_manifest(paths["stand_a"]).session_uuid)
     assert len(filter_trial_records(index.records, {"sessions": session_uuid})) == 2
-    assert len(filter_trial_records(index.records, {"conditions": "WALK_LEVEL"})) == 2
+    assert len(filter_trial_records(index.records, {"conditions": "WALK_1P0_NOEXO"})) == 2
     assert len(
         filter_trial_records(
             index.records,
@@ -291,7 +291,7 @@ def test_manifest_index_and_composable_filters(
         index.records,
         TrialFilter(projects=("正式",), qualities=("A",)),
     )
-    assert [item.condition_code for item in combined] == ["STAND"]
+    assert [item.condition_code for item in combined] == ["STAND_30S_NOEXO"]
     with pytest.raises(ValidationError, match="end_date"):
         TrialFilter(start_date=date(2026, 7, 2), end_date=date(2026, 7, 1))
 
@@ -326,29 +326,27 @@ def test_verified_sidecars_coverage_and_state_summary(
     formal = next(item for item in coverage if item.project_code == "F")
     assert formal.total_trial_count == 3
     assert formal.valid_trial_count == 3
-    assert formal.completed_condition_codes == ("STAND", "WALK_LEVEL")
-    walk = next(item for item in formal.conditions if item.condition_code == "WALK_LEVEL")
+    assert formal.completed_condition_codes == ("STAND_30S_NOEXO", "WALK_1P0_NOEXO")
+    walk = next(
+        item for item in formal.conditions if item.condition_code == "WALK_1P0_NOEXO"
+    )
     assert walk.status is ConditionCompletionStatus.COMPLETED
     assert walk.trial_count == 2
     assert walk.valid_trial_count == 2
     assert walk.repeat_indices == (1, 2)
     test_subject = next(item for item in coverage if item.project_code == "T")
     assert test_subject.completed_condition_codes == ()
-    expected_condition_codes = tuple(
-        condition.condition_code
-        for condition in load_default_protocol().conditions
+    assert test_subject.missing_condition_codes == ("FREE_TEST", "STATIC_CALIB")
+    assert test_subject.attempted_without_valid_condition_codes == ("FREE_TEST",)
+    assert test_subject.never_attempted_condition_codes == ("STATIC_CALIB",)
+    stand = next(
+        item for item in test_subject.conditions if item.condition_code == "FREE_TEST"
     )
-    assert test_subject.missing_condition_codes == expected_condition_codes
-    assert test_subject.attempted_without_valid_condition_codes == ("STAND",)
-    assert test_subject.never_attempted_condition_codes == tuple(
-        code for code in expected_condition_codes if code != "STAND"
-    )
-    stand = next(item for item in test_subject.conditions if item.condition_code == "STAND")
-    walk_missing = next(
-        item for item in test_subject.conditions if item.condition_code == "WALK_LEVEL"
+    calib_missing = next(
+        item for item in test_subject.conditions if item.condition_code == "STATIC_CALIB"
     )
     assert stand.status is ConditionCompletionStatus.ATTEMPTED_NO_VALID_TRIAL
-    assert walk_missing.status is ConditionCompletionStatus.MISSING
+    assert calib_missing.status is ConditionCompletionStatus.MISSING
 
     summary = summarize_dataset_states(root, index.records)
     assert summary.finalized_count == 4
@@ -362,9 +360,9 @@ def test_verified_sidecars_coverage_and_state_summary(
 @pytest.mark.parametrize(
     ("project_code", "condition_level", "expected_count"),
     [
-        ("F_BASE", "BASELINE", 5),
-        ("F_STEADY", "STEADY_STATE", 10),
-        ("F_TRANSIENT", "TRANSIENT", 4),
+        ("F_BASE", "BASELINE", 4),
+        ("F_STEADY", "STEADY_STATE", 14),
+        ("F_TRANSIENT", "TRANSIENT", 6),
     ],
 )
 def test_subject_coverage_uses_the_selected_formal_project_category(

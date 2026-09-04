@@ -1762,6 +1762,26 @@ def _verified_upload_audit_entry(
     return None
 
 
+def _remote_has_files(session: RemoteUploadSession, remote_path: str) -> bool:
+    """Return True when a remote directory tree actually contains a data file.
+
+    ``session.exists`` reports an empty directory as present, which would let a
+    stale local audit/cache reclassify a manually wiped trial as UPLOADED.
+    Walking the tree until the first regular file distinguishes "data still
+    exists" from "only the directory skeleton survives a wipe".
+    """
+    try:
+        entries = session.list_directory(remote_path)
+    except OSError:
+        return False
+    for name, is_directory in entries:
+        if not is_directory:
+            return True
+        if _remote_has_files(session, _remote_join(remote_path, name)):
+            return True
+    return False
+
+
 class RemoteDatasetStatusScanner:
     """Compare finalized local Trial packages with their exact remote mirrors."""
 
@@ -1834,20 +1854,21 @@ class RemoteDatasetStatusScanner:
                     manifest.trial_uuid,
                     remote_dir,
                 )
-                if entry is None:
-                    if session.exists(remote_dir):
-                        if verified_audit is not None:
-                            status = RemoteTrialStatus.UPLOADED
-                            detail = (
-                                "已找到该服务器目录的历史 VERIFIED 逐文件 "
-                                "SHA-256 上传审计；旧版远端数据可视为已上传。"
-                            )
-                        else:
-                            status = RemoteTrialStatus.PARTIAL
-                            detail = "云端存在旧数据但尚无 .exo 同步索引；请执行一次上传所选以补建索引"
+                if not _remote_has_files(session, remote_dir):
+                    # 云端该 Trial 的实际数据文件已被清空：无论 .exo 索引或本机
+                    # 验证缓存如何记录，都回落到「未上传」，让操作者能重新上传。
+                    status = RemoteTrialStatus.NOT_UPLOADED
+                    detail = "云端没有该 Trial 的数据文件"
+                elif entry is None:
+                    if verified_audit is not None:
+                        status = RemoteTrialStatus.UPLOADED
+                        detail = (
+                            "已找到该服务器目录的历史 VERIFIED 逐文件 "
+                            "SHA-256 上传审计；旧版远端数据可视为已上传。"
+                        )
                     else:
-                        status = RemoteTrialStatus.NOT_UPLOADED
-                        detail = "云端同步索引中没有该 Trial"
+                        status = RemoteTrialStatus.PARTIAL
+                        detail = "云端存在旧数据但尚无 .exo 同步索引；请执行一次上传所选以补建索引"
                 elif local_entry is None:
                     audit_matches_index = (
                         verified_audit is not None

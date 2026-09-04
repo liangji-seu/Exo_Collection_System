@@ -34,7 +34,9 @@ from PySide6.QtCore import (
     Slot,
 )
 from PySide6.QtGui import (
+    QBrush,
     QCloseEvent,
+    QColor,
     QDoubleValidator,
     QIntValidator,
     QKeyEvent,
@@ -123,6 +125,7 @@ from exo_collection.domain.prompt_labels import PromptLabelEvent, PromptLabelSou
 from exo_collection.domain.xingying_trigger import XingYingTriggerKind
 from exo_collection.protocols import load_default_protocol
 from exo_collection.quality import load_storage_policy
+from exo_collection.storage.subject_lock import is_subject_locked
 
 LOG = logging.getLogger("exo_collection.collector.ui")
 
@@ -247,6 +250,13 @@ _PROTOCOL = load_default_protocol()
 CONDITIONS: tuple[dict[str, Any], ...] = tuple(
     condition.model_dump(mode="json") for condition in _PROTOCOL.conditions
 )
+
+# 工况下拉框按穿戴状态着色，便于区分：不穿戴浅蓝、穿戴浅橙；
+# 无 exo 参数的工况（随意测试 / 静态标定）不着色。
+_CONDITION_WEAR_BACKGROUND: dict[bool, QColor] = {
+    False: QColor("#dbeafe"),
+    True: QColor("#ffe4c8"),
+}
 
 
 class WorkerHandle(Protocol):
@@ -2119,6 +2129,16 @@ class CollectorWindow(QMainWindow):
         parameters = dict(condition.get("parameters", {}))
         parts = [
             (
+                str(parameters["description"])
+                if parameters.get("description")
+                else ""
+            ),
+            (
+                ("穿戴：是" if parameters["exo"] else "穿戴：否")
+                if "exo" in parameters
+                else ""
+            ),
+            (
                 f"建议 Trial：{parameters['recommended_trial_count']}"
                 if "recommended_trial_count" in parameters
                 else ""
@@ -2169,6 +2189,13 @@ class CollectorWindow(QMainWindow):
                 condition.get("condition_level"),
             )
         ]
+        # 不穿戴与穿戴分组显示（不穿戴在前、穿戴在后），避免交替；无 exo
+        # 参数的工况（随意测试 / 静态标定）保持最前，组内沿用协议定义顺序。
+        def _wear_rank(condition: Mapping[str, Any]) -> int:
+            exo = (condition.get("parameters") or {}).get("exo")
+            return 0 if exo is None else (1 if exo is False else 2)
+
+        visible = sorted(visible, key=_wear_rank)
         previous_blocked = self.condition_combo.blockSignals(True)
         try:
             self.condition_combo.clear()
@@ -2184,6 +2211,13 @@ class CollectorWindow(QMainWindow):
                     self._condition_tooltip(condition),
                     Qt.ItemDataRole.ToolTipRole,
                 )
+                exo = (condition.get("parameters") or {}).get("exo")
+                if exo is not None:
+                    self.condition_combo.setItemData(
+                        self.condition_combo.count() - 1,
+                        QBrush(_CONDITION_WEAR_BACKGROUND[bool(exo)]),
+                        Qt.ItemDataRole.BackgroundRole,
+                    )
             selected_index = next(
                 (
                     index
@@ -3803,6 +3837,19 @@ class CollectorWindow(QMainWindow):
         except Exception as exc:
             self._append_alert(f"无法构建 Trial 请求：{type(exc).__name__}: {exc}")
             self.statusBar().showMessage("Trial 请求构建失败。")
+            return
+
+        # Subject freeze lock: refuse to write into a subject directory that
+        # Data Studio has locked (prevents mixing data when the subject code
+        # was not updated between recordings).
+        if is_subject_locked(request.data_root, request.subject_code):
+            QMessageBox.warning(
+                self,
+                "受试者已锁定",
+                f"受试者 {request.subject_code} 已在 Data Studio 中被锁定，禁止写入数据。\n"
+                "请先在 Data Studio 中解锁该受试者。",
+            )
+            self.statusBar().showMessage(f"受试者 {request.subject_code} 已锁定，禁止写入。")
             return
 
         # Only require at least one connected modality.

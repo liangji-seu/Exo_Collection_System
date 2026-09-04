@@ -41,6 +41,7 @@ COLLECTOR_PROJECTS: Final = (
 )
 
 PROJECT_CONDITION_LEVELS: Final = {
+    PROJECT_CODE_TEST: frozenset({"TEST"}),
     PROJECT_CODE_FORMAL_BASELINE: frozenset({"BASELINE"}),
     PROJECT_CODE_FORMAL_STEADY: frozenset({"STEADY_STATE"}),
     PROJECT_CODE_FORMAL_TRANSIENT: frozenset({"TRANSIENT"}),
@@ -53,7 +54,9 @@ def project_accepts_condition_level(
 ) -> bool:
     """Return whether a condition belongs in the selected project.
 
-    Test and legacy formal projects intentionally expose the complete protocol.
+    The test project exposes only ``TEST``-level conditions (free test and
+    static calibration), while the legacy formal project (``F``) intentionally
+    exposes the complete protocol.
     """
 
     expected = PROJECT_CONDITION_LEVELS.get(project_code.strip().upper())

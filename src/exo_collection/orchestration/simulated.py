@@ -90,6 +90,7 @@ from exo_collection.reporting.preview_png import (
     publish_quality_preview_pngs,
 )
 from exo_collection.storage.activity import AcquisitionLock
+from exo_collection.storage.subject_lock import SubjectLockedError, is_subject_locked
 from exo_collection.storage.checksum import sha256_file
 from exo_collection.storage.layout import TrialLayout
 from exo_collection.storage.manifest import (
@@ -696,6 +697,14 @@ def run_trial(
         repeat_index=request.repeat_index,
         started_at_utc=utc_now(),
     )
+    # Subject freeze lock: Data Studio may lock a subject to stop the Collector
+    # from writing into that subject's directory.  Enforce it here (in the
+    # worker process) so even non-UI entry points cannot bypass the guard.
+    if is_subject_locked(root, request.subject_code):
+        raise SubjectLockedError(
+            f"subject {request.subject_code} is locked; refusing to write "
+            f"{layout.subject_directory}"
+        )
     machine = TrialStateMachine()
     device_profile = load_device_profile(request.device_profile_key)
     profiles_by_modality = device_profile.by_modality()
