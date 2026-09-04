@@ -100,3 +100,42 @@ def test_viewer_widget_load_and_frame(tmp_path: Path) -> None:
     assert widget.has_data
     widget.load(None)
     assert not widget.has_data
+
+
+def test_viewer_set_imu_populates_and_clears_curves(tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    _write_synthetic_viewer(tmp_path)
+    widget = ViewerWidget()
+    widget.load(tmp_path)
+    # 三轴加速度（右腿 IMU）：加载后三条曲线都应有有效数据。
+    t = np.linspace(-1.0, 58.0, 5762)
+    accel = np.column_stack([
+        np.sin(2 * np.pi * t / 5.0),
+        np.cos(2 * np.pi * t / 5.0),
+        np.sin(2 * np.pi * t / 3.0) * 2.0,
+    ])
+    widget.set_imu(t, accel)
+    for axis in range(3):
+        x, y = widget.imu_curves._curves[axis].getData()
+        assert x.size == t.size
+        assert np.isfinite(y).all()
+    # 清空后曲线为空（不残留上一次的数据）。
+    widget.set_imu(None, None)
+    for curve in widget.imu_curves._curves:
+        x = curve.getData()[0]
+        assert x is None or x.size == 0
+
+
+def test_viewer_marker_switches_and_export_button(tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication([])
+    widget = ViewerWidget()
+    # 图层开关用静态/动态命名，导出按钮只保留「导出真值数据」。
+    assert widget._chk_model.text() == "静态 marker（19）"
+    assert widget._chk_exp.text() == "动态 marker（15）"
+    assert widget._export_gt_btn.text() == "导出真值数据"
+    # 数据属性在未加载时为空；加载后可访问。
+    assert widget.data is None
+    _write_synthetic_viewer(tmp_path)
+    widget.load(tmp_path)
+    assert widget.data is not None
+    assert widget.data.moments.shape == (60, 6)

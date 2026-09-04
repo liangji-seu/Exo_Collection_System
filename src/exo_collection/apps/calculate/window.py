@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QSplitter,
     QTabWidget,
@@ -125,12 +126,13 @@ class CalculateWindow(QMainWindow):
         self._sync_view.manual_data_requested.connect(self._run_load_sync_data)
         self._sync_view.manual_applied.connect(self._on_manual_applied)
         self._sync_view.sync_confirmed.connect(self._on_sync_confirmed)
-        self._sync_view.expert_forced.connect(self._on_expert_forced)
 
         self._processing_view.process_requested.connect(self._on_process_requested)
         self._processing_view.cancel_requested.connect(self._on_cancel_requested)
         self._processing_view.history_refresh_requested.connect(self._refresh_history)
         self._processing_view.history_load_requested.connect(self._on_history_load)
+
+        self._viewer.export_ground_truth_requested.connect(self._on_export_ground_truth)
 
         self._controller.state_changed.connect(self._on_state_changed)
 
@@ -374,19 +376,6 @@ class CalculateWindow(QMainWindow):
         result = self._controller.sync_raw or {}
         self._save_calibration(result, operator="operator")
         self.statusBar().showMessage("同步已确认")
-
-    def _on_expert_forced(self, offset_s: float, note: str) -> None:
-        """专家强制 offset：二次确认后写入（§3.2 第 5 条）。"""
-        self._controller.set_expert_forced(offset_s, note=note)
-        raw = {
-            "gaitway_offset_s": offset_s,
-            "median_offset_s": offset_s,
-            "confidence": "LOW",
-            "n_pairs": 0,
-            "method": SyncMethod.EXPERT_FORCED.value,
-        }
-        self._save_calibration(raw, operator="expert")
-        self.statusBar().showMessage("专家强制 offset 已应用")
 
     def _save_calibration(self, result: dict[str, Any], *, operator: str) -> None:
         dynamic = self._controller.dynamic
@@ -681,8 +670,8 @@ class CalculateWindow(QMainWindow):
     def _load_viewer(self, viewer_dir: Path | None, *, load_imu: bool = True) -> None:
         """载入回放页；失败只记录日志，不影响 QC 结论。
 
-        ``load_imu=False`` 用于历史 run 回放：不按当前同步叠加 IMU 曲线，只回放
-        已导出的纯数据（历史 run 可能对应不同的同步/动态选择）。
+        历史 run 回放同样载入 IMU：起始帧退回会话级 ``sync_calibration.json``
+        （其 C3D↔mocap.h5 对齐帧与步态 offset 无关、跨重复同步稳定）。
         """
         try:
             self._viewer.load(viewer_dir)
@@ -731,21 +720,28 @@ class CalculateWindow(QMainWindow):
             self._processing_view.append_log("该 run 无回放数据。")
             return
         self._processing_view.append_log(f"载入历史 run 回放：{run.run_id}")
-        self._load_viewer(run.viewer_dir, load_imu=False)
+        self._load_viewer(run.viewer_dir, load_imu=True)
 
     def _load_imu_trace(self) -> None:
-        """把右腿 IMU 三轴加速度映射到 C3D 时间后接入回放页；失败不致命。"""
+        """把右腿 IMU 三轴加速度映射到 C3D 时间后接入回放页；失败不致命。
+
+        起始帧优先取当前已确认同步；历史 run 回放时控制器可能尚未同步，则退回
+        会话级 ``sync_calibration.json``，保证两种回放场景都显示 IMU 曲线。
+        """
         import h5py
 
         from exo_collection.apps.calculate._pipeline import ensure_pipeline_on_path
 
         dynamic = self._controller.dynamic
-        sync = self._controller.sync
-        if dynamic is None or sync is None:
+        if dynamic is None:
             self._viewer.set_imu(None, None)
             return
         files = dynamic.files
         if files.imu_h5_path is None or files.mocap_h5_path is None:
+            self._viewer.set_imu(None, None)
+            return
+        start_frame = self._imu_start_frame()
+        if start_frame is None:
             self._viewer.set_imu(None, None)
             return
         try:
@@ -756,7 +752,6 @@ class CalculateWindow(QMainWindow):
                 read_host_monotonic_ns,
             )
 
-            start_frame = sync.c3d_start_in_mocap_h5_frame
             with h5py.File(files.mocap_h5_path, "r") as mocap_h5, h5py.File(
                 files.imu_h5_path, "r"
             ) as imu_h5:
@@ -773,6 +768,98 @@ class CalculateWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001
             _log.warning("加载 IMU 回放曲线失败：%s", exc)
             self._viewer.set_imu(None, None)
+
+    def _imu_start_frame(self) -> int | None:
+        """C3D→mocap.h5 起始帧：当前同步优先，否则读会话级 sync_calibration。"""
+        sync = self._controller.sync
+        if sync is not None:
+            return int(sync.c3d_start_in_mocap_h5_frame)
+        dynamic = self._controller.dynamic
+        if dynamic is None:
+            return None
+        calib = dynamic.session_dir / "derived" / "opensim" / "sync_calibration.json"
+        if not calib.is_file():
+            return None
+        try:
+            import json
+
+            document = json.loads(calib.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        for block in ("result", "auto_candidate"):
+            frame = (document.get(block) or {}).get("c3d_start_in_mocap_h5_frame")
+            if isinstance(frame, (int, float)):
+                return int(frame)
+        return None
+
+    # ------------------------------------------------------------------
+    # 导出真值数据（IMU 12 通道 + 关节力矩，对齐后写 CSV）
+    # ------------------------------------------------------------------
+    def _on_export_ground_truth(self) -> None:
+        """导出训练用真值：右腿 IMU 12 通道 + 关节力矩，对齐到同一 C3D 时间轴。"""
+        data = self._viewer.data
+        if data is None:
+            self._processing_view.append_log("无回放数据，无法导出真值。")
+            return
+        dynamic = self._controller.dynamic
+        if dynamic is None:
+            self._processing_view.append_log("未选择动态 Session，无法导出真值。")
+            return
+        files = dynamic.files
+        if files.imu_h5_path is None or files.mocap_h5_path is None:
+            self._processing_view.append_log("缺少 imu.h5 / mocap.h5，无法导出真值。")
+            return
+        start_frame = self._imu_start_frame()
+        if start_frame is None:
+            self._processing_view.append_log("尚未同步（无起始帧），无法导出真值。")
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出真值数据", "ground_truth.csv", "CSV 文件 (*.csv)"
+        )
+        if not path:
+            return
+
+        try:
+            import h5py
+
+            from exo_collection.apps.calculate._pipeline import ensure_pipeline_on_path
+
+            ensure_pipeline_on_path()
+            from pipeline.synchronization.clock import (
+                find_imu_sensor,
+                imu_sensor_on_c3d_time,
+                read_host_monotonic_ns,
+            )
+
+            with h5py.File(files.mocap_h5_path, "r") as mocap_h5, h5py.File(
+                files.imu_h5_path, "r"
+            ) as imu_h5:
+                mocap_host_ns = read_host_monotonic_ns(mocap_h5)
+                if not 0 <= start_frame < mocap_host_ns.size:
+                    raise ValueError(f"起始帧 {start_frame} 超出 mocap.h5 范围")
+                c3d_t0_host_ns = int(mocap_host_ns[start_frame])
+                sensor_index, _ = find_imu_sensor(imu_h5, side="right")
+                imu_time_s, imu_signal = imu_sensor_on_c3d_time(
+                    imu_h5, c3d_t0_host_ns, sensor_index=sensor_index,
+                    axis_slice=slice(0, 12),
+                )
+
+            from exo_collection.apps.calculate.ground_truth import (
+                align_ground_truth,
+                write_ground_truth_csv,
+            )
+
+            time_s, imu_aligned, moments = align_ground_truth(
+                data.time_s, data.moments, imu_time_s, imu_signal
+            )
+            write_ground_truth_csv(
+                Path(path), time_s, imu_aligned, moments, moment_names=data.moment_names
+            )
+            self.statusBar().showMessage(f"已导出真值数据：{path}（{time_s.shape[0]} 帧）")
+        except Exception as exc:  # noqa: BLE001
+            _log.exception("导出真值数据失败")
+            QMessageBox.warning(self, "导出失败", f"导出真值数据失败：\n{exc}")
 
     # ------------------------------------------------------------------
     def _on_state_changed(self, state: str) -> None:

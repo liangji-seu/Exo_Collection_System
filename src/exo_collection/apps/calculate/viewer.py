@@ -15,7 +15,6 @@
 
 from __future__ import annotations
 
-import csv
 import json
 import math
 import time
@@ -26,10 +25,9 @@ from typing import Any
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
-    QFileDialog,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -128,7 +126,7 @@ class Scene3DCanvas(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setMouseTracking(True)
-        self.setMinimumSize(560, 420)
+        self.setMinimumSize(320, 240)
 
         self._data: ViewerData | None = None
         self._frame = 0
@@ -170,7 +168,8 @@ class Scene3DCanvas(QWidget):
             return
         self._target = np.median(pts, axis=0)
         dist = np.linalg.norm(pts - self._target, axis=1)
-        self._zoom_mm = float(max(np.percentile(dist, 95) * 1.4, 300.0))
+        # 只比人“大一圈”：取 99 分位半径 + 20% 边距，让受试者尽量占满视图。
+        self._zoom_mm = float(max(np.percentile(dist, 99) * 1.2, 200.0))
 
     # -- 视角 -----------------------------------------------------------
     def set_view(self, name: str) -> None:
@@ -663,9 +662,10 @@ class IMUCurvesWidget(pg.GraphicsLayoutWidget):
 # 联合回放页
 # ---------------------------------------------------------------------------
 class ViewerWidget(QWidget):
-    """3D + 曲线 + 统一游标 + 播放控制 + 图层开关 + 导出。"""
+    """3D + 曲线 + 统一游标 + 播放控制 + 图层开关 + 导出真值。"""
 
     frame_changed = Signal(int, float)   # (frame index, time s)
+    export_ground_truth_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -694,10 +694,10 @@ class ViewerWidget(QWidget):
         top = QHBoxLayout()
         top.addWidget(self.canvas, 1)
         top.addWidget(self._build_controls(), 0)
-        root.addLayout(top, 3)
+        root.addLayout(top, 2)
 
         root.addWidget(self.curves, 2)
-        root.addWidget(self.imu_curves, 1)
+        root.addWidget(self.imu_curves, 2)
 
         root.addLayout(self._build_transport(), 0)
 
@@ -707,8 +707,8 @@ class ViewerWidget(QWidget):
         layout = QVBoxLayout(box)
 
         layout.addWidget(self._section_label("图层"))
-        self._chk_model = QCheckBox("模型 marker（19）")
-        self._chk_exp = QCheckBox("实验 marker（15）")
+        self._chk_model = QCheckBox("静态 marker（19）")
+        self._chk_exp = QCheckBox("动态 marker（15）")
         self._chk_skeleton = QCheckBox("骨架")
         self._chk_grf = QCheckBox("左右 COP / GRF")
         self._chk_error = QCheckBox("实验→模型误差连线")
@@ -748,14 +748,10 @@ class ViewerWidget(QWidget):
         layout.addWidget(self._marker_info)
 
         layout.addWidget(self._section_label("导出"))
-        export_row = QHBoxLayout()
-        png_btn = QPushButton("PNG")
-        png_btn.clicked.connect(self._export_png)
-        csv_btn = QPushButton("CSV")
-        csv_btn.clicked.connect(self._export_csv)
-        export_row.addWidget(png_btn)
-        export_row.addWidget(csv_btn)
-        layout.addLayout(export_row)
+        self._export_gt_btn = QPushButton("导出真值数据")
+        self._export_gt_btn.setProperty("buttonRole", "primary")
+        self._export_gt_btn.clicked.connect(self.export_ground_truth_requested.emit)
+        layout.addWidget(self._export_gt_btn)
 
         layout.addStretch(1)
         return box
@@ -817,6 +813,10 @@ class ViewerWidget(QWidget):
     @property
     def has_data(self) -> bool:
         return self._data is not None
+
+    @property
+    def data(self) -> ViewerData | None:
+        return self._data
 
     def set_frame(self, idx: int) -> None:
         if self._data is None:
@@ -886,27 +886,3 @@ class ViewerWidget(QWidget):
 
     def _on_marker_selected(self, name: str, detail: str) -> None:
         self._marker_info.setText(detail)
-
-    # -- 导出 -----------------------------------------------------------
-    def _export_png(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, "导出 3D 快照", "viewer_frame.png",
-                                              "PNG 图像 (*.png)")
-        if not path:
-            return
-        pixmap = QPixmap(self.canvas.size())
-        self.canvas.render(pixmap)
-        pixmap.save(path)
-
-    def _export_csv(self) -> None:
-        if self._data is None:
-            return
-        path, _ = QFileDialog.getSaveFileName(self, "导出关节力矩 CSV", "moments.csv",
-                                              "CSV 文件 (*.csv)")
-        if not path:
-            return
-        header = ["time_s", *self._data.moment_names]
-        with open(path, "w", newline="", encoding="utf-8") as fh:
-            writer = csv.writer(fh)
-            writer.writerow(header)
-            for i, t in enumerate(self._data.time_s):
-                writer.writerow([f"{t:.6f}"] + [f"{v:.6f}" for v in self._data.moments[i]])

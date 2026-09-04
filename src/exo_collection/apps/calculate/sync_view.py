@@ -18,16 +18,12 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
-    QDialog,
-    QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMessageBox,
     QPushButton,
     QStackedWidget,
@@ -70,7 +66,6 @@ class SyncView(QWidget):
     manual_applied = Signal(object)   # SyncResult
     sync_cleared = Signal()
     sync_confirmed = Signal()         # 用户确认「MEDIUM/LOW 自动同步」为已确认
-    expert_forced = Signal(float, str)  # (offset_s, note)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -102,12 +97,9 @@ class SyncView(QWidget):
         self._confirm_button = QPushButton("确认该同步")
         self._confirm_button.setEnabled(False)
         self._confirm_button.clicked.connect(self.sync_confirmed.emit)
-        self._expert_button = QPushButton("专家强制 offset…")
-        self._expert_button.clicked.connect(self._prompt_expert_forced)
         run_row.addWidget(self._auto_button)
         run_row.addWidget(self._manual_button)
         run_row.addWidget(self._confirm_button)
-        run_row.addWidget(self._expert_button)
         run_row.addStretch(1)
         layout.addLayout(run_row)
 
@@ -438,12 +430,6 @@ class SyncView(QWidget):
         self._stack.setCurrentIndex(0)
         self.sync_cleared.emit()
 
-    def _prompt_expert_forced(self) -> None:
-        """专家强制 offset：无峰证据的二次确认对话框（prompt6 §3.2 第 5 条）。"""
-        dialog = _ExpertForceDialog(self._current_offset_s, self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.expert_forced.emit(dialog.offset_s(), dialog.note())
-
     # ------------------------------------------------------------------
     def reset(self) -> None:
         self._auto_raw = None
@@ -461,64 +447,6 @@ def _wrap_row(layout: QHBoxLayout) -> QWidget:
     widget = QWidget()
     widget.setLayout(layout)
     return widget
-
-
-class _ExpertForceDialog(QDialog):
-    """专家强制 offset 的二次确认对话框。
-
-    输入一个 offset 值 + 理由；必须勾选「我确认这是无峰证据的强制值」才能点 OK，
-    防止误触把无证据的值当作同步结论（prompt6 §3.2 第 5 条）。
-    """
-
-    def __init__(self, initial_offset_s: float, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("专家强制 offset")
-        layout = QVBoxLayout(self)
-
-        form = QFormLayout()
-        self._offset_spin = QDoubleSpinBox()
-        self._offset_spin.setRange(-60.0, 60.0)
-        self._offset_spin.setDecimals(4)
-        self._offset_spin.setSingleStep(0.001)
-        self._offset_spin.setValue(float(initial_offset_s))
-        form.addRow("offset (s)：", self._offset_spin)
-
-        self._note_edit = QLineEdit()
-        self._note_edit.setPlaceholderText("强制原因（必填）")
-        form.addRow("原因：", self._note_edit)
-        layout.addLayout(form)
-
-        self._confirm_check = QCheckBox("我确认这是无峰证据的专家强制值（最终 QC 至少判为 WARN）")
-        layout.addWidget(self._confirm_check)
-
-        warning = QLabel(
-            "该值不经过峰对/MAD 验证，将标记为 EXPERT_FORCED，最终 QC 绝不会判为 PASS。"
-        )
-        warning.setWordWrap(True)
-        layout.addWidget(warning)
-
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        self._ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
-        self._ok_button.setEnabled(False)
-        self._confirm_check.toggled.connect(self._refresh_ok)
-        self._note_edit.textChanged.connect(self._refresh_ok)
-        layout.addWidget(buttons)
-        self._refresh_ok()
-
-    def _refresh_ok(self) -> None:
-        self._ok_button.setEnabled(
-            self._confirm_check.isChecked() and bool(self._note_edit.text().strip())
-        )
-
-    def offset_s(self) -> float:
-        return float(self._offset_spin.value())
-
-    def note(self) -> str:
-        return self._note_edit.text().strip()
 
 
 __all__ = ["SyncView"]

@@ -142,10 +142,6 @@ class ProcessingView(QWidget):
         range_form.addRow("静态窗口（起/止）：", _span(self._static_start, self._static_end))
         layout.addWidget(range_group)
 
-        # marker 调整专家确认（§3.6：>80mm 默认阻止，专家确认后 QC 降为 WARN）
-        self._marker_adjust_confirm = QCheckBox("专家确认：静态 marker 调整量可能超过 80 mm")
-        layout.addWidget(self._marker_adjust_confirm)
-
         # 运行控制
         run_row = QHBoxLayout()
         self._process_button = QPushButton("开始解算")
@@ -289,7 +285,6 @@ class ProcessingView(QWidget):
             grf_cutoff_hz=float(self._grf_cutoff.value()),
             analysis_time_range_s=analysis_range,
             static_time_range_s=static_range,
-            marker_adjustment_expert_confirmed=self._marker_adjust_confirm.isChecked(),
         )
         self.process_requested.emit(config)
 
