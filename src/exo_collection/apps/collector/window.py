@@ -4452,13 +4452,31 @@ class CollectorWindow(QMainWindow):
         Muscle names only become dict keys when they are non-empty and unique;
         otherwise (or when the payload omits ``labels``) we use stable synthetic
         labels so ``_build_emg_preview`` can address each trace deterministically.
+
+        When the payload also carries ``unit_serials`` (the bare Noraxon sensor
+        serial, e.g. ``234f0``), we append it to each label so the preview shows
+        both the muscle name and the paired sensor.
         """
         raw = payload.get("labels")
-        if isinstance(raw, (list, tuple)) and len(raw) == count:
-            labels = [str(item) for item in raw]
-            if all(labels) and len(set(labels)) == count:
-                return labels
-        return [f"emg_{index + 1:02d}" for index in range(count)]
+        labels = (
+            [str(item) for item in raw]
+            if isinstance(raw, (list, tuple)) and len(raw) == count
+            else []
+        )
+        if not (labels and all(labels) and len(set(labels)) == count):
+            labels = [f"emg_{index + 1:02d}" for index in range(count)]
+        raw_serials = payload.get("unit_serials")
+        serials = (
+            [str(item).strip() for item in raw_serials]
+            if isinstance(raw_serials, (list, tuple)) and len(raw_serials) == count
+            else []
+        )
+        if serials:
+            return [
+                f"{label} ({serial})" if serial else label
+                for label, serial in zip(labels, serials)
+            ]
+        return labels
 
     def _build_emg_preview(self, labels: Sequence[str]) -> None:
         """Rebuild the EMG preview as one window (plot) per configured channel."""

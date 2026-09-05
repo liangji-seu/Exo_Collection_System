@@ -164,6 +164,7 @@ def test_descriptor_records_muscle_to_channel_correspondence() -> None:
         "",
         "",
     ]
+    assert metadata["unit_serials"] == ["234fc", "234f5", "", ""]
     assert metadata["muscle_to_channel"] == {
         "股直肌": 0,
         "股内侧肌": 1,

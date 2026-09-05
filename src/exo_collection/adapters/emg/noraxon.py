@@ -608,6 +608,10 @@ class NoraxonEmgAdapter(QueuedHardwareAdapter):
                 "storage_format": "block_binary",
                 "channel_names": list(names),
                 "unit_ids": [channel.unit_id for channel in self._config.channels],
+                "unit_serials": [
+                    _normalise_unit_id(channel.unit_id)
+                    for channel in self._config.channels
+                ],
                 "muscle_to_channel": {
                     channel.name: index
                     for index, channel in enumerate(self._config.channels)

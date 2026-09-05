@@ -1369,6 +1369,31 @@ def test_emg_preview_builds_one_window_per_channel(tmp_path: Path) -> None:
     window.close()
 
 
+def test_emg_preview_labels_append_unit_serial(tmp_path: Path) -> None:
+    app, window, _created = _window_with_fake(tmp_path)
+    window.show()
+    app.processEvents()
+    window._handle_worker_event(
+        WorkerEvent(
+            event_type=WorkerEventType.PREVIEW,
+            modality="emg",
+            payload={
+                "channels": [[1.0, 2.0], [3.0, 4.0]],
+                "labels": ["股直肌", "股内侧肌"],
+                "unit_serials": ["234fc", "234f5"],
+            },
+        )
+    )
+    app.processEvents()
+
+    assert list(window._emg_traces.keys()) == ["股直肌 (234fc)", "股内侧肌 (234f5)"]
+    container = window._emg_grid_content
+    assert container is not None
+    name_labels = [label.text() for label in container.findChildren(QLabel)]
+    assert set(name_labels) == {"股直肌 (234fc)", "股内侧肌 (234f5)"}
+    window.close()
+
+
 def test_preview_workspace_layout_is_persisted(tmp_path: Path) -> None:
     app, window, _created = _window_with_fake(tmp_path)
     window.show()

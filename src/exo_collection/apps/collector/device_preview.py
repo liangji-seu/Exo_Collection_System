@@ -585,6 +585,9 @@ def _build_preview_event(
                 "channel_names": list(
                     descriptor.metadata.get("channel_names") or descriptor.channels
                 ),
+                "unit_serials": list(
+                    descriptor.metadata.get("unit_serials") or []
+                ),
             },
         )
     if isinstance(raw, SyncPulseEvent):
