@@ -62,6 +62,10 @@ class SignalPlayback:
     # individual devices; the UI must display this honestly rather than
     # inventing device IDs.
     sensor_labels: tuple[str, ...] = ()
+    # ``True`` means that the corresponding sample is the first sample after
+    # a discontinuity in the source device clock.  Plotters must not connect
+    # that sample to the preceding one.
+    break_before: NDArray[np.bool_] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -413,7 +417,13 @@ def _read_hdf5_signal(
             raise DataStudioToolError(f"HDF5 结构不完整：{path.name}")
         count = int(handle["samples/data"].shape[0])
         selector = _even_indices(count, max_points)
+        selected_rows = (
+            np.arange(*selector.indices(count), dtype=np.int64)
+            if isinstance(selector, slice)
+            else np.asarray(selector, dtype=np.int64)
+        )
         data = np.asarray(handle["samples/data"][selector])
+        break_before = np.zeros(selected_rows.size, dtype=np.bool_)
         host_ns = np.asarray(
             handle["samples/host_monotonic_ns"][selector], dtype=np.float64
         )
@@ -424,6 +434,28 @@ def _read_hdf5_signal(
             if device_time.size >= 2 and np.all(np.isfinite(device_time)):
                 source = _unwrap_device_clock(device_time)
                 if source is not None and np.all(np.diff(source) > 0):
+                    if source.size >= 2:
+                        selected_row_steps = np.diff(selected_rows).astype(
+                            np.float64
+                        )
+                        clock_steps = np.diff(source)
+                        clock_step_per_row = clock_steps / selected_row_steps
+                        nominal_clock_step = float(np.median(clock_step_per_row))
+                        if (
+                            np.isfinite(nominal_clock_step)
+                            and nominal_clock_step > 0
+                        ):
+                            # Account for the rows intentionally omitted by GUI
+                            # downsampling.  A further half device tick is enough
+                            # to distinguish an actual missing packet from normal
+                            # floating-point clock jitter.
+                            expected_clock_steps = (
+                                nominal_clock_step * selected_row_steps
+                            )
+                            tolerance = 0.5 * nominal_clock_step
+                            break_before[1:] = (
+                                clock_steps > expected_clock_steps + tolerance
+                            )
                     try:
                         host_ns = fit_affine_clock(source, host_ns).map(source)
                     except ValueError:
@@ -488,6 +520,7 @@ def _read_hdf5_signal(
             values=values,
             channels=labels,
             units=expanded_units,
+            break_before=break_before,
             sensor_labels=sensor_labels,
         ),
         np.asarray(trigger_times, dtype=np.float64),

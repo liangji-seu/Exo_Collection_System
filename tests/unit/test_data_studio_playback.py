@@ -184,6 +184,32 @@ def test_sweep_keeps_previous_cycle_until_each_position_is_overwritten() -> None
     app.processEvents()
 
 
+def test_sweep_does_not_connect_across_source_packet_loss() -> None:
+    app = QApplication.instance() or QApplication(["test-sweep-packet-loss"])
+    times = np.arange(0.0, 2.0, 0.01, dtype=np.float64)
+    break_before = np.zeros(times.shape, dtype=np.bool_)
+    break_before[100] = True
+    series = SignalPlayback(
+        time_s=times,
+        values=np.sin(times)[:, None],
+        channels=("mag_x",),
+        units=("a.u.",),
+        break_before=break_before,
+    )
+    signal = _SweepSignalPlot("magnetometer", series, (0,), 10.0)
+
+    signal.update_time(1.5, 0.0)
+
+    gap_column = int(round(times[100] / 10.0 * (signal._columns - 1)))
+    curve = signal._curves[0][1]
+    connect = curve.curve.opts["connect"]
+    assert signal._display_break_before[gap_column]
+    assert connect[gap_column] == 0
+    assert connect[gap_column - 1] == 1
+    signal.close()
+    app.processEvents()
+
+
 def test_prompt_markers_follow_ring_position_and_expire_when_overwritten() -> None:
     app = QApplication.instance() or QApplication(["test-prompt-markers"])
     prompt = (

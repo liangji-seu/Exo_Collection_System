@@ -670,6 +670,14 @@ class _SweepSignalPlot(pg.PlotWidget):
         super().__init__()
         self._times = np.asarray(series.time_s, dtype=np.float64)
         self._values = np.asarray(series.values)
+        source_breaks = series.break_before
+        if (
+            source_breaks is None
+            or np.asarray(source_breaks).shape != self._times.shape
+        ):
+            self._break_before = np.zeros(self._times.shape, dtype=np.bool_)
+        else:
+            self._break_before = np.asarray(source_breaks, dtype=np.bool_)
         self._window_s = float(window_s)
         self._prompt_labels = tuple(prompt_labels)
         self._prompt_lines: list["pg.InfiniteLine"] = []
@@ -689,6 +697,8 @@ class _SweepSignalPlot(pg.PlotWidget):
             dtype=np.float64,
         )
         self._display_values: dict[int, np.ndarray] = {}
+        self._display_times = np.full(self._columns, np.nan, dtype=np.float64)
+        self._display_break_before = np.ones(self._columns, dtype=np.bool_)
         self._last_current: float | None = None
         self._curves: list[tuple[int, pg.PlotDataItem]] = []
         self.setTitle(title)
@@ -742,6 +752,8 @@ class _SweepSignalPlot(pg.PlotWidget):
         if not continuing:
             for display in self._display_values.values():
                 display.fill(np.nan)
+            self._display_times.fill(np.nan)
+            self._display_break_before.fill(True)
         lower_bound = self._last_current if continuing else cycle_start_s
         sample_indices = np.flatnonzero(
             (
@@ -771,8 +783,19 @@ class _SweepSignalPlot(pg.PlotWidget):
                     source_index,
                     index,
                 ]
+            self._display_times[column] = self._times[source_index]
+            self._display_break_before[column] = self._break_before[source_index]
         for index, curve in self._curves:
-            curve.setData(self._x_grid, self._display_values[index])
+            display = self._display_values[index]
+            finite = np.isfinite(display) & np.isfinite(self._display_times)
+            connect = np.zeros(self._columns, dtype=np.int32)
+            connect[1:] = (
+                finite[1:]
+                & finite[:-1]
+                & ~self._display_break_before[1:]
+                & (self._display_times[1:] > self._display_times[:-1])
+            )
+            curve.setData(self._x_grid, display, connect=connect)
         self._last_current = current_s
         self.cursor.setPos(phase)
         _update_prompt_marker_lines(

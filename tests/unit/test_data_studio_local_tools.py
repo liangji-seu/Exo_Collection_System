@@ -947,3 +947,35 @@ def test_read_hdf5_signal_reconstructs_uniform_time_from_device_clock(
     diffs = np.diff(series.time_s)
     assert diffs.std() < 1e-9
     assert abs(diffs[0] - period_ns / 1e9) < 0.01 * (period_ns / 1e9)
+    assert series.break_before is not None
+    assert not np.any(series.break_before)
+
+
+def test_read_hdf5_signal_marks_device_clock_packet_loss_after_downsampling(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "imu.h5"
+    count = 40
+    device_time = np.arange(count, dtype=np.float64)
+    device_time[20:] += 3.0
+
+    with Hdf5SignalWriter(
+        path,
+        channels=("mag_x",),
+        units=("a.u.",),
+        device_metadata={"device_id": "imu_sim"},
+        sample_shape=(1,),
+        nominal_rate_hz=100.0,
+    ) as writer:
+        writer.append(
+            np.arange(count, dtype=np.float32)[:, None],
+            sample_index=0,
+            host_monotonic_ns=np.arange(count, dtype=np.uint64) * 10_000_000,
+            device_time=device_time,
+        )
+
+    series, _ = _read_hdf5_signal(path, formal_t0_ns=0, max_points=10)
+
+    assert series.time_s.size == 10
+    assert series.break_before is not None
+    assert np.count_nonzero(series.break_before) == 1
