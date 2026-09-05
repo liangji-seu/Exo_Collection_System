@@ -690,6 +690,15 @@ class _SweepSignalPlot(pg.PlotWidget):
             round(self._times.size * self._window_s / max(source_span, 1e-9))
         )
         self._columns = max(128, min(2000, estimated_window_points))
+        # The nominal per-sample spacing of the (possibly downsampled) source.
+        # Adjacent sweep columns drawn from the *same* cycle sit within a few
+        # multiples of this; a wrapped sweep or two interleaved cycles are whole
+        # seconds apart, so this cleanly separates the two.
+        self._nominal_step_s = (
+            float(source_span) / max(self._times.size - 1, 1)
+            if self._times.size > 1
+            else self._window_s
+        )
         self._x_grid = np.linspace(
             0.0,
             self._window_s,
@@ -789,11 +798,23 @@ class _SweepSignalPlot(pg.PlotWidget):
             display = self._display_values[index]
             finite = np.isfinite(display) & np.isfinite(self._display_times)
             connect = np.zeros(self._columns, dtype=np.int32)
-            connect[1:] = (
-                finite[1:]
-                & finite[:-1]
+            # ``connect[j]`` tells pyqtgraph whether to draw the segment from
+            # column j to j+1.  Draw it only when both ends are finite, the
+            # right end is not the first sample after a device-clock gap, and
+            # the time step is a normal forward advance within one sweep cycle.
+            # A non-positive step marks a wrapped sweep; a step larger than a
+            # few sample spacings marks two cycles interleaving onto the same
+            # column grid after GUI downsampling.  Both would otherwise draw a
+            # full-width spurious segment (a visible "毛刺"), so they are left
+            # unconnected.
+            dt = self._display_times[1:] - self._display_times[:-1]
+            max_normal_step = 3.0 * self._nominal_step_s
+            connect[:-1] = (
+                finite[:-1]
+                & finite[1:]
                 & ~self._display_break_before[1:]
-                & (self._display_times[1:] > self._display_times[:-1])
+                & (dt > 0.0)
+                & (dt <= max_normal_step)
             )
             curve.setData(self._x_grid, display, connect=connect)
         self._last_current = current_s

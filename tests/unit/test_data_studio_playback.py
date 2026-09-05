@@ -204,8 +204,49 @@ def test_sweep_does_not_connect_across_source_packet_loss() -> None:
     curve = signal._curves[0][1]
     connect = curve.curve.opts["connect"]
     assert signal._display_break_before[gap_column]
-    assert connect[gap_column] == 0
-    assert connect[gap_column - 1] == 1
+    # ``connect[j]`` drives the segment from column j to j+1, so the break
+    # must land on the segment *into* the gap-start sample (j-1 -> j), not the
+    # one leaving it (j -> j+1).
+    assert connect[gap_column - 1] == 0
+    assert connect[gap_column - 2] == 1
+    signal.close()
+    app.processEvents()
+
+
+def test_sweep_does_not_connect_across_interleaved_cycles() -> None:
+    app = QApplication.instance() or QApplication(["test-sweep-interleave"])
+    # The 10/20 ms alternating grid mimics the non-uniform rows selected by GUI
+    # downsampling.  After a sweep wrap the two cycles land on slightly
+    # different column grids and would interleave; every drawn segment must
+    # still stay within a normal same-cycle step.
+    steps = np.resize(np.array([0.010, 0.020], dtype=np.float64), 2100)
+    times = np.cumsum(np.concatenate(([0.0], steps)))
+    times = times[times <= 21.0]
+    series = SignalPlayback(
+        time_s=times,
+        values=np.sin(times)[:, None],
+        channels=("mag_x",),
+        units=("a.u.",),
+    )
+    signal = _SweepSignalPlot("magnetometer", series, (0,), 10.0)
+
+    current = 0.0
+    while current <= 21.0:
+        signal.update_time(current, float(int(current // 10.0) * 10.0))
+        current += 0.05
+
+    curve = signal._curves[0][1]
+    connect = curve.curve.opts["connect"]
+    display_times = signal._display_times
+    nominal = 3.0 * signal._nominal_step_s
+    for j in range(signal._columns - 1):
+        if connect[j]:
+            dt = display_times[j + 1] - display_times[j]
+            assert dt > 0.0
+            assert dt <= nominal, (
+                f"segment {j}->{j + 1} spans {dt:.3f} s, exceeding "
+                f"{nominal:.3f} s"
+            )
     signal.close()
     app.processEvents()
 
