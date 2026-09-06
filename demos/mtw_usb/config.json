@@ -1,0 +1,12 @@
+{
+  "sensors": {
+    "left_leg": "10B42626",
+    "right_leg": "10B4260D",
+    "pelvis": "10B4261F"
+  },
+  "sample_rate_hz": 100,
+  "duration_s": 60,
+  "no_data_timeout_s": 10,
+  "queue_capacity": 30000,
+  "output_dir": "output"
+}
