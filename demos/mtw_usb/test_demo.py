@@ -9,6 +9,10 @@ from types import SimpleNamespace
 import run_demo as demo
 
 
+class FakeArray(list):
+    def size(self): return len(self)
+
+
 class FakeId:
     def __init__(self, text, mtw=True): self.text,self.mtw=text,mtw
     def toXsString(self): return self.text
@@ -44,7 +48,7 @@ class Device:
     def connectivityState(self): return self.connected
     def gotoConfig(self): return True
     def setOptions(self,*args): pass
-    def supportedUpdateRates(self): return [self.rate]
+    def supportedUpdateRates(self): return FakeArray([self.rate])
     def setUpdateRate(self,rate): return rate==self.rate
     def updateRate(self): return self.rate
     def productCode(self): return 'FAKE_TEST_DEVICE'
@@ -58,7 +62,7 @@ class Device:
 def fake(devices):
     byid={d.did:d for d in devices}
     control=SimpleNamespace(openPort=lambda *a:True,device=lambda did:byid[did.toXsString()],close=lambda:None)
-    return SimpleNamespace(XsScanner_scanPorts=lambda:[FakePort(d.did) for d in devices],
+    return SimpleNamespace(XsScanner_scanPorts=lambda:FakeArray([FakePort(d.did) for d in devices]),
         XsControl_construct=lambda:control,XsCallback=object,XsDataPacket=lambda p:p,
         XCS_PluggedIn=2,XSO_Orientation=1,XSO_Calibrate=2)
 
@@ -87,10 +91,19 @@ class Tests(unittest.TestCase):
         self.assertEqual(sorted(map(len,rows.values())),[3,6,8])
         self.assertFalse(result['cross_device_hardware_sync_verified'])
 
-    def test_missing_id(self):
-        result,_=self.execute([Device('10B42626')])
+    def test_partial_match_auto_detects_subset(self):
+        # 只插了一颗（left_leg），应自动识别为这三颗之一并只采这一颗，而不是报缺。
+        result,rows=self.execute([Device('10B42626')])
+        self.assertEqual(result['status'],'FINISHED')
+        self.assertEqual(result['matched_sensor_names'],['left_leg'])
+        self.assertEqual(set(result['missing_sensor_names']),{'right_leg','pelvis'})
+        self.assertEqual(list(rows.keys()),['left_leg_10B42626.csv'])
+
+    def test_no_configured_sensor_found(self):
+        # 插的是三颗之外的陌生 MTw，一颗都不匹配，才报错。
+        result,_=self.execute([Device('FFFFFFFF')])
         self.assertEqual(result['status'],'FAILED')
-        self.assertIn('10B4260D',result['errors'][0])
+        self.assertIn('未找到任何配置',result['errors'][0])
 
     def test_wireless_rejected(self):
         result,_=self.execute([Device(did,connected=3) for did in self.config()['sensors'].values()])

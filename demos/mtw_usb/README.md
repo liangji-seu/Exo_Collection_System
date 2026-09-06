@@ -13,7 +13,7 @@
    | right_leg（右腿） | 10B4260D |
    | pelvis（骨盆） | 10B4261F |
 
-   必须填写完整 ID，不能只写末三位；大小写均可。为了先测单颗，可以临时仅保留一个 sensors 条目。
+   必须填写完整 ID，不能只写末三位；大小写均可。三颗 ID 都留在 `sensors` 里即可——程序会自动匹配当前实际连上的子集：只插一颗，就只采集这一颗并在控制台/`summary.json` 里标出缺了哪两颗。
 3. 第一次若当前 Python 没有 SDK，双击 `install_sdk.bat`。它使用工程已有的 `Exo_data_capture_system/MT SDK/Python` 下匹配 wheel 离线安装，不下载、不升级固件。安装到同一 EXO Python 环境；已有同版本时 pip 不重复安装。
 4. 可先双击 `scan_devices.bat`，看是否能发现目标 ID。扫描成功仅证明找到端口，尚未证明能输出数据。
 5. 双击 `run_demo.bat`。默认录 60 秒，期间可 Ctrl+C 停止保存。控制台每两秒显示各颗累计行数与计数跳缺，结束显示接收频率估计。
@@ -31,7 +31,7 @@ python run_demo.py --config config.json
 
 ## 功能与判定
 
-- 必须找到所有指定 ID；多余设备忽略，缺一颗会明确报错，不用别的设备替代。
+- 自动匹配：扫描到的 MTw 按配置 ID 对上几颗就采几颗（1–3 颗），并在控制台与 `summary.json` 的 `matched_sensor_names` / `missing_sensor_names` 标明；只有一颗都不匹配时才报错。多余/陌生 ID 忽略，不会用它替代缺的设备。
 - 打开后要求 SDK 的 `connectivityState` 为 `XCS_PluggedIn`；不启用无线，也不会无线回退。
 - 采用本地官方 `Examples/xda_matlab/example_mtw.m` 的 MTw 配置方式：`gotoConfig`、`XSO_Orientation | XSO_Calibrate`、`supportedUpdateRates`、`setUpdateRate(100)`、`gotoMeasurement`。不直接套用 MTi 的输出配置方式。
 - 不支持 100 Hz 或读回不是 100 Hz 时退出，不偷偷改为 80 Hz。
@@ -65,4 +65,4 @@ CSV 同时记录：设备 packet_counter、设备 sample_time_fine（存在时�
 - 配置成功但没有姿态：不要把这一轮当作成功，检查 SDK 版本和 MTw 软件滤波输出。完整错误在输出目录。
 - 当前开发机 EXO 环境起初缺少 `xsensdeviceapi`，已提供离线安装入口；未在本轮改动该环境。
 
-已执行离线模拟测试，覆盖三颗独立保存、缺失 ID、有线类型门禁、100 Hz 门禁、队列溢出、无数据超时、计数回绕和重复配置。**尚未接真实三颗 USB MTw 验证，明天的接线测试是硬件验收。**
+已执行离线模拟测试，覆盖三颗独立保存、单颗自动匹配、缺失 ID（全部不匹配）、有线类型门禁、100 Hz 门禁、队列溢出、无数据超时、计数回绕和重复配置。**尚未接真实三颗 USB MTw 验证，明天的接线测试是硬件验收。**

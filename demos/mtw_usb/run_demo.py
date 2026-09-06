@@ -52,7 +52,9 @@ def read_config(path):
 
 def select_ports(xda, sensors, announce=print):
     inventory, direct = [], {}
-    for p in xda.XsScanner_scanPorts():
+    ports = xda.XsScanner_scanPorts()
+    for index in range(ports.size()):
+        p = ports[index]
         did = str(p.deviceId().toXsString()).upper()
         mtw = bool(p.deviceId().isMtw())
         row = {'id': did, 'port': str(p.portName()), 'baudrate': int(p.baudrate()), 'is_mtw': mtw}
@@ -62,11 +64,23 @@ def select_ports(xda, sensors, announce=print):
             if did in direct:
                 raise RuntimeError(f'扫描出现重复 ID {did}，请检查连接。')
             direct[did] = p
-    missing = [f'{name}={did}' for name,did in sensors.items() if did not in direct]
+    matched = [(name, direct[did]) for name, did in sensors.items() if did in direct]
+    missing = [f'{name}={did}' for name, did in sensors.items() if did not in direct]
+    if not matched:
+        found = ', '.join(sorted(direct)) if direct else '（无 MTw）'
+        raise RuntimeError(
+            '未找到任何配置的 USB MTw。'
+            + f'已发现 MTw：{found}；配置：'
+            + ', '.join(f'{name}={did}' for name, did in sensors.items())
+            + '。请拔掉 Dongle，用数据线直连；关闭 Collector/MT Manager，检查驱动和 ID。'
+        )
     if missing:
-        raise RuntimeError('未找到指定 USB MTw：'+', '.join(missing)+
-                           '。请拔掉 Dongle，用数据线直连；关闭 Collector/MT Manager，检查驱动和 ID。')
-    return [(name,direct[did]) for name,did in sensors.items()], inventory
+        announce(
+            f'自动匹配：找到 {len(matched)}/{len(sensors)} 颗'
+            f'（{", ".join(name for name, _ in matched)}），'
+            f'缺少 {", ".join(missing)}，仅采集已连接的设备。'
+        )
+    return matched, inventory
 
 
 class CounterStats:
@@ -119,6 +133,7 @@ def unpack_packet(packet):
 def collect(xda, config, out, announce=print):
     summary = {'status':'STARTING', 'config':config, 'transport':'direct_usb_only',
                'cross_device_hardware_sync_verified':False, 'sensors':{}, 'errors':[],
+               'matched_sensor_names':[], 'missing_sensor_names':[],
                'timing_note':'host timestamps are callback arrival times, NOT simultaneous sample times',
                'units':{'acc':'m/s2','gyr':'rad/s','mag':'SDK native a.u.',
                         'euler':'degree','quaternion':'wxyz','sample_time_fine':'raw SDK ticks'}}
@@ -161,6 +176,9 @@ def collect(xda, config, out, announce=print):
 
     try:
         selected, summary['scan_inventory'] = select_ports(xda,config['sensors'],announce)
+        summary['matched_sensor_names'] = [name for name, _ in selected]
+        summary['missing_sensor_names'] = [name for name in config['sensors']
+                                           if name not in {n for n, _ in selected}]
         control = xda.XsControl_construct()
         if not control:
             raise RuntimeError('XsControl_construct 失败')
@@ -176,7 +194,8 @@ def collect(xda, config, out, announce=print):
             if not dev.gotoConfig():
                 raise RuntimeError(f'{name} 不能进入配置模式')
             dev.setOptions(xda.XSO_Orientation | xda.XSO_Calibrate, 0)
-            supported = [int(v) for v in dev.supportedUpdateRates()]
+            supported_raw = dev.supportedUpdateRates()
+            supported = [int(supported_raw[i]) for i in range(supported_raw.size())]
             if 100 not in supported:
                 raise RuntimeError(f'{name} 不支持 100 Hz；设备报告：{supported}')
             if not dev.setUpdateRate(100) or int(dev.updateRate()) != 100:
