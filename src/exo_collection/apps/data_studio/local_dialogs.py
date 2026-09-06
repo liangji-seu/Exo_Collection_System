@@ -989,6 +989,7 @@ class PlaybackDialog(QDialog):
         self._build_ultrasound_tab(playback)
         self._build_imu_tab(playback)
         self._build_encoder_tab(playback)
+        self._build_emg_tab(playback)
         self._timer = QTimer(self)
         # 20 FPS is ample for visual review and leaves the GUI thread enough
         # time to paint four images plus eleven signal plots reliably.
@@ -1234,12 +1235,52 @@ class PlaybackDialog(QDialog):
                 _log.warning("Trial %s 缺少电机编码器 %d", playback.trial_uuid, channel + 1)
         self.tabs.addTab(tab, "电机编码器 · 2 通道")
 
+    def _build_emg_tab(self, playback: TrialPlayback) -> None:
+        tab = QWidget()
+        grid = QGridLayout(tab)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(3)
+        emg = playback.emg
+        channel_count = (
+            int(np.asarray(emg.values).shape[1])
+            if emg is not None and emg.time_s.size
+            else 0
+        )
+        _log.info("EMG 回放通道数: %d", channel_count)
+        # Noraxon 采集端默认接入 4 个 Ultium 单元；固定 4 个窗口，缺失的用占位补齐。
+        for channel in range(4):
+            if emg is not None and channel < channel_count:
+                name = (
+                    emg.channels[channel]
+                    if channel < len(emg.channels)
+                    else f"ch_{channel + 1}"
+                )
+                plot = _SweepSignalPlot(
+                    f"EMG 通道 {channel + 1} · {name}",
+                    emg,
+                    (channel,),
+                    self._window_s,
+                    playback.prompt_labels,
+                )
+                self._sweep_plots.append(plot)
+                grid.addWidget(plot, channel // 2, channel % 2)
+            else:
+                grid.addWidget(
+                    _empty_tab(f"EMG 通道 {channel + 1}：数据缺失"),
+                    channel // 2,
+                    channel % 2,
+                )
+                _log.warning(
+                    "Trial %s 缺少 EMG 通道 %d", playback.trial_uuid, channel + 1
+                )
+        self.tabs.addTab(tab, "emg信号 · 4 通道")
+
     @staticmethod
     def _playback_bounds(playback: TrialPlayback) -> tuple[float, float]:
         arrays: list[np.ndarray] = []
         if playback.ultrasound is not None:
             arrays.append(np.asarray(playback.ultrasound.time_s, dtype=float))
-        for series in (playback.imu, playback.encoder, playback.sync):
+        for series in (playback.imu, playback.encoder, playback.sync, playback.emg):
             if series is not None:
                 arrays.append(np.asarray(series.time_s, dtype=float))
         if playback.prompt_labels:

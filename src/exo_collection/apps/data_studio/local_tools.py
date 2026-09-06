@@ -29,7 +29,7 @@ from exo_collection.domain.prompt_labels import (
     PromptLabelSource,
     load_prompt_label_events,
 )
-from exo_collection.readers.binary_block import BlockBinaryReader
+from exo_collection.readers.binary_block import BlockBinaryReader, scan_binary_file
 from exo_collection.storage.activity import read_activity
 from exo_collection.storage.layout import path_has_unpublished_component
 from exo_collection.storage.manifest import TrialManifest, load_manifest
@@ -103,6 +103,7 @@ class TrialPlayback:
     encoder: SignalPlayback | None
     sync: SignalPlayback | None
     sync_trigger_times_s: NDArray[np.float64]
+    emg: SignalPlayback | None = None
     prompt_labels: tuple[PromptLabelPlaybackEvent, ...] = ()
 
 
@@ -804,6 +805,147 @@ def _read_ultrasound(
         )
 
 
+def _emg_channel_labels(
+    metadata: dict[str, Any], channel_count: int
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    raw_channels = metadata.get("channel_names")
+    if isinstance(raw_channels, (list, tuple)) and len(raw_channels) == channel_count:
+        channels = tuple(str(value) for value in raw_channels)
+    else:
+        channels = tuple(f"ch_{index + 1}" for index in range(channel_count))
+    raw_units = metadata.get("units")
+    unit_values = (
+        [str(value) for value in raw_units]
+        if isinstance(raw_units, (list, tuple))
+        else []
+    )
+    if len(unit_values) < channel_count:
+        fallback = unit_values[-1] if unit_values else ""
+        unit_values.extend([fallback] * (channel_count - len(unit_values)))
+    return channels, tuple(unit_values[:channel_count])
+
+
+def _read_emg(
+    path: Path,
+    *,
+    meta_path: Path,
+    index_path: Path,
+    formal_t0_ns: int,
+    max_points: int,
+    idle_check: Callable[[], None],
+) -> SignalPlayback:
+    """Load a bounded, time-aligned EMG view from its block-binary artifact.
+
+    EMG shares the block-binary layout with ultrasound, but every block stores a
+    ``(sample_count, n_channels)`` batch of µV samples instead of A-lines.  The
+    Noraxon SDK stamps each block's ``host_monotonic_ns`` at *arrival* time,
+    which corresponds to the block's *last* sample, so the per-sample clock is
+    reconstructed with ``fit_affine_clock(last_sample_index, host_ns)`` rather
+    than read from the file.
+    """
+
+    with BlockBinaryReader(
+        path,
+        meta_path=meta_path,
+        index_path=index_path,
+        validate_crc=True,
+        auto_rebuild_index=False,
+    ) as reader:
+        block_count = reader.block_count
+        shape = reader.sample_shape
+        channel_count = int(shape[0]) if shape else 0
+        channels, units = _emg_channel_labels(reader.metadata, channel_count)
+        if block_count == 0:
+            return SignalPlayback(
+                time_s=np.empty((0,), dtype=np.float64),
+                values=np.empty((0, channel_count), dtype=np.float32),
+                channels=channels,
+                units=units,
+            )
+
+        # Anchor the sample clock to host arrival time with a header-only scan
+        # (skips payload), then fit once so the whole axis is smooth/monotonic
+        # instead of inheriting per-block arrival jitter.
+        scan = scan_binary_file(path, validate_crc=False)
+        if len(scan.headers) != block_count:
+            raise DataStudioToolError("EMG 索引与数据文件块数不一致")
+        anchor_selector = _even_indices(len(scan.headers), 2000)
+        anchor_ordinals = np.arange(len(scan.headers), dtype=np.int64)[
+            anchor_selector
+        ]
+        source = np.asarray(
+            [
+                scan.headers[int(ordinal)].first_sample_index
+                + scan.headers[int(ordinal)].sample_count
+                - 1
+                for ordinal in anchor_ordinals
+            ],
+            dtype=np.float64,
+        )
+        target = np.asarray(
+            [scan.headers[int(ordinal)].host_monotonic_ns for ordinal in anchor_ordinals],
+            dtype=np.float64,
+        )
+        model = fit_affine_clock(source, target)
+
+        # A source discontinuity only exists where a block's first sample does
+        # not continue the previous block's sample run.
+        gap_before_block = np.zeros(len(scan.headers), dtype=np.bool_)
+        for block_ordinal in range(1, len(scan.headers)):
+            previous = scan.headers[block_ordinal - 1]
+            current = scan.headers[block_ordinal]
+            gap_before_block[block_ordinal] = (
+                current.first_sample_index
+                != previous.first_sample_index + previous.sample_count
+            )
+
+        # EMG is one continuous sample stream across blocks, so downsample
+        # *globally* (uniform source positions) rather than per block.  Uneven
+        # block sizes would otherwise make the retained sample spacing ragged,
+        # which the sweep plotter renders as spurious "丢包" gaps.
+        total_samples = sum(int(header.sample_count) for header in scan.headers)
+        keep = np.arange(total_samples, dtype=np.int64)[
+            _even_indices(total_samples, max_points)
+        ]
+        values = np.empty((keep.size, channel_count), dtype=np.float32)
+        retained_indices = np.empty(keep.size, dtype=np.int64)
+        break_before = np.zeros(keep.size, dtype=np.bool_)
+        cursor = 0
+        stream_start = 0  # global position of the current block's first row
+        for ordinal in range(block_count):
+            block_size = int(scan.headers[ordinal].sample_count)
+            stream_end = stream_start + block_size
+            if cursor >= keep.size:
+                break
+            if keep[cursor] >= stream_end:
+                stream_start = stream_end
+                continue
+            idle_check()
+            begin = cursor
+            while cursor < keep.size and keep[cursor] < stream_end:
+                cursor += 1
+            local_offsets = keep[begin:cursor] - stream_start
+            record = reader.read_block(ordinal=ordinal)
+            values[begin:cursor] = record.data[local_offsets]
+            retained_indices[begin:cursor] = (
+                scan.headers[ordinal].first_sample_index + local_offsets
+            )
+            if gap_before_block[ordinal] and local_offsets[0] == 0:
+                break_before[begin] = True
+            stream_start = stream_end
+
+        time_s = (
+            model.map(retained_indices.astype(np.float64)) - float(formal_t0_ns)
+        ) / 1e9
+        return SignalPlayback(
+            time_s=np.asarray(time_s, dtype=np.float64),
+            values=values,
+            channels=channels,
+            units=units,
+            break_before=break_before,
+        )
+
+
 def load_trial_playback(
     manifest_path: str | Path,
     *,
@@ -872,9 +1014,10 @@ def load_trial_playback(
         "imu": None,
         "encoder": None,
         "sync_pulse": None,
+        "emg": None,
     }
     sync_trigger_times = np.empty((0,), dtype=np.float64)
-    for modality in signals:
+    for modality in ("imu", "encoder", "sync_pulse"):
         idle_check()
         relative = _artifact_for(manifest, modality=modality, suffix=".h5")
         _log.info("HDF5 artifact [%s]: %s", modality, relative)
@@ -890,6 +1033,31 @@ def load_trial_playback(
                   modality, series.time_s.size, series.values.shape)
         if modality == "sync_pulse":
             sync_trigger_times = trigger_times
+
+    # EMG is block-binary (.bin + .meta.json + .idx), not HDF5.
+    emg_relative = _artifact_for(manifest, modality="emg", suffix=".bin")
+    _log.info("EMG artifact: %s", emg_relative)
+    if emg_relative is not None:
+        idle_check()
+        relative_meta, relative_index = companion_paths(emg_relative)
+        published_paths = {artifact.relative_path for artifact in manifest.artifacts}
+        companion_relatives = (relative_meta.as_posix(), relative_index.as_posix())
+        missing_companions = set(companion_relatives) - published_paths
+        if missing_companions:
+            raise DataStudioToolError(
+                "EMG 回放缺少 Manifest 所列 companion Artifact："
+                + ", ".join(sorted(missing_companions))
+            )
+        signals["emg"] = _read_emg(
+            _artifact_path(trial_root, emg_relative),
+            meta_path=_artifact_path(trial_root, companion_relatives[0]),
+            index_path=_artifact_path(trial_root, companion_relatives[1]),
+            formal_t0_ns=formal_t0_ns,
+            max_points=max_signal_points,
+            idle_check=idle_check,
+        )
+        _log.info("[emg] 加载完成: time_s=%d points, values shape=%s",
+                  signals["emg"].time_s.size, signals["emg"].values.shape)
 
     prompt_labels: tuple[PromptLabelPlaybackEvent, ...] = ()
     prompt_relative = _artifact_for(
@@ -938,6 +1106,7 @@ def load_trial_playback(
         imu=signals["imu"],
         encoder=signals["encoder"],
         sync=signals["sync_pulse"],
+        emg=signals["emg"],
         sync_trigger_times_s=sync_trigger_times,
         prompt_labels=prompt_labels,
     )

@@ -66,6 +66,17 @@ def _complete_playback() -> TrialPlayback:
             ),
             units=("deg", "deg/s", "Nm", "deg", "deg/s", "Nm"),
         ),
+        emg=SignalPlayback(
+            time_s=time_s,
+            values=np.zeros((time_s.size, 4), dtype=np.float32),
+            channels=(
+                "rectus_femoris",
+                "vastus_lateralis",
+                "biceps_femoris",
+                "gastrocnemius",
+            ),
+            units=("µV",) * 4,
+        ),
         sync=None,
         sync_trigger_times_s=np.empty(0),
         prompt_labels=(
@@ -90,8 +101,9 @@ def test_playback_has_requested_modality_layout_and_fixed_sweep_axes() -> None:
     dialog = PlaybackDialog(_complete_playback())
 
     tabs = dialog.findChild(QTabWidget, "playback_tabs")
-    assert tabs is not None and tabs.count() == 4
+    assert tabs is not None and tabs.count() == 5
     assert tabs.tabText(0) == "全部"
+    assert tabs.tabText(4) == "emg信号 · 4 通道"
     assert tabs.currentIndex() == 0
     all_ultrasound = dialog.findChild(QWidget, "playback_all_ultrasound")
     assert all_ultrasound is not None
@@ -110,9 +122,11 @@ def test_playback_has_requested_modality_layout_and_fixed_sweep_axes() -> None:
         *(f"playback_all_ultrasound_frame_{index}" for index in range(1, 5)),
         *(f"playback_ultrasound_frame_{index}" for index in range(1, 5)),
     }
-    assert len(signals) == 22  # combined tab + (3 IMUs x 3 + 2 encoders)
-    assert [len(plot._curves) for plot in signals[9:11]] == [3, 3]
-    assert [len(plot._curves) for plot in signals[-2:]] == [3, 3]
+    assert len(signals) == 26  # combined tab + (3 IMUs x 3 + 2 encoders) + 4 EMG
+    curve_counts = [len(plot._curves) for plot in signals]
+    assert curve_counts.count(1) == 4  # one sweep per connected EMG unit
+    assert curve_counts.count(3) == 22  # every IMU / encoder sweep carries 3 channels
+    assert [len(plot._curves) for plot in signals[-2:]] == [3, 3]  # encoder tab last
 
     dialog.set_playback_time(10.5)
     assert all(abs(float(plot.cursor.value()) - 0.5) < 1e-6 for plot in waterfalls)

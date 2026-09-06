@@ -104,6 +104,38 @@ def _write_hdf5(path: Path, modality: str, columns: int, count: int = 100) -> No
         )
 
 
+def _write_emg_bin(path: Path, columns: int = 4, count: int = 100) -> None:
+    """Write a block-binary EMG artifact mirroring the Noraxon arrival timing."""
+    channel_names = ("股直肌", "股外侧肌", "股中外侧肌", "股中内侧肌")
+    period_ns = 10_000_000  # 100 Hz nominal, matching the other fixtures
+    half = count // 2
+    with BlockBinaryWriter(
+        path,
+        dtype=np.float32,
+        sample_shape=(columns,),
+        metadata={
+            "clock_domain": "emg_noraxon_clock",
+            "channel_names": list(channel_names[:columns]),
+            "units": ["µV"] * columns,
+            "nominal_sample_rate_hz": 100.0,
+            "storage_format": "block_binary",
+        },
+    ) as writer:
+        sample_index = 0
+        for size in (half, count - half):
+            samples = np.arange(size * columns, dtype=np.float32).reshape(
+                size, columns
+            )
+            last_index = sample_index + size - 1
+            writer.append(
+                samples,
+                first_sample_index=sample_index,
+                host_monotonic_ns=900_000_000 + last_index * period_ns,
+                host_utc_ns=1_900_000_000 + last_index * period_ns,
+            )
+            sample_index += size
+
+
 def _build_finalized_trial(data_root: Path) -> tuple[Path, TrialManifest]:
     now = datetime(2026, 7, 15, tzinfo=timezone.utc)
     project_uuid = uuid4()
@@ -143,6 +175,7 @@ def _build_finalized_trial(data_root: Path) -> tuple[Path, TrialManifest]:
     _write_hdf5(raw / "imu.h5", "imu", 6)
     _write_hdf5(raw / "encoder.h5", "encoder", 2)
     _write_hdf5(raw / "sync_pulse.h5", "sync_pulse", 1)
+    _write_emg_bin(raw / "emg.bin", 4)
 
     (reports / "quality_report.json").write_text(
         json.dumps(
@@ -185,6 +218,9 @@ def _build_finalized_trial(data_root: Path) -> tuple[Path, TrialManifest]:
         "raw/imu.h5",
         "raw/encoder.h5",
         "raw/sync_pulse.h5",
+        "raw/emg.bin",
+        "raw/emg.meta.json",
+        "raw/emg.idx",
         "reports/quality_report.json",
         "reports/device_status.csv",
         "reports/sync_check.csv",
@@ -197,6 +233,9 @@ def _build_finalized_trial(data_root: Path) -> tuple[Path, TrialManifest]:
         "raw/imu.h5": "imu",
         "raw/encoder.h5": "encoder",
         "raw/sync_pulse.h5": "sync_pulse",
+        "raw/emg.bin": "emg",
+        "raw/emg.meta.json": "emg",
+        "raw/emg.idx": "emg",
         "reports/quality_report.json": "trial",
         "reports/device_status.csv": "trial",
         "reports/sync_check.csv": "sync_pulse",
@@ -296,6 +335,7 @@ def test_playback_is_bounded_and_contains_all_four_modalities(tmp_path: Path) ->
     assert playback.imu is not None and playback.imu.values.shape == (20, 6)
     assert playback.encoder is not None and playback.encoder.values.shape == (20, 2)
     assert playback.sync is not None and playback.sync.values.shape == (20, 1)
+    assert playback.emg is not None and playback.emg.values.shape == (20, 4)
     np.testing.assert_allclose(playback.sync_trigger_times_s, [0.5])
 
 
@@ -520,8 +560,9 @@ def test_checksum_quality_and_full_statistics_are_manifest_driven(tmp_path: Path
     assert statistics.subjects == 1
     assert statistics.sessions == 1
     assert statistics.trials == statistics.finalized_trials == 1
-    assert statistics.artifact_count == 10
+    assert statistics.artifact_count == 13
     assert statistics.by_modality["ultrasound"]["artifact_count"] == 3
+    assert statistics.by_modality["emg"]["artifact_count"] == 3
 
 
 def test_human_quality_reviews_are_append_only_hash_chained_and_visible(
@@ -811,7 +852,7 @@ def test_inspect_trial_artifacts_covers_every_published_artifact(
     inspection = inspect_trial_artifacts(manifest_path, data_root=tmp_path)
 
     assert isinstance(inspection, TrialInspection)
-    assert inspection.artifact_count == len(manifest.artifacts) == 10
+    assert inspection.artifact_count == len(manifest.artifacts) == 13
     assert inspection.trial_uuid == str(manifest.trial_uuid)
 
     by_path = {artifact.relative_path: artifact for artifact in inspection.artifacts}
