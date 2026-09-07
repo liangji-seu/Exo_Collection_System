@@ -93,6 +93,16 @@ class PromptLabelPlaybackEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class MocapPlayback:
+    """Bounded, plot-ready optical marker trajectory for the 3D view."""
+
+    time_s: NDArray[np.float64]
+    # Shape is (frame, marker, 3) in millimetres.
+    positions: NDArray[np.generic]
+    marker_names: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class TrialPlayback:
     manifest_path: Path
     trial_uuid: str
@@ -109,6 +119,8 @@ class TrialPlayback:
     # recordings keep the shared-axis ``imu`` and leave this empty.
     imu_sensors: tuple[SignalPlayback, ...] = ()
     emg: SignalPlayback | None = None
+    mocap: MocapPlayback | None = None
+    moment: SignalPlayback | None = None
     prompt_labels: tuple[PromptLabelPlaybackEvent, ...] = ()
 
 
@@ -667,6 +679,104 @@ def _read_hdf5_imu_sensors(
         return tuple(series_list)
 
 
+def _read_hdf5_mocap(
+    path: Path,
+    *,
+    formal_t0_ns: int,
+    max_points: int,
+) -> MocapPlayback:
+    """Read optical-marker trajectories (``samples/data`` = frame × marker × 3)."""
+
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    with h5py.File(path, "r") as handle:
+        if not bool(handle.attrs.get("closed_cleanly", False)):
+            raise DataStudioToolError(f"HDF5 未正常关闭：{path.name}")
+        if "samples/data" not in handle or "samples/host_monotonic_ns" not in handle:
+            raise DataStudioToolError(f"HDF5 结构不完整：{path.name}")
+        data = np.asarray(handle["samples/data"], dtype=np.float64)
+        if data.ndim != 3 or data.shape[2] != 3:
+            raise DataStudioToolError(
+                f"动捕 HDF5 形状应为 (帧, marker, 3)，实际为 {data.shape}"
+            )
+        count = int(data.shape[0])
+        selector = _even_indices(count, max_points)
+        positions = data[selector]
+        host_ns = np.asarray(
+            handle["samples/host_monotonic_ns"][selector], dtype=np.float64
+        )
+        marker_names = (
+            _decode_strings(handle["metadata/channels"][:])
+            if "metadata/channels" in handle
+            else ()
+        )
+        if len(marker_names) != positions.shape[1]:
+            device_metadata = (
+                _decode_device_metadata(handle["metadata/device"][()], path)
+                if "metadata/device" in handle
+                else {}
+            )
+            raw_names = device_metadata.get("marker_names")
+            if isinstance(raw_names, (list, tuple)):
+                marker_names = tuple(str(name) for name in raw_names)
+        if len(marker_names) != positions.shape[1]:
+            marker_names = tuple(
+                f"marker_{index + 1:02d}" for index in range(positions.shape[1])
+            )
+    time_s = (host_ns - float(formal_t0_ns)) / 1e9
+    return MocapPlayback(
+        time_s=np.asarray(time_s, dtype=np.float64),
+        positions=positions,
+        marker_names=tuple(marker_names),
+    )
+
+
+def _read_moment_csv(path: Path) -> SignalPlayback | None:
+    """Best-effort read of a ``ground_truth.csv`` moment truth sidecar.
+
+    The first column is assumed to be ``time_s`` in seconds; every remaining
+    numeric column becomes a channel.  Returns ``None`` when the file is absent
+    or unparseable so a trial without a truth sidecar still opens.
+    """
+
+    if not path.is_file():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return None
+    rows = [line for line in text.splitlines() if line.strip()]
+    if len(rows) < 2:
+        return None
+    import csv as _csv
+
+    try:
+        records = list(_csv.reader(rows))
+    except _csv.Error:
+        return None
+    header = records[0]
+    if not header or header[0].strip().casefold() not in {"time_s", "time", "t"}:
+        return None
+    channels = tuple(str(name).strip() for name in header[1:]) or ("moment",)
+    try:
+        matrix = np.asarray(
+            [[float(cell) for cell in row] for row in records[1:]],
+            dtype=np.float64,
+        )
+    except (TypeError, ValueError):
+        return None
+    if matrix.ndim != 2 or matrix.shape[1] < 2:
+        return None
+    time_s = matrix[:, 0]
+    values = matrix[:, 1:]
+    return SignalPlayback(
+        time_s=np.asarray(time_s, dtype=np.float64),
+        values=np.asarray(values, dtype=np.float64),
+        channels=channels[: values.shape[1]],
+        units=("N·m",) * values.shape[1],
+    )
+
+
 def _is_raw_ethernet_ultrasound(metadata: dict[str, Any]) -> bool:
     """Return whether binary metadata declares the packet-per-channel format."""
 
@@ -1220,6 +1330,34 @@ def load_trial_playback(
         _log.info("[emg] 加载完成: time_s=%d points, values shape=%s",
                   signals["emg"].time_s.size, signals["emg"].values.shape)
 
+    mocap: MocapPlayback | None = None
+    mocap_relative = _artifact_for(manifest, modality="mocap", suffix=".h5")
+    if mocap_relative is not None:
+        idle_check()
+        mocap = _read_hdf5_mocap(
+            _artifact_path(trial_root, mocap_relative),
+            formal_t0_ns=formal_t0_ns,
+            max_points=max_signal_points,
+        )
+        _log.info(
+            "[mocap] 加载完成: frames=%d, markers=%d",
+            mocap.time_s.size,
+            mocap.positions.shape[1],
+        )
+
+    moment: SignalPlayback | None = None
+    for candidate_name in ("ground_truth.csv", "moment_truth.csv"):
+        moment_path = _artifact_path(trial_root, candidate_name)
+        if moment_path.is_file():
+            moment = _read_moment_csv(moment_path)
+            if moment is not None:
+                _log.info(
+                    "[moment] 加载完成: %s, values shape=%s",
+                    candidate_name,
+                    moment.values.shape,
+                )
+                break
+
     prompt_labels: tuple[PromptLabelPlaybackEvent, ...] = ()
     prompt_relative = _artifact_for(
         manifest,
@@ -1268,6 +1406,8 @@ def load_trial_playback(
         encoder=signals["encoder"],
         sync=signals["sync_pulse"],
         emg=signals["emg"],
+        mocap=mocap,
+        moment=moment,
         sync_trigger_times_s=sync_trigger_times,
         imu_sensors=imu_sensors,
         prompt_labels=prompt_labels,
