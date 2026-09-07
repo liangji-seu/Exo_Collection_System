@@ -13,7 +13,7 @@ from uuid import uuid4
 
 import pytest
 
-from exo_collection.adapters.base import AdapterError, TrialContext
+from exo_collection.adapters.base import AdapterError, AdapterState, TrialContext
 from exo_collection.adapters.imu.xsens_mtw_usb import (
     XdaMtwUsbBackend,
     XsensMtwUsbConfig,
@@ -319,6 +319,33 @@ def test_per_device_counter_gap_detected() -> None:
     assert len(events) == 2
     # A: 1→10 (8 missing), B: 1→11 (9), C: 1→12 (10)
     assert adapter.health().metrics["counter_gaps"] == 27
+    adapter.stop()
+    adapter.close()
+
+
+def test_pending_eviction_is_fifo_and_does_not_raise() -> None:
+    """The pending-group eviction path must not raise; it exercises the
+    OrderedDict.popitem(last=False) FIFO eviction a plain dict lacks."""
+    backend = FakeMtwUsbBackend(("A", "B", "C"))
+    adapter = XsensMtwUsbImuAdapter(
+        backend=backend,
+        config={"queue_capacity": 16, "pending_group_limit": 1},
+    )
+    adapter.connect()
+    adapter.prepare(context())
+    adapter.start()
+    adapter._t0_ns = 0
+    adapter._period_ns = 10_000_000  # 10 ms per bucket
+
+    # A lands in bucket 0 (incomplete), then bucket 1 (incomplete).  The second
+    # insert must evict the older bucket 0 without raising.
+    backend.emit("A", Packet(1), 0)
+    backend.emit("A", Packet(2), 10_000_000)
+    sleep(0.05)
+
+    assert adapter.state == AdapterState.RUNNING  # not FAULTED
+    # bucket 0 was evicted while missing B and C → 2 incomplete samples
+    assert adapter.health().metrics["incomplete_sensor_samples"] == 2
     adapter.stop()
     adapter.close()
 

@@ -15,6 +15,7 @@ preview, hdf5 writer and opensim pipeline are untouched.
 from __future__ import annotations
 
 import traceback
+from collections import OrderedDict
 from dataclasses import asdict, dataclass
 from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
@@ -390,7 +391,7 @@ class XsensMtwUsbImuAdapter(QueuedHardwareAdapter):
         self._consumer_thread: Thread | None = None
         self._consumer_stop = Event()
 
-        self._pending: dict[int, _PendingGroup] = {}
+        self._pending: OrderedDict[int, _PendingGroup] = OrderedDict()
         self._pending_lock = Lock()
         self._per_device_last_counter: dict[str, int] = {}
 
