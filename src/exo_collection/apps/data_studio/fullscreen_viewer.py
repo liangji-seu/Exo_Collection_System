@@ -21,6 +21,7 @@ import pyqtgraph as pg
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer
 from PySide6.QtWidgets import (
     QComboBox,
+    QHBoxLayout,
     QLabel,
     QPushButton,
     QSlider,
@@ -40,10 +41,37 @@ from .plots import TimeSeriesPlot
 
 _WINDOW_SECONDS = 10.0
 
-# Plausible full-body marker segments (Plug-in-Gait style names).  Only segments
-# whose two endpoints both exist in the recording are drawn; unknown marker sets
-# fall back to points plus a ground grid.
+# Bone segments are matched by marker-name *suffix* (after the marker-set prefix,
+# e.g. ``010_no_exo_dynamic/R.ASIS`` → ``R.ASIS``), case-insensitively.  The
+# lower-body CAST-style names cover the exoskeleton experiments actually recorded;
+# the full-body Plug-in-Gait names remain as a fallback for datasets that use that
+# convention.  Only segments whose two endpoints both exist are drawn; unknown
+# marker sets fall back to points plus a ground grid.
 _BONE_SEGMENTS = (
+    # -- lower body: pelvis triangle, thighs, shanks, feet --
+    ("R.ASIS", "L.ASIS"),
+    ("R.ASIS", "V.Sacral"),
+    ("L.ASIS", "V.Sacral"),
+    ("R.ASIS", "R.Thigh"),
+    ("R.Thigh", "R.Knee"),
+    ("R.Knee", "R.Shank"),
+    ("R.Shank", "R.Ankle"),
+    ("R.Ankle", "R.Heel"),
+    ("R.Ankle", "R.Toe"),
+    ("R.Heel", "R.Toe"),
+    ("L.ASIS", "L.Thigh"),
+    ("L.Thigh", "L.Knee"),
+    ("L.Knee", "L.Shank"),
+    ("L.Shank", "L.Ankle"),
+    ("L.Ankle", "L.Heel"),
+    ("L.Ankle", "L.Toe"),
+    ("L.Heel", "L.Toe"),
+    # -- medial knee/ankle markers (static calibration recordings only) --
+    ("R.Knee", "R.Knee.Medial"),
+    ("R.Ankle", "R.Ankle.Medial"),
+    ("L.Knee", "L.Knee.Medial"),
+    ("L.Ankle", "L.Ankle.Medial"),
+    # -- full-body Plug-in-Gait (fallback for other datasets) --
     ("C7", "T10"),
     ("C7", "CLAV"),
     ("CLAV", "STRN"),
@@ -86,6 +114,8 @@ class Mocap3DCanvas(pg.PlotWidget):
         self._elevation = 20.0
         self._frame = 0
         self._last_pos = None
+        self._center: np.ndarray | None = None
+        self._fit_radius = 500.0
         self.setBackground("#ffffff")
         self.setTitle("动捕 · marker 3D")
         self.setLabel("bottom", "X", units="mm")
@@ -101,7 +131,7 @@ class Mocap3DCanvas(pg.PlotWidget):
         self.addItem(self._markers)
         self._segments: list[pg.PlotDataItem] = []
         self._name_to_index = {
-            name.casefold(): index
+            name.casefold().rsplit("/", 1)[-1]: index
             for index, name in enumerate(mocap.marker_names)
         }
         pen = pg.mkPen("#8C8C8C", width=1.6)
@@ -117,19 +147,42 @@ class Mocap3DCanvas(pg.PlotWidget):
         pts = np.asarray(self._mocap.positions, dtype=np.float64).reshape(-1, 3)
         pts = pts[np.isfinite(pts).all(axis=1)]
         if pts.size == 0:
-            self.setXRange(-500.0, 500.0)
-            self.setYRange(-500.0, 500.0)
+            self._center = None
+            self._fit_radius = 500.0
+            self.setXRange(-500.0, 500.0, padding=0.0)
+            self.setYRange(-500.0, 500.0, padding=0.0)
             return
         center = np.median(pts, axis=0)
         radius = float(np.percentile(np.linalg.norm(pts - center, axis=1), 95))
-        radius = max(radius, 150.0)
-        self.setXRange(center[0] - radius, center[0] + radius, padding=0.0)
-        self.setYRange(center[2] - radius, center[2] + radius, padding=0.0)
+        self._center = center
+        self._fit_radius = max(radius, 150.0) * 1.2
+        self._recenter()
+
+    def _recenter(self) -> None:
+        """Center the view on the *projected* body, not the raw coordinates.
+
+        The orthographic projection rotates the marker cloud, so fitting the X/Y
+        ranges to raw X/Z coordinates (the old behaviour) left an off-origin body
+        — e.g. Nokov data sitting around x≈-4.6 m — entirely outside the view.
+        A rotation preserves distances, so a square range of the 3D bounding
+        sphere radius around the projected centre contains every marker.
+        """
+        if self._center is None:
+            return
+        projected = self._project(self._center[None, :])[0]
+        radius = self._fit_radius
+        self.setXRange(projected[0] - radius, projected[0] + radius, padding=0.0)
+        self.setYRange(projected[1] - radius, projected[1] + radius, padding=0.0)
 
     def _project(self, points: np.ndarray) -> np.ndarray:
         az = math.radians(self._azimuth)
         el = math.radians(self._elevation)
-        x = points[:, 0]
+        # Nokov's raw x-axis is medial-lateral with the subject's RIGHT side at
+        # the more negative x (e.g. R.ASIS < L.ASIS). Negate it so the right
+        # side maps to +screen_x (the plot's right-hand side); otherwise the
+        # view is a left-right mirror and the right foot's stomps appear to come
+        # from the left foot.
+        x = -points[:, 0]
         y = points[:, 1]
         z = points[:, 2]
         screen_x = x * math.cos(az) - y * math.sin(az)
@@ -158,6 +211,7 @@ class Mocap3DCanvas(pg.PlotWidget):
     def rotate(self, delta_azimuth: float, delta_elevation: float) -> None:
         self._azimuth = (self._azimuth + delta_azimuth) % 360.0
         self._elevation = max(-89.0, min(89.0, self._elevation + delta_elevation))
+        self._recenter()
         self.set_frame(self._frame)
 
     def mousePressEvent(self, event: object) -> None:
@@ -272,10 +326,12 @@ class FullscreenViewer(PreviewWorkspace):
         return holder
 
     def _build_imu_panel(self) -> QWidget:
+        # 3 IMUs side-by-side; within each IMU, acc/gyr/mag stack vertically so
+        # the three measurements stay visually separated per sensor.
         holder = QWidget()
-        layout = QVBoxLayout(holder)
+        layout = QHBoxLayout(holder)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
+        layout.setSpacing(4)
         rows = _imu_sensor_rows(self.playback)
         for sensor, series, kinds in rows:
             if series is None:
@@ -298,8 +354,8 @@ class FullscreenViewer(PreviewWorkspace):
                     self._window_s,
                 )
                 self._panels.append(plot)
-                block_layout.addWidget(plot)
-            layout.addWidget(block)
+                block_layout.addWidget(plot, 1)
+            layout.addWidget(block, 1)
         return holder
 
     def _build_emg_panel(self) -> QWidget:
@@ -392,7 +448,7 @@ class FullscreenViewer(PreviewWorkspace):
             cycle_start = max(self._time_min, cycle_start - self._window_s)
         for panel in self._panels:
             if isinstance(panel, TimeSeriesPlot):
-                panel.set_time(bounded)
+                panel.set_time(bounded, cycle_start)
             elif isinstance(panel, _SweepWaterfallPlot):
                 panel.update_time(bounded, cycle_start)
             elif isinstance(panel, Mocap3DCanvas):

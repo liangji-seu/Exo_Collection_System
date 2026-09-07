@@ -247,6 +247,48 @@ def test_verified_upload_immediately_turns_matching_trial_green(
     app.processEvents()
 
 
+def test_render_tree_preserves_user_expansion_across_rebuild(
+    tmp_path: Path,
+) -> None:
+    app = QApplication.instance() or QApplication(["test-tree-expansion"])
+    window = DataStudioWindow(tmp_path, autostart_refresh=False)
+    tree = [
+        {
+            "type": "project",
+            "label": "T",
+            "uuid": "project",
+            "children": [
+                {
+                    "type": "subject",
+                    "label": "001",
+                    "uuid": "subject-1",
+                    "children": [
+                        {
+                            "type": "session",
+                            "label": "WALK_LEVEL",
+                            "uuid": "session-1",
+                            "children": [],
+                        }
+                    ],
+                }
+            ],
+        }
+    ]
+
+    window._render_tree(tree)
+    subject = window.tree_widget.topLevelItem(0).child(0)
+    subject.setExpanded(True)
+    assert subject.isExpanded()
+
+    # 懒加载管理索引 / 筛选完成会整树 clear 再重建；展开状态应当被恢复。
+    window._render_tree(tree)
+
+    rebuilt = window.tree_widget.topLevelItem(0).child(0)
+    assert rebuilt.isExpanded()
+    window.close()
+    app.processEvents()
+
+
 def test_saved_password_builds_direct_remote_request_without_dialog(
     tmp_path: Path,
     monkeypatch: object,
@@ -274,65 +316,6 @@ def test_saved_password_builds_direct_remote_request_without_dialog(
     assert request.password == "saved-secret"
     assert request.operation.value == "SYNC_REMOTE_STATUS"
     assert window.quick_upload_button.text() == "上传"
-    window.close()
-
-
-def test_startup_automatically_starts_silent_remote_status_sync(
-    tmp_path: Path,
-    monkeypatch: object,
-) -> None:
-    settings = SharedAppSettings(
-        QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
-    )
-    settings.set_upload_endpoint(
-        {
-            "host": "10.192.26.253",
-            "port": 22,
-            "username": "liangji",
-            "remote_workdir": "/home/liangji/Master/My_Exo/data",
-            "authentication": "PASSWORD",
-            "remember_password": True,
-        }
-    )
-    monkeypatch.setattr(window_module, "load_password", lambda *_args: "saved-secret")  # type: ignore[attr-defined]
-    window = DataStudioWindow(tmp_path, settings=settings, autostart_refresh=False)
-    manifest = (tmp_path / "T/001/WALK/session1/.exo/manifest.json").resolve()
-    window._catalog_tree = [
-        {
-            "type": "trial",
-            "label": "session1",
-            "uuid": str(uuid4()),
-            "manifest_path": str(manifest),
-            "state": "FINALIZED",
-            "children": [],
-        }
-    ]
-    window._render_tree(window._catalog_tree)
-    captured: dict[str, object] = {}
-
-    def capture_start(
-        manifest_paths: tuple[Path, ...],
-        *,
-        status_only: bool,
-        force_dialog: bool = False,
-        silent: bool = False,
-    ) -> None:
-        captured.update(
-            manifest_paths=manifest_paths,
-            status_only=status_only,
-            force_dialog=force_dialog,
-            silent=silent,
-        )
-
-    monkeypatch.setattr(window, "_start_remote_operation", capture_start)  # type: ignore[attr-defined]
-    window._automatic_remote_sync_pending = True
-
-    window._start_automatic_remote_sync()
-
-    assert captured["manifest_paths"] == (manifest,)
-    assert captured["status_only"] is True
-    assert captured["silent"] is True
-    assert window._automatic_remote_sync_pending is False
     window.close()
 
 

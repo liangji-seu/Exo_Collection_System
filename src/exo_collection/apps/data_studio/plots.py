@@ -2,10 +2,12 @@
 
 The old sweep plots kept a fixed ring buffer and rewrote columns every cycle,
 which produced point-like, disconnected traces (毛刺) whenever samples landed
-between columns or two cycles interleaved.  :class:`TimeSeriesPlot` abandons the
-ring buffer entirely: it plots real sample time on the x-axis inside a fixed
-trailing scroll window, connects only samples that are truly adjacent in time,
-and draws thicker antialiased lines on a light background.
+between columns or two cycles interleaved.  :class:`TimeSeriesPlot` keeps a real
+time axis but renders it oscilloscope-style: the x-axis is fixed at
+``[0, window]``, the cursor sweeps left-to-right, and the previous cycle's trace
+is overwritten in place (never cleared), so the full window always shows the
+trailing ``window`` seconds wrapped at the cursor.  Lines are thicker and
+antialiased on a light background.
 """
 
 from __future__ import annotations
@@ -99,14 +101,58 @@ class TimeSeriesPlot(pg.PlotWidget):
             pos=0.0,
             angle=90,
             movable=False,
-            pen=pg.mkPen("#e11d48", width=2.0),
+            pen=pg.mkPen("#dc2626", width=3.0),
         )
         self.cursor.setZValue(100)
         self.addItem(self.cursor)
         self.setXRange(0.0, self._window_s, padding=0.0)
 
-    def set_time(self, current_s: float) -> None:
+    def set_time(self, current_s: float, cycle_start_s: float | None = None) -> None:
+        """Advance the sweep cursor.
+
+        With a fixed ``cycle_start_s`` the plot is an oscilloscope-style cyclic
+        sweep on a *fixed* ``[0, window]`` x-axis: the cursor marks the current
+        sample and sweeps left-to-right before wrapping to the left edge, and
+        each cycle overwrites the previous cycle's trace in place rather than
+        clearing it.  The full window always shows the trailing ``window``
+        seconds, wrapped at the cursor (the current sweep fills ``[0, phase]``
+        and the previous cycle's tail fills ``[phase, window]``).  Without a
+        ``cycle_start_s`` the plot falls back to a trailing window ending at the
+        cursor.
+        """
         current = float(current_s)
+        if cycle_start_s is not None:
+            left = float(cycle_start_s)
+            phase = current - left
+            self.setXRange(0.0, self._window_s, padding=0.0)
+            self.cursor.setPos(phase)
+            if not self._times.size:
+                for curve in self._curves:
+                    curve.setData([], [])
+                return
+            new_mask = (self._times >= left) & (self._times <= current)
+            old_mask = (self._times >= current - self._window_s) & (self._times < left)
+            x = np.concatenate(
+                (
+                    self._times[new_mask] - left,
+                    self._times[old_mask] - left + self._window_s,
+                )
+            )
+            for index, curve in enumerate(self._curves):
+                if self._values.ndim == 2 and index < self._values.shape[1]:
+                    samples = np.concatenate(
+                        (
+                            self._values[new_mask, index],
+                            self._values[old_mask, index],
+                        )
+                    )
+                    if self._offset:
+                        samples = samples + index * self._offset
+                else:
+                    samples = np.empty(0, dtype=np.float64)
+                curve.setData(x, samples)
+            return
+
         left = current - self._window_s
         self.setXRange(left, current, padding=0.0)
         self.cursor.setPos(current)

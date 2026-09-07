@@ -268,7 +268,6 @@ class DataStudioWindow(QMainWindow):
         self._lightweight_mode = False
         self._catalog_tree: list[dict[str, Any]] = []
         self._remote_status_by_manifest: dict[str, tuple[RemoteTrialStatus, str]] = {}
-        self._automatic_remote_sync_pending = autostart_refresh
         self._management_index: ManagementIndex | None = None
         self._annex_scan: AnnexScanResult | None = None
         self._sync_status_by_manifest: dict[str, SyncDataStatus] = {}
@@ -590,7 +589,6 @@ class DataStudioWindow(QMainWindow):
         self.tree_widget.clear()
         self._catalog_tree = []
         self._remote_status_by_manifest.clear()
-        self._automatic_remote_sync_pending = refresh
         self._management_index = None
         self._annex_scan = None
         self._filtered_records = ()
@@ -662,8 +660,6 @@ class DataStudioWindow(QMainWindow):
             )
         self.statusBar().showMessage("Catalog 刷新完成。", 5000)
         self._finish_refresh(True)
-        if self._automatic_remote_sync_pending:
-            QTimer.singleShot(0, self._start_automatic_remote_sync)
 
     @Slot(str)
     def _refresh_failed(self, details: str) -> None:
@@ -1768,41 +1764,6 @@ class DataStudioWindow(QMainWindow):
             manifest_paths, status_only=True, one_click=True
         )
 
-    @Slot()
-    def _start_automatic_remote_sync(self) -> None:
-        """Silently sync cloud state once after the initial Catalog scan."""
-
-        if not self._automatic_remote_sync_pending or self._closing:
-            return
-        self._automatic_remote_sync_pending = False
-        self._apply_activity(read_activity(self._data_root))
-        if self._lightweight_mode or self._active_upload is not None:
-            _log.info(
-                "启动自动云端状态同步已跳过：lightweight=%s active_remote=%s",
-                self._lightweight_mode,
-                self._active_upload is not None,
-            )
-            return
-        manifest_paths = self._all_finalized_manifest_paths()
-        if not manifest_paths:
-            _log.info("启动自动云端状态同步已跳过：没有 FINALIZED Trial。")
-            return
-        if self._saved_remote_request(
-            manifest_paths, status_only=True, quiet=True
-        ) is None:
-            _log.info("启动自动云端状态同步已跳过：未保存完整凭据。")
-            self.statusBar().showMessage(
-                "尚未保存完整 SSH/SCP 凭据，本次未自动同步云端状态。",
-                8000,
-            )
-            return
-        _log.info("启动后自动同步云端状态：Trial 数=%d", len(manifest_paths))
-        self._start_remote_operation(
-            manifest_paths,
-            status_only=True,
-            silent=True,
-        )
-
     def _saved_remote_request(
         self,
         manifest_paths: tuple[Path, ...],
@@ -2577,10 +2538,39 @@ class DataStudioWindow(QMainWindow):
             self._apply_activity(read_activity(self._data_root))
 
     def _render_tree(self, tree: list[dict[str, Any]]) -> None:
+        # 重建会 clear() 整棵树并默认折叠到顶层；重建前记录用户已展开的节点，
+        # 重建后按 UUID 恢复，避免懒加载管理索引 / 筛选重绘时把用户展开的树收起。
+        expanded = self._collect_expanded_uuids()
         self.tree_widget.clear()
         for node in tree:
             self.tree_widget.addTopLevelItem(self._make_tree_item(node))
-        # 默认全部折叠，只显示顶层；用户按需展开，避免启动时递归展开慢。
+        self._restore_expanded(expanded)
+
+    def _collect_expanded_uuids(self) -> set[str]:
+        expanded: set[str] = set()
+
+        def walk(item: QTreeWidgetItem) -> None:
+            if item.isExpanded():
+                key = str(item.data(0, Qt.ItemDataRole.UserRole) or "")
+                if key:
+                    expanded.add(key)
+            for index in range(item.childCount()):
+                walk(item.child(index))
+
+        for index in range(self.tree_widget.topLevelItemCount()):
+            walk(self.tree_widget.topLevelItem(index))
+        return expanded
+
+    def _restore_expanded(self, uuids: set[str]) -> None:
+        def walk(item: QTreeWidgetItem) -> None:
+            key = str(item.data(0, Qt.ItemDataRole.UserRole) or "")
+            if key and key in uuids:
+                item.setExpanded(True)
+            for index in range(item.childCount()):
+                walk(item.child(index))
+
+        for index in range(self.tree_widget.topLevelItemCount()):
+            walk(self.tree_widget.topLevelItem(index))
 
     def _make_tree_item(self, node: dict[str, Any]) -> QTreeWidgetItem:
         node_type = str(node.get("type", ""))

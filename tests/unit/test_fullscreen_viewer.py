@@ -8,7 +8,7 @@ import numpy as np
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QHBoxLayout, QVBoxLayout
 
 from exo_collection.apps.data_studio.fullscreen_viewer import (
     FullscreenViewer,
@@ -21,6 +21,7 @@ from exo_collection.apps.data_studio.local_tools import (
     _read_hdf5_mocap,
     _read_moment_csv,
 )
+from exo_collection.apps.data_studio.plots import TimeSeriesPlot
 from exo_collection.writers import Hdf5SignalWriter
 
 
@@ -180,5 +181,118 @@ def test_fullscreen_viewer_registers_mocap_and_moment_docks() -> None:
     viewer.toggle_playback()
     viewer.toggle_playback()
     assert viewer._current_time > 0.0
+    viewer.close()
+    app.processEvents()
+
+
+def test_mocap_canvas_fits_off_center_markers() -> None:
+    app = QApplication.instance() or QApplication(["test-mocap-fit"])
+    n_frames, n_markers = 3, 15
+    # Real Nokov data sits far from the origin (≈ -4.6 m in X, +1.5 m in Y), so
+    # the old raw-coordinate auto-fit left every marker outside the view.
+    base = np.array([-4600.0, 1500.0, 0.0])
+    rng = np.random.default_rng(0)
+    offsets = rng.normal(0.0, 150.0, (n_frames, n_markers, 3))
+    positions = base + offsets
+    names = tuple(
+        f"010_no_exo_dynamic/{name}"
+        for name in (
+            "R.ASIS", "L.ASIS", "V.Sacral", "R.Thigh", "R.Knee", "R.Shank",
+            "R.Ankle", "R.Heel", "R.Toe", "L.Thigh", "L.Knee", "L.Shank",
+            "L.Ankle", "L.Heel", "L.Toe",
+        )
+    )
+    mocap = MocapPlayback(
+        time_s=np.linspace(0.0, 1.0, n_frames, dtype=np.float64),
+        positions=positions,
+        marker_names=names,
+    )
+
+    canvas = Mocap3DCanvas(mocap)
+    app.processEvents()
+
+    projected = canvas._project(np.asarray(positions[0], dtype=np.float64))
+    (xmin, xmax), (ymin, ymax) = canvas.viewRange()
+    tol = 50.0  # mm; far smaller than the ~3 m offset the old bug produced
+    assert projected[:, 0].min() >= xmin - tol
+    assert projected[:, 0].max() <= xmax + tol
+    assert projected[:, 1].min() >= ymin - tol
+    assert projected[:, 1].max() <= ymax + tol
+
+    # The lower-body marker set should connect into a skeleton, not just dots.
+    assert len(canvas._segments) > 0
+    canvas.close()
+    app.processEvents()
+
+
+def test_mocap_canvas_does_not_mirror_left_right() -> None:
+    app = QApplication.instance() or QApplication(["test-mocap-lr"])
+    # Nokov convention: the subject's RIGHT side sits at the more negative x
+    # (R.ASIS < L.ASIS). The projection must keep the right marker on the
+    # screen's right-hand side rather than mirroring left/right.
+    positions = np.array(
+        [[[-4600.0, 1500.0, 700.0], [-4400.0, 1500.0, 700.0]]],
+        dtype=np.float64,
+    )
+    names = ("R.ASIS", "L.ASIS")
+    mocap = MocapPlayback(
+        time_s=np.array([0.0]),
+        positions=positions,
+        marker_names=names,
+    )
+    canvas = Mocap3DCanvas(mocap)
+    canvas._azimuth = 0.0
+    canvas._elevation = 0.0
+    projected = canvas._project(positions[0])
+    assert float(projected[0, 0]) > float(projected[1, 0])
+    canvas.close()
+    app.processEvents()
+
+
+def test_imu_panel_lays_out_sensors_horizontally() -> None:
+    app = QApplication.instance() or QApplication(["test-imu-layout"])
+    channels = (
+        "acc_x", "acc_y", "acc_z", "gyr_x", "gyr_y", "gyr_z",
+        "mag_x", "mag_y", "mag_z", "roll", "pitch", "yaw",
+    )
+    n = 120
+    time_s = np.linspace(0.0, 1.2, n, dtype=np.float64)
+    sensors = tuple(
+        SignalPlayback(
+            time_s=time_s,
+            values=np.random.default_rng(index).normal(0.0, 1.0, (n, 12)),
+            channels=channels,
+            units=("",) * 12,
+            sensor_labels=(f"IMU{index + 1}",),
+        )
+        for index in range(3)
+    )
+    playback = TrialPlayback(
+        manifest_path=Path("manifest.json"),
+        trial_uuid="00000000-0000-0000-0000-000000000009",
+        condition_code="WALK_LEVEL",
+        formal_t0_host_monotonic_ns=0,
+        ultrasound=None,
+        imu=None,
+        encoder=None,
+        sync=None,
+        sync_trigger_times_s=np.empty(0),
+        imu_sensors=sensors,
+    )
+
+    viewer = FullscreenViewer(playback)
+    panel = viewer._build_imu_panel()
+
+    layout = panel.layout()
+    assert isinstance(layout, QHBoxLayout)
+    blocks = [layout.itemAt(index).widget() for index in range(layout.count())]
+    assert len(blocks) == 3
+    for block in blocks:
+        inner = block.layout()
+        assert isinstance(inner, QVBoxLayout)
+        assert inner.count() == 3
+        for slot in range(inner.count()):
+            assert isinstance(inner.itemAt(slot).widget(), TimeSeriesPlot)
+
     viewer.close()
     app.processEvents()
