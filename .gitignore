@@ -27,3 +27,5 @@ Desktop.ini
 $RECYCLE.BIN/
 *.db-journal
 *.wal
+
+demos/mtw_usb/output/
