@@ -143,8 +143,12 @@ def recommend_static_for_subject(
     ]
     if not candidates:
         return None
-    # 日期最近优先（started_at_utc 为 ISO 字符串，字典序即时间序）。
-    candidates.sort(key=lambda s: s.started_at_utc, reverse=True)
+    # 显式静态标定（STATIC_CALIB）优先于旧协议的 STAND 基线；同优先级的按日期
+    # 最近优先（started_at_utc 为 ISO 字符串，字典序即时间序）。
+    candidates.sort(
+        key=lambda s: (s.is_explicit_static_calibration, s.started_at_utc),
+        reverse=True,
+    )
     return candidates[0]
 
 

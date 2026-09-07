@@ -89,8 +89,29 @@ class SessionRecord:
 
     @property
     def is_stand(self) -> bool:
-        """静态标定 Session 判定（条件码含 ``STAND``）。"""
-        return "STAND" in (self.condition_code or "").upper()
+        """静态标定 Session 判定。
+
+        识别三类「静态」试次：旧协议 1.1.0 的 ``STAND``（含 ``STAND_30S_*`` 基线
+        站立，沿用旧约定）、新协议的显式静态标定 ``STATIC_CALIB``，以及
+        ``condition_parameters.category == "test_static_calibration"`` 的工况。
+        """
+        code = (self.condition_code or "").upper()
+        if "STAND" in code or "STATIC" in code or "CALIB" in code:
+            return True
+        category = str(self.condition_parameters.get("category") or "").casefold()
+        return category == "test_static_calibration"
+
+    @property
+    def is_explicit_static_calibration(self) -> bool:
+        """是否为显式静态标定试次（``STATIC_CALIB``），而非旧协议的基线站立。
+
+        用于在同时存在 ``STATIC_CALIB`` 与 ``STAND``/``STAND_30S_*`` 的受试者中，
+        把自动绑定的静态模型优先指向显式标定。
+        """
+        if (self.condition_code or "").upper() == "STATIC_CALIB":
+            return True
+        category = str(self.condition_parameters.get("category") or "").casefold()
+        return category == "test_static_calibration"
 
     @property
     def subject_and_condition(self) -> str:
@@ -183,6 +204,8 @@ class ProcessingConfig:
     height_m: float
     marker_cutoff_hz: float = 6.0
     grf_cutoff_hz: float = 20.0
+    # Legacy names: signs apply to native walking/lateral FORCE axes before
+    # rotation; they are no longer post-rotation OpenSim-axis reflections.
     opensim_x_sign: float = -1.0
     opensim_z_sign: float = -1.0
     analysis_time_range_s: tuple[float, float] | None = None

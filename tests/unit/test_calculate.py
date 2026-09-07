@@ -413,8 +413,30 @@ def test_session_files_missing_and_has_dynamic_inputs(tmp_path: Path) -> None:
 
 
 def test_session_record_is_stand_detection() -> None:
+    from dataclasses import replace
+
     assert _make_session(condition="STAND").is_stand
+    assert _make_session(condition="STAND_30S_NOEXO").is_stand
+    assert _make_session(condition="STATIC_CALIB").is_stand
     assert not _make_session(condition="WALK_STEADY_1P00").is_stand
+    # category 兜底：condition_code 不含 STAND/STATIC/CALIB，但 category 指明静态标定。
+    by_category = replace(
+        _make_session(condition="HELEN_HAYES"),
+        condition_parameters={"category": "test_static_calibration"},
+    )
+    assert by_category.is_stand
+
+
+def test_session_record_explicit_static_calibration_flag() -> None:
+    from dataclasses import replace
+
+    assert not _make_session(condition="STAND").is_explicit_static_calibration
+    assert not _make_session(condition="STAND_30S_NOEXO").is_explicit_static_calibration
+    assert _make_session(condition="STATIC_CALIB").is_explicit_static_calibration
+    assert replace(
+        _make_session(condition="HELEN_HAYES"),
+        condition_parameters={"category": "test_static_calibration"},
+    ).is_explicit_static_calibration
 
 
 # --------------------------------------------------------------------------
@@ -539,6 +561,23 @@ def test_recommend_static_for_subject_requires_c3d_and_same_subject() -> None:
     ]
     assert recommend_static_for_subject("003", sessions) is None
     assert recommend_static_for_subject("005", sessions) is None
+
+
+def test_recommend_static_prefers_explicit_calibration_over_legacy_stand() -> None:
+    from dataclasses import replace
+
+    from exo_collection.apps.calculate.discovery import recommend_static_for_subject
+
+    # 受试者同时有旧协议 STAND（日期更新）与显式静态标定 STATIC_CALIB（日期更旧），
+    # 显式标定应胜出，避免把基线站立误当静态模型。
+    legacy_recent = _stand_session(date="2026-09-02T00:00:00")
+    explicit = replace(
+        _stand_session(date="2026-08-01T00:00:00"),
+        condition_code="STATIC_CALIB",
+    )
+    chosen = recommend_static_for_subject("003", [legacy_recent, explicit])
+    assert chosen is not None
+    assert chosen.condition_code == "STATIC_CALIB"
 
 
 def test_session_selector_auto_binds_static_and_dynamic(tmp_path: Path, monkeypatch) -> None:
