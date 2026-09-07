@@ -1,7 +1,8 @@
 """Tests for the Xsens MTw direct-USB (wired) adapter.
 
 Focuses on the two things that differ from the Awinda wireless adapter:
-(1) host-timestamp bucket alignment instead of shared PacketCounter, and
+(1) independent per-unit emission with exact host arrival timestamps (no
+    cross-device alignment), and
 (2) the wired backend's per-device open/configure path with no master.
 """
 
@@ -11,9 +12,10 @@ import sys
 from time import monotonic, sleep
 from uuid import uuid4
 
+import numpy as np
 import pytest
 
-from exo_collection.adapters.base import AdapterError, AdapterState, TrialContext
+from exo_collection.adapters.base import AdapterError, TrialContext
 from exo_collection.adapters.imu.xsens_mtw_usb import (
     XdaMtwUsbBackend,
     XsensMtwUsbConfig,
@@ -129,9 +131,15 @@ class FakeMtwUsbBackend:
     def close(self) -> None:
         self.closed += 1
 
-    def emit(self, device_id: str, packet: Packet, host_ns: int) -> None:
+    def emit(
+        self,
+        device_id: str,
+        packet: Packet,
+        host_mono_ns: int,
+        host_utc_ns: int | None = None,
+    ) -> None:
         assert self.callback is not None
-        self.callback(device_id, packet, host_ns)
+        self.callback(device_id, packet, host_mono_ns, host_utc_ns)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -206,7 +214,7 @@ def test_descriptor_shape_alignment_mode_and_labels() -> None:
     desc = adapter.descriptor()
     assert desc.sample_shape == (3, 12)
     assert desc.modality == "imu"
-    assert desc.metadata["alignment_mode"] == "host_timestamp_bucket"
+    assert desc.metadata["alignment_mode"] == "none_independent_streams"
     assert desc.metadata["cross_device_hardware_sync_verified"] is False
     assert desc.metadata["transport"] == "direct_usb_only"
     assert desc.metadata["preview_labels"] == [
@@ -231,85 +239,81 @@ def test_two_slot_descriptor_labels() -> None:
 
 
 # ──────────────────────────────────────────────────────────────
-#  Host-timestamp bucket alignment (the wired-specific behavior)
+#  Independent emission (no cross-device alignment)
 # ──────────────────────────────────────────────────────────────
 
 
-def test_three_devices_same_bucket_grouped_by_host_time() -> None:
-    """Different counters still group when their host timestamps land in the
-    same bucket — wired alignment ignores the per-device counter."""
+def test_each_packet_emitted_independently() -> None:
+    """Every packet becomes its own one-sample batch — no waiting for the other
+    devices to arrive."""
     adapter, backend = running_adapter()
-    adapter._t0_ns = 0
-    adapter._period_ns = 10  # 10 ns per nominal bucket
 
-    backend.emit("A", Packet(1), 1)
-    backend.emit("B", Packet(2), 2)
-    assert adapter.get_event(timeout=0.1) is None  # only 2 of 3
-
-    backend.emit("C", Packet(3), 3)
+    backend.emit("A", Packet(1), 1_000)
     event = adapter.get_event(timeout=0.5)
     assert event is not None
     assert event.data.shape == (1, 3, 12)
-    assert event.device_timestamp is None  # no unified device clock
+    # only the arriving device's row is populated; the rest are NaN
+    assert not np.isnan(event.data[0, 0, 0])
+    assert np.isnan(event.data[0, 1, 0])
+    assert np.isnan(event.data[0, 2, 0])
     adapter.stop()
     adapter.close()
 
 
-def test_devices_in_different_buckets_do_not_merge() -> None:
-    """A and B land in bucket 0, C lands far away in bucket 2 — no complete
-    sample is produced and every incomplete group is counted."""
+def test_nan_padding_for_non_arriving_devices() -> None:
     adapter, backend = running_adapter()
-    adapter._t0_ns = 0
-    adapter._period_ns = 10
 
-    backend.emit("A", Packet(1), 0)
-    backend.emit("B", Packet(2), 1)
-    backend.emit("C", Packet(3), 20)  # key = round(20/10) = 2
-
-    sleep(0.05)
-    assert adapter.get_event(timeout=0.1) is None
-
+    backend.emit("B", Packet(1), 1_000)
+    event = adapter.get_event(timeout=0.5)
+    assert event is not None
+    assert np.isnan(event.data[0, 0, 0])  # A absent
+    assert not np.isnan(event.data[0, 1, 0])  # B present
+    assert np.isnan(event.data[0, 2, 0])  # C absent
     adapter.stop()
-    # bucket 0 missing C (1), bucket 2 missing A and B (2) → 3 incomplete
-    assert adapter.health().dropped_packets == 3
     adapter.close()
 
 
-def test_host_timestamp_is_earliest_arrival_of_group() -> None:
-    """Emitted host_monotonic_ns is the earliest arrival of the aligned group,
-    staying monotonic even when the devices stream with a fixed phase offset."""
+def test_host_arrival_timestamps_recorded_exactly() -> None:
+    """Both monotonic and UTC arrival timestamps are stamped at the callback
+    and passed through unchanged (no alignment rewrites them)."""
     adapter, backend = running_adapter()
-    adapter._period_ns = 10_000_000  # 10 ms alignment window
 
-    # Arrivals spread 6 ms apart — more than half a bucket, so the old round()
-    # bucketing would have split them; the window alignment keeps them grouped.
-    backend.emit("A", Packet(1), 18_000_000)
-    backend.emit("B", Packet(1), 22_000_000)
-    backend.emit("C", Packet(1), 24_000_000)
-
+    backend.emit("A", Packet(1), 18_000_000, 1_700_000_000_000_000_000)
     event = adapter.get_event(timeout=0.5)
     assert event is not None
     assert event.host_monotonic_ns == 18_000_000
+    assert event.host_utc_ns == 1_700_000_000_000_000_000
     adapter.stop()
     adapter.close()
 
 
-def test_fixed_inter_device_phase_offset_aligns_without_loss() -> None:
-    """Regression for the 2+-device ~70 Hz packet-loss bug: three devices
-    sampling at a constant phase offset (3 ms and 6 ms apart) must pair every
-    sample instead of dropping them via strict round() bucketing."""
+def test_device_timestamp_uses_sample_time_fine() -> None:
+    """device_timestamp is the unit's own SampleTimeFine (no unified clock)."""
     adapter, backend = running_adapter()
-    adapter._period_ns = 10_000_000  # 10 ms alignment window
+
+    backend.emit("A", Packet(1, sample_time_fine=123456), 1_000)
+    event = adapter.get_event(timeout=0.5)
+    assert event is not None
+    assert event.device_timestamp == 123456
+    adapter.stop()
+    adapter.close()
+
+
+def test_fixed_phase_offset_emits_every_sample_without_loss() -> None:
+    """Regression for the 2+-device ~70 Hz bug: three units at a constant phase
+    offset (3 ms / 6 ms apart) must all be recorded — nothing is dropped by
+    alignment, because there is no alignment."""
+    adapter, backend = running_adapter()
 
     for k in range(5):
         base = k * 10_000_000
-        backend.emit("A", Packet(k + 1), base)
-        backend.emit("B", Packet(k + 1), base + 3_000_000)
-        backend.emit("C", Packet(k + 1), base + 6_000_000)
+        backend.emit("A", Packet(k + 1), base, base + 1_000)
+        backend.emit("B", Packet(k + 1), base + 3_000_000, base + 3_001_000)
+        backend.emit("C", Packet(k + 1), base + 6_000_000, base + 6_001_000)
 
     events = _drain_events(adapter, timeout=0.5)
-    assert len(events) == 5
-    assert adapter.health().metrics["incomplete_sensor_samples"] == 0
+    assert len(events) == 15  # 5 samples × 3 devices, all preserved
+    assert adapter.health().dropped_packets == 0
     adapter.stop()
     adapter.close()
 
@@ -322,48 +326,34 @@ def test_fixed_inter_device_phase_offset_aligns_without_loss() -> None:
 def test_per_device_counter_gap_detected() -> None:
     """Each wired MTw tracks its own counter; gaps accumulate per device."""
     adapter, backend = running_adapter()
-    adapter._t0_ns = 0
-    adapter._period_ns = 10
 
-    backend.emit("A", Packet(1), 0)
-    backend.emit("B", Packet(1), 1)
-    backend.emit("C", Packet(1), 2)
+    backend.emit("A", Packet(1), 1_000)
+    backend.emit("B", Packet(1), 2_000)
+    backend.emit("C", Packet(1), 3_000)
 
-    backend.emit("A", Packet(10), 20)
-    backend.emit("B", Packet(11), 21)
-    backend.emit("C", Packet(12), 22)
+    backend.emit("A", Packet(10), 4_000)
+    backend.emit("B", Packet(11), 5_000)
+    backend.emit("C", Packet(12), 6_000)
 
     events = _drain_events(adapter, timeout=0.3)
-    assert len(events) == 2
+    assert len(events) == 6  # each packet emitted independently
     # A: 1→10 (8 missing), B: 1→11 (9), C: 1→12 (10)
     assert adapter.health().metrics["counter_gaps"] == 27
     adapter.stop()
     adapter.close()
 
 
-def test_pending_limit_evicts_oldest_without_raising() -> None:
-    """When one device floods while the others stay silent, the globally-oldest
-    queued samples are evicted once the per-device bound is exceeded — this must
-    not raise and must not fault the adapter."""
-    backend = FakeMtwUsbBackend(("A", "B", "C"))
-    adapter = XsensMtwUsbImuAdapter(
-        backend=backend,
-        config={"queue_capacity": 16, "pending_group_limit": 1},
-    )
-    adapter.connect()
-    adapter.prepare(context())
-    adapter.start()
-    adapter._period_ns = 10_000_000  # 10 ms window
+def test_duplicate_packet_is_dropped() -> None:
+    """A repeated PacketCounter (delta 0) is counted as a duplicate and not
+    emitted a second time."""
+    adapter, backend = running_adapter()
 
-    # A floods four samples (0/10/20/30 ms); B and C never arrive.  With a
-    # per-device bound of 1 (×3 devices = 3 total), the oldest A sample is
-    # evicted once the fourth arrives.
-    for index, offset in enumerate((0, 10_000_000, 20_000_000, 30_000_000)):
-        backend.emit("A", Packet(index + 1), offset)
-    sleep(0.05)
+    backend.emit("A", Packet(1), 1_000)
+    backend.emit("A", Packet(1), 2_000)  # duplicate counter
 
-    assert adapter.state == AdapterState.RUNNING  # not FAULTED
-    assert adapter.health().metrics["incomplete_sensor_samples"] == 1
+    events = _drain_events(adapter, timeout=0.3)
+    assert len(events) == 1
+    assert adapter.health().metrics["duplicate_packets"] == 1
     adapter.stop()
     adapter.close()
 
@@ -519,7 +509,7 @@ def test_backend_connect_wired_success() -> None:
         devs, sensor_ids=("10B42626", "10B4260D", "10B4261F")
     )
     collected = []
-    backend.connect(lambda did, pkt, ns: collected.append(did))
+    backend.connect(lambda did, pkt, mono_ns, utc_ns: collected.append(did))
 
     assert backend.device_ids == ("10B42626", "10B4260D", "10B4261F")
     assert backend.actual_rate_hz == 100

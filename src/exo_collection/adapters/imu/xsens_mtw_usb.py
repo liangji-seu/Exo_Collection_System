@@ -2,12 +2,14 @@
 
 Replaces the Awinda wireless backend: every MTw is connected over its own USB
 data cable, so there is no wireless master and no cross-device hardware sync.
-The MTw units run on independent crystals.  Samples are therefore aligned on
-the host by quantising callback arrival time into nominal-sample buckets
-rather than by a shared PacketCounter (which the wireless master used to keep
-in lock-step).
+The MTw units run on independent crystals and therefore have a fixed, unknown
+phase offset between their sample instants.  Forcing them into aligned batches
+was dropping samples, so the adapter records each unit independently: every
+parsed packet is emitted immediately as its own one-sample batch, with only
+that unit's row populated (the other rows are NaN) and the packet's exact host
+arrival time (monotonic + UTC) recorded.
 
-The emitted ``SampleBatch`` keeps the exact downstream contract of the Awinda
+The emitted ``SampleBatch`` keeps the downstream contract of the Awinda
 adapter — ``sample_shape=(N, 12)`` and the same 12 IMU channels — so the
 preview, hdf5 writer and opensim pipeline are untouched.
 """
@@ -15,10 +17,9 @@ preview, hdf5 writer and opensim pipeline are untouched.
 from __future__ import annotations
 
 import traceback
-from collections import deque
 from dataclasses import asdict, dataclass
 from queue import Empty, Full, Queue
-from threading import Event, Lock, Thread
+from threading import Event, Thread
 from time import perf_counter_ns, time_ns
 from typing import Any, Callable, Mapping, Protocol
 
@@ -30,7 +31,6 @@ from exo_collection.adapters.imu.simulated import IMU_CHANNELS, IMU_UNITS
 from exo_collection.adapters.imu.xsens_awinda import (
     _COUNTER_WRAP_MOD,
     _IMU_SLOT_PREVIEW_LABELS,
-    _PendingGroup,
     _match_device_id,
     _read_optional_packet_counter,
     _read_optional_sample_time_fine,
@@ -121,7 +121,7 @@ class MtwUsbBackend(Protocol):
     actual_rate_hz: int
     metadata: Mapping[str, Any]
 
-    def connect(self, on_packet: Callable[[str, Any, int], None]) -> None: ...
+    def connect(self, on_packet: Callable[[str, Any, int, int], None]) -> None: ...
 
     def start(self) -> None: ...
 
@@ -151,7 +151,7 @@ class XdaMtwUsbBackend:
         self._callback: Any = None
         self._measurement_started = False
 
-    def connect(self, on_packet: Callable[[str, Any, int], None]) -> None:
+    def connect(self, on_packet: Callable[[str, Any, int, int], None]) -> None:
         if self._api is not None:
             xda = self._api
         else:
@@ -254,10 +254,14 @@ class XdaMtwUsbBackend:
 
             def onLiveDataAvailable(self, device: Any, packet: Any) -> None:
                 copied = xda.XsDataPacket(packet)
+                # Stamp the exact PC arrival instant with BOTH the monotonic
+                # clock (sample spacing) and the UTC wall clock (absolute time),
+                # read back-to-back so the pair describes one arrival moment.
                 on_packet(
                     str(device.deviceId().toXsString()),
                     copied,
                     perf_counter_ns(),
+                    time_ns(),
                 )
 
         callback = Callback()
@@ -361,13 +365,13 @@ class XdaMtwUsbBackend:
 # ──────────────────────────────────────────────────────────────
 
 class XsensMtwUsbImuAdapter(QueuedHardwareAdapter):
-    """Wired callback→packet-queue→consumer pipeline aligned on host time.
+    """Wired callback→packet-queue→consumer pipeline with NO cross-device alignment.
 
-    Callback thread copies each ``XsDataPacket`` and pushes
-    ``(device_id, packet, host_ns)`` to a bounded queue.  The consumer parses
-    the same 12 fields, then groups the three (or N) units by a host-timestamp
-    bucket (quantised to the nominal sample period) instead of a shared
-    PacketCounter.
+    Callback thread copies each ``XsDataPacket``, stamps its exact PC arrival
+    time (monotonic + UTC), and pushes ``(device_id, packet, mono_ns, utc_ns)``
+    to a bounded queue.  The consumer parses the same 12 fields and emits every
+    packet immediately as its own one-sample batch: only the arriving unit's
+    row is populated, the other rows are NaN.
     """
 
     def __init__(
@@ -384,28 +388,23 @@ class XsensMtwUsbImuAdapter(QueuedHardwareAdapter):
         self._active_slot_indices: tuple[int, ...] = (
             self._config.active_sensor_slot_indices
         )
+        self._device_id_to_slot: dict[str, int] = {}
 
-        self._packet_queue: Queue[tuple[str, Any, int | None]] = Queue(
+        self._packet_queue: Queue[tuple[str, Any, int, int]] = Queue(
             maxsize=self._config.queue_capacity
         )
         self._consumer_thread: Thread | None = None
         self._consumer_stop = Event()
 
-        self._pending: dict[
-            str, deque[tuple[int, np.ndarray, int | None, int | None]]
-        ] = {}
-        self._pending_lock = Lock()
         self._per_device_last_counter: dict[str, int] = {}
+        self._per_device_sample_count: dict[str, int] = {}
 
         self._sample_index = 0
         self._batch_sequence = 0
-        self._incomplete_samples = 0
         self._malformed_packets = 0
         self._duplicate_packets = 0
         self._counter_gaps = 0
-        self._max_arrival_spread_ns = 0
         self._accepting_packets = False
-        self._period_ns: float = 1e9 / 100.0
 
     # ── descriptor / snapshot ──────────────────────────────
 
@@ -446,7 +445,7 @@ class XsensMtwUsbImuAdapter(QueuedHardwareAdapter):
                 "physical_location_mapping": (
                     "configured" if cfg.active_sensor_ids else "unassigned"
                 ),
-                "alignment_mode": "host_timestamp_bucket",
+                "alignment_mode": "none_independent_streams",
                 "expected_device_count": active_count,
                 **{k: v for k, v in backend_meta.items()
                    if k not in {"device_ids", "expected_device_count",
@@ -463,7 +462,7 @@ class XsensMtwUsbImuAdapter(QueuedHardwareAdapter):
             "actual_rate_hz": getattr(self._backend, "actual_rate_hz", None),
             **{k: v for k, v in backend_meta.items()
                if k not in {"pending_group_limit", "queue_capacity"}},
-            "alignment_mode": "host_timestamp_bucket",
+            "alignment_mode": "none_independent_streams",
         }
 
     # ── lifecycle hooks ────────────────────────────────────
@@ -477,6 +476,7 @@ class XsensMtwUsbImuAdapter(QueuedHardwareAdapter):
                 f"实际为 {ids}"
             )
         self._use_device_ids = ids
+        self._device_id_to_slot = {did: index for index, did in enumerate(ids)}
         backend_slots = tuple(
             int(index)
             for index in getattr(self._backend, "metadata", {}).get(
@@ -491,20 +491,13 @@ class XsensMtwUsbImuAdapter(QueuedHardwareAdapter):
             self._active_slot_indices = tuple(range(len(ids)))
 
     def _reset_trial_state(self) -> None:
-        with self._pending_lock:
-            self._pending.clear()
         self._per_device_last_counter = {}
+        self._per_device_sample_count = {did: 0 for did in self._use_device_ids}
         self._sample_index = 0
         self._batch_sequence = 0
-        self._incomplete_samples = 0
         self._malformed_packets = 0
         self._duplicate_packets = 0
         self._counter_gaps = 0
-        self._max_arrival_spread_ns = 0
-        rate_hz = float(
-            getattr(self._backend, "actual_rate_hz", self._config.sample_rate_hz)
-        )
-        self._period_ns = 1e9 / rate_hz
         while not self._packet_queue.empty():
             try:
                 self._packet_queue.get_nowait()
@@ -552,13 +545,6 @@ class XsensMtwUsbImuAdapter(QueuedHardwareAdapter):
         if self._consumer_thread is not None and not self._consumer_thread.is_alive():
             self._consumer_thread = None
 
-        # 5. Only touch pending groups after the sole consumer has stopped.
-        if self._consumer_thread is None:
-            with self._pending_lock:
-                for queue in self._pending.values():
-                    self._incomplete_samples += len(queue)
-                self._pending.clear()
-
         if first_error is not None:
             raise first_error
 
@@ -583,7 +569,11 @@ class XsensMtwUsbImuAdapter(QueuedHardwareAdapter):
     # ── callback entry point ───────────────────────────────
 
     def _on_packet(
-        self, device_id: str, packet: Any, host_ns: int | None = None
+        self,
+        device_id: str,
+        packet: Any,
+        host_mono_ns: int | None = None,
+        host_utc_ns: int | None = None,
     ) -> None:
         if not self._accepting_packets:
             return
@@ -591,9 +581,10 @@ class XsensMtwUsbImuAdapter(QueuedHardwareAdapter):
             self._set_fault(AdapterError(f"收到未配置 MTw {device_id} 的数据"))
             return
 
-        received_ns = perf_counter_ns() if host_ns is None else int(host_ns)
+        mono_ns = perf_counter_ns() if host_mono_ns is None else int(host_mono_ns)
+        utc_ns = time_ns() if host_utc_ns is None else int(host_utc_ns)
         try:
-            self._packet_queue.put_nowait((device_id, packet, received_ns))
+            self._packet_queue.put_nowait((device_id, packet, mono_ns, utc_ns))
         except Full:
             error = AdapterError(
                 f"MTw USB packet queue overflow (capacity={self._config.queue_capacity})"
@@ -616,7 +607,11 @@ class XsensMtwUsbImuAdapter(QueuedHardwareAdapter):
                 self._set_fault(exc)
 
     def _process_one_packet(
-        self, device_id: str, packet: Any, host_ns: int
+        self,
+        device_id: str,
+        packet: Any,
+        host_mono_ns: int,
+        host_utc_ns: int,
     ) -> None:
         try:
             row = parse_xsens_packet(packet)
@@ -627,114 +622,45 @@ class XsensMtwUsbImuAdapter(QueuedHardwareAdapter):
         counter = _read_optional_packet_counter(packet)
         sample_time = _read_optional_sample_time_fine(packet)
 
-        # Per-device counter gap detection: unlike Awinda, each wired MTw has an
-        # independent crystal, so a shared/common counter cannot be assumed.
+        # Per-device counter gap detection.  Each wired MTw has an independent
+        # crystal, so a shared/common counter cannot be assumed; track each
+        # unit's counter on its own.  A zero delta means the same packet was
+        # delivered twice (count it and drop it); any positive small delta
+        # counts the missing packets in between as real drops.
         if counter is not None:
             last = self._per_device_last_counter.get(device_id)
             if last is not None:
                 delta = (counter - last) % _COUNTER_WRAP_MOD
+                if delta == 0:
+                    self._duplicate_packets += 1
+                    return
                 if 0 < delta < _COUNTER_WRAP_MOD // 2:
                     self._counter_gaps += delta - 1
             self._per_device_last_counter[device_id] = counter
 
-        # Host-timestamp window alignment (wired: no shared counter).  Each MTw
-        # streams on its own crystal, so its samples carry a fixed phase offset
-        # relative to the others; a strict round() bucket would split
-        # near-simultaneous samples across neighbouring buckets.  Queue per
-        # device instead and pair the oldest sample of every device whenever
-        # their host arrival times fall within one nominal period of each other.
-        with self._pending_lock:
-            queue = self._pending.setdefault(device_id, deque())
-            if counter is not None and queue and queue[-1][2] == counter:
-                self._duplicate_packets += 1
-                return
-            queue.append((host_ns, row, counter, sample_time))
-            self._enforce_pending_limit_locked()
-            ready = self._drain_aligned_groups_locked()
-
-        for group_host_ns, group in ready:
-            self._emit_group(group_host_ns, group)
-
-    def _enforce_pending_limit_locked(self) -> None:
-        """Evict the globally-oldest queued sample when the pending queues grow
-        past the configured bound (guards against an idle/offline device letting
-        the other devices' queues grow without bound).  Caller holds the lock."""
-        limit = self._config.pending_group_limit * max(1, len(self._use_device_ids))
-        while True:
-            total = sum(len(queue) for queue in self._pending.values())
-            if total <= limit:
-                return
-            oldest_did = min(
-                (did for did in self._pending if self._pending[did]),
-                key=lambda did: self._pending[did][0][0],
-            )
-            self._pending[oldest_did].popleft()
-            self._incomplete_samples += 1
-
-    def _drain_aligned_groups_locked(
-        self,
-    ) -> list[tuple[int, _PendingGroup]]:
-        """Pair the oldest sample of every active device into complete groups.
-
-        Caller holds ``_pending_lock``.  A group is complete when all devices
-        have queued samples whose host arrival times fall within one nominal
-        period (``self._period_ns``) — wide enough to absorb the fixed
-        inter-device phase offset the independent crystals introduce.  Samples
-        that grow too old to ever pair are evicted and counted as incomplete.
-        """
-        active_ids = self._use_device_ids
-        window_ns = self._period_ns
-        ready: list[tuple[int, _PendingGroup]] = []
-        while True:
-            heads = {}
-            for did in active_ids:
-                queue = self._pending.get(did)
-                if not queue:
-                    return ready
-                heads[did] = queue[0]
-
-            host_times = [entry[0] for entry in heads.values()]
-            spread = max(host_times) - min(host_times)
-
-            if spread <= window_ns:
-                group = _PendingGroup(
-                    rows={},
-                    host_times={},
-                    device_times={},
-                    device_counters={},
-                )
-                for did in active_ids:
-                    host_ns, row, counter, sample_time = self._pending[did].popleft()
-                    group.rows[did] = row
-                    group.host_times[did] = host_ns
-                    group.device_times[did] = (
-                        sample_time if sample_time is not None else counter
-                    )
-                    group.device_counters[did] = counter
-                ready.append((min(host_times), group))
-            else:
-                # The globally-oldest sample can never align — evict it.
-                oldest_did = min(
-                    active_ids, key=lambda did: self._pending[did][0][0]
-                )
-                self._pending[oldest_did].popleft()
-                self._incomplete_samples += 1
-
-    def _emit_group(self, host_ns: int, group: _PendingGroup) -> None:
-        data = np.ascontiguousarray(
-            np.stack(
-                [group.rows[device_id] for device_id in self._use_device_ids],
-                axis=0,
-            )[None, ...],
-            dtype=np.float32,
+        self._emit_single(
+            device_id, row, counter, sample_time, host_mono_ns, host_utc_ns
         )
 
-        host_times_list = [
-            group.host_times[device_id] for device_id in self._use_device_ids
-        ]
-        arrival_spread = max(host_times_list) - min(host_times_list)
-        if arrival_spread > self._max_arrival_spread_ns:
-            self._max_arrival_spread_ns = arrival_spread
+    def _emit_single(
+        self,
+        device_id: str,
+        row: np.ndarray,
+        counter: int | None,
+        sample_time: int | None,
+        host_mono_ns: int,
+        host_utc_ns: int,
+    ) -> None:
+        slot = self._device_id_to_slot[device_id]
+        n_devices = len(self._use_device_ids)
+        data = np.full(
+            (1, n_devices, len(IMU_CHANNELS)), np.nan, dtype=np.float32
+        )
+        data[0, slot, :] = row
+
+        self._per_device_sample_count[device_id] = (
+            self._per_device_sample_count.get(device_id, 0) + 1
+        )
 
         event = SampleBatch(
             session_uuid=(
@@ -746,40 +672,52 @@ class XsensMtwUsbImuAdapter(QueuedHardwareAdapter):
             device_id=self._config.device_id,
             modality="imu",
             clock_domain=self._config.clock_domain,
-            host_monotonic_ns=host_ns,
-            host_utc_ns=time_ns(),
+            host_monotonic_ns=host_mono_ns,
+            host_utc_ns=host_utc_ns,
             first_sample_index=self._sample_index,
             sample_count=1,
             sequence_number=self._batch_sequence,
-            # No unified device clock across independently-wired MTw units.
-            device_timestamp=None,
+            # No unified device clock across independently-wired MTw units; use
+            # this unit's own SampleTimeFine (falling back to PacketCounter).
+            device_timestamp=sample_time if sample_time is not None else counter,
             sample_rate_hz=float(self._backend.actual_rate_hz),
             data=data,
         )
-        self._publish_raw(event, item_count=1, host_monotonic_ns=host_ns)
+        self._publish_raw(event, item_count=1, host_monotonic_ns=host_mono_ns)
         self._sample_index += 1
         self._batch_sequence += 1
 
     # ── health ─────────────────────────────────────────────
 
+    def _compute_actual_rate(self, elapsed: float) -> float:
+        # Independent streams: ``_samples_emitted`` is the total packet count
+        # across all units.  Report the per-unit average rate so a healthy
+        # 3-unit array reads as ~100 Hz rather than ~300 Hz.
+        if elapsed <= 0:
+            return 0.0
+        device_count = max(1, len(self._use_device_ids))
+        return self._samples_emitted / elapsed / device_count
+
     def _dropped_packets(self) -> int:
-        return self._incomplete_samples
+        # With no cross-device alignment there are no "incomplete" batches; the
+        # only real drop is a per-device PacketCounter gap.
+        return self._counter_gaps
 
     def _sequence_gaps(self) -> int:
         return self._counter_gaps
 
     def _health_metrics(self) -> dict[str, int | float | str | bool | None]:
-        with self._pending_lock:
-            pending_groups = sum(len(queue) for queue in self._pending.values())
+        per_device = ",".join(
+            f"{did}:{self._per_device_sample_count.get(did, 0)}"
+            for did in self._use_device_ids or self._sensor_ids
+        )
         return {
-            "pending_alignment_groups": pending_groups,
-            "incomplete_sensor_samples": self._incomplete_samples,
             "malformed_packets": self._malformed_packets,
             "duplicate_packets": self._duplicate_packets,
             "counter_gaps": self._counter_gaps,
-            "max_arrival_spread_ns": self._max_arrival_spread_ns,
-            "alignment_mode": "host_timestamp_bucket",
+            "alignment_mode": "none_independent_streams",
             "cross_device_hardware_sync_verified": False,
+            "per_device_samples": per_device,
             "resolved_sensor_ids": ",".join(
                 self._use_device_ids or self._sensor_ids
             ),
