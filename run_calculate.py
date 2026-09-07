@@ -1,4 +1,9 @@
-"""一键启动 Exo Calculate（标定 / 同步 / 解算 / 回放端）。"""
+"""一键启动 Exo Calculate（标定 / 同步 / 解算 / 回放端）。
+
+解算由 pipeline.opensim_io.prep_session 驱动：读取 Gaitway 实际坡度，
+先转换原始力方向，再将力和 COP 绕零坡度标定的后沿轴旋转。
+修改后需新建解算运行；历史结果不会自动改写。
+"""
 
 from pathlib import Path
 import sys

@@ -29,7 +29,7 @@ import numpy as np
 from ..c3d.reader import read_c3d
 from ..gait.steady_state import detect_steady_walking
 from ..gaitway import build_bilateral_grf, read_gaitway_ascii
-from ..transforms import R_FP_TO_MOCAP_DEFAULT, R_MOCAP_TO_OPENSIM
+from ..transforms import R_FP_TO_MOCAP_DEFAULT, R_MOCAP_TO_OPENSIM, FORCE_TRANSFORM_VERSION
 from .build_trc import build_trc
 from .grf import write_external_loads_xml
 from .static_window import select_static_window
@@ -162,6 +162,7 @@ def prepare_session(
         cutoff_hz=grf_cutoff_hz,
         opensim_x_sign=opensim_x_sign,
         opensim_z_sign=opensim_z_sign,
+        require_grade=True,
     )
     write_grf_mot(out / "grf.mot", dynamic_data.time_s, feet)
     write_external_loads_xml(out / "external_loads.xml", "grf.mot")
@@ -202,6 +203,8 @@ def prepare_session(
         "static_time_range_s": [static_window["start_s"], static_window["end_s"]],
         "static_window": static_window,
         "processing": {
+            "force_transform_version": FORCE_TRANSFORM_VERSION,
+            "force_sign_application": "native_before_rotation",
             "marker_cutoff_hz": marker_cutoff_hz,
             "grf_cutoff_hz": grf_cutoff_hz,
             "opensim_force_x_sign": float(opensim_x_sign),

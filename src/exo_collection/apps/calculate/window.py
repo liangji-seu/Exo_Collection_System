@@ -525,6 +525,13 @@ class CalculateWindow(QMainWindow):
             f"有效双侧帧 {summary.get('n_valid_decomposed_frames')}"
         )
         sw = summary.get("static_window") or {}
+        force_info = summary.get("gaitway") or {}
+        if force_info.get("force_transform_version"):
+            self._processing_view.append_log(
+                f"已按后沿转轴修正坡度：记录中位数 "
+                f"{force_info['grade_percent_median']:.3f}%"
+                f"（{force_info['grade_angle_deg_median']:.2f}°），力和 COP 同步变换。"
+            )
         if sw.get("start_s") is not None:
             self._processing_view.append_log(
                 f"静态稳定窗口：{sw['start_s']:.2f}~{sw['end_s']:.2f} s"

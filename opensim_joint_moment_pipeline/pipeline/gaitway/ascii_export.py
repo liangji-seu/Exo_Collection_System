@@ -1,8 +1,9 @@
 """Parse gaitway-3D native tab-delimited exports and build bilateral GRFs.
 
-The native export already contains ground-on-foot left/right forces and COP in
-the gaitway frame.  Unlike the legacy C3D analog path, no force sign inversion
-or single-support allocation is needed.
+The native export contains bilateral forces and COP. Configured horizontal
+force-channel signs are applied in the native frame before the calibrated
+zero-grade pose and recorded incline. No overall action/reaction negation or
+single-support allocation is applied as in the legacy C3D analog path.
 """
 
 from __future__ import annotations
@@ -15,7 +16,10 @@ import numpy as np
 import pandas as pd
 
 from ..filtering import lowpass_segmented
-from ..transforms import combine_transform
+from ..transforms import (
+    combine_transform, rotate_treadmill_grade, FORCE_TRANSFORM_VERSION,
+    REAR_AXIS_MOCAP, O_MOCAP_MM,
+)
 
 
 @dataclass(frozen=True)
@@ -74,6 +78,8 @@ def read_gaitway_ascii(path: str | Path) -> GaitwayAsciiData:
         name: pd.to_numeric(frame[name], errors="coerce").to_numpy(dtype=np.float64)
         for name in required
     }
+    if "Grade (%)" in frame.columns:
+        columns["Grade (%)"] = pd.to_numeric(frame["Grade (%)"], errors="coerce").to_numpy(dtype=np.float64)
     return GaitwayAsciiData(source, metadata, columns.pop("Time (s)"), columns)
 
 
@@ -159,11 +165,19 @@ def build_bilateral_grf(
     cutoff_hz: float | None = DEFAULT_GRF_CUTOFF_HZ,
     opensim_x_sign: float = 1.0,
     opensim_z_sign: float = 1.0,
+    require_grade: bool = False,
+    rear_axis_mocap: np.ndarray = REAR_AXIS_MOCAP,
 ) -> tuple[list[dict], np.ndarray, dict]:
     """把 gaitway 原生左右力抗混叠降采样到 mocap 时间并旋转到 OpenSim。
 
     ``force_time_offset_s`` follows ``gaitway_time = mocap_time + offset``。
     Returned validity is true where the native decomposition is available.
+
+    Historical parameter names are retained for callers: opensim_x_sign now
+    applies to native fore-aft Fy BEFORE rotation; opensim_z_sign to native
+    lateral Fx BEFORE rotation. Exo Calculate defaults to (-Fy, -Fx, Fz).
+    COP retains its position convention (CoPy, CoPx, 0); a force sign correction
+    is not a position-axis reflection. No global-axis sign flips are performed.
 
     抗混叠策略（prompt6 §3.8）：在 gaitway 原生采样率（1000 Hz）先做零相位低通
     （每个接触段独立滤波，避免跨接触边界振铃），再做线性重采样到 mocap 100 Hz，
@@ -173,6 +187,19 @@ def build_bilateral_grf(
     in_bounds = (query >= gaitway.time_s[0]) & (query <= gaitway.time_s[-1])
     R = combine_transform(R_fp_to_mocap)
     native_t = gaitway.time_s
+    grade = gaitway.columns.get("Grade (%)")
+    if grade is None:
+        if require_grade:
+            raise ValueError("Gaitway 文件缺少 Grade (%) 列，无法自动修正坡度；请使用原始完整导出文件")
+        grade = np.zeros_like(native_t)
+        grade_source = "missing_assumed_zero_legacy_caller"
+    else:
+        grade = np.asarray(grade, dtype=np.float64)
+        grade_source = "Grade (%)"
+    if grade.shape != native_t.shape or not np.isfinite(grade).all():
+        raise ValueError("Gaitway Grade (%) 长度不一致或含无效值，不能确定测力台姿态")
+    if opensim_x_sign not in (-1.0, 1.0) or opensim_z_sign not in (-1.0, 1.0):
+        raise ValueError("Force direction signs must be +1 or -1")
     native_rate = gaitway.sample_rate_hz
     apply_aa = (
         cutoff_hz is not None and float(cutoff_hz) > 0
@@ -188,14 +215,16 @@ def build_bilateral_grf(
         copx_n = gaitway.columns[f"CoPx{side}(m)"]
         copy_n = gaitway.columns[f"CoPy{side}(m)"]
 
-        # gaitway native: X=lateral, Y=fore-aft, Z=up.  The exported forces are
-        # already ground-on-foot, so rotate only (do not negate as for C3D analogs).
-        force_n = np.column_stack([fy_n, fx_n, fz_n])
+        # Native X=lateral, Y=fore-aft, Z=normal. The application calibration
+        # uses horizontal force signs (-1, -1); leave the normal force positive.
+        force_n = np.column_stack([float(opensim_x_sign)*fy_n, float(opensim_z_sign)*fx_n, fz_n])
         point_n = np.column_stack([copy_n, copx_n, np.zeros_like(copx_n)])
         force_n = force_n @ R.T
         point_n = point_n @ R.T
-        force_n[:, 0] *= float(opensim_x_sign)
-        force_n[:, 2] *= float(opensim_z_sign)
+        # One physical pose for forces and points; at the native rate, BEFORE
+        # low-pass filtering and resampling (also supports changing grade).
+        force_n = rotate_treadmill_grade(force_n, grade, rear_axis_mocap)
+        point_n = rotate_treadmill_grade(point_n, grade, rear_axis_mocap)
 
         # 接触段（原生采样率）：只接触时力才有物理意义，非接触按 0 处理。
         contact_n = np.isfinite(fz_n) & (fz_n > float(force_threshold_N))
@@ -233,6 +262,17 @@ def build_bilateral_grf(
     )
     decomposition_valid = in_bounds & ((contacts["right"] | contacts["left"]))
     qc = {
+        "force_transform_version": FORCE_TRANSFORM_VERSION,
+        "grade_source": grade_source,
+        "grade_percent_min": float(np.min(grade)),
+        "grade_percent_max": float(np.max(grade)),
+        "grade_percent_median": float(np.median(grade)),
+        "grade_angle_deg_median": float(np.degrees(np.arctan(np.median(grade)/100.0))),
+        "native_force_signs_walk_left_up": [float(opensim_x_sign), float(opensim_z_sign), 1.0],
+        "zero_grade_rotation_fp_to_mocap": np.asarray(R_fp_to_mocap).tolist(),
+        "fixed_rear_axis_mocap": np.asarray(rear_axis_mocap).tolist(),
+        "origin_mocap_mm": O_MOCAP_MM.tolist(),
+        "assumptions": ["标定对应显示坡度0，后沿轴在全局中固定", "保留动捕+Z竖直和模型原有重力，不根据力矩拟合重力", "双侧自由力矩缺失，仍按0处理", "原始水平力映射为局部方向后再旋转，未用新加载实验验证"],
         "force_time_offset_s": float(force_time_offset_s),
         "gaitway_sample_rate_hz": gaitway.sample_rate_hz,
         "grf_cutoff_hz": (float(cutoff_hz) if cutoff_hz is not None else None),

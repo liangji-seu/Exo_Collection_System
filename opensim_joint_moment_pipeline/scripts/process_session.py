@@ -285,6 +285,8 @@ def _run(manifest: dict, cancel_file: str | None) -> dict:
     result = {
         "schema_version": "1.0.0",
         "method": "scale + two-pass static-trial marker calibration + dynamic IK + bilateral ID",
+        "processing": manifest.get("processing"),
+        "force_transform": manifest.get("gaitway"),
         "subject": manifest["subject"],
         "static_window_s": list(static_window),
         "static_window": manifest.get("static_window"),

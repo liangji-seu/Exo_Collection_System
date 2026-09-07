@@ -39,6 +39,36 @@ R_MOCAP_TO_OPENSIM = np.array(
 # 选它作平移参考，使台面（mocap Z=-251）映射到 OpenSim Y=0、原点→(0,0,0)。
 O_MOCAP_MM = np.array([-5078.5, 2086.5, -251.0], dtype=np.float64)
 
+# User-confirmed fixed rear edge, measured at display grade 0 (2026-09-07).
+# Use the measured edge, not the slightly different orthogonalized local Y.
+REAR_AXIS_MOCAP = np.array([814.8, 0.0, 2.1], dtype=np.float64)
+REAR_AXIS_MOCAP /= np.linalg.norm(REAR_AXIS_MOCAP)
+FORCE_TRANSFORM_VERSION = "rear_axis_native_signs_v1"
+
+
+def rotate_treadmill_grade(
+    vectors_opensim: np.ndarray,
+    grade_percent: np.ndarray,
+    rear_axis_mocap: np.ndarray = REAR_AXIS_MOCAP,
+) -> np.ndarray:
+    """Rotate zero-grade vectors/COP about the fixed rear edge before filtering.
+
+    COP is relative to the rear-right origin, so no extra translation is needed.
+    Negative right-hand rotation about the right-to-left edge lifts the front.
+    Grade is percent, not degrees. Gravity and mocap points are NOT rotated.
+    """
+    v = np.asarray(vectors_opensim, dtype=np.float64)
+    grade = np.asarray(grade_percent, dtype=np.float64)
+    axis = R_MOCAP_TO_OPENSIM @ np.asarray(rear_axis_mocap, dtype=np.float64)
+    if not np.isfinite(axis).all() or np.linalg.norm(axis) == 0:
+        raise ValueError("Invalid treadmill rear axis")
+    if not np.isfinite(grade).all():
+        raise ValueError("Grade (%) 含无效值，不能确定测力台姿态")
+    axis /= np.linalg.norm(axis)
+    angle = -np.arctan(grade / 100.0)
+    c, s = np.cos(angle)[..., None], np.sin(angle)[..., None]
+    return v*c + np.cross(axis, v)*s + (v @ axis)[..., None]*axis*(1-c)
+
 # 测力台标定旋转矩阵（实验室标定，**非受试者相关**）：把测力台标定局部帧
 # （X=行走向、Y=侧向、Z=上）映射到 mocap 全局。与 configs/*.yaml 里
 # ``transforms.forceplate_to_mocap.rotation_matrix`` 一致，作为 App 侧默认值。

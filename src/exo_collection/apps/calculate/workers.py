@@ -290,7 +290,7 @@ class PrepWorker(QRunnable):
             ensure_pipeline_on_path()
             from pipeline.opensim_io.prep_session import prepare_session
 
-            self.signals.progress.emit("预处理：C3D→TRC、Gaitway→GRF、写 manifest…")
+            self.signals.progress.emit("预处理：读取实际坡度，修正力与 COP 的方向和位置，生成解算数据…")
             summary = prepare_session(
                 static_c3d_path=self._static_c3d,
                 dynamic_c3d_path=self._dynamic_c3d,
