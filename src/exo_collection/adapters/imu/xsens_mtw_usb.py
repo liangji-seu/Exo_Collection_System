@@ -15,7 +15,7 @@ preview, hdf5 writer and opensim pipeline are untouched.
 from __future__ import annotations
 
 import traceback
-from collections import OrderedDict
+from collections import deque
 from dataclasses import asdict, dataclass
 from queue import Empty, Full, Queue
 from threading import Event, Lock, Thread
@@ -391,7 +391,9 @@ class XsensMtwUsbImuAdapter(QueuedHardwareAdapter):
         self._consumer_thread: Thread | None = None
         self._consumer_stop = Event()
 
-        self._pending: OrderedDict[int, _PendingGroup] = OrderedDict()
+        self._pending: dict[
+            str, deque[tuple[int, np.ndarray, int | None, int | None]]
+        ] = {}
         self._pending_lock = Lock()
         self._per_device_last_counter: dict[str, int] = {}
 
@@ -403,7 +405,6 @@ class XsensMtwUsbImuAdapter(QueuedHardwareAdapter):
         self._counter_gaps = 0
         self._max_arrival_spread_ns = 0
         self._accepting_packets = False
-        self._t0_ns: int | None = None
         self._period_ns: float = 1e9 / 100.0
 
     # ── descriptor / snapshot ──────────────────────────────
@@ -500,7 +501,6 @@ class XsensMtwUsbImuAdapter(QueuedHardwareAdapter):
         self._duplicate_packets = 0
         self._counter_gaps = 0
         self._max_arrival_spread_ns = 0
-        self._t0_ns = None
         rate_hz = float(
             getattr(self._backend, "actual_rate_hz", self._config.sample_rate_hz)
         )
@@ -514,7 +514,6 @@ class XsensMtwUsbImuAdapter(QueuedHardwareAdapter):
     def _start_hardware(self) -> None:
         self._accepting_packets = True
         self._consumer_stop.clear()
-        self._t0_ns = perf_counter_ns()
         self._consumer_thread = Thread(
             target=self._consumer_loop,
             name="xsens-mtw-usb-consumer",
@@ -555,12 +554,9 @@ class XsensMtwUsbImuAdapter(QueuedHardwareAdapter):
 
         # 5. Only touch pending groups after the sole consumer has stopped.
         if self._consumer_thread is None:
-            active_count = len(self._use_device_ids)
             with self._pending_lock:
-                for group in self._pending.values():
-                    self._incomplete_samples += max(
-                        0, active_count - len(group.rows)
-                    )
+                for queue in self._pending.values():
+                    self._incomplete_samples += len(queue)
                 self._pending.clear()
 
         if first_error is not None:
@@ -641,45 +637,90 @@ class XsensMtwUsbImuAdapter(QueuedHardwareAdapter):
                     self._counter_gaps += delta - 1
             self._per_device_last_counter[device_id] = counter
 
-        # Host-timestamp bucket is the alignment key (wired: no shared counter).
-        t0 = self._t0_ns if self._t0_ns is not None else host_ns
-        key = max(0, int(round((host_ns - t0) / self._period_ns)))
-
+        # Host-timestamp window alignment (wired: no shared counter).  Each MTw
+        # streams on its own crystal, so its samples carry a fixed phase offset
+        # relative to the others; a strict round() bucket would split
+        # near-simultaneous samples across neighbouring buckets.  Queue per
+        # device instead and pair the oldest sample of every device whenever
+        # their host arrival times fall within one nominal period of each other.
         with self._pending_lock:
-            group = self._pending.setdefault(
-                key,
-                _PendingGroup(
+            queue = self._pending.setdefault(device_id, deque())
+            if counter is not None and queue and queue[-1][2] == counter:
+                self._duplicate_packets += 1
+                return
+            queue.append((host_ns, row, counter, sample_time))
+            self._enforce_pending_limit_locked()
+            ready = self._drain_aligned_groups_locked()
+
+        for group_host_ns, group in ready:
+            self._emit_group(group_host_ns, group)
+
+    def _enforce_pending_limit_locked(self) -> None:
+        """Evict the globally-oldest queued sample when the pending queues grow
+        past the configured bound (guards against an idle/offline device letting
+        the other devices' queues grow without bound).  Caller holds the lock."""
+        limit = self._config.pending_group_limit * max(1, len(self._use_device_ids))
+        while True:
+            total = sum(len(queue) for queue in self._pending.values())
+            if total <= limit:
+                return
+            oldest_did = min(
+                (did for did in self._pending if self._pending[did]),
+                key=lambda did: self._pending[did][0][0],
+            )
+            self._pending[oldest_did].popleft()
+            self._incomplete_samples += 1
+
+    def _drain_aligned_groups_locked(
+        self,
+    ) -> list[tuple[int, _PendingGroup]]:
+        """Pair the oldest sample of every active device into complete groups.
+
+        Caller holds ``_pending_lock``.  A group is complete when all devices
+        have queued samples whose host arrival times fall within one nominal
+        period (``self._period_ns``) — wide enough to absorb the fixed
+        inter-device phase offset the independent crystals introduce.  Samples
+        that grow too old to ever pair are evicted and counted as incomplete.
+        """
+        active_ids = self._use_device_ids
+        window_ns = self._period_ns
+        ready: list[tuple[int, _PendingGroup]] = []
+        while True:
+            heads = {}
+            for did in active_ids:
+                queue = self._pending.get(did)
+                if not queue:
+                    return ready
+                heads[did] = queue[0]
+
+            host_times = [entry[0] for entry in heads.values()]
+            spread = max(host_times) - min(host_times)
+
+            if spread <= window_ns:
+                group = _PendingGroup(
                     rows={},
                     host_times={},
                     device_times={},
                     device_counters={},
-                ),
-            )
-            if device_id in group.rows:
-                self._duplicate_packets += 1
-                return
-            group.rows[device_id] = row
-            group.host_times[device_id] = host_ns
-            group.device_times[device_id] = (
-                sample_time if sample_time is not None else counter
-            )
-            group.device_counters[device_id] = counter
-
-            active_count = len(self._use_device_ids)
-            complete = len(group.rows) == active_count
-            if complete:
-                self._pending.pop(key)
-
-            while len(self._pending) > self._config.pending_group_limit:
-                _old_key, old_group = self._pending.popitem(last=False)
-                self._incomplete_samples += max(
-                    0, active_count - len(old_group.rows)
                 )
+                for did in active_ids:
+                    host_ns, row, counter, sample_time = self._pending[did].popleft()
+                    group.rows[did] = row
+                    group.host_times[did] = host_ns
+                    group.device_times[did] = (
+                        sample_time if sample_time is not None else counter
+                    )
+                    group.device_counters[did] = counter
+                ready.append((min(host_times), group))
+            else:
+                # The globally-oldest sample can never align — evict it.
+                oldest_did = min(
+                    active_ids, key=lambda did: self._pending[did][0][0]
+                )
+                self._pending[oldest_did].popleft()
+                self._incomplete_samples += 1
 
-        if complete:
-            self._emit_group(key, group)
-
-    def _emit_group(self, key: int, group: _PendingGroup) -> None:
+    def _emit_group(self, host_ns: int, group: _PendingGroup) -> None:
         data = np.ascontiguousarray(
             np.stack(
                 [group.rows[device_id] for device_id in self._use_device_ids],
@@ -687,10 +728,6 @@ class XsensMtwUsbImuAdapter(QueuedHardwareAdapter):
             )[None, ...],
             dtype=np.float32,
         )
-
-        # Reconstruct a uniform host time from the bucket, hiding USB jitter.
-        t0 = self._t0_ns if self._t0_ns is not None else 0
-        host_ns = int(t0 + key * self._period_ns)
 
         host_times_list = [
             group.host_times[device_id] for device_id in self._use_device_ids
@@ -733,7 +770,7 @@ class XsensMtwUsbImuAdapter(QueuedHardwareAdapter):
 
     def _health_metrics(self) -> dict[str, int | float | str | bool | None]:
         with self._pending_lock:
-            pending_groups = len(self._pending)
+            pending_groups = sum(len(queue) for queue in self._pending.values())
         return {
             "pending_alignment_groups": pending_groups,
             "incomplete_sensor_samples": self._incomplete_samples,

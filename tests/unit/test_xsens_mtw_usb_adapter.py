@@ -275,23 +275,41 @@ def test_devices_in_different_buckets_do_not_merge() -> None:
     adapter.close()
 
 
-def test_host_timestamp_reconstructed_from_bucket() -> None:
-    """Emitted host_monotonic_ns is uniform (t0 + key*period), not the raw
-    arrival timestamp."""
+def test_host_timestamp_is_earliest_arrival_of_group() -> None:
+    """Emitted host_monotonic_ns is the earliest arrival of the aligned group,
+    staying monotonic even when the devices stream with a fixed phase offset."""
     adapter, backend = running_adapter()
-    adapter._t0_ns = 10_000_000
-    adapter._period_ns = 10_000_000  # 10 ms nominal bucket
+    adapter._period_ns = 10_000_000  # 10 ms alignment window
 
-    # Arrivals are jittered around the 10 ms boundary (8/12/14 ms after t0),
-    # so they all quantise to bucket key == 1.
-    backend.emit("A", Packet(1), 10_000_000 + 8_000_000)
-    backend.emit("B", Packet(1), 10_000_000 + 12_000_000)
-    backend.emit("C", Packet(1), 10_000_000 + 14_000_000)
+    # Arrivals spread 6 ms apart — more than half a bucket, so the old round()
+    # bucketing would have split them; the window alignment keeps them grouped.
+    backend.emit("A", Packet(1), 18_000_000)
+    backend.emit("B", Packet(1), 22_000_000)
+    backend.emit("C", Packet(1), 24_000_000)
 
     event = adapter.get_event(timeout=0.5)
     assert event is not None
-    # key == 1 → host = t0 + 1*period = 20_000_000 (uniform, jitter hidden)
-    assert event.host_monotonic_ns == 20_000_000
+    assert event.host_monotonic_ns == 18_000_000
+    adapter.stop()
+    adapter.close()
+
+
+def test_fixed_inter_device_phase_offset_aligns_without_loss() -> None:
+    """Regression for the 2+-device ~70 Hz packet-loss bug: three devices
+    sampling at a constant phase offset (3 ms and 6 ms apart) must pair every
+    sample instead of dropping them via strict round() bucketing."""
+    adapter, backend = running_adapter()
+    adapter._period_ns = 10_000_000  # 10 ms alignment window
+
+    for k in range(5):
+        base = k * 10_000_000
+        backend.emit("A", Packet(k + 1), base)
+        backend.emit("B", Packet(k + 1), base + 3_000_000)
+        backend.emit("C", Packet(k + 1), base + 6_000_000)
+
+    events = _drain_events(adapter, timeout=0.5)
+    assert len(events) == 5
+    assert adapter.health().metrics["incomplete_sensor_samples"] == 0
     adapter.stop()
     adapter.close()
 
@@ -323,9 +341,10 @@ def test_per_device_counter_gap_detected() -> None:
     adapter.close()
 
 
-def test_pending_eviction_is_fifo_and_does_not_raise() -> None:
-    """The pending-group eviction path must not raise; it exercises the
-    OrderedDict.popitem(last=False) FIFO eviction a plain dict lacks."""
+def test_pending_limit_evicts_oldest_without_raising() -> None:
+    """When one device floods while the others stay silent, the globally-oldest
+    queued samples are evicted once the per-device bound is exceeded — this must
+    not raise and must not fault the adapter."""
     backend = FakeMtwUsbBackend(("A", "B", "C"))
     adapter = XsensMtwUsbImuAdapter(
         backend=backend,
@@ -334,18 +353,17 @@ def test_pending_eviction_is_fifo_and_does_not_raise() -> None:
     adapter.connect()
     adapter.prepare(context())
     adapter.start()
-    adapter._t0_ns = 0
-    adapter._period_ns = 10_000_000  # 10 ms per bucket
+    adapter._period_ns = 10_000_000  # 10 ms window
 
-    # A lands in bucket 0 (incomplete), then bucket 1 (incomplete).  The second
-    # insert must evict the older bucket 0 without raising.
-    backend.emit("A", Packet(1), 0)
-    backend.emit("A", Packet(2), 10_000_000)
+    # A floods four samples (0/10/20/30 ms); B and C never arrive.  With a
+    # per-device bound of 1 (×3 devices = 3 total), the oldest A sample is
+    # evicted once the fourth arrives.
+    for index, offset in enumerate((0, 10_000_000, 20_000_000, 30_000_000)):
+        backend.emit("A", Packet(index + 1), offset)
     sleep(0.05)
 
     assert adapter.state == AdapterState.RUNNING  # not FAULTED
-    # bucket 0 was evicted while missing B and C → 2 incomplete samples
-    assert adapter.health().metrics["incomplete_sensor_samples"] == 2
+    assert adapter.health().metrics["incomplete_sensor_samples"] == 1
     adapter.stop()
     adapter.close()
 
