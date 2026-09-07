@@ -16,7 +16,7 @@ from exo_collection.configuration.device_profiles import (
 )
 from exo_collection.configuration.adapter_registry import build_adapters
 from exo_collection.adapters.encoder.teensy_serial import TeensySerialEncoderAdapter
-from exo_collection.adapters.imu.xsens_awinda import XsensAwindaImuAdapter
+from exo_collection.adapters.imu.xsens_mtw_usb import XsensMtwUsbImuAdapter
 from exo_collection.adapters.mocap import XingNokovMocapAdapter
 from exo_collection.adapters.emg import NoraxonEmgAdapter
 from exo_collection.adapters.ultrasound.raw_ethernet import RawEthernetUltrasoundAdapter
@@ -124,7 +124,7 @@ def test_hardware_profile_is_strict() -> None:
 def test_hardware_registry_constructs_without_loading_vendor_sdks() -> None:
     adapters = build_adapters(load_device_profile("hardware"))
     assert isinstance(adapters["ultrasound"], RawEthernetUltrasoundAdapter)
-    assert isinstance(adapters["imu"], XsensAwindaImuAdapter)
+    assert isinstance(adapters["imu"], XsensMtwUsbImuAdapter)
     assert isinstance(adapters["encoder"], TeensySerialEncoderAdapter)
     assert isinstance(adapters["mocap"], XingNokovMocapAdapter)
     assert isinstance(adapters["emg"], NoraxonEmgAdapter)

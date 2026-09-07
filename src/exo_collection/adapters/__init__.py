@@ -29,6 +29,8 @@ from .imu import (
     SimulatedImuConfig,
     XsensAwindaConfig,
     XsensAwindaImuAdapter,
+    XsensMtwUsbConfig,
+    XsensMtwUsbImuAdapter,
 )
 from .hardware_base import QueuedHardwareAdapter
 from .force_plate import (
@@ -89,4 +91,6 @@ __all__ = [
     "ElonxiUltrasoundConfig",
     "XsensAwindaConfig",
     "XsensAwindaImuAdapter",
+    "XsensMtwUsbConfig",
+    "XsensMtwUsbImuAdapter",
 ]

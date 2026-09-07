@@ -51,6 +51,7 @@ class Device:
     def supportedUpdateRates(self): return FakeArray([self.rate])
     def setUpdateRate(self,rate): return rate==self.rate
     def updateRate(self): return self.rate
+    def setOutputConfiguration(self,cfg): return True
     def productCode(self): return 'FAKE_TEST_DEVICE'
     def addCallbackHandler(self,cb): self.callback=cb
     def removeCallbackHandler(self,cb): self.callback=None
@@ -59,12 +60,20 @@ class Device:
         return True
 
 
+class FakeOutputConfigArray(list):
+    def push_back(self, item): self.append(item)
+
+
 def fake(devices):
     byid={d.did:d for d in devices}
     control=SimpleNamespace(openPort=lambda *a:True,device=lambda did:byid[did.toXsString()],close=lambda:None)
     return SimpleNamespace(XsScanner_scanPorts=lambda:FakeArray([FakePort(d.did) for d in devices]),
         XsControl_construct=lambda:control,XsCallback=object,XsDataPacket=lambda p:p,
-        XCS_PluggedIn=2,XSO_Orientation=1,XSO_Calibrate=2)
+        XCS_PluggedIn=2,XSO_Orientation=1,XSO_Calibrate=2,
+        XsOutputConfigurationArray=FakeOutputConfigArray,
+        XsOutputConfiguration=lambda data_id, freq: (data_id, freq),
+        XDI_PacketCounter=1, XDI_SampleTimeFine=2, XDI_Acceleration=3,
+        XDI_RateOfTurn=4, XDI_MagneticField=5, XDI_EulerAngles=6)
 
 
 class Tests(unittest.TestCase):

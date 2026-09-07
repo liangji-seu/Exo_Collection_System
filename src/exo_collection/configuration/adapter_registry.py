@@ -20,6 +20,7 @@ from exo_collection.adapters.force_plate import (
 )
 from exo_collection.adapters.imu.simulated import SimulatedImuAdapter
 from exo_collection.adapters.imu.xsens_awinda import XsensAwindaImuAdapter
+from exo_collection.adapters.imu.xsens_mtw_usb import XsensMtwUsbImuAdapter
 from exo_collection.adapters.mocap import SimulatedMocapAdapter, XingNokovMocapAdapter
 from exo_collection.adapters.sync_pulse.simulated import SimulatedSyncPulseAdapter
 from exo_collection.adapters.ultrasound.elonxi import ElonxiUltrasoundAdapter
@@ -45,6 +46,7 @@ from .device_profiles import (
     XING_NOKOV_FORCE_PLATE_ADAPTER,
     XING_NOKOV_MOCAP_ADAPTER,
     XSENS_AWINDA_ADAPTER,
+    XSENS_MTW_USB_ADAPTER,
 )
 
 
@@ -58,6 +60,7 @@ ADAPTER_REGISTRY: dict[str, type[Any]] = {
     ELONXI_ULTRASOUND_ADAPTER: ElonxiUltrasoundAdapter,
     RAW_ETHERNET_ULTRASOUND_ADAPTER: RawEthernetUltrasoundAdapter,
     XSENS_AWINDA_ADAPTER: XsensAwindaImuAdapter,
+    XSENS_MTW_USB_ADAPTER: XsensMtwUsbImuAdapter,
     TEENSY_ENCODER_ADAPTER: TeensySerialEncoderAdapter,
     XING_NOKOV_MOCAP_ADAPTER: XingNokovMocapAdapter,
     XING_NOKOV_EMG_ADAPTER: XingNokovEmgAdapter,

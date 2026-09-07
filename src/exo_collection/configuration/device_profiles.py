@@ -39,6 +39,7 @@ ELONXI_ULTRASOUND_ADAPTER = (
     "exo_collection.adapters.ultrasound.ElonxiUltrasoundAdapter"
 )
 XSENS_AWINDA_ADAPTER = "exo_collection.adapters.imu.XsensAwindaImuAdapter"
+XSENS_MTW_USB_ADAPTER = "exo_collection.adapters.imu.XsensMtwUsbImuAdapter"
 TEENSY_ENCODER_ADAPTER = (
     "exo_collection.adapters.encoder.TeensySerialEncoderAdapter"
 )
@@ -486,7 +487,7 @@ class HardwareUltrasoundDeviceProfile(HardwareDeviceProfileBase):
 
 class HardwareImuDeviceProfile(HardwareDeviceProfileBase):
     modality: Literal["imu"]
-    adapter: Literal[XSENS_AWINDA_ADAPTER]
+    adapter: Literal[XSENS_AWINDA_ADAPTER, XSENS_MTW_USB_ADAPTER]
     writer: Literal["hdf5_signal"]
     simulated: Literal[False]
     parameters: HardwareImuParameters

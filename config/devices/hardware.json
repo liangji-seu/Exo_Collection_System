@@ -23,21 +23,18 @@
       }
     },
     {
-      "id": "imu_xsens_awinda",
+      "id": "imu_xsens_mtw_usb",
       "modality": "imu",
-      "adapter": "exo_collection.adapters.imu.XsensAwindaImuAdapter",
+      "adapter": "exo_collection.adapters.imu.XsensMtwUsbImuAdapter",
       "writer": "hdf5_signal",
       "required": true,
-      "clock_domain": "imu_xsens_awinda_clock",
+      "clock_domain": "imu_xsens_mtw_usb_clock",
       "simulated": false,
       "parameters": {
         "radio_channel": 25,
-        "sample_rate_hz": 120.0,
+        "sample_rate_hz": 100.0,
         "expected_device_count": 3,
         "sensor_ids": [],
-        "wait_timeout_s": 15.0,
-        "stable_wait_s": 3.0,
-        "poll_interval_s": 0.25,
         "pending_group_limit": 128,
         "queue_capacity": 256
       }

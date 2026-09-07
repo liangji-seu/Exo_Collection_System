@@ -7,6 +7,12 @@ from .xsens_awinda import (
     XsensAwindaImuAdapter,
     parse_xsens_packet,
 )
+from .xsens_mtw_usb import (
+    MtwUsbBackend,
+    XdaMtwUsbBackend,
+    XsensMtwUsbConfig,
+    XsensMtwUsbImuAdapter,
+)
 
 __all__ = [
     "IMU_CHANNELS",
@@ -17,4 +23,8 @@ __all__ = [
     "XsensAwindaConfig",
     "XsensAwindaImuAdapter",
     "parse_xsens_packet",
+    "MtwUsbBackend",
+    "XdaMtwUsbBackend",
+    "XsensMtwUsbConfig",
+    "XsensMtwUsbImuAdapter",
 ]

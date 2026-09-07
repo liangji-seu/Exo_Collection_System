@@ -194,6 +194,18 @@ def collect(xda, config, out, announce=print):
             if not dev.gotoConfig():
                 raise RuntimeError(f'{name} 不能进入配置模式')
             dev.setOptions(xda.XSO_Orientation | xda.XSO_Calibrate, 0)
+            output = xda.XsOutputConfigurationArray()
+            for data_id, freq in (
+                (xda.XDI_PacketCounter, 0),
+                (xda.XDI_SampleTimeFine, 0),
+                (xda.XDI_Acceleration, 100),
+                (xda.XDI_RateOfTurn, 100),
+                (xda.XDI_MagneticField, 100),
+                (xda.XDI_EulerAngles, 100),
+            ):
+                output.push_back(xda.XsOutputConfiguration(data_id, freq))
+            if not dev.setOutputConfiguration(output):
+                raise RuntimeError(f'{name} 设置输出配置失败')
             supported_raw = dev.supportedUpdateRates()
             supported = [int(supported_raw[i]) for i in range(supported_raw.size())]
             if 100 not in supported:
