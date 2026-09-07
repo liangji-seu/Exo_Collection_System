@@ -106,6 +106,10 @@ def _run_ui(
     def catalog_finished(succeeded: bool) -> None:
         result["catalog_completed"] = True
         result["catalog_succeeded"] = succeeded
+        if succeeded:
+            # 交互版已把管理索引改为懒加载；smoke 探针仍需显式跑一次，确保
+            # management/annex 进程能 import、执行并返回（打包/启动自检）。
+            window.trigger_management_refresh()
         if result["management_completed"]:
             window._thread_pool.waitForDone(10_000)
             QTimer.singleShot(0, app.quit)

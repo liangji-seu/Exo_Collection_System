@@ -273,7 +273,7 @@ def test_saved_password_builds_direct_remote_request_without_dialog(
     assert request is not None
     assert request.password == "saved-secret"
     assert request.operation.value == "SYNC_REMOTE_STATUS"
-    assert window.quick_upload_button.text() == "上传所选"
+    assert window.quick_upload_button.text() == "上传"
     window.close()
 
 

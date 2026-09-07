@@ -316,15 +316,12 @@ def _window_with_management(
     window.management_refresh_finished.connect(management_completions.append)
     window.refresh_finished.connect(catalog_completions.append)
     window.refresh_catalog()
-    # refresh_catalog starts both the management process and the Catalog
-    # QRunnable.  Tests must not return a window while either background owner
-    # is still active, otherwise the next test can collect the wrapper while a
-    # native Qt thread is executing.
-    _wait_until(
-        app,
-        lambda: management_completions == [True]
-        and catalog_completions == [True],
-    )
+    # Catalog 刷新只做 Manifest 快照；管理索引/annex 校验现在是懒加载，
+    # 需要显式触发一次（对应 UI 里展开受试者节点）。Tests must not return a
+    # window while either background owner is still active.
+    _wait_until(app, lambda: catalog_completions == [True])
+    window._ensure_management_index(None)
+    _wait_until(app, lambda: management_completions == [True])
     return window
 
 

@@ -55,6 +55,7 @@ from exo_collection.storage.subject_lock import (
 from .data_view import DataViewWidget
 from .external_import_dialog import ExternalImportDialog
 from .external_import_worker import ExternalImportWorker
+from .fullscreen_viewer import FullscreenViewer
 from .local_dialogs import (
     ChecksumDialog,
     FullStatisticsDialog,
@@ -259,6 +260,7 @@ class DataStudioWindow(QMainWindow):
         self._process_worker_factory = process_worker_factory or DataStudioProcessWorker
         self._active_upload: _UploadTaskContext | None = None
         self._result_dialogs: list[QDialog] = []
+        self._fullscreen_viewers: list[FullscreenViewer] = []
         self._closing = False
         self._shutdown_retry_pending = False
         self._close_started_at: float | None = None
@@ -273,12 +275,14 @@ class DataStudioWindow(QMainWindow):
         self._filtered_records: tuple[TrialManagementRecord, ...] = ()
         self._populating_filters = False
         self._catalog_summary_text = "尚未刷新。"
+        self._last_snapshot: DataStudioSnapshot | None = None
 
         self.setWindowTitle("Exo Data Studio")
         self.resize(1120, 720)
         self._create_actions()
         self._create_ui()
         self.tree_widget.currentItemChanged.connect(self._update_subject_lock_action)
+        self.tree_widget.itemExpanded.connect(self._ensure_management_index)
 
         # Activity detection is a tiny lock-file read and is intentionally
         # immediate; the heavier catalog work starts on the worker pool.
@@ -351,17 +355,9 @@ class DataStudioWindow(QMainWindow):
         self.sync_mocap_action.triggered.connect(self.sync_mocap_data)
         self.sync_force_plate_action.triggered.connect(self.sync_force_plate_data)
 
-        toolbar = self.addToolBar("数据工具")
-        toolbar.setObjectName("data_tools_toolbar")
-        toolbar.setMovable(False)
-        for action in self._restricted_actions:
-            toolbar.addAction(action)
-        toolbar.addSeparator()
-        for action in self._management_actions:
-            toolbar.addAction(action)
-        toolbar.addSeparator()
-        for action in self._sync_actions:
-            toolbar.addAction(action)
+        # 界面彻底精简：不再渲染 11 个工具栏按钮。这些 QAction 仍被创建并连接，
+        # 供 _apply_activity 统一启用/禁用（轻量模式）与保留各入口方法，但不再
+        # 挂到任何 toolbar/menu 上，用户在界面上只看到下方极简按钮行。
 
     def _create_ui(self) -> None:
         central = QWidget(self)
@@ -379,34 +375,29 @@ class DataStudioWindow(QMainWindow):
         self.refresh_button = QPushButton("刷新 Catalog")
         self.refresh_button.clicked.connect(self.refresh_catalog)
         root_row.addWidget(self.refresh_button)
-        self.quick_upload_button = QPushButton("上传所选")
-        self.quick_upload_button.setObjectName("quick_upload_selected")
-        self.quick_upload_button.clicked.connect(self.upload_selected_trial)
-        root_row.addWidget(self.quick_upload_button)
-        self.one_click_upload_button = QPushButton("一键上传")
-        self.one_click_upload_button.setObjectName("one_click_upload")
-        self.one_click_upload_button.setToolTip(
-            "自动比对云端与本地的 Trial；若云端是本地子集则直接增量上传，"
-            "否则弹出选择框让你指定要上传的 Trial。"
-        )
-        self.one_click_upload_button.clicked.connect(self.one_click_upload)
-        root_row.addWidget(self.one_click_upload_button)
-        self.remote_sync_button = QPushButton("同步云端状态")
-        self.remote_sync_button.setObjectName("sync_remote_status")
-        self.remote_sync_button.clicked.connect(self.sync_remote_status)
-        root_row.addWidget(self.remote_sync_button)
-        self.remote_settings_button = QPushButton("SSH/SCP 设置…")
+        self.remote_settings_button = QPushButton("远程设置")
         self.remote_settings_button.setObjectName("configure_remote_upload")
         self.remote_settings_button.clicked.connect(self.configure_remote_upload)
         root_row.addWidget(self.remote_settings_button)
-        self.download_button = QPushButton("从服务器拉取数据")
+        self.quick_upload_button = QPushButton("上传")
+        self.quick_upload_button.setObjectName("quick_upload_selected")
+        self.quick_upload_button.setToolTip(
+            "增量上传所选 Trial：新增文件上传、远端多出文件弹窗确认后删除。"
+        )
+        self.quick_upload_button.clicked.connect(self.upload_selected_trial)
+        root_row.addWidget(self.quick_upload_button)
+        self.download_button = QPushButton("下载")
         self.download_button.setObjectName("download_from_remote")
         self.download_button.setToolTip(
-            "把服务器 data/ 全量拉取到所选本地文件夹；已下载且一致的 Trial 跳过，"
-            "其余覆盖下载（git pull 式）。"
+            "把服务器 data/ 增量拉取到本地；已下载且一致的 Trial 跳过，绝不删除本地文件。"
         )
         self.download_button.clicked.connect(self.download_remote_data)
         root_row.addWidget(self.download_button)
+        self.visualize_button = QPushButton("可视化")
+        self.visualize_button.setObjectName("visualize_selected")
+        self.visualize_button.setToolTip("选中 Session 后全屏展示全部模态。")
+        self.visualize_button.clicked.connect(self.playback_selected_trial)
+        root_row.addWidget(self.visualize_button)
         self.lock_subject_button = QPushButton("锁定受试者")
         self.lock_subject_button.setObjectName("lock_subject")
         self.lock_subject_button.setEnabled(False)
@@ -415,6 +406,13 @@ class DataStudioWindow(QMainWindow):
         )
         self.lock_subject_button.clicked.connect(self.toggle_subject_lock)
         root_row.addWidget(self.lock_subject_button)
+        # 保留但不在精简界面展示的入口（供 _apply_activity 等内部方法引用）。
+        self.one_click_upload_button = QPushButton("一键上传")
+        self.one_click_upload_button.setObjectName("one_click_upload")
+        self.one_click_upload_button.clicked.connect(self.one_click_upload)
+        self.remote_sync_button = QPushButton("同步云端状态")
+        self.remote_sync_button.setObjectName("sync_remote_status")
+        self.remote_sync_button.clicked.connect(self.sync_remote_status)
         outer.addLayout(root_row)
 
         self.remote_status_legend = QLabel(
@@ -430,7 +428,7 @@ class DataStudioWindow(QMainWindow):
             "● 紫色：本地与云端的内容指纹冲突\n"
             "上传并逐文件校验成功后，Trial 会立即显示为绿色。"
         )
-        outer.addWidget(self.remote_status_legend)
+        # 精简界面不再在顶部渲染状态图例（颜色灯已在树的「同步数据」列体现）。
 
         self.activity_banner = QLabel()
         self.activity_banner.setObjectName("activity_banner")
@@ -499,7 +497,7 @@ class DataStudioWindow(QMainWindow):
         filters.addWidget(self.clear_filters_button, 2, 5)
         filters.addWidget(self.summary_button, 2, 6)
         filters.addWidget(self.export_button, 2, 7, 1, 2)
-        outer.addWidget(self.filter_group)
+        # 精简界面不再展示筛选区（管理索引改为懒加载，见 refresh_catalog）。
 
         self._filter_inputs = (
             self.project_filter,
@@ -531,7 +529,6 @@ class DataStudioWindow(QMainWindow):
         self.summary_button.clicked.connect(lambda: self.management_summary_action.trigger())
         self.export_button.clicked.connect(lambda: self.export_inventory_action.trigger())
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
         self.tree_widget = QTreeWidget()
         self.tree_widget.setObjectName("catalog_tree")
         self.tree_widget.setHeaderLabels(["名称", "类型", "模态", "详情", "同步数据"])
@@ -548,40 +545,23 @@ class DataStudioWindow(QMainWindow):
         self.tree_widget.setColumnWidth(0, 350)
         self.tree_widget.setColumnWidth(1, 90)
         self.tree_widget.setColumnWidth(2, 70)
-        splitter.addWidget(self.tree_widget)
+        outer.addWidget(self.tree_widget, 1)
 
-        statistics_panel = QGroupBox("基础统计（来自 SQLite Catalog）")
-        statistics_layout = QVBoxLayout(statistics_panel)
-        cards = QGridLayout()
+        # 精简界面不再展示统计面板；保留标签供 _render_statistics 写入。
         self.trial_count_label = QLabel("Trial 总数：0")
         self.finalized_count_label = QLabel("已最终化：0")
         self.duration_label = QLabel("总时长：0.00 s")
-        cards.addWidget(self.trial_count_label, 0, 0)
-        cards.addWidget(self.finalized_count_label, 0, 1)
-        cards.addWidget(self.duration_label, 1, 0, 1, 2)
-        statistics_layout.addLayout(cards)
-        statistics_layout.addWidget(QLabel("按工况："))
         self.condition_table = QTableWidget(0, 3)
         self.condition_table.setObjectName("condition_statistics")
         self.condition_table.setHorizontalHeaderLabels(["工况代码", "Trial 数", "时长 (s)"])
-        self.condition_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.condition_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.condition_table.verticalHeader().setVisible(False)
-        self.condition_table.horizontalHeader().setStretchLastSection(True)
-        statistics_layout.addWidget(self.condition_table, 1)
-        splitter.addWidget(statistics_panel)
-        splitter.setSizes([680, 400])
-        outer.addWidget(splitter, 1)
 
         self.scan_summary_label = QLabel("尚未刷新。")
         self.scan_summary_label.setObjectName("scan_summary")
         outer.addWidget(self.scan_summary_label)
 
-        self.tabs = QTabWidget()
-        self.tabs.addTab(central, "数据管理")
+        # 精简界面不再使用双 Tab；数据查看控件保留为隐藏引用，供 _inspect_selected_trial。
         self.data_view_widget = DataViewWidget(self._inspect_selected_trial)
-        self.tabs.addTab(self.data_view_widget, "数据查看")
-        self.setCentralWidget(self.tabs)
+        self.setCentralWidget(central)
         self.statusBar().showMessage("就绪")
 
     @Slot()
@@ -654,6 +634,7 @@ class DataStudioWindow(QMainWindow):
         if not isinstance(snapshot, DataStudioSnapshot):
             self._refresh_failed("Catalog worker returned an invalid snapshot")
             return
+        self._last_snapshot = snapshot
         self._catalog_tree = deepcopy(snapshot.tree)
         self._management_index = None
         self._annex_scan = None
@@ -674,15 +655,10 @@ class DataStudioWindow(QMainWindow):
             )
             self.filter_result_label.setText("采集期间管理筛选已暂停。")
         else:
+            # 打开即用：启动只做 Manifest 快照，慢的管理索引/annex 校验改为懒加载，
+            # 仅在展开受试者节点时按需触发（见 _ensure_management_index）。
             self.scan_summary_label.setText(
-                summary + "；正在独立进程加载管理索引并校验 annex…"
-            )
-            self._start_process_tool(
-                "管理索引与 annex 校验",
-                "management_refresh",
-                self._management_refresh_succeeded,
-                kind="management_refresh",
-                snapshot=snapshot,
+                summary + "；展开受试者节点可加载管理索引与 annex 校验。"
             )
         self.statusBar().showMessage("Catalog 刷新完成。", 5000)
         self._finish_refresh(True)
@@ -766,6 +742,35 @@ class DataStudioWindow(QMainWindow):
         )
         self._apply_activity(read_activity(self._data_root))
         self.management_refresh_finished.emit(False)
+
+    @Slot(QTreeWidgetItem)
+    def _ensure_management_index(self, _item: QTreeWidgetItem) -> None:
+        """懒加载管理索引：首次展开任意节点时才在后台构建（不再阻塞启动）。"""
+        if (
+            self._lightweight_mode
+            or self._management_index is not None
+            or self._last_snapshot is None
+            or self._last_snapshot.lightweight_mode
+        ):
+            return
+        self.trigger_management_refresh()
+
+    def trigger_management_refresh(self) -> None:
+        """显式启动管理索引 + annex 校验（懒加载核心，亦供 smoke 探针复用）。"""
+        if self._last_snapshot is None or self._last_snapshot.lightweight_mode:
+            return
+        if any(
+            context.kind == "management_refresh"
+            for context in self._process_tasks.values()
+        ):
+            return
+        self._start_process_tool(
+            "管理索引与 annex 校验",
+            "management_refresh",
+            self._management_refresh_succeeded,
+            kind="management_refresh",
+            snapshot=self._last_snapshot,
+        )
 
     def _reset_filter_options(self) -> None:
         if not hasattr(self, "project_filter"):
@@ -1311,6 +1316,13 @@ class DataStudioWindow(QMainWindow):
                         self._cancel_active_upload()
                     else:
                         self._confirm_host_key(event.host_key)
+                elif event.event_type is UploadWorkerEventType.DELETE_CONFIRMATION_REQUIRED:
+                    if context.silent:
+                        # Automatic remote sync must never delete server data
+                        # without a human in the loop; keep and move on.
+                        context.worker.confirm_remote_delete(())
+                    else:
+                        self._confirm_remote_delete(event.remote_only_files)
                 elif event.event_type is UploadWorkerEventType.COMPLETED:
                     context.terminal_handled = True
                     context.progress_dialog.mark_finished()
@@ -1995,6 +2007,41 @@ class DataStudioWindow(QMainWindow):
         else:
             self._cancel_active_upload()
 
+    def _confirm_remote_delete(self, remote_only_files: tuple[str, ...]) -> None:
+        """Ask the operator to confirm deleting server files absent locally."""
+        context = self._active_upload
+        if context is None or not remote_only_files:
+            if context is not None:
+                context.worker.confirm_remote_delete(())
+            return
+        context.progress_dialog.waiting_for_delete_confirmation()
+        listing = "\n".join(f"  · {name}" for name in remote_only_files)
+        box = QMessageBox(self)
+        box.setWindowTitle("云端多余文件删除确认")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText(f"云端存在 {len(remote_only_files)} 个本地已缺失的文件。")
+        box.setInformativeText(
+            "确认后将删除云端这些文件，然后继续增量上传；"
+            "拒绝则保留这些文件、仅上传本地新增内容。"
+        )
+        box.setDetailedText(listing)
+        box.setStyleSheet(
+            "QMessageBox QLabel { font-size: 18px; font-weight: 700; color: #7F1D1D; }"
+        )
+        delete_button = box.addButton("删除并继续上传", QMessageBox.ButtonRole.AcceptRole)
+        keep_button = box.addButton("保留，仅增量上传", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(keep_button)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is delete_button:
+            try:
+                context.worker.confirm_remote_delete(remote_only_files)
+            except Exception as exc:
+                QMessageBox.critical(self, "删除确认失败", str(exc))
+                self._cancel_active_upload()
+        else:
+            context.worker.confirm_remote_delete(())
+
     def _upload_succeeded(
         self, result: OfflineUploadResult | BatchOfflineUploadResult
     ) -> None:
@@ -2278,22 +2325,35 @@ class DataStudioWindow(QMainWindow):
         dialog.deleteLater()
 
     def _show_playback(self, result: object) -> None:
-        _log.info("回放数据已就绪，创建 PlaybackDialog…")
+        _log.info("回放数据已就绪，创建全屏可视化视图…")
         if not isinstance(result, TrialPlayback):
             _log.error("回放 worker 返回了无效结果：%s", type(result))
             raise TypeError("playback worker returned an invalid result")
-        _log.info("Trial UUID: %s, US: %s, IMU: %s, Encoder: %s",
+        _log.info("Trial UUID: %s, US: %s, IMU: %s, Encoder: %s, Mocap: %s, Moment: %s",
                   result.trial_uuid,
                   result.ultrasound is not None,
                   result.imu is not None,
-                  result.encoder is not None)
+                  result.encoder is not None,
+                  result.mocap is not None,
+                  result.moment is not None)
         try:
-            dialog = PlaybackDialog(result, self)
+            viewer = FullscreenViewer(result, self)
         except Exception:
-            _log.exception("创建 PlaybackDialog 失败")
+            _log.exception("创建全屏可视化视图失败")
             raise
-        _log.info("PlaybackDialog 创建成功，显示中…")
-        self._show_result_dialog(dialog)
+        self._fullscreen_viewers.append(viewer)
+        viewer.destroyed.connect(
+            lambda _obj=None, current=viewer: self._forget_fullscreen_viewer(current)
+        )
+        viewer.show()
+        viewer.showMaximized()
+        viewer.raise_()
+        viewer.activateWindow()
+        _log.info("全屏可视化视图显示中…")
+
+    def _forget_fullscreen_viewer(self, viewer: FullscreenViewer) -> None:
+        if viewer in self._fullscreen_viewers:
+            self._fullscreen_viewers.remove(viewer)
 
     def _show_full_statistics(self, result: object) -> None:
         if not isinstance(result, FullStatistics):
@@ -2502,6 +2562,12 @@ class DataStudioWindow(QMainWindow):
         self.remote_settings_button.setEnabled(
             root_controls_enabled and not self._lightweight_mode and bool(self._catalog_tree)
         )
+        self.visualize_button.setEnabled(
+            root_controls_enabled and not self._lightweight_mode and bool(self._catalog_tree)
+        )
+        self.download_button.setEnabled(
+            root_controls_enabled and not self._lightweight_mode
+        )
 
     @Slot()
     def _poll_activity(self) -> None:
@@ -2514,7 +2580,7 @@ class DataStudioWindow(QMainWindow):
         self.tree_widget.clear()
         for node in tree:
             self.tree_widget.addTopLevelItem(self._make_tree_item(node))
-        self.tree_widget.expandToDepth(2)
+        # 默认全部折叠，只显示顶层；用户按需展开，避免启动时递归展开慢。
 
     def _make_tree_item(self, node: dict[str, Any]) -> QTreeWidgetItem:
         node_type = str(node.get("type", ""))
