@@ -50,6 +50,14 @@ QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
     padding: 2px 6px;
 }
 
+/* Trial 设置里的选择控件：站远要能看清数字 */
+QLineEdit#subject_code, QComboBox#project, QSpinBox#day,
+QComboBox#condition, QSpinBox#repeat_index {
+    font-size: 20px;
+    font-weight: 700;
+    min-height: 38px;
+}
+
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QPlainTextEdit:focus {
     border: 2px solid #0f766e;
 }

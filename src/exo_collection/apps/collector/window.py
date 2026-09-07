@@ -1175,6 +1175,9 @@ class CollectorWindow(QMainWindow):
         self._preview_connection_status: dict[str, str] = {
             m: "未连接" for m in MODALITIES
         }
+        # 每个模态最近一次健康分类结果（"数据正常"/"数据中断"/"数据异常" 等），
+        # 供「开始写盘前检查」与「录制中数据中断」判定使用。
+        self._preview_data_state: dict[str, str] = {}
         self._preview_disconnect_deadlines: dict[str, float] = {}
         self._recording_preview_handles: dict[str, ModalityPreviewHandle] = {}
         self._recording_streams_ended = False
@@ -1604,15 +1607,15 @@ class CollectorWindow(QMainWindow):
         row2.setColumnStretch(1, 1)
         row2.setColumnStretch(3, 0)
         form.addRow(row2)
-        for compact_control in (
-            self.data_root_edit,
+        self.data_root_edit.setFixedHeight(28)
+        for big_control in (
             self.project_combo,
             self.subject_code_edit,
             self.day_spin,
             self.condition_combo,
             self.repeat_spin,
         ):
-            compact_control.setFixedHeight(28)
+            big_control.setFixedHeight(40)
         controls_layout.addWidget(metadata_box)
 
         experiment_box = QGroupBox("详细信息")
@@ -3501,12 +3504,24 @@ class CollectorWindow(QMainWindow):
         """Fail only the Trial recording branch; keep device preview alive."""
 
         event_trial_uuid = event.trial_uuid or event.payload.get("trial_uuid")
-        active_trial_uuid = self._active_trial_uuid
         fault = str(
             event.payload.get("fault")
             or event.message
             or "unknown recording stream fault"
         )
+        self._abort_recording_for_modality(
+            modality, fault, event_trial_uuid=event_trial_uuid
+        )
+
+    def _abort_recording_for_modality(
+        self,
+        modality: str,
+        fault: str,
+        *,
+        event_trial_uuid: str | None = None,
+    ) -> None:
+        """因某模态故障/数据中断而中止当前 Trial（设备预览保持连接）。"""
+        active_trial_uuid = self._active_trial_uuid
         if (
             active_trial_uuid is None
             or (
@@ -3514,18 +3529,19 @@ class CollectorWindow(QMainWindow):
                 and str(event_trial_uuid) != active_trial_uuid
             )
         ):
-            self._append_alert(
-                f"已忽略 {modality} 的过期记录支路 FAULT："
-                f"trial={event_trial_uuid or '未知'}，{fault}"
-            )
-            LOG.warning(
-                "ignored stale recording branch fault: modality=%s "
-                "event_trial=%s active_trial=%s fault=%s",
-                modality,
-                event_trial_uuid,
-                active_trial_uuid,
-                fault,
-            )
+            if event_trial_uuid is not None:
+                self._append_alert(
+                    f"已忽略 {modality} 的过期记录支路 FAULT："
+                    f"trial={event_trial_uuid or '未知'}，{fault}"
+                )
+                LOG.warning(
+                    "ignored stale recording branch fault: modality=%s "
+                    "event_trial=%s active_trial=%s fault=%s",
+                    modality,
+                    event_trial_uuid,
+                    active_trial_uuid,
+                    fault,
+                )
             return
 
         if self._recording_branch_fault is None:
@@ -3535,6 +3551,12 @@ class CollectorWindow(QMainWindow):
                 "已停止全部写盘转发；设备预览保持连接。"
             )
             self._add_timeline_event(2, f"RECORDING FAULT · {modality} · {fault}")
+            # 致命失败：大字号中文弹窗，明确「数据已作废删除」。
+            display = MODALITY_DISPLAY_NAMES.get(modality, modality)
+            self._show_fatal_collection_error(
+                "采集失败，数据已作废",
+                f"{display} 数据中断，本次采集已停止并删除。",
+            )
         self._trial_succeeded = False
         self._end_recording_streams()
 
@@ -3583,6 +3605,16 @@ class CollectorWindow(QMainWindow):
         indicator_status, indicator_reason, data_age_s = (
             self._classify_preview_health(payload)
         )
+        self._preview_data_state[modality] = indicator_status
+        if (
+            indicator_status in {"故障", "数据中断", "数据异常"}
+            and self._active_trial_uuid is not None
+            and self._active_request is not None
+            and modality in self._active_request.enabled_modalities
+        ):
+            self._abort_recording_for_modality(
+                modality, indicator_reason or indicator_status
+            )
         handle = self._preview_workers.get(modality)
         device_id = str(
             payload.get("device_id")
@@ -3879,6 +3911,25 @@ class CollectorWindow(QMainWindow):
             self._update_start_button()
             return
         request = request.model_copy(update={"enabled_modalities": streaming})
+
+        # 开始写盘前检查：已连接的每个模态都必须处于「已连接（READY，正在读取）」
+        # 状态，否则直接阻断。复用 _preview_connection_status 的 READY 语义——
+        # 该字典在预览 STATE=READY 时写入「已连接」，含「已收到首批有效数据」。
+        not_reading = [
+            modality
+            for modality in streaming
+            if self._preview_connection_status.get(modality) != "已连接"
+        ]
+        if not_reading:
+            names = "、".join(
+                MODALITY_DISPLAY_NAMES.get(m, m) for m in not_reading
+            )
+            self._show_fatal_collection_error(
+                "无法开始采集",
+                f"{names} 未正常读取数据，请检查连接后重试。",
+            )
+            self._update_start_button()
+            return
 
         # The already-running preview processes own the hardware Adapters.
         # Recording attaches to their raw IPC endpoints without stopping or
@@ -4640,6 +4691,8 @@ class CollectorWindow(QMainWindow):
         else:
             LOG.warning("Collector Worker 已完成，但未返回 Manifest 路径")
         self.start_button.setEnabled(False)
+        # 采集完成后轮次自动 +1，便于连续采集同一工况的多个轮次。
+        self.repeat_spin.setValue(self.repeat_spin.value() + 1)
         # XINGYING 的 .cap 保留在其固定工程目录中，本系统只记录对应的 .cap 文件名
         # （由 7061 触发监听写入 raw/xingying_trigger.jsonl + sync_manifest.json），
         # 不做任何搬移。
@@ -4847,6 +4900,24 @@ class CollectorWindow(QMainWindow):
         else:
             LOG.info("UI: %s", message)
         self._show_toast(message, level=level)
+
+    def _show_fatal_collection_error(self, title: str, message: str) -> None:
+        """致命采集错误：大字号中文模态弹窗，文案极简，明确「数据作废」。
+
+        用 ``open()`` 而非 ``exec()``：模态窗口仍会阻塞用户交互，但不冻结
+        Qt 事件循环，让停止/回收流程能继续跑完。
+        """
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Critical)
+        box.setWindowTitle(title)
+        box.setText(message)
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        box.setStyleSheet(
+            "QMessageBox QLabel { font-size: 20px; font-weight: 700;"
+            " color: #7F1D1D; }"
+        )
+        self._fatal_error_box = box
+        box.open()
 
     # ── toast overlay ────────────────────────────────────────────────────
 

@@ -626,9 +626,10 @@ def test_collector_worker_exits_when_parent_does_not_consume_telemetry(tmp_path)
             worker.close()
 
 
-def test_finalization_failure_is_recoverable_and_preserves_original_error(
+def test_finalization_failure_deletes_recording_and_preserves_original_error(
     tmp_path, monkeypatch
 ) -> None:
+    events = []
     request = TrialRunRequest(data_root=tmp_path, duration_s=0.2)
 
     def fail_finalization(*_args, **_kwargs):
@@ -636,23 +637,18 @@ def test_finalization_failure_is_recoverable_and_preserves_original_error(
 
     monkeypatch.setattr(simulated_module, "finalize_trial_package", fail_finalization)
     with pytest.raises(OSError, match="forced-finalize-sentinel"):
-        run_simulated_trial(request)
+        run_simulated_trial(request, publish=events.append)
 
-    recordings = list(tmp_path.rglob("*.recording"))
-    assert len(recordings) == 1
-    records = [
-        json.loads(line)
-        for line in (recordings[0] / "logs/trial.jsonl").read_text(encoding="utf-8").splitlines()
+    # 任何失败都删除未 finalize 的 session，不留 .recording 半成品供「Trial 恢复」。
+    assert not list(tmp_path.rglob("*.recording"))
+    assert not list(tmp_path.rglob("manifest.json"))
+    published_states = [
+        event.payload.get("state")
+        for event in events
+        if event.event_type is WorkerEventType.STATE
     ]
-    assert any(record["event_type"] == "trial_publication_intent" for record in records)
-    assert not any(
-        record.get("to_state") == TrialState.FINALIZED.value for record in records
-    )
-    failure_reports = list((recordings[0] / "reports").glob("finalization-failure-*.json"))
-    assert len(failure_reports) == 1
-    failure = json.loads(failure_reports[0].read_text(encoding="utf-8"))
-    assert failure["state"] == TrialState.FINALIZING.value
-    assert failure["recovery_state"] == TrialState.RECOVERABLE.value
+    assert TrialState.RECOVERABLE.value in published_states
+    assert TrialState.FINALIZED.value not in published_states
     assert not (tmp_path / ".collector-active.json").exists()
 
 
@@ -987,23 +983,15 @@ def test_device_failure_while_waiting_sync_still_fails_with_adapter_error(
     with pytest.raises(AdapterError, match="injected disconnect"):
         run_simulated_trial(request, publish=events.append)
 
-    recording = next(tmp_path.rglob("*.recording"))
-    assert not (recording / "reports/sync_failure.json").exists()
-    journal_records = [
-        json.loads(line)
-        for line in (recording / "logs/trial.jsonl.partial")
-        .read_text(encoding="utf-8")
-        .splitlines()
-    ]
-    failure = next(
-        record for record in journal_records if record["event_type"] == "trial_failure"
-    )
-    assert failure["state"] == "RECORDING"
-    assert failure["recovery_state"] == "ABORTED"
-    assert failure["exception_type"] == "AdapterError"
-    assert any(record.get("to_state") == "ABORTED" for record in journal_records)
+    assert not list(tmp_path.rglob("*.recording"))
     assert not list(tmp_path.rglob("manifest.json"))
-    assert not list((recording / "reports").glob("finalization-failure-*.json"))
+    published_states = [
+        event.payload.get("state")
+        for event in events
+        if event.event_type is WorkerEventType.STATE
+    ]
+    assert "ABORTED" in published_states
+    assert "FINALIZED" not in published_states
 
 
 def test_adapter_fault_between_health_poll_and_stop_is_never_finalized(
@@ -1013,6 +1001,7 @@ def test_adapter_fault_between_health_poll_and_stop_is_never_finalized(
     # This injected disconnect occurs at about 0.15 s, just before the formal
     # stop at about 0.21 s, so the post-stop fault check is the only reliable
     # place to catch it. These rates are the built-in simulator profile only.
+    events = []
     request = TrialRunRequest(
         data_root=tmp_path,
         duration_s=0.2,
@@ -1023,31 +1012,18 @@ def test_adapter_fault_between_health_poll_and_stop_is_never_finalized(
     )
 
     with pytest.raises(AdapterError, match="ultrasound"):
-        run_simulated_trial(request)
+        run_simulated_trial(request, publish=events.append)
 
-    recordings = list(tmp_path.rglob("*.recording"))
-    assert len(recordings) == 1
-    recording = recordings[0]
+    assert not list(tmp_path.rglob("*.recording"))
     assert not list(tmp_path.rglob("manifest.json"))
     assert not list(tmp_path.rglob("checksums.sha256"))
-    scan = scan_binary_file(recording / "raw/ultrasound.bin.partial")
-    assert scan.is_clean
-    assert scan.complete_block_count > 0
-    with h5py.File(recording / "raw/imu.h5.partial", "r") as file:
-        assert bool(file.attrs["closed_cleanly"])
-
-    journal_records = [
-        json.loads(line)
-        for line in (recording / "logs/trial.jsonl.partial")
-        .read_text(encoding="utf-8")
-        .splitlines()
+    published_states = [
+        event.payload.get("state")
+        for event in events
+        if event.event_type is WorkerEventType.STATE
     ]
-    failure = next(
-        record for record in journal_records if record["event_type"] == "trial_failure"
-    )
-    assert failure["recovery_state"] == "RECOVERABLE"
-    assert "injected disconnect" in failure["message"]
-    assert failure["stop_reports"]["ultrasound"]["fault"] is not None
+    assert "RECOVERABLE" in published_states
+    assert "FINALIZED" not in published_states
 
 
 def test_simulated_raw_queue_saturation_is_explicit_and_never_finalized(
@@ -1072,6 +1048,7 @@ def test_simulated_raw_queue_saturation_is_explicit_and_never_finalized(
         return original_append(self, *args, **kwargs)
 
     monkeypatch.setattr(BlockBinaryWriterProcess, "append", briefly_slow_append)
+    events = []
     request = TrialRunRequest(
         data_root=tmp_path,
         duration_s=None,
@@ -1086,30 +1063,27 @@ def test_simulated_raw_queue_saturation_is_explicit_and_never_finalized(
     )
 
     with pytest.raises(AdapterError, match="raw queue overflow"):
-        run_simulated_trial(request)
+        run_simulated_trial(request, publish=events.append)
 
-    recording = next(tmp_path.rglob("*.recording"))
+    assert not list(tmp_path.rglob("*.recording"))
     assert not list(tmp_path.rglob("manifest.json"))
-    journal_records = [
-        json.loads(line)
-        for line in (recording / "logs/trial.jsonl.partial")
-        .read_text(encoding="utf-8")
-        .splitlines()
+    published_states = [
+        event.payload.get("state")
+        for event in events
+        if event.event_type is WorkerEventType.STATE
     ]
-    failure = next(
-        record for record in journal_records if record["event_type"] == "trial_failure"
-    )
-    assert failure["recovery_state"] == "ABORTED"
-    assert "raw queue overflow" in failure["message"]
+    assert "ABORTED" in published_states
+    assert "FINALIZED" not in published_states
 
 
-def test_mid_acquisition_disk_write_error_is_explicit_and_leaves_recovery_data(
+def test_mid_acquisition_disk_write_error_is_explicit_and_deletes_session(
     tmp_path,
     monkeypatch,
 ) -> None:
     # HDF5 modalities are intentionally written in the collector-core process.
     # Inject an OS-level write failure after formal t0 to prove it cannot be
-    # converted into a successful or immutable Trial.
+    # converted into a successful or immutable Trial, and that the half-written
+    # session directory is deleted outright.
     original_append = Hdf5SignalWriter.append_batch
     imu_batches = 0
 
@@ -1122,26 +1096,23 @@ def test_mid_acquisition_disk_write_error_is_explicit_and_leaves_recovery_data(
         return original_append(self, batch)
 
     monkeypatch.setattr(Hdf5SignalWriter, "append_batch", fail_after_trigger)
+    events = []
 
     with pytest.raises(OSError, match="simulated mid-acquisition disk full"):
-        run_simulated_trial(TrialRunRequest(data_root=tmp_path, duration_s=0.5))
+        run_simulated_trial(
+            TrialRunRequest(data_root=tmp_path, duration_s=0.5),
+            publish=events.append,
+        )
 
-    recording = next(tmp_path.rglob("*.recording"))
+    assert not list(tmp_path.rglob("*.recording"))
     assert not list(tmp_path.rglob("manifest.json"))
-    with h5py.File(recording / "raw/imu.h5.partial", "r") as file:
-        assert not bool(file.attrs["closed_cleanly"])
-        assert int(file.attrs["sample_count"]) > 0
-    journal_records = [
-        json.loads(line)
-        for line in (recording / "logs/trial.jsonl.partial")
-        .read_text(encoding="utf-8")
-        .splitlines()
+    published_states = [
+        event.payload.get("state")
+        for event in events
+        if event.event_type is WorkerEventType.STATE
     ]
-    failure = next(
-        record for record in journal_records if record["event_type"] == "trial_failure"
-    )
-    assert failure["exception_type"] == "OSError"
-    assert "disk full" in failure["message"]
+    assert "ABORTED" in published_states
+    assert "FINALIZED" not in published_states
 
 
 def test_worker_completes_without_sync_and_reports_optional_status(tmp_path) -> None:

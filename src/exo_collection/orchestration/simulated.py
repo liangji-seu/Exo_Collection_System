@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import platform
 from queue import Empty
+import shutil
 import subprocess
 import time
 from typing import Any, Protocol
@@ -2833,6 +2834,14 @@ def run_trial(
         if xingying_trigger_writer is not None:
             try:
                 xingying_trigger_writer.close_incomplete()
+            except BaseException:
+                pass
+        # 任何失败都删除未 finalize 的录制目录，不留半成品数据供「Trial 恢复」。
+        # finalize 成功后 recording_directory 已通过 os.replace 移走，此处 is_dir()
+        # 为 False，不会误删已发布的 trial。
+        if layout.recording_directory.is_dir():
+            try:
+                shutil.rmtree(layout.recording_directory)
             except BaseException:
                 pass
         raise
