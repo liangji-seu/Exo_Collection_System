@@ -287,14 +287,15 @@ def test_host_arrival_timestamps_recorded_exactly() -> None:
     adapter.close()
 
 
-def test_device_timestamp_uses_sample_time_fine() -> None:
-    """device_timestamp is the unit's own SampleTimeFine (no unified clock)."""
+def test_device_timestamp_unset_for_independent_streams() -> None:
+    """No unified device clock across independently-wired MTw units, so
+    device_timestamp stays None (host arrival timestamps are authoritative)."""
     adapter, backend = running_adapter()
 
     backend.emit("A", Packet(1, sample_time_fine=123456), 1_000)
     event = adapter.get_event(timeout=0.5)
     assert event is not None
-    assert event.device_timestamp == 123456
+    assert event.device_timestamp is None
     adapter.stop()
     adapter.close()
 

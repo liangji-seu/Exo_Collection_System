@@ -33,7 +33,6 @@ from exo_collection.adapters.imu.xsens_awinda import (
     _IMU_SLOT_PREVIEW_LABELS,
     _match_device_id,
     _read_optional_packet_counter,
-    _read_optional_sample_time_fine,
     parse_xsens_packet,
 )
 from exo_collection.domain.events import SampleBatch
@@ -620,7 +619,6 @@ class XsensMtwUsbImuAdapter(QueuedHardwareAdapter):
             return
 
         counter = _read_optional_packet_counter(packet)
-        sample_time = _read_optional_sample_time_fine(packet)
 
         # Per-device counter gap detection.  Each wired MTw has an independent
         # crystal, so a shared/common counter cannot be assumed; track each
@@ -638,16 +636,12 @@ class XsensMtwUsbImuAdapter(QueuedHardwareAdapter):
                     self._counter_gaps += delta - 1
             self._per_device_last_counter[device_id] = counter
 
-        self._emit_single(
-            device_id, row, counter, sample_time, host_mono_ns, host_utc_ns
-        )
+        self._emit_single(device_id, row, host_mono_ns, host_utc_ns)
 
     def _emit_single(
         self,
         device_id: str,
         row: np.ndarray,
-        counter: int | None,
-        sample_time: int | None,
         host_mono_ns: int,
         host_utc_ns: int,
     ) -> None:
@@ -677,9 +671,12 @@ class XsensMtwUsbImuAdapter(QueuedHardwareAdapter):
             first_sample_index=self._sample_index,
             sample_count=1,
             sequence_number=self._batch_sequence,
-            # No unified device clock across independently-wired MTw units; use
-            # this unit's own SampleTimeFine (falling back to PacketCounter).
-            device_timestamp=sample_time if sample_time is not None else counter,
+            # Independently-wired MTw units share no unified device clock; each
+            # unit's own SampleTimeFine/PacketCounter is not monotonic across
+            # the interleaved stream, so it must not seed the affine clock
+            # mapping (fit_affine_clock requires strictly increasing anchors).
+            # The host arrival timestamps are the authoritative time base.
+            device_timestamp=None,
             sample_rate_hz=float(self._backend.actual_rate_hz),
             data=data,
         )
