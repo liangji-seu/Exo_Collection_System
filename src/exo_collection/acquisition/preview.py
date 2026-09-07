@@ -153,6 +153,14 @@ def build_preview_event(
                         values[:, device_index, axis_idx].astype(float).tolist()
                     )
                     labels.append(f"{sensor_labels[device_index]}_{axis_name}")
+            # Independent streams emit one unit's row per batch (the rest NaN);
+            # expose which sensor(s) actually carry data so the preview worker
+            # can give each unit its own rate-limited UI stream.
+            active_sensor_indices = [
+                int(index)
+                for index in range(values.shape[1])
+                if not np.all(np.isnan(values[:, index, :]))
+            ]
             payload = {
                 "host_monotonic_ns": event.host_monotonic_ns,
                 "values": channels[0] if channels else [],
@@ -160,6 +168,7 @@ def build_preview_event(
                 "labels": labels,
                 "channel": "acceleration",
                 "channel_count": len(channels),
+                "active_sensor_indices": active_sensor_indices,
             }
         elif event.modality == "encoder":
             if values.ndim != 2 or values.shape[1] < 6:

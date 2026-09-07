@@ -89,6 +89,17 @@ def _preview_rate_limit_key(event: WorkerEvent) -> tuple[str, int | None]:
         if event.payload.get("packet_type") == 2:
             return modality, 2
         return modality, 1
+    if modality == "imu":
+        # Independently-wired IMUs publish one unit's row per batch, so a single
+        # "imu" stream key would let the three units take turns starving the
+        # shared 30 fps quota (making the trace look choppy).  Give each active
+        # unit its own stream so every sensor refreshes at the full preview rate.
+        active = event.payload.get("active_sensor_indices")
+        if isinstance(active, (list, tuple)) and len(active) == 1:
+            try:
+                return modality, int(active[0])
+            except (TypeError, ValueError):
+                pass
     return modality, None
 
 
