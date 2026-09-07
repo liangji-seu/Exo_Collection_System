@@ -392,7 +392,7 @@ class UploadProgressDialog(QDialog):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("SSH/SCP 上传进度")
+        self.setWindowTitle("上传进度")
         self.setModal(False)
         self.setMinimumWidth(520)
         layout = QVBoxLayout(self)
@@ -419,6 +419,10 @@ class UploadProgressDialog(QDialog):
 
     def waiting_for_host_key(self) -> None:
         self.status_label.setText("等待操作者核对 SSH 主机指纹…")
+        self.progress_bar.setRange(0, 0)
+
+    def waiting_for_delete_confirmation(self) -> None:
+        self.status_label.setText("等待确认是否删除云端多余文件…")
         self.progress_bar.setRange(0, 0)
 
     def mark_cancelling(self) -> None:

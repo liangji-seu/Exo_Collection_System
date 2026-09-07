@@ -317,6 +317,60 @@ def test_existing_remote_trial_is_merged_additively_without_deleting_extras(
     assert all(".partial-" not in path for path in session.files)
 
 
+def test_merge_with_delete_confirmation_removes_remote_only_files(
+    tmp_path: Path,
+) -> None:
+    manifest_path = _publish_trial(tmp_path)
+    request = _password_request(tmp_path, manifest_path)
+    plan = build_upload_plan(manifest_path)
+    remote = build_remote_trial_directory(request.remote_workdir, plan, tmp_path)
+    session = _FakeRemoteSession()
+    session.ensure_directory(remote)
+    manifest_item = next(
+        item for item in plan.files if item.relative_path.as_posix() == "manifest.json"
+    )
+    session.files[f"{remote}/manifest.json"] = manifest_item.local_path.read_bytes()
+    session.files[f"{remote}/server-only-note.txt"] = b"stale-remote"
+
+    seen: list[tuple[str, ...]] = []
+
+    def confirm(files: tuple[str, ...]) -> tuple[str, ...]:
+        seen.append(files)
+        return files
+
+    SshScpTrialUploader(lambda _request: session).upload(
+        request, confirm_remote_delete=confirm
+    )
+
+    assert seen == [("server-only-note.txt",)]
+    assert f"{remote}/server-only-note.txt" not in session.files
+    assert session.files[f"{remote}/raw/imu.h5"] == b"immutable-imu-payload"
+    assert session.files[f"{remote}/manifest.json"] == manifest_item.local_path.read_bytes()
+
+
+def test_merge_with_delete_rejection_keeps_remote_only_files(
+    tmp_path: Path,
+) -> None:
+    manifest_path = _publish_trial(tmp_path)
+    request = _password_request(tmp_path, manifest_path)
+    plan = build_upload_plan(manifest_path)
+    remote = build_remote_trial_directory(request.remote_workdir, plan, tmp_path)
+    session = _FakeRemoteSession()
+    session.ensure_directory(remote)
+    manifest_item = next(
+        item for item in plan.files if item.relative_path.as_posix() == "manifest.json"
+    )
+    session.files[f"{remote}/manifest.json"] = manifest_item.local_path.read_bytes()
+    session.files[f"{remote}/server-only-note.txt"] = b"keep-me"
+
+    SshScpTrialUploader(lambda _request: session).upload(
+        request, confirm_remote_delete=lambda files: ()
+    )
+
+    assert session.files[f"{remote}/server-only-note.txt"] == b"keep-me"
+    assert session.files[f"{remote}/raw/imu.h5"] == b"immutable-imu-payload"
+
+
 def test_existing_same_path_with_different_bytes_is_never_overwritten(
     tmp_path: Path,
 ) -> None:

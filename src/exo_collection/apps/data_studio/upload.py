@@ -42,8 +42,18 @@ from exo_collection.storage.manifest import TrialManifest, load_manifest
 LOG = logging.getLogger(__name__)
 
 
-_COPY_BUFFER_SIZE = 1024 * 1024
+_COPY_BUFFER_SIZE = 8 * 1024 * 1024
 _SAFE_REMOTE_SEGMENT = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _format_size(size_bytes: int) -> str:
+    """Human-readable byte count for one-line progress messages."""
+    value = float(size_bytes)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if value < 1024.0 or unit == "TB":
+            return f"{int(value)} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024.0
+    return f"{value:.1f} TB"
 UPLOAD_AUDIT_DIRECTORY = ".upload-audit"
 REMOTE_SYNC_INDEX_RELATIVE_PATH = PurePosixPath(".exo/exo_sync_index.json")
 REMOTE_SYNC_INDEX_SCHEMA = "exo.remote-sync-index/v1"
@@ -1198,6 +1208,35 @@ def _default_remote_session(request: OfflineUploadRequest) -> RemoteUploadSessio
     return ParamikoScpSession(request)
 
 
+def _remote_only_relative_paths(
+    session: RemoteUploadSession,
+    plan: TrialUploadPlan,
+    remote_trial_directory: str,
+) -> tuple[str, ...]:
+    """List remote files under a Trial that are absent from the local plan.
+
+    Hidden entries (``.partial-*`` staging files, ``.exo`` index, ``.upload-audit``)
+    are skipped so they are never offered for deletion.
+    """
+
+    local_relative = {item.relative_path.as_posix() for item in plan.files}
+    remote_only: list[str] = []
+
+    def walk(remote_directory: str, prefix: str) -> None:
+        for name, is_directory in session.list_directory(remote_directory):
+            if name.startswith("."):
+                continue
+            relative = f"{prefix}{name}"
+            child = _remote_join(remote_directory, name)
+            if is_directory:
+                walk(child, f"{relative}/")
+            elif relative not in local_relative:
+                remote_only.append(relative)
+
+    walk(remote_trial_directory, "")
+    return tuple(remote_only)
+
+
 class SshScpTrialUploader:
     """Upload, verify, then publish one immutable Trial package."""
 
@@ -1210,6 +1249,9 @@ class SshScpTrialUploader:
         *,
         progress: ProgressCallback | None = None,
         cancelled: CancelCheck | None = None,
+        confirm_remote_delete: (
+            Callable[[tuple[str, ...]], tuple[str, ...]] | None
+        ) = None,
     ) -> OfflineUploadResult:
         report = progress or (lambda _update: None)
         is_cancelled = cancelled or (lambda: False)
@@ -1254,6 +1296,7 @@ class SshScpTrialUploader:
                     remote_final,
                     report=report,
                     cancelled=is_cancelled,
+                    confirm_remote_delete=confirm_remote_delete,
                 )
                 report(UploadProgress(UploadPhase.PUBLISHING, "正在更新云端 .exo 同步索引…"))
                 _update_remote_sync_index(session, request, plan)
@@ -1301,7 +1344,8 @@ class SshScpTrialUploader:
                 report(
                     UploadProgress(
                         UploadPhase.UPLOADING,
-                        f"正在上传 {index}/{total_files}：{item.relative_path.as_posix()}",
+                        f"正在上传第 {index}/{total_files} 个文件："
+                        f"{item.relative_path.as_posix()}（{_format_size(item.size_bytes)}）",
                         index - 1,
                         total_files,
                     )
@@ -1345,8 +1389,9 @@ class SshScpTrialUploader:
                         report(
                             UploadProgress(
                                 UploadPhase.UPLOADING,
-                                f"正在上传 {current_index}/{total_files}："
-                                f"{current_item.relative_path.as_posix()} · {percentage:.1f}%",
+                                f"正在上传第 {current_index}/{total_files} 个文件："
+                                f"{current_item.relative_path.as_posix()}"
+                                f"（{_format_size(current_item.size_bytes)}） · {percentage:.1f}%",
                                 current_index - 1,
                                 total_files,
                             )
@@ -1527,12 +1572,52 @@ class SshScpTrialUploader:
         *,
         report: ProgressCallback,
         cancelled: CancelCheck,
+        confirm_remote_delete: (
+            Callable[[tuple[str, ...]], tuple[str, ...]] | None
+        ) = None,
     ) -> None:
-        """Add missing files without deleting or replacing any remote bytes."""
+        """Add missing files without deleting or replacing any remote bytes.
+
+        Remote-only files (present on the server but absent locally) are
+        surfaced to the operator for confirmation when ``confirm_remote_delete``
+        is supplied; confirmed files are unlinked before the additive merge.
+        Without the callback they are retained, matching the historic
+        never-delete behaviour.
+        """
 
         session.ensure_directory(remote_trial_directory)
         missing: list[TrialUploadFile] = []
         total_files = len(plan.files)
+
+        remote_only = _remote_only_relative_paths(
+            session, plan, remote_trial_directory
+        )
+        if remote_only and confirm_remote_delete is not None:
+            self._guard(request, cancelled)
+            report(
+                UploadProgress(
+                    UploadPhase.VALIDATING,
+                    f"云端存在 {len(remote_only)} 个本地已缺失的文件，等待确认。",
+                )
+            )
+            confirmed = confirm_remote_delete(remote_only)
+            for relative_path in confirmed:
+                self._guard(request, cancelled)
+                if relative_path not in remote_only:
+                    raise UploadError(
+                        "INVALID_DELETE_DECISION",
+                        "删除确认包含不在清单内的文件，已停止。",
+                    )
+                remote_file = _remote_join(
+                    remote_trial_directory, *PurePosixPath(relative_path).parts
+                )
+                report(
+                    UploadProgress(
+                        UploadPhase.UPLOADING,
+                        f"正在删除云端多余文件：{relative_path}",
+                    )
+                )
+                session.remove_file(remote_file)
 
         def guarded_progress(
             message: str,
@@ -1623,8 +1708,8 @@ class SshScpTrialUploader:
                     )
                 temporary_files.append(temporary_file)
                 upload_message = (
-                    f"正在补传缺少文件 {index}/{len(missing)}："
-                    f"{item.relative_path.as_posix()}"
+                    f"正在补传第 {index}/{len(missing)} 个文件："
+                    f"{item.relative_path.as_posix()}（{_format_size(item.size_bytes)}）"
                 )
                 session.upload_file(
                     item.local_path,
@@ -2124,6 +2209,7 @@ def _safe_exception(exc: BaseException, *secrets: str) -> str:
 class UploadWorkerEventType(StrEnum):
     PROGRESS = "PROGRESS"
     HOST_KEY_REQUIRED = "HOST_KEY_REQUIRED"
+    DELETE_CONFIRMATION_REQUIRED = "DELETE_CONFIRMATION_REQUIRED"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
 
@@ -2134,6 +2220,7 @@ class UploadWorkerEvent:
     progress: UploadProgress | None = None
     result: OfflineUploadResult | BatchOfflineUploadResult | RemoteStatusSyncResult | DownloadResult | None = None
     host_key: HostKeyInfo | None = None
+    remote_only_files: tuple[str, ...] = ()
     error_code: str | None = None
     message: str | None = None
 
@@ -2151,6 +2238,32 @@ def _upload_worker_main(command: Connection, events: Connection) -> None:
         except EOFError:
             return True
         return message == "CANCEL"
+
+    def confirm_remote_delete(remote_only_files: tuple[str, ...]) -> tuple[str, ...]:
+        """Block the worker until the operator decides which remote-only files
+        (present on the server but absent locally) to delete.  Returns the
+        confirmed relative paths, or an empty tuple to keep everything."""
+        events.send(
+            UploadWorkerEvent(
+                UploadWorkerEventType.DELETE_CONFIRMATION_REQUIRED,
+                remote_only_files=remote_only_files,
+            )
+        )
+        try:
+            decision = command.recv()
+        except EOFError as pipe_error:
+            raise UploadCancelled() from pipe_error
+        if decision == "CANCEL":
+            raise UploadCancelled("操作者未确认删除云端多余文件，上传已取消。")
+        if (
+            not isinstance(decision, tuple)
+            or len(decision) != 2
+            or decision[0] != "CONFIRM_DELETE_REMOTE_ONLY"
+            or not isinstance(decision[1], tuple)
+            or not all(isinstance(value, str) for value in decision[1])
+        ):
+            raise UploadError("INVALID_DELETE_DECISION", "云端文件删除确认响应无效。")
+        return decision[1]
 
     try:
         incoming = command.recv()
@@ -2203,6 +2316,7 @@ def _upload_worker_main(command: Connection, events: Connection) -> None:
                                 subrequest,
                                 progress=batch_progress,
                                 cancelled=cancelled,
+                                confirm_remote_delete=confirm_remote_delete,
                             )
                         )
                     result = (
@@ -2346,6 +2460,11 @@ class UploadWorkerHandle:
         if self._command is None or not self.is_alive:
             raise RuntimeError("Upload worker is not waiting for a host key decision")
         self._command.send(("TRUST_HOST_KEY", host_key))
+
+    def confirm_remote_delete(self, remote_only_files: tuple[str, ...]) -> None:
+        if self._command is None or not self.is_alive:
+            raise RuntimeError("Upload worker is not waiting for a delete decision")
+        self._command.send(("CONFIRM_DELETE_REMOTE_ONLY", tuple(remote_only_files)))
 
     def poll_events(self, limit: int = 100) -> list[UploadWorkerEvent]:
         events: list[UploadWorkerEvent] = []
