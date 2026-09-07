@@ -882,6 +882,48 @@ def _imu_sensor_groups(
     ]
 
 
+def _imu_sensor_rows(
+    playback: TrialPlayback,
+) -> list[tuple[str, SignalPlayback | None, dict[str, tuple[int, ...]]]]:
+    """Return up to three (label, series, kind->indices) IMU plot rows.
+
+    Decoupled recordings expose one per-sensor series whose columns are the raw
+    12 IMU channels; each row then uses its own series (and its own real time
+    axis).  Coupled recordings share a single flattened series and split it by
+    sensor here.
+    """
+    if playback.imu_sensors:
+        rows: list[
+            tuple[str, SignalPlayback | None, dict[str, tuple[int, ...]]]
+        ] = []
+        for series in playback.imu_sensors:
+            groups = _imu_sensor_groups(series)
+            sensor, kinds = (
+                groups[0]
+                if groups
+                else (
+                    series.sensor_labels[0] if series.sensor_labels else "IMU",
+                    {},
+                )
+            )
+            rows.append((sensor, series, kinds))
+        return rows[:3]
+    imu = playback.imu
+    if imu is None or not imu.time_s.size:
+        return []
+    groups = _imu_sensor_groups(imu)
+    labels = list(imu.sensor_labels[:3])
+    rows = []
+    for slot in range(3):
+        if slot < len(groups):
+            sensor, kinds = groups[slot]
+        else:
+            sensor = labels[slot] if slot < len(labels) else f"IMU {slot + 1}"
+            kinds = {}
+        rows.append((sensor, imu, kinds))
+    return rows
+
+
 def _encoder_side_groups(series: SignalPlayback) -> list[tuple[str, tuple[int, ...]]]:
     """Group published encoder channels by explicit left/right prefixes."""
 
@@ -1051,29 +1093,20 @@ class PlaybackDialog(QDialog):
         imu_grid = QGridLayout(imu_box)
         imu_grid.setContentsMargins(3, 3, 3, 3)
         imu_grid.setSpacing(3)
-        imu = playback.imu
-        imu_groups = (
-            _imu_sensor_groups(imu) if imu is not None and imu.time_s.size else []
-        )
-        sensor_labels = list(imu.sensor_labels[:3]) if imu is not None else []
+        imu_rows = _imu_sensor_rows(playback)
         for sensor_slot in range(3):
-            if sensor_slot < len(imu_groups):
-                sensor, kinds = imu_groups[sensor_slot]
+            if sensor_slot < len(imu_rows):
+                sensor, series, kinds = imu_rows[sensor_slot]
             else:
-                sensor = (
-                    sensor_labels[sensor_slot]
-                    if sensor_slot < len(sensor_labels)
-                    else f"IMU {sensor_slot + 1}"
-                )
-                kinds = {}
+                sensor, series, kinds = f"IMU {sensor_slot + 1}", None, {}
             for row, (kind, title) in enumerate(
                 (("acc", "加速度计"), ("mag", "磁力计"), ("gyr", "陀螺仪"))
             ):
                 indices = kinds.get(kind, ())
-                if imu is not None and indices:
+                if series is not None and indices:
                     plot = _SweepSignalPlot(
                         f"{sensor} · {title}",
-                        imu,
+                        series,
                         indices,
                         self._window_s,
                         playback.prompt_labels,
@@ -1178,24 +1211,26 @@ class PlaybackDialog(QDialog):
     def _build_imu_tab(self, playback: TrialPlayback) -> None:
         tab = QWidget()
         outer = QHBoxLayout(tab)
-        imu = playback.imu
-        groups = _imu_sensor_groups(imu) if imu is not None and imu.time_s.size else []
-        _log.info("IMU 回放分组: %s", [(name, kinds) for name, kinds in groups])
-        labels = list(imu.sensor_labels[:3]) if imu is not None else []
+        imu_rows = _imu_sensor_rows(playback)
+        _log.info(
+            "IMU 回放分组: %s",
+            [(label, kinds) for label, _series, kinds in imu_rows],
+        )
+        labels = [label for label, _series, _kinds in imu_rows]
         for slot in range(3):
-            if slot < len(groups):
-                sensor, kinds = groups[slot]
+            if slot < len(imu_rows):
+                sensor, series, kinds = imu_rows[slot]
             else:
                 sensor = labels[slot] if slot < len(labels) else f"IMU {slot + 1}"
-                kinds = {}
+                series, kinds = None, {}
             group_box = QGroupBox(sensor)
             group_layout = QVBoxLayout(group_box)
             for kind, title in (("acc", "加速度计"), ("mag", "磁力计"), ("gyr", "陀螺仪")):
                 indices = kinds.get(kind, ())
-                if imu is not None and indices:
+                if series is not None and indices:
                     plot = _SweepSignalPlot(
                         title,
-                        imu,
+                        series,
                         indices,
                         self._window_s,
                         playback.prompt_labels,

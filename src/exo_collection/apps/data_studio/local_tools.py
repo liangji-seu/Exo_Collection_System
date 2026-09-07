@@ -103,6 +103,11 @@ class TrialPlayback:
     encoder: SignalPlayback | None
     sync: SignalPlayback | None
     sync_trigger_times_s: NDArray[np.float64]
+    # When the IMU recording is decoupled (each physical unit on its own
+    # independent clock), ``imu`` is ``None`` and every physical sensor is
+    # exposed as its own time-aligned series here.  Coupled / single-device
+    # recordings keep the shared-axis ``imu`` and leave this empty.
+    imu_sensors: tuple[SignalPlayback, ...] = ()
     emg: SignalPlayback | None = None
     prompt_labels: tuple[PromptLabelPlaybackEvent, ...] = ()
 
@@ -403,6 +408,58 @@ def _unwrap_device_clock(values: NDArray[np.float64]) -> NDArray[np.float64] | N
     return values + correction
 
 
+def _decode_device_metadata(
+    raw_device: Any, path: Path | None = None
+) -> dict[str, Any]:
+    """Parse the JSON object stored under ``metadata/device``."""
+    if isinstance(raw_device, bytes):
+        raw_device = raw_device.decode("utf-8", errors="replace")
+    try:
+        result = json.loads(str(raw_device))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        if path is not None:
+            _log.warning("HDF5 device metadata is not valid JSON: %s", path)
+        return {}
+    return result if isinstance(result, dict) else {}
+
+
+def _sensor_labels_from_metadata(device_metadata: dict[str, Any]) -> tuple[str, ...]:
+    candidates = (
+        device_metadata.get("preview_labels")
+        or device_metadata.get("device_ids")
+        or ()
+    )
+    if isinstance(candidates, (list, tuple)):
+        return tuple(str(value) for value in candidates)
+    return ()
+
+
+def _is_decoupled_imu(
+    device_metadata: dict[str, Any],
+    device_time: NDArray[np.float64] | None,
+    n_devices: int,
+) -> bool:
+    """Detect independent per-unit streams that must not share one time axis.
+
+    The wired MTw adapter stamps each packet with that unit's own SampleTimeFine
+    and records ``alignment_mode: "none_independent_streams"``.  As a fallback
+    for older files without that marker, interleaved per-unit clocks also show
+    up as many negative diffs in the raw device_time array, whereas a single
+    shared clock is monotonic except for at most a couple of wrap points.
+    """
+    if n_devices <= 1:
+        return False
+    if device_metadata.get("alignment_mode") == "none_independent_streams":
+        return True
+    if (
+        device_time is not None
+        and device_time.size >= 2
+        and np.all(np.isfinite(device_time))
+    ):
+        return int(np.count_nonzero(np.diff(device_time) < 0)) > 2
+    return False
+
+
 def _read_hdf5_signal(
     path: Path,
     *,
@@ -433,34 +490,42 @@ def _read_hdf5_signal(
                 handle["samples/device_time"][selector], dtype=np.float64
             )
             if device_time.size >= 2 and np.all(np.isfinite(device_time)):
-                source = _unwrap_device_clock(device_time)
-                if source is not None and np.all(np.diff(source) > 0):
-                    if source.size >= 2:
-                        selected_row_steps = np.diff(selected_rows).astype(
-                            np.float64
-                        )
-                        clock_steps = np.diff(source)
-                        clock_step_per_row = clock_steps / selected_row_steps
-                        nominal_clock_step = float(np.median(clock_step_per_row))
-                        if (
-                            np.isfinite(nominal_clock_step)
-                            and nominal_clock_step > 0
-                        ):
-                            # Account for the rows intentionally omitted by GUI
-                            # downsampling.  A further half device tick is enough
-                            # to distinguish an actual missing packet from normal
-                            # floating-point clock jitter.
-                            expected_clock_steps = (
-                                nominal_clock_step * selected_row_steps
+                # Independent-streams recordings interleave several per-unit
+                # clocks into one array, so raw device_time shows many negative
+                # diffs.  A single shared clock is monotonic except for at most
+                # a couple of wrap points.  Only reconstruct a uniform axis from
+                # a genuine shared clock; decoupled data keeps the real per-row
+                # host arrival time instead.
+                decoupled = int(np.count_nonzero(np.diff(device_time) < 0)) > 2
+                if not decoupled:
+                    source = _unwrap_device_clock(device_time)
+                    if source is not None and np.all(np.diff(source) > 0):
+                        if source.size >= 2:
+                            selected_row_steps = np.diff(selected_rows).astype(
+                                np.float64
                             )
-                            tolerance = 0.5 * nominal_clock_step
-                            break_before[1:] = (
-                                clock_steps > expected_clock_steps + tolerance
-                            )
-                    try:
-                        host_ns = fit_affine_clock(source, host_ns).map(source)
-                    except ValueError:
-                        pass  # fall back to raw host_ns on a degenerate fit
+                            clock_steps = np.diff(source)
+                            clock_step_per_row = clock_steps / selected_row_steps
+                            nominal_clock_step = float(np.median(clock_step_per_row))
+                            if (
+                                np.isfinite(nominal_clock_step)
+                                and nominal_clock_step > 0
+                            ):
+                                # Account for the rows intentionally omitted by
+                                # GUI downsampling.  A further half device tick
+                                # is enough to distinguish an actual missing
+                                # packet from normal floating-point clock jitter.
+                                expected_clock_steps = (
+                                    nominal_clock_step * selected_row_steps
+                                )
+                                tolerance = 0.5 * nominal_clock_step
+                                break_before[1:] = (
+                                    clock_steps > expected_clock_steps + tolerance
+                                )
+                        try:
+                            host_ns = fit_affine_clock(source, host_ns).map(source)
+                        except ValueError:
+                            pass  # fall back to raw host_ns on a degenerate fit
         channels = (
             _decode_strings(handle["metadata/channels"][:])
             if "metadata/channels" in handle
@@ -473,21 +538,10 @@ def _read_hdf5_signal(
         )
         sensor_labels: tuple[str, ...] = ()
         if "metadata/device" in handle:
-            raw_device = handle["metadata/device"][()]
-            if isinstance(raw_device, bytes):
-                raw_device = raw_device.decode("utf-8", errors="replace")
-            try:
-                device_metadata = json.loads(str(raw_device))
-            except (TypeError, ValueError, json.JSONDecodeError):
-                _log.warning("HDF5 device metadata is not valid JSON: %s", path)
-            else:
-                candidates = (
-                    device_metadata.get("preview_labels")
-                    or device_metadata.get("device_ids")
-                    or ()
-                )
-                if isinstance(candidates, (list, tuple)):
-                    sensor_labels = tuple(str(value) for value in candidates)
+            device_metadata = _decode_device_metadata(
+                handle["metadata/device"][()], path
+            )
+            sensor_labels = _sensor_labels_from_metadata(device_metadata)
         trigger_times: list[float] = []
         if "events/records" in handle:
             records = handle["events/records"]
@@ -526,6 +580,91 @@ def _read_hdf5_signal(
         ),
         np.asarray(trigger_times, dtype=np.float64),
     )
+
+
+def _read_hdf5_imu_sensors(
+    path: Path,
+    *,
+    formal_t0_ns: int,
+    max_points: int,
+) -> tuple[SignalPlayback, ...]:
+    """Read an IMU HDF5, splitting decoupled devices into per-sensor series.
+
+    The wired MTw adapter records each unit independently: every parsed packet
+    is its own one-sample batch with only that unit's row populated, so the raw
+    ``samples/data`` interleaves several independent per-unit clocks.  A single
+    shared time axis cannot represent that faithfully, so when the recording is
+    decoupled the reader returns one ``SignalPlayback`` per physical sensor,
+    each carrying that sensor's own host-arrival timestamps.  Coupled (Awinda)
+    or single-device recordings return a one-element tuple and delegate to the
+    shared-clock reconstruction in :func:`_read_hdf5_signal`.
+    """
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    with h5py.File(path, "r") as handle:
+        if not bool(handle.attrs.get("closed_cleanly", False)):
+            raise DataStudioToolError(f"HDF5 未正常关闭：{path.name}")
+        if "samples/data" not in handle or "samples/host_monotonic_ns" not in handle:
+            raise DataStudioToolError(f"HDF5 结构不完整：{path.name}")
+        data_ds = handle["samples/data"]
+        n_devices = int(data_ds.shape[1]) if data_ds.ndim == 3 else 1
+        channels = (
+            _decode_strings(handle["metadata/channels"][:])
+            if "metadata/channels" in handle
+            else ()
+        )
+        units = (
+            _decode_strings(handle["metadata/units"][:])
+            if "metadata/units" in handle
+            else ()
+        )
+        device_metadata = (
+            _decode_device_metadata(handle["metadata/device"][()], path)
+            if "metadata/device" in handle
+            else {}
+        )
+        sensor_labels = _sensor_labels_from_metadata(device_metadata)
+        device_time = (
+            np.asarray(handle["samples/device_time"], dtype=np.float64)
+            if "samples/device_time" in handle
+            else None
+        )
+
+        decoupled = (
+            _is_decoupled_imu(device_metadata, device_time, n_devices)
+            and data_ds.ndim == 3
+            and len(sensor_labels) == n_devices
+            and len(channels) == int(data_ds.shape[2])
+        )
+        if not decoupled:
+            series, _ = _read_hdf5_signal(
+                path, formal_t0_ns=formal_t0_ns, max_points=max_points
+            )
+            return (series,)
+
+        data = np.asarray(data_ds)
+        host_ns = np.asarray(
+            handle["samples/host_monotonic_ns"], dtype=np.float64
+        )
+        series_list: list[SignalPlayback] = []
+        for slot in range(n_devices):
+            row_index = np.flatnonzero(np.isfinite(data[:, slot, 0]))
+            if row_index.size == 0:
+                continue
+            chosen = row_index[_even_indices(int(row_index.size), max_points)]
+            slot_values = data[chosen, slot, :].reshape(-1, len(channels))
+            slot_time_s = (host_ns[chosen] - float(formal_t0_ns)) / 1e9
+            series_list.append(
+                SignalPlayback(
+                    time_s=np.asarray(slot_time_s, dtype=np.float64),
+                    values=slot_values,
+                    channels=channels,
+                    units=units,
+                    break_before=None,
+                    sensor_labels=(sensor_labels[slot],),
+                )
+            )
+        return tuple(series_list)
 
 
 def _is_raw_ethernet_ultrasound(metadata: dict[str, Any]) -> bool:
@@ -1017,11 +1156,33 @@ def load_trial_playback(
         "emg": None,
     }
     sync_trigger_times = np.empty((0,), dtype=np.float64)
+    imu_sensors: tuple[SignalPlayback, ...] = ()
     for modality in ("imu", "encoder", "sync_pulse"):
         idle_check()
         relative = _artifact_for(manifest, modality=modality, suffix=".h5")
         _log.info("HDF5 artifact [%s]: %s", modality, relative)
         if relative is None:
+            continue
+        if modality == "imu":
+            sensor_series = _read_hdf5_imu_sensors(
+                _artifact_path(trial_root, relative),
+                formal_t0_ns=formal_t0_ns,
+                max_points=max_signal_points,
+            )
+            if len(sensor_series) > 1:
+                imu_sensors = sensor_series
+                signals["imu"] = None
+                _log.info(
+                    "[imu] 加载完成: %d 颗解耦传感器序列", len(sensor_series)
+                )
+            else:
+                signals["imu"] = sensor_series[0] if sensor_series else None
+                if signals["imu"] is not None:
+                    _log.info(
+                        "[imu] 加载完成: time_s=%d points, values shape=%s",
+                        signals["imu"].time_s.size,
+                        signals["imu"].values.shape,
+                    )
             continue
         series, trigger_times = _read_hdf5_signal(
             _artifact_path(trial_root, relative),
@@ -1108,6 +1269,7 @@ def load_trial_playback(
         sync=signals["sync_pulse"],
         emg=signals["emg"],
         sync_trigger_times_s=sync_trigger_times,
+        imu_sensors=imu_sensors,
         prompt_labels=prompt_labels,
     )
 

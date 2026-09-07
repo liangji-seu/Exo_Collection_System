@@ -40,6 +40,8 @@ from exo_collection.apps.data_studio.local_tools import (
     TrialInspection,
     TrialPlayback,
     _inspect_hdf5,
+    _is_decoupled_imu,
+    _read_hdf5_imu_sensors,
     _read_hdf5_signal,
     _read_ultrasound,
     _unwrap_device_clock,
@@ -1020,3 +1022,140 @@ def test_read_hdf5_signal_marks_device_clock_packet_loss_after_downsampling(
     assert series.time_s.size == 10
     assert series.break_before is not None
     assert np.count_nonzero(series.break_before) == 1
+
+
+def test_is_decoupled_imu_detects_interleaved_clock_without_marker() -> None:
+    # Three free-running counters with arbitrary offsets, interleaved.  Each
+    # unit advances by 1 between its own samples, so the raw sequence flips
+    # sign on every slot boundary — far more than a shared clock's wrap points.
+    offsets = (1_000_000.0, 500.0, 300_000.0)
+    interleaved = np.array(
+        [offsets[slot] + k for k in range(4) for slot in range(3)]
+    )
+    assert _is_decoupled_imu({}, interleaved, n_devices=3) is True
+
+    shared = np.arange(6, dtype=np.float64)
+    assert _is_decoupled_imu({}, shared, n_devices=3) is False
+    # A single wrap point in a shared uint16 counter is still shared.
+    wrapped = np.array([65534.0, 65535.0, 0.0, 1.0, 2.0])
+    assert _is_decoupled_imu({}, wrapped, n_devices=3) is False
+    # The metadata marker wins even without inspecting device_time.
+    assert (
+        _is_decoupled_imu({"alignment_mode": "none_independent_streams"}, None, n_devices=3)
+        is True
+    )
+    # A single device is never decoupled.
+    assert (
+        _is_decoupled_imu({"alignment_mode": "none_independent_streams"}, None, n_devices=1)
+        is False
+    )
+
+
+def test_read_hdf5_imu_sensors_splits_decoupled_devices(tmp_path: Path) -> None:
+    path = tmp_path / "imu.h5"
+    n_devices = 3
+    channels = (
+        "acc_x", "acc_y", "acc_z",
+        "gyr_x", "gyr_y", "gyr_z",
+        "mag_x", "mag_y", "mag_z",
+        "roll", "pitch", "yaw",
+    )
+    labels = ("left_leg", "right_leg", "pelvis")
+    per_device = 20
+    count = per_device * n_devices
+
+    # Interleave the three independent per-unit streams.  Only the arriving
+    # unit's row is populated; the other two slots stay NaN, exactly like the
+    # wired MTw adapter writes them.
+    data = np.full((count, n_devices, len(channels)), np.nan, dtype=np.float32)
+    host_ns = np.zeros(count, dtype=np.uint64)
+    device_time = np.zeros(count, dtype=np.float64)
+    # Free-running SampleTimeFine offsets are arbitrary per unit, so the raw
+    # interleaved device_time is non-monotonic (many negative diffs).
+    offsets = (1_000_000.0, 500.0, 300_000.0)
+    for k in range(per_device):
+        for slot in range(n_devices):
+            row = k * n_devices + slot
+            data[row, slot, :] = float(slot * 1000 + k)
+            host_ns[row] = 900_000_000 + row * 10_000_000
+            device_time[row] = offsets[slot] + k
+
+    with Hdf5SignalWriter(
+        path,
+        channels=channels,
+        units=(
+            "m/s2", "m/s2", "m/s2",
+            "rad/s", "rad/s", "rad/s",
+            "a.u.", "a.u.", "a.u.",
+            "deg", "deg", "deg",
+        ),
+        device_metadata={
+            "device_id": "xsens_mtw_usb",
+            "alignment_mode": "none_independent_streams",
+            "cross_device_hardware_sync_verified": False,
+            "preview_labels": list(labels),
+        },
+        sample_shape=(n_devices, len(channels)),
+        nominal_rate_hz=100.0,
+    ) as writer:
+        writer.append(
+            data,
+            sample_index=0,
+            host_monotonic_ns=host_ns,
+            device_time=device_time,
+        )
+
+    series_list = _read_hdf5_imu_sensors(
+        path, formal_t0_ns=900_000_000, max_points=1000
+    )
+
+    assert len(series_list) == n_devices
+    for slot, series in enumerate(series_list):
+        assert series.channels == channels
+        assert series.sensor_labels == (labels[slot],)
+        assert series.values.shape == (per_device, len(channels))
+        assert not np.any(np.isnan(series.values))
+        assert series.values[0, 0] == float(slot * 1000)
+        # Each unit keeps its own real arrival timestamps on its own axis.
+        assert np.all(np.diff(series.time_s) > 0)
+        expected_time_s = (
+            np.arange(per_device, dtype=np.float64) * 0.03 + slot * 0.01
+        )
+        assert np.allclose(series.time_s, expected_time_s)
+
+
+def test_read_hdf5_imu_sensors_keeps_coupled_recording_on_one_axis(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "imu.h5"
+    n_devices = 3
+    columns = 12
+    channels = tuple(f"ch_{index + 1}" for index in range(columns))
+    count = 30
+    data = np.zeros((count, n_devices, columns), dtype=np.float32)
+
+    with Hdf5SignalWriter(
+        path,
+        channels=channels,
+        units=("a.u.",) * columns,
+        device_metadata={
+            "device_id": "imu_sim",
+            "device_ids": ["a", "b", "c"],
+        },
+        sample_shape=(n_devices, columns),
+        nominal_rate_hz=100.0,
+    ) as writer:
+        writer.append(
+            data,
+            sample_index=0,
+            host_monotonic_ns=np.arange(count, dtype=np.uint64) * 10_000_000
+            + 900_000_000,
+            device_time=np.arange(count, dtype=np.float64),
+        )
+
+    series_list = _read_hdf5_imu_sensors(
+        path, formal_t0_ns=900_000_000, max_points=1000
+    )
+
+    assert len(series_list) == 1
+    assert series_list[0].values.shape == (count, n_devices * columns)

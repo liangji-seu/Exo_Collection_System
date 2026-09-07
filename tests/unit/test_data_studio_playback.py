@@ -327,3 +327,48 @@ def test_missing_modalities_are_rendered_without_synthetic_curves() -> None:
     assert not dialog.findChildren(_SweepSignalPlot)
     dialog.close()
     app.processEvents()
+
+
+def test_playback_renders_decoupled_imu_per_sensor() -> None:
+    app = QApplication.instance() or QApplication(["test-decoupled-imu"])
+    base_channels = (
+        "acc_x", "acc_y", "acc_z",
+        "gyr_x", "gyr_y", "gyr_z",
+        "mag_x", "mag_y", "mag_z",
+        "roll", "pitch", "yaw",
+    )
+    labels = ("imu_left_leg", "imu_right_leg", "imu_pelvis")
+    sensors = []
+    for index, label in enumerate(labels):
+        time_s = np.arange(0.0, 12.0, 0.01, dtype=np.float64) + index * 1e-4
+        sensors.append(
+            SignalPlayback(
+                time_s=time_s,
+                values=np.zeros((time_s.size, 12), dtype=np.float32),
+                channels=base_channels,
+                units=("",) * 12,
+                sensor_labels=(label,),
+            )
+        )
+    playback = TrialPlayback(
+        manifest_path=Path("manifest.json"),
+        trial_uuid="00000000-0000-0000-0000-000000000002",
+        condition_code="WALK_LEVEL",
+        formal_t0_host_monotonic_ns=1,
+        ultrasound=None,
+        imu=None,
+        encoder=None,
+        sync=None,
+        sync_trigger_times_s=np.empty(0),
+        imu_sensors=tuple(sensors),
+    )
+
+    dialog = PlaybackDialog(playback)
+
+    # Decoupled IMU is the only modality: 3 sensors x 3 kinds appear in both
+    # the combined tab and the IMU tab, each sweep carrying 3 channels.
+    signals = dialog.findChildren(_SweepSignalPlot)
+    assert len(signals) == 18
+    assert all(len(plot._curves) == 3 for plot in signals)
+    dialog.close()
+    app.processEvents()
