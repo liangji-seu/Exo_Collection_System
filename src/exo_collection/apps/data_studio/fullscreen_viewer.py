@@ -14,6 +14,7 @@ sharing a single global timeline across every panel:
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from time import perf_counter
 
 import numpy as np
@@ -37,6 +38,8 @@ from .local_dialogs import (
     _encoder_side_groups,
     _imu_sensor_rows,
 )
+from .gait_baseline import build_hip_baseline
+from .opensim_overlay import HipValidation, load_hip_validation
 from .local_tools import MocapPlayback, TrialPlayback
 from .plots import TimeSeriesPlot
 
@@ -304,6 +307,12 @@ class FullscreenViewer(PreviewWorkspace):
         if playback.moment is not None and playback.moment.time_s.size:
             self.register_panel("moment", "力矩真值", self._build_moment_panel())
             self._panels.append(self.dock_for("moment").widget())
+        validation = load_hip_validation(self._trial_root())
+        if validation is not None:
+            self.register_panel(
+                "validation", "验证三联图", self._build_validation_panel(validation)
+            )
+            self._panels.append(self.dock_for("validation").widget())
         self.reset_default_layout()
 
     def _build_ultrasound_panel(self) -> QWidget:
@@ -404,13 +413,37 @@ class FullscreenViewer(PreviewWorkspace):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
 
+        # 右腿 IMU → 步态相位 → Winter 样条 baseline，叠加到力矩曲线旁作对比。
+        baseline = build_hip_baseline(self.playback)
+        values = np.asarray(moment.values)
+        channels = list(moment.channels)
+        baseline_index: int | None = None
+        if baseline is not None:
+            baseline_time, baseline_torque = baseline
+            resampled = np.full(moment.time_s.size, np.nan, dtype=np.float64)
+            in_range = (moment.time_s >= baseline_time.min()) & (
+                moment.time_s <= baseline_time.max()
+            )
+            if in_range.any():
+                resampled[in_range] = np.interp(
+                    moment.time_s[in_range], baseline_time, baseline_torque
+                )
+            values = np.column_stack([values, resampled])
+            channels.append("样条 baseline")
+            baseline_index = values.shape[1] - 1
+
         plot = TimeSeriesPlot(
             "髋关节力矩真值",
             moment.time_s,
-            np.asarray(moment.values),
-            moment.channels,
+            values,
+            tuple(channels),
             self._window_s,
         )
+        if baseline_index is not None:
+            plot.set_channel_pen(
+                baseline_index,
+                pg.mkPen("#6B7280", width=2.0, style=Qt.PenStyle.DashLine),
+            )
         self._panels.append(plot)
         layout.addWidget(plot, 1)
 
@@ -431,9 +464,50 @@ class FullscreenViewer(PreviewWorkspace):
                 lambda checked, i=index: plot.set_channel_visible(i, checked)
             )
             controls.addWidget(box)
+        if baseline_index is not None:
+            baseline_box = QCheckBox("样条 baseline")
+            baseline_box.setChecked(True)
+            baseline_box.toggled.connect(
+                lambda checked, i=baseline_index: plot.set_channel_visible(i, checked)
+            )
+            controls.addWidget(baseline_box)
         controls.addStretch(1)
         layout.addLayout(controls)
         return holder
+
+    def _build_validation_panel(self, validation: HipValidation) -> QWidget:
+        """右脚 Fz / 右髋屈曲角 / 右髋屈曲力矩三张子图，共用一条全局时间轴。
+
+        三个量尺度差异极大（0–900 N / −12–28° / −50–40 N·m），故各自独立 y 范围、
+        上下堆叠，仅共享 x（时间）游标，便于肉眼核对时序。
+        """
+        holder = QWidget()
+        layout = QVBoxLayout(holder)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+        rows = (
+            ("右脚竖直地面反力 Fz (N)", "Fz", validation.fz_r),
+            ("右髋屈曲角 hip_flexion_r (deg)", "hip angle", validation.hip_angle_r),
+            ("右髋屈曲力矩 hip_flexion_r (N·m)", "hip moment", validation.hip_moment_r),
+        )
+        for title, channel, signal in rows:
+            plot = TimeSeriesPlot(
+                title,
+                validation.time_s,
+                np.asarray(signal, dtype=np.float64).reshape(-1, 1),
+                (channel,),
+                self._window_s,
+            )
+            self._panels.append(plot)
+            layout.addWidget(plot, 1)
+        return holder
+
+    def _trial_root(self) -> Path:
+        """session 目录（``playback.manifest_path`` 可能位于 ``.exo/`` 下）。"""
+        root = Path(self.playback.manifest_path).parent
+        if root.name == ".exo":
+            root = root.parent
+        return root
 
     def _sweep_plots_append(self, plot: object) -> None:
         self._panels.append(plot)

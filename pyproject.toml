@@ -51,7 +51,7 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.package-data]
-exo_collection = ["catalog/migrations/**/*.py"]
+exo_collection = ["catalog/migrations/**/*.py", "apps/data_studio/data/*.csv"]
 
 [tool.pytest.ini_options]
 addopts = "-ra --strict-markers"

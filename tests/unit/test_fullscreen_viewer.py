@@ -272,6 +272,62 @@ def test_moment_panel_has_left_right_hip_toggles() -> None:
     app.processEvents()
 
 
+def test_moment_panel_adds_spline_baseline_with_right_imu() -> None:
+    app = QApplication.instance() or QApplication(["test-moment-baseline"])
+    n = 600
+    time_s = np.linspace(0.0, 6.0, n, dtype=np.float64)  # 6 s @ 100 Hz
+    moment = SignalPlayback(
+        time_s=time_s,
+        values=np.column_stack([np.sin(time_s), np.cos(time_s)]),
+        channels=("hip_flexion_r", "hip_flexion_l"),
+        units=("N·m", "N·m"),
+    )
+    # 右腿 IMU：干净的余弦 pitch，脚跟触地落在每个步距边界，能被相位估计稳定检出。
+    pitch = np.cos(2.0 * np.pi * (np.arange(n) % 100) / 100.0)
+    imu = SignalPlayback(
+        time_s=time_s,
+        values=pitch.reshape(-1, 1),
+        channels=("pitch",),
+        units=("deg",),
+        sensor_labels=("imu_right_leg",),
+    )
+    playback = TrialPlayback(
+        manifest_path=Path("manifest.json"),
+        trial_uuid="00000000-0000-0000-0000-000000000010",
+        condition_code="WALK_LEVEL",
+        formal_t0_host_monotonic_ns=0,
+        ultrasound=None,
+        imu=None,
+        encoder=None,
+        sync=None,
+        sync_trigger_times_s=np.empty(0),
+        imu_sensors=(imu,),
+        mocap=None,
+        moment=moment,
+    )
+
+    viewer = FullscreenViewer(playback)
+    panel = viewer.dock_for("moment").widget()
+
+    boxes = panel.findChildren(QCheckBox)
+    labels = {box.text(): box for box in boxes}
+    assert set(labels) == {"左髋", "右髋", "样条 baseline"}
+
+    plot = panel.findChild(TimeSeriesPlot)
+    assert plot is not None
+    assert len(plot._curves) == 3
+    # baseline 是追加的第 3 条通道（index 2），默认可见。
+    assert plot._curves[2].isVisible()
+
+    labels["样条 baseline"].setChecked(False)
+    assert not plot._curves[2].isVisible()
+    # 左/右髋仍然不受影响。
+    assert plot._curves[0].isVisible() and plot._curves[1].isVisible()
+
+    viewer.close()
+    app.processEvents()
+
+
 def test_mocap_canvas_fits_off_center_markers() -> None:
     app = QApplication.instance() or QApplication(["test-mocap-fit"])
     n_frames, n_markers = 3, 15

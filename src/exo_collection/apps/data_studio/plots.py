@@ -112,6 +112,11 @@ class TimeSeriesPlot(pg.PlotWidget):
         if 0 <= index < len(self._curves):
             self._curves[index].setVisible(visible)
 
+    def set_channel_pen(self, index: int, pen: object) -> None:
+        """覆盖第 ``index`` 条通道的画笔（如把 baseline 画成虚线）。"""
+        if 0 <= index < len(self._curves):
+            self._curves[index].setPen(pen)
+
     def set_time(self, current_s: float, cycle_start_s: float | None = None) -> None:
         """Advance the sweep cursor.
 
