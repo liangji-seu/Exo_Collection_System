@@ -113,7 +113,7 @@ def test_read_hdf5_mocap_downsamples_frames_without_aliasing(
 def test_read_moment_csv_parses_truth_sidecar(tmp_path: Path) -> None:
     path = tmp_path / "ground_truth.csv"
     path.write_text(
-        "time_s,knee_moment,ankle_moment\n"
+        "time_s,hip_flexion_r,hip_flexion_l\n"
         "0.0,1.0,2.0\n"
         "0.1,1.5,2.5\n"
         "0.2,2.0,3.0\n",
@@ -123,10 +123,47 @@ def test_read_moment_csv_parses_truth_sidecar(tmp_path: Path) -> None:
     moment = _read_moment_csv(path)
 
     assert moment is not None
-    assert moment.channels == ("knee_moment", "ankle_moment")
+    assert moment.channels == ("hip_flexion_r", "hip_flexion_l")
     assert moment.units == ("N·m", "N·m")
     np.testing.assert_allclose(moment.time_s, [0.0, 0.1, 0.2])
     np.testing.assert_allclose(moment.values, [[1.0, 2.0], [1.5, 2.5], [2.0, 3.0]])
+
+
+def test_read_moment_csv_keeps_only_hip_moments(tmp_path: Path) -> None:
+    # ground_truth.csv 的表头是 time_s + 12 个 imu_* 特征 + 6 个关节力矩列；力矩
+    # 真值面板只保留两个髋关节力矩，IMU 特征与膝/踝力矩都不展示。
+    path = tmp_path / "ground_truth.csv"
+    path.write_text(
+        "time_s,imu_acc_x,imu_acc_y,hip_flexion_r,hip_flexion_l,knee_angle_r\n"
+        "0.0,1.0,2.0,3.0,4.0,5.0\n"
+        "0.1,1.1,2.1,3.1,4.1,5.1\n",
+        encoding="utf-8-sig",
+    )
+
+    moment = _read_moment_csv(path)
+
+    assert moment is not None
+    assert moment.channels == ("hip_flexion_r", "hip_flexion_l")
+    np.testing.assert_allclose(moment.values, [[3.0, 4.0], [3.1, 4.1]])
+
+
+def test_read_moment_csv_returns_none_when_only_imu_columns(tmp_path: Path) -> None:
+    path = tmp_path / "ground_truth.csv"
+    path.write_text(
+        "time_s,imu_acc_x,imu_acc_y,imu_acc_z\n0.0,1.0,2.0,3.0\n",
+        encoding="utf-8-sig",
+    )
+    assert _read_moment_csv(path) is None
+
+
+def test_read_moment_csv_returns_none_without_hip_columns(tmp_path: Path) -> None:
+    # 只有膝/踝力矩、没有髋关节力矩时，力矩真值面板无可展示内容。
+    path = tmp_path / "ground_truth.csv"
+    path.write_text(
+        "time_s,knee_angle_r,knee_angle_l,ankle_angle_r\n0.0,1.0,2.0,3.0\n",
+        encoding="utf-8-sig",
+    )
+    assert _read_moment_csv(path) is None
 
 
 def test_read_moment_csv_returns_none_when_absent_or_malformed(tmp_path: Path) -> None:

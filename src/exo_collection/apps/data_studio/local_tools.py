@@ -757,7 +757,7 @@ def _read_moment_csv(path: Path) -> SignalPlayback | None:
     header = records[0]
     if not header or header[0].strip().casefold() not in {"time_s", "time", "t"}:
         return None
-    channels = tuple(str(name).strip() for name in header[1:]) or ("moment",)
+    raw_channels = tuple(str(name).strip() for name in header[1:])
     try:
         matrix = np.asarray(
             [[float(cell) for cell in row] for row in records[1:]],
@@ -769,6 +769,19 @@ def _read_moment_csv(path: Path) -> SignalPlayback | None:
         return None
     time_s = matrix[:, 0]
     values = matrix[:, 1:]
+    # ground_truth.csv 的表头为 time_s + 12 个 imu_* 特征列 + 6 个关节力矩列
+    # （hip_flexion_r/l、knee_angle_r/l、ankle_angle_r/l）。力矩真值面板只展示两个
+    # 髋关节力矩（IMU 特征另有独立面板，来自 imu.h5；膝/踝力矩暂不展示），故剔除
+    # imu_ 特征列并只保留 hip 列。
+    keep = [
+        index
+        for index, name in enumerate(raw_channels)
+        if not name.casefold().startswith("imu_") and "hip" in name.casefold()
+    ]
+    if not keep:
+        return None
+    channels = tuple(raw_channels[index] for index in keep)
+    values = values[:, keep]
     return SignalPlayback(
         time_s=np.asarray(time_s, dtype=np.float64),
         values=np.asarray(values, dtype=np.float64),

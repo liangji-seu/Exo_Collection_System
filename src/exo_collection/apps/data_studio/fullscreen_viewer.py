@@ -402,7 +402,7 @@ class FullscreenViewer(PreviewWorkspace):
         layout = QVBoxLayout(holder)
         layout.setContentsMargins(0, 0, 0, 0)
         plot = TimeSeriesPlot(
-            "关节力矩真值",
+            "髋关节力矩真值",
             moment.time_s,
             np.asarray(moment.values),
             moment.channels,
