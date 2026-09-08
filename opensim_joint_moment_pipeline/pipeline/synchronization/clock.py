@@ -102,11 +102,20 @@ def imu_sensor_on_c3d_time(
 
     返回 ``(time_s, signal)``，``time_s = (host_monotonic_ns - c3d_t0_host_ns)/1e9``，
     ``signal`` 为 ``samples/data[:, sensor_index, axis_slice]``。
+
+    ``imu.h5`` 的 ``samples/data`` 按「包」存储：一行只属于一个传感器，其它传感器
+    在该行为 NaN（``metadata/device.alignment_mode`` 为 ``none_independent_streams``）。
+    因此取完单个传感器后要丢弃本传感器为 NaN 的行，否则会把其它传感器的空档当成
+    缺帧，后续插值产生大面积 NaN。
     """
     host_ns = read_host_monotonic_ns(imu_handle)
     time_s = (host_ns - int(c3d_t0_host_ns)) / 1e9
-    signal = imu_handle["samples/data"][:, sensor_index, axis_slice]
-    return time_s, np.asarray(signal, dtype=np.float64)
+    signal = np.asarray(
+        imu_handle["samples/data"][:, sensor_index, axis_slice], dtype=np.float64
+    )
+    # 丢弃本传感器为 NaN 的行（这些行属于其它传感器的数据包）。
+    valid = ~np.isnan(signal).any(axis=1)
+    return time_s[valid], signal[valid]
 
 
 def imu_sample_rate_hz(time_s: np.ndarray) -> float:
