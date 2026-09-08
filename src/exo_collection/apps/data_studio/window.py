@@ -56,6 +56,7 @@ from .data_view import DataViewWidget
 from .external_import_dialog import ExternalImportDialog
 from .external_import_worker import ExternalImportWorker
 from .fullscreen_viewer import FullscreenViewer
+from .global_preview import GlobalPreviewWindow, read_truth_preview
 from .local_dialogs import (
     ChecksumDialog,
     FullStatisticsDialog,
@@ -261,6 +262,7 @@ class DataStudioWindow(QMainWindow):
         self._active_upload: _UploadTaskContext | None = None
         self._result_dialogs: list[QDialog] = []
         self._fullscreen_viewers: list[FullscreenViewer] = []
+        self._global_preview_windows: list[GlobalPreviewWindow] = []
         self._closing = False
         self._shutdown_retry_pending = False
         self._close_started_at: float | None = None
@@ -398,6 +400,13 @@ class DataStudioWindow(QMainWindow):
         self.visualize_button.setToolTip("选中 Session 后全屏展示全部模态。")
         self.visualize_button.clicked.connect(self.playback_selected_trial)
         root_row.addWidget(self.visualize_button)
+        self.global_preview_button = QPushButton("全局预览")
+        self.global_preview_button.setObjectName("global_preview_selected")
+        self.global_preview_button.setToolTip(
+            "完整时间轴的真值全貌：髋关节力矩（左右可屏蔽）+ IMU 姿态角。"
+        )
+        self.global_preview_button.clicked.connect(self.global_preview_selected_trial)
+        root_row.addWidget(self.global_preview_button)
         self.lock_subject_button = QPushButton("锁定受试者")
         self.lock_subject_button.setObjectName("lock_subject")
         self.lock_subject_button.setEnabled(False)
@@ -1449,6 +1458,44 @@ class DataStudioWindow(QMainWindow):
             data_root=str(self._data_root),
         )
         _log.info("回放子进程已启动，等待结果…")
+
+    def global_preview_selected_trial(self) -> None:
+        """对选中 Trial 打开「全局预览」：整条时间轴的髋力矩 + IMU 姿态真值。"""
+        manifest_path = self._selected_finalized_manifest_path()
+        if manifest_path is None:
+            return
+        session_dir = manifest_path.parent
+        if session_dir.name == ".exo":
+            session_dir = session_dir.parent
+        gt_path = session_dir / "ground_truth.csv"
+        if not gt_path.is_file():
+            QMessageBox.information(
+                self,
+                "暂无真值",
+                "该 session 尚未解算，没有 ground_truth.csv。\n请先在 run_process 中解算该 session。",
+            )
+            return
+        preview = read_truth_preview(gt_path)
+        if preview is None:
+            QMessageBox.warning(
+                self, "无法解析真值", f"ground_truth.csv 解析失败：\n{gt_path}"
+            )
+            return
+        item = self.tree_widget.currentItem()
+        title = item.text(0) if item is not None else session_dir.name
+        window = GlobalPreviewWindow(preview, title, self)
+        self._global_preview_windows.append(window)
+        window.destroyed.connect(
+            lambda _obj=None, w=window: self._forget_global_preview(w)
+        )
+        window.show()
+        window.showMaximized()
+        window.raise_()
+        window.activateWindow()
+
+    def _forget_global_preview(self, window: GlobalPreviewWindow) -> None:
+        if window in self._global_preview_windows:
+            self._global_preview_windows.remove(window)
 
     @Slot()
     def run_full_statistics(self) -> None:
@@ -2580,6 +2627,9 @@ class DataStudioWindow(QMainWindow):
             root_controls_enabled and not self._lightweight_mode and bool(self._catalog_tree)
         )
         self.visualize_button.setEnabled(
+            root_controls_enabled and not self._lightweight_mode and bool(self._catalog_tree)
+        )
+        self.global_preview_button.setEnabled(
             root_controls_enabled and not self._lightweight_mode and bool(self._catalog_tree)
         )
         self.download_button.setEnabled(
