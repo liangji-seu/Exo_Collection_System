@@ -249,6 +249,9 @@ HEALTH_FAULT_STREAK_THRESHOLD = 3
 # 避免「有线 MTw 偶发丢 1 个包（100 Hz 下 10 ms 间隙）」就作废整段采集。
 HEALTH_DROP_RATE_FATAL = 0.01
 HEALTH_DROP_COUNT_FATAL_MIN = 10
+# 数据中断判致命的「无新数据」时长下限：连续超过该秒数未收到新数据才判
+# 「数据中断」（再经 HEALTH_FAULT_STREAK_THRESHOLD 次防抖后才作废）。
+HEALTH_DATA_STALE_AFTER_S = 3.0
 
 PROJECTS: tuple[dict[str, str], ...] = tuple(
     dict(project) for project in COLLECTOR_PROJECTS
@@ -3759,11 +3762,11 @@ class CollectorWindow(QMainWindow):
         nominal_rate = payload.get("nominal_sample_rate_hz")
         try:
             stale_after_s = max(
-                2.0,
+                HEALTH_DATA_STALE_AFTER_S,
                 20.0 / max(float(nominal_rate or 0.0), 1e-9),
             )
         except (TypeError, ValueError):
-            stale_after_s = 2.0
+            stale_after_s = HEALTH_DATA_STALE_AFTER_S
         if data_age_s is not None and data_age_s > stale_after_s:
             return (
                 "数据中断",

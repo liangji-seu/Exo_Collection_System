@@ -2875,11 +2875,22 @@ def test_connection_lamp_combines_connection_data_and_health_states(
     assert state == "数据异常"
     assert "丢包率过高" in str(reason)
 
+    # 无新数据时长低于阈值（旧版 2.0s 会误判）时保持「数据正常」。
     state, reason, _age = window._classify_preview_health(
         {
             **common,
             "last_data_host_monotonic_ns": (
-                time.perf_counter_ns() - 3_000_000_000
+                time.perf_counter_ns() - 2_500_000_000
+            ),
+        }
+    )
+    assert state == "数据正常"
+
+    state, reason, _age = window._classify_preview_health(
+        {
+            **common,
+            "last_data_host_monotonic_ns": (
+                time.perf_counter_ns() - 5_000_000_000
             ),
         }
     )
