@@ -3280,6 +3280,11 @@ class CollectorWindow(QMainWindow):
                 # force_plate 在硬件模式下由 _connect_modality 路由到远程触发，
                 # 动捕 marker 则正常 spawn SDK 预览 worker。
                 self._connect_modality(modality)
+            # 动捕行在硬件模式下还需联动 XINGYING 远程触发（.cap 录制通道）：
+            # 否则「全部连接」只 spawn 了 mocap SDK 预览 worker，7060/7061 触发
+            # 通道未建立，后续 Trial 的 .cap 录制会被静默跳过。
+            if self._xingying_linked_enabled() and "mocap" in available:
+                self._connect_xingying_remote()
 
     def _update_connect_button_state(self) -> None:
         """Update connect-all toggle and per-row buttons."""
@@ -3930,6 +3935,29 @@ class CollectorWindow(QMainWindow):
             )
             self._update_start_button()
             return
+
+        # 防呆：硬件模式下 mocap SDK 已连但 XINGYING 远程触发未连时，动捕 .cap
+        # 不会被录制，主动提示操作员确认，避免静默丢动捕数据。
+        if (
+            self._xingying_linked_enabled()
+            and "mocap" in self._preview_connected_modalities
+            and self._xingying_remote is None
+        ):
+            answer = QMessageBox.question(
+                self,
+                "XINGYING 远程触发未连接",
+                "动捕 marker 预览已连接，但 XINGYING 远程触发（7060/7061）未连接，"
+                "本次采集将不会触发 XINGYING 录制 .cap 动捕数据。\n\n"
+                "是否仍要继续采集？（点「否」请先连接 XINGYING 远程触发）",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer == QMessageBox.No:
+                self.statusBar().showMessage(
+                    "已取消采集：请先连接 XINGYING 远程触发。"
+                )
+                self._update_start_button()
+                return
 
         # The already-running preview processes own the hardware Adapters.
         # Recording attaches to their raw IPC endpoints without stopping or
