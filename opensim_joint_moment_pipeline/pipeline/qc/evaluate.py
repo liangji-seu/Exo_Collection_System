@@ -58,6 +58,11 @@ MARKER_ADJUST_REMIND_MM = 30.0
 MARKER_ADJUST_WARN_MM = 50.0
 MARKER_ADJUST_FAIL_MM = 80.0
 
+# HH19 markers with a relatively free placement on a segment. Their distance
+# from a generic model's guessed location is a placement diagnostic, not a
+# direct measure of anatomical landmark error.
+TECHNICAL_MARKERS = frozenset({"L.Thigh", "R.Thigh", "L.Shank", "R.Shank"})
+
 _G = 9.80665
 
 # 判定优先级：FAIL > WARN > PASS > INFO（INFO 不影响结论）
@@ -247,8 +252,10 @@ def grade_marker_adjustments(refinement: dict[str, Any] | None) -> dict[str, Any
         norm = float(norm)
         if max_norm is None or norm > max_norm:
             max_norm = norm
-        if norm > MARKER_ADJUST_FAIL_MM:
+        if norm > MARKER_ADJUST_FAIL_MM and name not in TECHNICAL_MARKERS:
             grade, n_block = "BLOCK", n_block + 1
+        elif norm > MARKER_ADJUST_FAIL_MM:
+            grade, n_warn = "WARN", n_warn + 1
         elif norm > MARKER_ADJUST_WARN_MM:
             grade, n_warn = "WARN", n_warn + 1
         elif norm >= MARKER_ADJUST_REMIND_MM:
@@ -278,7 +285,8 @@ def _marker_adjustment_checks(
 ) -> list[dict[str, Any]]:
     """静态 marker 调整分级 → QC 检查（prompt6 §3.6）。
 
-    >80mm 默认阻止（FAIL）；专家确认后降为 WARN，绝不 PASS。
+    技术跟踪点（Thigh/Shank）的 >80mm 仅提示；解剖 marker 的 >80mm
+    默认阻止（FAIL），专家确认后降为 WARN。
     """
     if not adjustment:
         return [_check("marker_adjustment", "静态 marker 调整", None, "INFO", "",
@@ -286,11 +294,19 @@ def _marker_adjustment_checks(
     max_norm = adjustment.get("max_adjustment_norm_mm")
     n_block = int(adjustment.get("n_block") or 0)
     n_warn = int(adjustment.get("n_warn") or 0)
-    offenders = ", ".join(
+    anatomical_offenders = ", ".join(
         f"{m['marker']} {m['adjustment_norm_mm']}mm"
         for m in adjustment.get("markers", [])
         if m.get("adjustment_norm_mm", 0) > MARKER_ADJUST_WARN_MM
+        and m.get("marker") not in TECHNICAL_MARKERS
     ) or "无"
+    technical_offenders = ", ".join(
+        f"{m['marker']} {m['adjustment_norm_mm']}mm"
+        for m in adjustment.get("markers", [])
+        if m.get("adjustment_norm_mm", 0) > MARKER_ADJUST_WARN_MM
+        and m.get("marker") in TECHNICAL_MARKERS
+    ) or "无"
+    offenders = anatomical_offenders
 
     # The first-pass displacement is measured from the generic model's guessed
     # marker locations.  It is not a tracking error and is expected to be large
@@ -309,12 +325,12 @@ def _marker_adjustment_checks(
     elif n_block > 0:
         status, detail = "WARN", f"调整 >{MARKER_ADJUST_FAIL_MM:.0f}mm（{offenders}），专家已确认"
     elif n_warn > 0:
-        status, detail = "WARN", f"调整 >{MARKER_ADJUST_WARN_MM:.0f}mm（{offenders}），检查贴点/名称/body归属"
+        status, detail = "WARN", f"技术点/解剖点调整偏大；技术点 {technical_offenders}；需检查的解剖点 {anatomical_offenders}"
     else:
         status, detail = "PASS", f"最大调整 {max_norm}mm"
     return [_check(
         "marker_adjustment", "静态 marker 调整", max_norm, status, "mm",
-        f"≤{MARKER_ADJUST_WARN_MM:.0f} 正常，>{MARKER_ADJUST_FAIL_MM:.0f} 阻止",
+        f"解剖点 ≤{MARKER_ADJUST_WARN_MM:.0f} 正常，>{MARKER_ADJUST_FAIL_MM:.0f} 需检查；技术点仅提示",
         detail,
     )]
 
