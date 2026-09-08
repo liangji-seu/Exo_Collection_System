@@ -82,6 +82,19 @@ def test_qc_marker_bands() -> None:
     assert _run(marker_qc_overall={"rms_mean_cm": 5.0})["status"] == "FAIL"
 
 
+def test_large_generic_marker_relocation_is_warning_when_dynamic_fit_passes() -> None:
+    adjustment = {
+        "max_adjustment_norm_mm": 120.0,
+        "n_block": 1,
+        "n_warn": 0,
+        "markers": [{"marker": "L.Shank", "adjustment_norm_mm": 120.0}],
+    }
+    verdict = _run(marker_adjustment=adjustment)
+    assert verdict["status"] == "WARN"
+    marker_check = next(c for c in verdict["checks"] if c["key"] == "marker_adjustment")
+    assert marker_check["status"] == "WARN"
+
+
 def test_qc_residual_bands() -> None:
     # BW = 80 * 9.80665 ≈ 784.5 N；130 N ≈ 16.6% → WARN，300 N ≈ 38% → FAIL。
     assert _run(id_qc=_id_qc(130.0))["status"] == "WARN"
