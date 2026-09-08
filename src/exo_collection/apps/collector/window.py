@@ -4969,6 +4969,12 @@ class CollectorWindow(QMainWindow):
         self.state_label.setStyleSheet(
             f"QLabel {{{colors}padding:6px;border-radius:3px;font-weight:600;}}"
         )
+        # 写盘期间顶部五模态方块整体切换为醒目的「录制红」，与单模态故障红区分。
+        if self._status_overview is not None:
+            self._status_overview.set_recording(
+                normalized
+                in {"RECORDING", "WAITING_SYNC", "PREPARING", "READY", "STOPPING"}
+            )
 
     def _append_alert(self, message: str) -> None:
         upper_message = message.upper()

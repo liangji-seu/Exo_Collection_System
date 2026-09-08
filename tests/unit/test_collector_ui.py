@@ -2961,6 +2961,44 @@ def test_status_overview_blocks_reflect_modality_state(tmp_path: Path) -> None:
     window.close()
 
 
+def test_status_overview_recording_override_distinct_red() -> None:
+    """写盘期间方块整体变「录制红」，结束后恢复各自状态，且与故障红区分。"""
+    QApplication.instance() or QApplication(["test-exo-collector"])
+    strip = ModalityStatusStrip({"imu": "IMU", "encoder": "电机编码器"})
+
+    strip.set_state("imu", "ok", "正常采集")
+    strip.set_state("encoder", "bad", "数据中断")
+
+    strip.set_recording(True)
+    for modality in ("imu", "encoder"):
+        stylesheet = strip._blocks[modality].styleSheet()
+        assert "#dc2626" in stylesheet
+        assert "#a53f3f" not in stylesheet
+        assert "#0f766e" not in stylesheet
+        assert "正在写入" in strip._blocks[modality].text()
+
+    strip.set_recording(False)
+    assert "#0f766e" in strip._blocks["imu"].styleSheet()
+    assert "#a53f3f" in strip._blocks["encoder"].styleSheet()
+    assert strip._last["imu"] == ("ok", "正常采集")
+
+
+def test_window_recording_state_drives_overview(tmp_path: Path) -> None:
+    """进入 RECORDING 时五方块进入录制红，回到 IDLE 时恢复。"""
+    _app, window, _created = _window_with_fake(tmp_path)
+    overview = window._status_overview
+    assert overview is not None
+
+    window._set_trial_state("RECORDING")
+    assert overview._recording is True
+    assert "#dc2626" in overview._blocks["imu"].styleSheet()
+
+    window._set_trial_state("IDLE")
+    assert overview._recording is False
+
+    window.close()
+
+
 def test_health_table_has_modalities_and_prompt_label_counters(tmp_path: Path) -> None:
     """Compact table includes both keyboard-label counters."""
     _app, window, _created = _window_with_fake(tmp_path)
