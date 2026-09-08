@@ -405,6 +405,20 @@ class DataStudioWindow(QMainWindow):
         )
         self.lock_subject_button.clicked.connect(self.toggle_subject_lock)
         root_row.addWidget(self.lock_subject_button)
+        self.sync_mocap_button = QPushButton("同步动捕")
+        self.sync_mocap_button.setObjectName("sync_mocap_data")
+        self.sync_mocap_button.setToolTip(
+            "从所选扫描文件夹递归拷贝匹配的 .c3d 到各 Session 文件夹，补齐动捕同步数据。"
+        )
+        self.sync_mocap_button.clicked.connect(self.sync_mocap_data)
+        root_row.addWidget(self.sync_mocap_button)
+        self.sync_force_plate_button = QPushButton("同步测力台")
+        self.sync_force_plate_button.setObjectName("sync_force_plate_data")
+        self.sync_force_plate_button.setToolTip(
+            "从所选扫描文件夹递归拷贝匹配的 .txt 到各 Session 文件夹，补齐测力台同步数据。"
+        )
+        self.sync_force_plate_button.clicked.connect(self.sync_force_plate_data)
+        root_row.addWidget(self.sync_force_plate_button)
         # 保留但不在精简界面展示的入口（供 _apply_activity 等内部方法引用）。
         self.one_click_upload_button = QPushButton("一键上传")
         self.one_click_upload_button.setObjectName("one_click_upload")
@@ -2528,6 +2542,12 @@ class DataStudioWindow(QMainWindow):
         )
         self.download_button.setEnabled(
             root_controls_enabled and not self._lightweight_mode
+        )
+        self.sync_mocap_button.setEnabled(
+            root_controls_enabled and not self._lightweight_mode and bool(self._catalog_tree)
+        )
+        self.sync_force_plate_button.setEnabled(
+            root_controls_enabled and not self._lightweight_mode and bool(self._catalog_tree)
         )
 
     @Slot()

@@ -319,6 +319,37 @@ def test_saved_password_builds_direct_remote_request_without_dialog(
     window.close()
 
 
+def test_sync_mocap_and_force_plate_buttons_route_to_sidecar_import(
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
+    app = QApplication.instance() or QApplication(["test-sync-sidecar-buttons"])
+    window = DataStudioWindow(tmp_path, autostart_refresh=False)
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        window,
+        "_pick_and_sync_sidecar",
+        lambda extension, title: calls.append((extension, title)),
+    )
+
+    assert window.sync_mocap_button.text() == "同步动捕"
+    assert window.sync_force_plate_button.text() == "同步测力台"
+    assert window.sync_mocap_button.objectName() == "sync_mocap_data"
+    assert window.sync_force_plate_button.objectName() == "sync_force_plate_data"
+
+    # 无 Catalog 时按钮禁用；给一个非空树后按钮启用，点击应路由到同步导入。
+    window._catalog_tree = [{"type": "project", "children": []}]
+    window._apply_activity(None)
+    assert window.sync_mocap_button.isEnabled()
+    assert window.sync_force_plate_button.isEnabled()
+
+    window.sync_mocap_button.click()
+    window.sync_force_plate_button.click()
+    assert calls == [(".c3d", "同步动捕数据"), (".txt", "同步测力台数据")]
+    window.close()
+    app.processEvents()
+
+
 def test_snapshot_scans_only_published_manifests_and_never_artifacts(
     tmp_path: Path, monkeypatch: object
 ) -> None:
