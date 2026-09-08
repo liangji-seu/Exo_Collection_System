@@ -242,6 +242,14 @@ _ENCODER_SHARED_Y_RANGE = (-13.0, 13.0)
 DEFAULT_OPERATOR = "not_recorded"
 DEFAULT_CONTROLLED_STOP_TIMEOUT_S = 30.0
 
+# 录制中健康异常 → 致命中止的防抖：连续 N 次健康轮询（约 0.5s/次）都报
+# 「数据中断/数据异常」才作废当前 Trial；单次瞬时抖动只告警、不作废。
+HEALTH_FAULT_STREAK_THRESHOLD = 3
+# IMU 丢包判致命的阈值：累计丢包率超过该比例、且绝对数达到下限时才判异常，
+# 避免「有线 MTw 偶发丢 1 个包（100 Hz 下 10 ms 间隙）」就作废整段采集。
+HEALTH_DROP_RATE_FATAL = 0.01
+HEALTH_DROP_COUNT_FATAL_MIN = 10
+
 PROJECTS: tuple[dict[str, str], ...] = tuple(
     dict(project) for project in COLLECTOR_PROJECTS
 )
@@ -1178,6 +1186,8 @@ class CollectorWindow(QMainWindow):
         # 每个模态最近一次健康分类结果（"数据正常"/"数据中断"/"数据异常" 等），
         # 供「开始写盘前检查」与「录制中数据中断」判定使用。
         self._preview_data_state: dict[str, str] = {}
+        # 「数据中断/数据异常」连续次数（防抖），见 _handle_preview_health。
+        self._preview_fault_streak: dict[str, int] = {}
         self._preview_disconnect_deadlines: dict[str, float] = {}
         self._recording_preview_handles: dict[str, ModalityPreviewHandle] = {}
         self._recording_streams_ended = False
@@ -3610,12 +3620,35 @@ class CollectorWindow(QMainWindow):
         indicator_status, indicator_reason, data_age_s = (
             self._classify_preview_health(payload)
         )
+        previous_indicator = self._preview_data_state.get(modality)
         self._preview_data_state[modality] = indicator_status
+        # 数据中断/恢复的状态沿变化记录到日志，便于定位周期性断流（无论是否在录制）。
+        if indicator_status != previous_indicator:
+            if indicator_status == "数据中断":
+                LOG.warning(
+                    "UI: %s 数据中断：%s（距最近数据 %.2f s）",
+                    modality, indicator_reason or "", data_age_s or 0.0,
+                )
+            elif previous_indicator == "数据中断" and indicator_status == "数据正常":
+                LOG.info("UI: %s 数据已恢复（重新收到新数据）", modality)
+        # 健康异常 → 致命中止的防抖：真正的「故障」（adapter 报错）立即作废；
+        # 「数据中断/数据异常」需连续 HEALTH_FAULT_STREAK_THRESHOLD 次健康轮询
+        # 都异常才作废，瞬时抖动（如写盘边界的一过性停顿）只告警、给数据流恢复机会。
+        faulty = indicator_status in {"故障", "数据中断", "数据异常"}
+        if faulty:
+            streak = self._preview_fault_streak.get(modality, 0) + 1
+        else:
+            streak = 0
+        self._preview_fault_streak[modality] = streak
+
         if (
-            indicator_status in {"故障", "数据中断", "数据异常"}
-            and self._active_trial_uuid is not None
+            self._active_trial_uuid is not None
             and self._active_request is not None
             and modality in self._active_request.enabled_modalities
+            and (
+                indicator_status == "故障"
+                or (faulty and streak >= HEALTH_FAULT_STREAK_THRESHOLD)
+            )
         ):
             self._abort_recording_for_modality(
                 modality, indicator_reason or indicator_status
@@ -3755,11 +3788,19 @@ class CollectorWindow(QMainWindow):
                 data_age_s,
             )
         if dropped_packets > 0:
-            return (
-                "数据异常",
-                f"已检测到 {dropped_packets} 个丢包",
-                data_age_s,
-            )
+            # 有线设备偶发丢 1 个包（如 MTw 100 Hz 下的 10 ms 间隙）不致命；
+            # 只有累计丢包率超过阈值且绝对数足够时才判「数据异常」。
+            drop_rate = dropped_packets / max(sample_count, 1)
+            if (
+                drop_rate > HEALTH_DROP_RATE_FATAL
+                and dropped_packets >= HEALTH_DROP_COUNT_FATAL_MIN
+            ):
+                return (
+                    "数据异常",
+                    f"丢包率过高（{drop_rate:.1%}，累计 {dropped_packets} 个）",
+                    data_age_s,
+                )
+            # 低于阈值：保持「数据正常」，累计丢包数仍在健康表「累计丢包」列可见。
         if queue_fill >= 0.8:
             return (
                 "数据异常",
@@ -4094,6 +4135,7 @@ class CollectorWindow(QMainWindow):
         # recording is not a device-stream boundary and must be visually
         # imperceptible apart from the Trial state controls.
         self._last_health_status.clear()
+        self._preview_fault_streak.clear()
         self._prompt_label_counts = {
             PromptLabelSource.SUBJECT: 0,
             PromptLabelSource.OPERATOR: 0,

@@ -2862,11 +2862,18 @@ def test_connection_lamp_combines_connection_data_and_health_states(
     assert state == "已连接，等待数据"
     assert reason is None
 
+    # 偶发少量丢包（丢包率/绝对数低于阈值）不判致命，保持「数据正常」。
     state, reason, _age = window._classify_preview_health(
         {**common, "dropped_packets": 2}
     )
+    assert state == "数据正常"
+
+    # 累计丢包率超过阈值且绝对数足够时才判「数据异常」。
+    state, reason, _age = window._classify_preview_health(
+        {**common, "dropped_packets": 20, "sample_count": 1000}
+    )
     assert state == "数据异常"
-    assert "2 个丢包" in str(reason)
+    assert "丢包率过高" in str(reason)
 
     state, reason, _age = window._classify_preview_health(
         {
