@@ -491,6 +491,13 @@ def _preview_runner_target(
                         ),
                         "message": health.message,
                         "sampled_at_utc": health.sampled_at_utc.isoformat(),
+                        "marker_count": health.metrics.get("marker_count"),
+                        "marker_missing_count": health.metrics.get(
+                            "marker_missing_count"
+                        ),
+                        "marker_missing_streak_s": health.metrics.get(
+                            "marker_missing_streak_s"
+                        ),
                     },
                 )
 

@@ -2999,6 +2999,106 @@ def test_window_recording_state_drives_overview(tmp_path: Path) -> None:
     window.close()
 
 
+def test_static_calibration_marker_fault_classification(tmp_path: Path) -> None:
+    """静态标定工况识别 + 动捕 marker 持续缺失阈值判定。"""
+    _app, window, _created = _window_with_fake(tmp_path)
+
+    # 无活动 Trial 时不判定。
+    assert window._is_static_calibration_active() is False
+    assert (
+        window._static_calibration_marker_fault(
+            "mocap", {"marker_missing_streak_s": 5.0}
+        )
+        is None
+    )
+
+    # 活动 Trial 为静态标定（按 condition_code）。
+    window._active_request = TrialRunRequest(
+        data_root=tmp_path,
+        condition_code="STATIC_CALIB",
+        enabled_modalities=frozenset(MODALITIES),
+    )
+    assert window._is_static_calibration_active() is True
+
+    # 非 mocap 模态、未超阈值均不触发。
+    assert (
+        window._static_calibration_marker_fault(
+            "imu", {"marker_missing_streak_s": 5.0}
+        )
+        is None
+    )
+    assert (
+        window._static_calibration_marker_fault(
+            "mocap", {"marker_missing_streak_s": 2.0}
+        )
+        is None
+    )
+
+    # 超阈值触发，并给出缺失点数与时长。
+    reason = window._static_calibration_marker_fault(
+        "mocap", {"marker_missing_streak_s": 5.0, "marker_missing_count": 1}
+    )
+    assert reason is not None
+    assert "5.0 s" in reason and "缺失 1 点" in reason
+
+    # 也按 category 识别静态标定。
+    window._active_request = TrialRunRequest(
+        data_root=tmp_path,
+        condition_code="CUSTOM",
+        condition_parameters={"category": "test_static_calibration"},
+        enabled_modalities=frozenset(MODALITIES),
+    )
+    assert window._is_static_calibration_active() is True
+
+    # 非静态标定工况不触发。
+    window._active_request = TrialRunRequest(
+        data_root=tmp_path,
+        condition_code="WALK_1P0_EXO",
+        enabled_modalities=frozenset(MODALITIES),
+    )
+    assert window._is_static_calibration_active() is False
+    assert (
+        window._static_calibration_marker_fault(
+            "mocap", {"marker_missing_streak_s": 5.0}
+        )
+        is None
+    )
+
+    window.close()
+
+
+def test_static_calibration_marker_missing_aborts_trial(tmp_path: Path) -> None:
+    """静态标定下动捕 marker 持续缺失会作废 Trial。"""
+    _app, window, _created = _window_with_fake(tmp_path)
+    window._active_request = TrialRunRequest(
+        data_root=tmp_path,
+        condition_code="STATIC_CALIB",
+        enabled_modalities=frozenset(MODALITIES),
+    )
+    window._active_trial_uuid = str(uuid4())
+
+    event = WorkerEvent(
+        event_type=WorkerEventType.HEALTH,
+        modality="mocap",
+        payload={
+            "device_id": "mocap_sim",
+            "status": "HEALTHY",
+            "health_status": "HEALTHY",
+            "connected": True,
+            "sample_count": 100,
+            "dropped_packets": 0,
+            "marker_missing_streak_s": 5.0,
+            "marker_missing_count": 1,
+        },
+    )
+    window._handle_preview_health(event, "mocap")
+
+    assert window._recording_branch_fault is not None
+    assert "静态标定" in window._recording_branch_fault
+    assert "mocap" in window._recording_branch_fault
+    window.close()
+
+
 def test_health_table_has_modalities_and_prompt_label_counters(tmp_path: Path) -> None:
     """Compact table includes both keyboard-label counters."""
     _app, window, _created = _window_with_fake(tmp_path)

@@ -85,6 +85,82 @@ def test_mocap_adapter_copies_marker_sets_into_fixed_sample_geometry() -> None:
     adapter.close()
 
 
+def test_mocap_adapter_tracks_sustained_missing_markers() -> None:
+    """缺失 marker（超大占位坐标）的持续时长被计入健康指标。"""
+    backend = _FakeBackend(
+        {
+            "frame_rate_hz": 100.0,
+            "marker_names": ["leg/hip", "leg/knee", "foot/heel"],
+            "marker_sets": [
+                {"name": "leg", "marker_names": ["hip", "knee"]},
+                {"name": "foot", "marker_names": ["heel"]},
+            ],
+        }
+    )
+    adapter = XingNokovMocapAdapter(backend=backend)
+    _start(adapter)
+
+    present = np.asarray([[1, 2, 3], [4, 5, 6]], dtype=np.float32)
+    missing_heel = np.asarray(
+        [[99999999.0, 99999999.0, 99999999.0]], dtype=np.float32
+    )
+    recovered_heel = np.asarray([[7, 8, 9]], dtype=np.float32)
+
+    # 帧 1（t=0）：heel 缺失 → 缺失 1 点，持续时长起始为 0。
+    backend.publish(
+        {
+            "frame_number": 1,
+            "device_timestamp": 1,
+            "marker_sets": [
+                {"name": "leg", "values": present},
+                {"name": "foot", "values": missing_heel},
+            ],
+        },
+        host_ns=0,
+    )
+    assert adapter.get_event(timeout=0.1) is not None
+    metrics = adapter.health().metrics
+    assert metrics["marker_missing_count"] == 1
+    assert metrics["marker_missing_streak_s"] == 0.0
+
+    # 帧 2（t=4s）：heel 仍缺失 → 已持续缺失 4 s。
+    backend.publish(
+        {
+            "frame_number": 2,
+            "device_timestamp": 2,
+            "marker_sets": [
+                {"name": "leg", "values": present},
+                {"name": "foot", "values": missing_heel},
+            ],
+        },
+        host_ns=4_000_000_000,
+    )
+    assert adapter.get_event(timeout=0.1) is not None
+    metrics = adapter.health().metrics
+    assert metrics["marker_missing_count"] == 1
+    assert abs(metrics["marker_missing_streak_s"] - 4.0) < 0.01
+
+    # 帧 3（t=5s）：heel 恢复 → 缺失归零。
+    backend.publish(
+        {
+            "frame_number": 3,
+            "device_timestamp": 3,
+            "marker_sets": [
+                {"name": "leg", "values": present},
+                {"name": "foot", "values": recovered_heel},
+            ],
+        },
+        host_ns=5_000_000_000,
+    )
+    assert adapter.get_event(timeout=0.1) is not None
+    metrics = adapter.health().metrics
+    assert metrics["marker_missing_count"] == 0
+    assert metrics["marker_missing_streak_s"] == 0.0
+
+    adapter.stop()
+    adapter.close()
+
+
 def test_emg_adapter_transports_sdk_subframes_as_sample_rows() -> None:
     backend = _FakeBackend({"sdk_version": "4.1.0.5645"})
     adapter = XingNokovEmgAdapter(

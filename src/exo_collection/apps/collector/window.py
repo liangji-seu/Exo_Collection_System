@@ -253,6 +253,11 @@ HEALTH_DROP_COUNT_FATAL_MIN = 10
 # 数据中断判致命的「无新数据」时长下限：连续超过该秒数未收到新数据才判
 # 「数据中断」（再经 HEALTH_FAULT_STREAK_THRESHOLD 次防抖后才作废）。
 HEALTH_DATA_STALE_AFTER_S = 3.0
+# 静态标定工况：动捕 marker 必须全程齐全。单个 marker 持续缺失（占位超大坐标
+# 或 NaN）超过该秒数即作废本次 Trial（报警、停止、删除 session，重新录制）。
+STATIC_CALIB_MARKER_MISSING_AFTER_S = 3.0
+# 静态标定工况的 condition_code；该工况需动捕 19 点全程齐备。
+STATIC_CALIB_CONDITION_CODE = "STATIC_CALIB"
 
 PROJECTS: tuple[dict[str, str], ...] = tuple(
     dict(project) for project in COLLECTOR_PROJECTS
@@ -3680,18 +3685,24 @@ class CollectorWindow(QMainWindow):
             streak = 0
         self._preview_fault_streak[modality] = streak
 
+        static_calib_marker_reason = self._static_calibration_marker_fault(
+            modality, payload
+        )
         if (
             self._active_trial_uuid is not None
             and self._active_request is not None
             and modality in self._active_request.enabled_modalities
-            and (
-                indicator_status == "故障"
-                or (faulty and streak >= HEALTH_FAULT_STREAK_THRESHOLD)
-            )
         ):
-            self._abort_recording_for_modality(
-                modality, indicator_reason or indicator_status
-            )
+            if static_calib_marker_reason is not None:
+                self._abort_recording_for_modality(
+                    modality, static_calib_marker_reason
+                )
+            elif indicator_status == "故障" or (
+                faulty and streak >= HEALTH_FAULT_STREAK_THRESHOLD
+            ):
+                self._abort_recording_for_modality(
+                    modality, indicator_reason or indicator_status
+                )
         handle = self._preview_workers.get(modality)
         device_id = str(
             payload.get("device_id")
@@ -3847,6 +3858,40 @@ class CollectorWindow(QMainWindow):
                 data_age_s,
             )
         return "数据正常", None, data_age_s
+
+    def _is_static_calibration_active(self) -> bool:
+        """当前 Trial 是否为静态标定工况（动捕 marker 需全程齐备）。"""
+        request = self._active_request
+        if request is None:
+            return False
+        code = str(request.condition_code or "").strip().upper()
+        if code == STATIC_CALIB_CONDITION_CODE:
+            return True
+        category = str(
+            (request.condition_parameters or {}).get("category") or ""
+        )
+        return category == "test_static_calibration"
+
+    def _static_calibration_marker_fault(
+        self, modality: str, payload: Mapping[str, Any]
+    ) -> str | None:
+        """静态标定下动捕 marker 持续缺失超过阈值 → 返回作废原因，否则 None。"""
+        if modality != "mocap" or not self._is_static_calibration_active():
+            return None
+        try:
+            streak_s = float(payload.get("marker_missing_streak_s") or 0.0)
+        except (TypeError, ValueError):
+            streak_s = 0.0
+        if streak_s <= STATIC_CALIB_MARKER_MISSING_AFTER_S:
+            return None
+        missing = payload.get("marker_missing_count")
+        missing_text = (
+            f"，缺失 {int(missing)} 点" if missing is not None else ""
+        )
+        return (
+            f"静态标定动捕 marker 持续丢失 {streak_s:.1f} s"
+            f"{missing_text}，超过 {STATIC_CALIB_MARKER_MISSING_AFTER_S:.0f} s 阈值"
+        )
 
     def _handle_preview_worker_death(self, modality: str, handle: ModalityPreviewHandle) -> None:
         requested = modality in self._preview_disconnect_deadlines

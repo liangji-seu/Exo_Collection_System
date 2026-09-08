@@ -26,6 +26,10 @@ from exo_collection.domain.events import SampleBatch
 _SDK_CALLBACK_LOCK = Lock()
 _SDK_CALLBACK_KEEPALIVE: list[Any] = []
 
+# Nokov/XING 用超大坐标占位（如 99999999）表示某 marker 当前未被识别；坐标绝对
+# 值达到该量级即视为「缺失」。真实动捕坐标量级远小于此（mm，通常 < 10^4）。
+_MISSING_MARKER_COORD_MAGNITUDE = 9.0e7
+
 
 def _coerce_dataclass(config_type: type[Any], value: Any) -> Any:
     if value is None:
@@ -357,6 +361,11 @@ class XingNokovMocapAdapter(QueuedHardwareAdapter):
         self._last_frame_number: int | None = None
         self._sequence_gaps_count = 0
         self._malformed_frames = 0
+        # 静态标定完整性：单个 marker 持续缺失的起始帧时间戳（host_ns）与最近
+        # 一帧的缺失点数，见 _on_frame / _health_metrics。
+        self._marker_missing_since_ns: dict[int, int] = {}
+        self._marker_missing_count = 0
+        self._last_frame_host_ns: int | None = None
 
     def descriptor(self) -> ModalityDescriptor:
         marker_count = len(self._marker_names) or self._config.marker_count_fallback or 1
@@ -399,6 +408,9 @@ class XingNokovMocapAdapter(QueuedHardwareAdapter):
         self._last_frame_number = None
         self._sequence_gaps_count = 0
         self._malformed_frames = 0
+        self._marker_missing_since_ns.clear()
+        self._marker_missing_count = 0
+        self._last_frame_host_ns = None
 
     def _start_hardware(self) -> None:
         self._backend.start()
@@ -443,6 +455,22 @@ class XingNokovMocapAdapter(QueuedHardwareAdapter):
                         )
                     rows.append(values)
                 data = np.ascontiguousarray(np.concatenate(rows, axis=0)[None, ...])
+            # 静态标定依赖完整 marker 集：追踪单个 marker 持续缺失的时长（占位
+            # 超大坐标或 NaN 视为缺失），供上层在静态标定工况下校验 19 点齐全。
+            if not self._unlabeled:
+                now_ns = int(host_ns)
+                self._last_frame_host_ns = now_ns
+                values = data[0]
+                missing = np.isnan(values).any(axis=1) | (
+                    np.abs(values) >= _MISSING_MARKER_COORD_MAGNITUDE
+                ).any(axis=1)
+                since = self._marker_missing_since_ns
+                for index, is_missing in enumerate(missing.tolist()):
+                    if is_missing:
+                        since.setdefault(index, now_ns)
+                    else:
+                        since.pop(index, None)
+                self._marker_missing_count = int(missing.sum())
             frame_number = int(payload["frame_number"])
             if self._last_frame_number is not None and frame_number > self._last_frame_number + 1:
                 self._sequence_gaps_count += frame_number - self._last_frame_number - 1
@@ -481,6 +509,17 @@ class XingNokovMocapAdapter(QueuedHardwareAdapter):
         if self._unlabeled:
             metrics["marker_source"] = "unlabeled"
             metrics["last_unlabeled_marker_count"] = self._last_unlabeled_marker_count
+        else:
+            now_ns = self._last_frame_host_ns or 0
+            streak_s = max(
+                (
+                    (now_ns - since_ns) / 1e9
+                    for since_ns in self._marker_missing_since_ns.values()
+                ),
+                default=0.0,
+            )
+            metrics["marker_missing_count"] = self._marker_missing_count
+            metrics["marker_missing_streak_s"] = round(streak_s, 3)
         return metrics
 
 
