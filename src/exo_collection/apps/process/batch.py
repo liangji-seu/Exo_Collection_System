@@ -337,6 +337,30 @@ def session_solve_status(record: SessionRecord) -> SessionSolveState:
     return SessionSolveState.UNSOLVED
 
 
+def erase_ground_truth(records: list[SessionRecord]) -> int:
+    """删除每个 session 的 ``ground_truth.csv`` 及其 QC 附带文件，返回删除的 CSV 数。
+
+    纯文件操作、不跑计算，可脱离 UI 单测。删除后 ``session_solve_status`` 会自动
+    回退到「未解算」，便于重新解算。
+    """
+    removed = 0
+    for record in records:
+        csv_path = record.session_dir / "ground_truth.csv"
+        qc_path = csv_path.with_suffix(".qc.json")
+        if csv_path.is_file():
+            try:
+                csv_path.unlink()
+                removed += 1
+            except OSError as exc:
+                _log.warning("删除 %s 失败：%s", csv_path, exc)
+        if qc_path.is_file():
+            try:
+                qc_path.unlink()
+            except OSError as exc:
+                _log.warning("删除 %s 失败：%s", qc_path, exc)
+    return removed
+
+
 class _BatchSignals(QObject):
     session_started = Signal(str)             # session_name
     session_finished = Signal(str, str, str)  # name, SessionSolveState.value, out_path
@@ -449,6 +473,7 @@ __all__ = [
     "SessionSolveState",
     "SolveCancelled",
     "SyncFailed",
+    "erase_ground_truth",
     "session_solve_status",
     "solve_one_session",
 ]

@@ -29,6 +29,7 @@ from exo_collection.apps.process.batch import (  # noqa: E402
     SessionSolveState,
     SolveCancelled,
     SyncFailed,
+    erase_ground_truth,
     session_solve_status,
     solve_one_session,
 )
@@ -120,6 +121,26 @@ def test_status_unsolved_when_complete(tmp_path: Path) -> None:
     assert session_solve_status(_make_session(tmp_path, files=_complete_files())) is (
         SessionSolveState.UNSOLVED
     )
+
+
+def test_erase_ground_truth_deletes_csv_and_qc(tmp_path: Path) -> None:
+    record = _make_session(tmp_path, files=_complete_files())
+    (record.session_dir / "ground_truth.csv").write_text("time_s\n", encoding="utf-8")
+    (record.session_dir / "ground_truth.qc.json").write_text("{}", encoding="utf-8")
+    assert session_solve_status(record) is SessionSolveState.SOLVED
+
+    removed = erase_ground_truth([record])
+
+    assert removed == 1
+    assert not (record.session_dir / "ground_truth.csv").exists()
+    assert not (record.session_dir / "ground_truth.qc.json").exists()
+    assert session_solve_status(record) is SessionSolveState.UNSOLVED
+
+
+def test_erase_ground_truth_noop_without_csv(tmp_path: Path) -> None:
+    record = _make_session(tmp_path, files=_complete_files())
+    assert erase_ground_truth([record]) == 0
+    assert session_solve_status(record) is SessionSolveState.UNSOLVED
 
 
 # ── solve_one_session 输入门禁 / 取消 ───────────────────────────

@@ -41,6 +41,7 @@ from exo_collection.apps.collector.theme import COLLECTOR_STYLESHEET
 from exo_collection.apps.process.batch import (
     BatchWorker,
     SessionSolveState,
+    erase_ground_truth,
     session_solve_status,
 )
 from exo_collection.configuration import SharedAppSettings
@@ -129,6 +130,11 @@ class ProcessWindow(QMainWindow):
         self._cancel_button.setEnabled(False)
         self._cancel_button.clicked.connect(self._on_cancel_clicked)
         row.addWidget(self._cancel_button)
+
+        self._erase_button = QPushButton("擦除真值")
+        self._erase_button.setToolTip("删除数据根下所有已导出的 ground_truth.csv（含 QC 附带文件），使 session 回到「未解算」。")
+        self._erase_button.clicked.connect(self._on_erase_clicked)
+        row.addWidget(self._erase_button)
         root.addLayout(row)
         root.addLayout(static_row)
 
@@ -387,12 +393,38 @@ class ProcessWindow(QMainWindow):
         self._overwrite_check.setEnabled(not running)
         self._batch_button.setEnabled(not running)
         self._cancel_button.setEnabled(running)
+        self._erase_button.setEnabled(not running)
 
     def _on_cancel_clicked(self) -> None:
         if self._batch_worker is not None:
             self._batch_worker.cancel()
             self._cancel_button.setEnabled(False)
             self._append_log("已请求取消，等待当前 session 结束…")
+
+    def _on_erase_clicked(self) -> None:
+        """擦除数据根下所有已导出的 ground_truth.csv（含 QC 附带文件）。"""
+        existing = [
+            record
+            for record in self._sessions
+            if (record.session_dir / "ground_truth.csv").is_file()
+        ]
+        if not existing:
+            QMessageBox.information(self, "无可擦除真值", "当前没有已导出的 ground_truth.csv。")
+            return
+        reply = QMessageBox.question(
+            self,
+            "确认擦除真值",
+            f"将删除 {len(existing)} 个 session 的 ground_truth.csv（及其 QC 附带文件），"
+            "此操作不可恢复。\n\n确定继续？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        removed = erase_ground_truth(self._sessions)
+        self._append_log(f"已擦除 {removed} 个 ground_truth.csv，session 回到「未解算」。")
+        self._rebuild_tree()
+        self.statusBar().showMessage(f"已擦除 {removed} 个真值 CSV")
 
     def _on_session_started(self, name: str) -> None:
         item = self._item_by_session_name.get(name)
