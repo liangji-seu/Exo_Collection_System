@@ -57,6 +57,7 @@ from .external_import_dialog import ExternalImportDialog
 from .external_import_worker import ExternalImportWorker
 from .fullscreen_viewer import FullscreenViewer
 from .global_preview import GlobalPreviewWindow, read_truth_preview
+from .qc_report import GaitQCReportWindow, load_gait_qc
 from .local_dialogs import (
     ChecksumDialog,
     FullStatisticsDialog,
@@ -262,7 +263,7 @@ class DataStudioWindow(QMainWindow):
         self._active_upload: _UploadTaskContext | None = None
         self._result_dialogs: list[QDialog] = []
         self._fullscreen_viewers: list[FullscreenViewer] = []
-        self._global_preview_windows: list[GlobalPreviewWindow] = []
+        self._global_preview_windows: list[QMainWindow] = []
         self._closing = False
         self._shutdown_retry_pending = False
         self._close_started_at: float | None = None
@@ -1460,13 +1461,30 @@ class DataStudioWindow(QMainWindow):
         _log.info("回放子进程已启动，等待结果…")
 
     def global_preview_selected_trial(self) -> None:
-        """对选中 Trial 打开「全局预览」：整条时间轴的髋力矩 + IMU 姿态真值。"""
+        """对选中 Trial 打开「全局预览」：优先 OpenSim QC 报告，否则回退轻量 CSV 视图。"""
         manifest_path = self._selected_finalized_manifest_path()
         if manifest_path is None:
             return
         session_dir = manifest_path.parent
         if session_dir.name == ".exo":
             session_dir = session_dir.parent
+        item = self.tree_widget.currentItem()
+        title = item.text(0) if item is not None else session_dir.name
+
+        qc_data = load_gait_qc(session_dir)
+        if qc_data is not None:
+            window: QMainWindow = GaitQCReportWindow(qc_data, title, self)
+            self._global_preview_windows.append(window)
+            window.destroyed.connect(
+                lambda _obj=None, w=window: self._forget_global_preview(w)
+            )
+            window.show()
+            window.showMaximized()
+            window.raise_()
+            window.activateWindow()
+            return
+
+        # 回退：无 run 目录 / 解析失败 → 轻量 CSV 力矩 + IMU 视图。
         gt_path = session_dir / "ground_truth.csv"
         if not gt_path.is_file():
             QMessageBox.information(
@@ -1481,8 +1499,6 @@ class DataStudioWindow(QMainWindow):
                 self, "无法解析真值", f"ground_truth.csv 解析失败：\n{gt_path}"
             )
             return
-        item = self.tree_widget.currentItem()
-        title = item.text(0) if item is not None else session_dir.name
         window = GlobalPreviewWindow(preview, title, self)
         self._global_preview_windows.append(window)
         window.destroyed.connect(
@@ -1493,7 +1509,7 @@ class DataStudioWindow(QMainWindow):
         window.raise_()
         window.activateWindow()
 
-    def _forget_global_preview(self, window: GlobalPreviewWindow) -> None:
+    def _forget_global_preview(self, window: QMainWindow) -> None:
         if window in self._global_preview_windows:
             self._global_preview_windows.remove(window)
 
