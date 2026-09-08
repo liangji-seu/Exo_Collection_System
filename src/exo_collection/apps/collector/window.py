@@ -99,6 +99,7 @@ from exo_collection.apps.collector.preflight import (
 )
 from exo_collection.apps.collector.elapsed_timer import ElapsedTimerPanel
 from exo_collection.apps.collector.preview_workspace import PreviewWorkspace
+from exo_collection.apps.collector.status_overview import ModalityStatusStrip
 from exo_collection.apps.collector.sync_filename import SyncFilenameBar
 from exo_collection.apps.collector.xingying_recording import XingYingRecordingPanel
 from exo_collection.apps.collector.theme import COLLECTOR_STYLESHEET
@@ -1234,6 +1235,7 @@ class CollectorWindow(QMainWindow):
         self._xingying_status_panel: XingYingRecordingPanel | None = None
         self._mocap_table: QTableWidget | None = None
         self.preview_workspace: PreviewWorkspace | None = None
+        self._status_overview: ModalityStatusStrip | None = None
         self._elapsed_timer: ElapsedTimerPanel | None = None
         self._preview_focus_previous_sizes: list[int] | None = None
         self._preview_y_ranges: dict[str, tuple[float, float]] = {}
@@ -1932,6 +1934,10 @@ class CollectorWindow(QMainWindow):
         # ── Dockable preview workspace ──
         preview_workspace = PreviewWorkspace(self)
         self.preview_workspace = preview_workspace
+        # 顶部固定状态条：五个大圆角方块，一眼看清各模态采集状态。
+        self._status_overview = ModalityStatusStrip(
+            {modality: MODALITY_DISPLAY_NAMES[modality] for modality in MODALITIES}
+        )
         pg.setConfigOptions(antialias=False, imageAxisOrder="row-major")
 
         us_grid = QGroupBox("超声 · 4 通道当前单帧")
@@ -2087,7 +2093,15 @@ class CollectorWindow(QMainWindow):
             visible_by_default=False,
         )
 
-        body.addWidget(preview_workspace)
+        # 右侧列：顶部固定状态条 + 可停靠预览区（状态条始终可见，不被关闭/隐藏）。
+        right_column = QWidget()
+        right_column.setObjectName("preview_right_column")
+        right_layout = QVBoxLayout(right_column)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(4)
+        right_layout.addWidget(self._status_overview)
+        right_layout.addWidget(preview_workspace, 1)
+        body.addWidget(right_column)
         body.setStretchFactor(0, 0)
         body.setStretchFactor(1, 1)
         body.setSizes([630, 1270])
@@ -2804,6 +2818,28 @@ class CollectorWindow(QMainWindow):
                 tooltip_lines.append(f"详情：{error}")
             label.setToolTip("\n".join(tooltip_lines))
             label.setAccessibleName(f"{row_key} 状态：{display_status}")
+        self._refresh_status_overview()
+
+    def _refresh_status_overview(self) -> None:
+        """按各模态连接/数据状态刷新顶部五方块的颜色与文字。"""
+        overview = self._status_overview
+        if overview is None:
+            return
+        for modality in MODALITIES:
+            if modality not in self._preview_connected_modalities:
+                connection = self._preview_connection_status.get(modality, "未连接")
+                if connection in {"连接中", "断开中"}:
+                    overview.set_state(modality, "transition", connection)
+                else:
+                    overview.set_state(modality, "off", "未连接")
+                continue
+            data_state = self._preview_data_state.get(modality)
+            if data_state == "数据正常":
+                overview.set_state(modality, "ok", "正常采集")
+            elif data_state in {"数据中断", "数据异常", "故障"}:
+                overview.set_state(modality, "bad", data_state)
+            else:
+                overview.set_state(modality, "transition", "等待数据")
 
     # ── XINGYING 远程触发（动捕 Marker + 测力台）─────────────────────────
 

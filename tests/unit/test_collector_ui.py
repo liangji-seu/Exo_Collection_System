@@ -47,6 +47,7 @@ from exo_collection.apps.collector.window import (
     SIGNAL_RING_CAPACITY,
     XINGYING_LINKED_MODALITIES,
 )
+from exo_collection.apps.collector.status_overview import ModalityStatusStrip
 from exo_collection.apps.collector.xingying_recording import XingYingRecordingPanel
 from exo_collection.configuration import (
     SharedAppSettings,
@@ -2902,6 +2903,61 @@ def test_connection_lamp_combines_connection_data_and_health_states(
     )
     assert state == "故障"
     assert reason == "device fault"
+    window.close()
+
+
+def test_status_overview_strip_paints_state_colors() -> None:
+    """状态条每个方块按状态着色，reset 回到灰色「未连接」。"""
+    QApplication.instance() or QApplication(["test-exo-collector"])
+    strip = ModalityStatusStrip({"imu": "IMU", "encoder": "电机编码器"})
+    assert set(strip._blocks) == {"imu", "encoder"}
+
+    strip.set_state("imu", "ok", "正常采集")
+    assert strip._last["imu"] == ("ok", "正常采集")
+    assert "#0f766e" in strip._blocks["imu"].styleSheet()
+
+    strip.set_state("imu", "bad", "数据中断")
+    assert "#a53f3f" in strip._blocks["imu"].styleSheet()
+
+    strip.reset()
+    assert strip._last["imu"] == ("off", "未连接")
+
+
+def test_status_overview_blocks_reflect_modality_state(tmp_path: Path) -> None:
+    """顶部五方块按模态连接/数据状态变色。"""
+    _app, window, _created = _window_with_fake(tmp_path)
+    overview = window._status_overview
+    assert overview is not None
+    assert set(overview._blocks) == set(MODALITIES)
+
+    # 初始：全部灰色「未连接」。
+    window._refresh_status_overview()
+    assert all(overview._last[m] == ("off", "未连接") for m in MODALITIES)
+
+    # 连接中 → 黄色过渡态。
+    window._preview_connected_modalities.discard("imu")
+    window._preview_connection_status["imu"] = "连接中"
+    window._preview_data_state.pop("imu", None)
+    window._refresh_status_overview()
+    assert overview._last["imu"] == ("transition", "连接中")
+
+    # 已连接但尚无数据 → 黄色「等待数据」。
+    window._preview_connected_modalities.add("imu")
+    window._preview_connection_status["imu"] = "已连接"
+    window._preview_data_state.pop("imu", None)
+    window._refresh_status_overview()
+    assert overview._last["imu"] == ("transition", "等待数据")
+
+    # 数据正常 → 绿色。
+    window._preview_data_state["imu"] = "数据正常"
+    window._refresh_status_overview()
+    assert overview._last["imu"] == ("ok", "正常采集")
+
+    # 数据中断 → 红色。
+    window._preview_data_state["imu"] = "数据中断"
+    window._refresh_status_overview()
+    assert overview._last["imu"] == ("bad", "数据中断")
+
     window.close()
 
 
