@@ -324,3 +324,49 @@ def test_data_studio_displays_persisted_qc(tmp_path, qc):
     assert f"QC {qc or '未知'}" in item.text(4)
     if qc != "PASS":
         assert item.foreground(4).color().name() != "#20a35a"
+
+
+def test_cross_subject_static_is_explicit_and_reaches_batch(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from PySide6.QtWidgets import QApplication
+    from exo_collection.apps.process import window as window_module
+
+    app = QApplication.instance() or QApplication([])
+    static102 = replace(_static_session(tmp_path / "102"), subject_code="102",
+                        condition_code="STATIC_CALIB")
+    static103 = replace(_static_session(tmp_path / "103"), subject_code="103",
+                        condition_code="STATIC_CALIB")
+    dynamic = replace(_make_session(tmp_path, files=_complete_files()), subject_code="103")
+    monkeypatch.setattr(window_module, "discover_sessions", lambda _: [static102, static103, dynamic])
+    monkeypatch.setattr(window_module.ProcessWindow, "_resolve_opensim_env", lambda _: None)
+    window = window_module.ProcessWindow(tmp_path, settings=None)
+    try:
+        window._subject_combo.setCurrentText("103")
+        assert window._static_candidates == [static103]
+        assert window._selected_static() == static103
+        window._cross_subject_check.setChecked(True)
+        assert static102 in window._static_candidates
+        assert window._selected_static() == static103
+        window._static_combo.setCurrentIndex(window._static_candidates.index(static102))
+        assert window._selected_static() == static102
+        window._cross_subject_check.setChecked(False)
+        assert window._selected_static() == static103
+        window._cross_subject_check.setChecked(True)
+        window._static_combo.setCurrentIndex(window._static_candidates.index(static102))
+
+        # Capture dispatch without running OpenSim or writing real data.
+        started = []
+        class Pool:
+            def start(self, worker):
+                started.append(worker)
+        window._thread_pool = Pool()
+        window._opensim_python = Path("python")
+        window._generic_model = Path("model")
+        window._on_batch_clicked()
+        assert len(started) == 1
+        assert started[0]._static == static102
+        assert started[0]._sessions == [dynamic]
+        assert not window._cross_subject_check.isEnabled()
+        assert "静态来源 102" in window._log.toPlainText()
+    finally:
+        window.close()

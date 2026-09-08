@@ -98,11 +98,19 @@ class ProcessWindow(QMainWindow):
         self._subject_combo.currentIndexChanged.connect(self._on_subject_changed)
         row.addWidget(self._subject_combo)
 
-        row.addSpacing(16)
-        row.addWidget(QLabel("静态标定："))
+        static_row = QHBoxLayout()
+        static_row.addWidget(QLabel("静态标定："))
         self._static_combo = QComboBox()
         self._static_combo.setMinimumWidth(320)
-        row.addWidget(self._static_combo)
+        static_row.addWidget(self._static_combo, 1)
+        self._cross_subject_check = QCheckBox("显示其他受试者静态标定")
+        self._cross_subject_check.setToolTip("用于手动选择其他受试者编号下的标定；仅影响静态模型来源。")
+        self._cross_subject_check.toggled.connect(
+            lambda _: self._rebuild_static(
+                self._subject_combo.currentText(), preserve_selection=True
+            )
+        )
+        static_row.addWidget(self._cross_subject_check)
 
         row.addSpacing(16)
         self._env_label = QLabel("OpenSim：未配置")
@@ -122,6 +130,7 @@ class ProcessWindow(QMainWindow):
         self._cancel_button.clicked.connect(self._on_cancel_clicked)
         row.addWidget(self._cancel_button)
         root.addLayout(row)
+        root.addLayout(static_row)
 
     def _build_tree(self, root: QVBoxLayout) -> None:
         self._tree = QTreeWidget()
@@ -209,24 +218,34 @@ class ProcessWindow(QMainWindow):
         self._rebuild_tree()
         self._rebuild_static(code)
 
-    def _rebuild_static(self, subject_code: str) -> None:
+    def _rebuild_static(self, subject_code: str, *, preserve_selection: bool = False) -> None:
+        previous = self._selected_static() if preserve_selection else None
         self._static_candidates = [
             s
-            for s in self._subject_sessions
+            for s in self._sessions
             if s.is_stand and s.files.c3d_path is not None
+            and (s.subject_code == subject_code or self._cross_subject_check.isChecked())
         ]
         self._static_combo.blockSignals(True)
         self._static_combo.clear()
         for record in self._static_candidates:
-            label = f"{record.condition_code} · {record.session_name}"
+            label = f"{record.subject_code} · {record.condition_code} · {record.session_name}"
             self._static_combo.addItem(label, record)
+            self._static_combo.setItemData(
+                self._static_combo.count() - 1, str(record.files.c3d_path), Qt.ItemDataRole.ToolTipRole
+            )
+        self._static_combo.setCurrentIndex(-1)
         self._static_combo.blockSignals(False)
 
         recommended = recommend_static_for_subject(subject_code, self._sessions)
+        if previous is not None and any(
+            s.manifest_path == previous.manifest_path for s in self._static_candidates
+        ):
+            recommended = previous
         if recommended is not None:
             for i in range(self._static_combo.count()):
                 record = self._static_combo.itemData(i)
-                if record is not None and record.session_uuid == recommended.session_uuid:
+                if record is not None and record.manifest_path == recommended.manifest_path:
                     self._static_combo.setCurrentIndex(i)
                     break
 
@@ -354,12 +373,17 @@ class ProcessWindow(QMainWindow):
         self._progress.setValue(0)
         self._log.clear()
         self._set_running(True)
-        self._append_log(f"开始批量解算 {len(targets)} 个 session（静态 {static.session_name}）。")
+        self._append_log(
+            f"开始批量解算 {len(targets)} 个 session（动态受试者 {self._subject_combo.currentText()}；"
+            f"静态来源 {static.subject_code} / {static.condition_code} / {static.session_name}）。"
+        )
+        self._append_log(f"静态 C3D：{static.files.c3d_path}")
         self._thread_pool.start(self._batch_worker)
 
     def _set_running(self, running: bool) -> None:
         self._subject_combo.setEnabled(not running)
         self._static_combo.setEnabled(not running)
+        self._cross_subject_check.setEnabled(not running)
         self._overwrite_check.setEnabled(not running)
         self._batch_button.setEnabled(not running)
         self._cancel_button.setEnabled(running)
