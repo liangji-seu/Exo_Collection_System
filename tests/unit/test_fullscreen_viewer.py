@@ -8,7 +8,7 @@ import numpy as np
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QHBoxLayout, QVBoxLayout
+from PySide6.QtWidgets import QApplication, QCheckBox, QHBoxLayout, QVBoxLayout
 
 from exo_collection.apps.data_studio.fullscreen_viewer import (
     FullscreenViewer,
@@ -218,6 +218,56 @@ def test_fullscreen_viewer_registers_mocap_and_moment_docks() -> None:
     viewer.toggle_playback()
     viewer.toggle_playback()
     assert viewer._current_time > 0.0
+    viewer.close()
+    app.processEvents()
+
+
+def test_moment_panel_has_left_right_hip_toggles() -> None:
+    app = QApplication.instance() or QApplication(["test-moment-toggles"])
+    time_s = np.linspace(0.0, 1.0, 11, dtype=np.float64)
+    moment = SignalPlayback(
+        time_s=time_s,
+        values=np.column_stack([np.zeros(11), np.ones(11)]),
+        channels=("hip_flexion_r", "hip_flexion_l"),
+        units=("N·m", "N·m"),
+    )
+    playback = TrialPlayback(
+        manifest_path=Path("manifest.json"),
+        trial_uuid="00000000-0000-0000-0000-000000000004",
+        condition_code="WALK_LEVEL",
+        formal_t0_host_monotonic_ns=0,
+        ultrasound=None,
+        imu=None,
+        encoder=None,
+        sync=None,
+        sync_trigger_times_s=np.empty(0),
+        mocap=None,
+        moment=moment,
+    )
+
+    viewer = FullscreenViewer(playback)
+    dock = viewer.dock_for("moment")
+    assert dock is not None
+    panel = dock.widget()
+
+    boxes = panel.findChildren(QCheckBox)
+    labels = {box.text(): box for box in boxes}
+    assert set(labels) == {"左髋", "右髋"}
+
+    plot = panel.findChild(TimeSeriesPlot)
+    assert plot is not None
+    assert plot._curves[0].isVisible() and plot._curves[1].isVisible()
+
+    # 通道顺序 hip_flexion_r(右)→index 0、hip_flexion_l(左)→index 1。
+    labels["右髋"].setChecked(False)
+    assert not plot._curves[0].isVisible()
+    assert plot._curves[1].isVisible()
+
+    labels["右髋"].setChecked(True)
+    labels["左髋"].setChecked(False)
+    assert plot._curves[0].isVisible()
+    assert not plot._curves[1].isVisible()
+
     viewer.close()
     app.processEvents()
 

@@ -20,6 +20,7 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QLabel,
@@ -401,6 +402,8 @@ class FullscreenViewer(PreviewWorkspace):
         holder = QWidget()
         layout = QVBoxLayout(holder)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+
         plot = TimeSeriesPlot(
             "髋关节力矩真值",
             moment.time_s,
@@ -409,7 +412,27 @@ class FullscreenViewer(PreviewWorkspace):
             self._window_s,
         )
         self._panels.append(plot)
-        layout.addWidget(plot)
+        layout.addWidget(plot, 1)
+
+        # 左髋/右髋显示勾选：按通道名后缀 _l/_r 映射到对应曲线，左在前右在后。
+        controls = QHBoxLayout()
+        controls.setContentsMargins(0, 0, 0, 0)
+        controls.addWidget(QLabel("显示："))
+        ordered: list[tuple[str, int]] = []
+        for side, suffix in (("左髋", "_l"), ("右髋", "_r")):
+            for index, name in enumerate(moment.channels):
+                if name.casefold().endswith(suffix):
+                    ordered.append((side, index))
+                    break
+        for label, index in ordered:
+            box = QCheckBox(label)
+            box.setChecked(True)
+            box.toggled.connect(
+                lambda checked, i=index: plot.set_channel_visible(i, checked)
+            )
+            controls.addWidget(box)
+        controls.addStretch(1)
+        layout.addLayout(controls)
         return holder
 
     def _sweep_plots_append(self, plot: object) -> None:

@@ -107,6 +107,11 @@ class TimeSeriesPlot(pg.PlotWidget):
         self.addItem(self.cursor)
         self.setXRange(0.0, self._window_s, padding=0.0)
 
+    def set_channel_visible(self, index: int, visible: bool) -> None:
+        """显示/隐藏第 ``index`` 条通道曲线（及其图例项）。"""
+        if 0 <= index < len(self._curves):
+            self._curves[index].setVisible(visible)
+
     def set_time(self, current_s: float, cycle_start_s: float | None = None) -> None:
         """Advance the sweep cursor.
 
