@@ -107,10 +107,22 @@ def run_auto_sync(
         mocap_period_ms = float(mocap_health.median_period_ns) / 1e6
 
         sensor_index, sensor_label = find_imu_sensor(imu_h5, side="right")
-        imu_host_ns = read_host_monotonic_ns(imu_h5)
+        # MTw direct-USB records are an interleaved union of independent
+        # per-device streams: each row belongs to one sensor and the other
+        # sensor slots are NaN.  Clock health, rate estimation and stomp
+        # detection must use the selected sensor's rows only.  Evaluating the
+        # merged axis makes a healthy 100 Hz sensor appear to run at ~300 Hz
+        # (or worse, depending on host batching) and falsely counts slot
+        # interleaving as packet gaps.
+        imu_host_all_ns = read_host_monotonic_ns(imu_h5)
+        acc_all = np.asarray(imu_h5["samples/data"][:, sensor_index, :3], dtype=np.float64)
+        imu_valid = np.isfinite(acc_all).all(axis=1)
+        if int(imu_valid.sum()) < 2:
+            raise ValueError(f"IMU 传感器 {sensor_label} 有效样本不足，无法同步")
+        imu_host_ns = imu_host_all_ns[imu_valid]
         imu_health = clock_health(imu_host_ns)
         imu_time_c3d = (imu_host_ns - c3d_t0_host_ns) / 1e9
-        acc = np.asarray(imu_h5["samples/data"][:, sensor_index, :3], dtype=np.float64)
+        acc = acc_all[imu_valid]
         imu_rate = imu_sample_rate_hz(imu_time_c3d)
         acc_norm = np.linalg.norm(acc, axis=1)
         imu_envelope = highpass_envelope(acc_norm, imu_rate)

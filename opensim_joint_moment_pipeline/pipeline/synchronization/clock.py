@@ -45,9 +45,13 @@ def clock_health(times_ns: np.ndarray) -> ClockHealth:
     diff = np.diff(t)
     median = float(np.median(diff))
     n_decreasing = int(np.sum(diff <= 0))
-    # 周期偏差超过中位数 20% 视为一次间断（采样周期异常或丢帧）。
-    threshold = max(abs(median) * 0.2, 1.0)
-    n_gaps = int(np.sum(np.abs(diff - median) > threshold))
+    # Host-arrival timestamps can be bursty (especially for independently
+    # connected USB IMUs): a short interval followed by a longer interval can
+    # still represent a regular device stream. Estimate the nominal period from
+    # the full span and count only intervals >=2 periods as missing-time gaps;
+    # do not count normal scheduler jitter as packet loss.
+    nominal = float((t[-1] - t[0]) / max(t.size - 1, 1))
+    n_gaps = int(np.sum(diff >= max(nominal * 2.0, 1.0)))
     return ClockHealth(
         n_samples=int(t.size),
         median_period_ns=median,
@@ -114,7 +118,7 @@ def imu_sensor_on_c3d_time(
         imu_handle["samples/data"][:, sensor_index, axis_slice], dtype=np.float64
     )
     # 丢弃本传感器为 NaN 的行（这些行属于其它传感器的数据包）。
-    valid = ~np.isnan(signal).any(axis=1)
+    valid = np.isfinite(signal).all(axis=1)
     return time_s[valid], signal[valid]
 
 
@@ -122,7 +126,10 @@ def imu_sample_rate_hz(time_s: np.ndarray) -> float:
     t = np.asarray(time_s, dtype=np.float64)
     if t.size < 2:
         return float("nan")
-    period = float(np.median(np.diff(t)))
+    # Host timestamps may arrive in bursts even when the device emits at a
+    # steady rate. Span/(N-1) is robust to that scheduling jitter; the caller
+    # must already have filtered to one independent sensor stream.
+    period = float((t[-1] - t[0]) / max(t.size - 1, 1))
     return float(1.0 / period) if period > 0 else float("nan")
 
 
