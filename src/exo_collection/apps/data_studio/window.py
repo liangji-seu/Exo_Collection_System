@@ -88,7 +88,7 @@ from .process_workers import DataStudioProcessWorker, ProcessOperation
 from .quality_reviews import append_quality_review
 from .recovery_dialog import RecoveryDialog
 from .service import DataStudioSnapshot
-from .sync_data import SyncCopyResult, SyncDataStatus, sync_sidecar_files
+from .sync_data import SolveStatus, SyncCopyResult, SyncDataStatus, sync_sidecar_files
 from .credential_store import load_password
 from .upload import (
     BatchOfflineUploadResult,
@@ -271,6 +271,7 @@ class DataStudioWindow(QMainWindow):
         self._management_index: ManagementIndex | None = None
         self._annex_scan: AnnexScanResult | None = None
         self._sync_status_by_manifest: dict[str, SyncDataStatus] = {}
+        self._solve_status_by_manifest: dict[str, SolveStatus] = {}
         self._filtered_records: tuple[TrialManagementRecord, ...] = ()
         self._populating_filters = False
         self._catalog_summary_text = "尚未刷新。"
@@ -718,6 +719,14 @@ class DataStudioWindow(QMainWindow):
             self._catalog_tree,
             self._sync_status_by_manifest,
         )
+        self._solve_status_by_manifest = {
+            str(Path(status.manifest_path).expanduser().resolve()): status
+            for status in result.solve_statuses
+        }
+        self._catalog_tree = self._attach_solved_status(
+            self._catalog_tree,
+            self._solve_status_by_manifest,
+        )
         self._populate_filter_options(result.index.records)
         self._apply_management_filters()
         invalid_annexes = sum(
@@ -1051,6 +1060,39 @@ class DataStudioWindow(QMainWindow):
                 )
                 node["sync_c3d_missing"] = status.c3d_missing if status is not None else None
                 node["sync_txt_missing"] = status.txt_missing if status is not None else None
+            for child in node.get("children", []):
+                if isinstance(child, dict) and child.get("type") != "external_annex":
+                    visit(child)
+
+        for root_node in result:
+            visit(root_node)
+        return result
+
+    @staticmethod
+    def _attach_solved_status(
+        tree: list[dict[str, Any]],
+        solve_by_manifest: dict[str, SolveStatus],
+    ) -> list[dict[str, Any]]:
+        """Inject per-trial 解算标注（已解算/未解算）into the catalog tree."""
+        result = deepcopy(tree)
+
+        def visit(node: dict[str, Any]) -> None:
+            if str(node.get("type")) == "trial":
+                manifest_path = node.get("manifest_path")
+                status = (
+                    solve_by_manifest.get(
+                        str(Path(str(manifest_path)).expanduser().resolve())
+                    )
+                    if manifest_path
+                    else None
+                )
+                node["solve_complete"] = (
+                    bool(status.complete) if status is not None else False
+                )
+                node["solve_qc_status"] = status.qc_status if status is not None else None
+                node["solve_solved"] = (
+                    bool(status.solved) if status is not None else False
+                )
             for child in node.get("children", []):
                 if isinstance(child, dict) and child.get("type") != "external_annex":
                     visit(child)
@@ -2762,10 +2804,19 @@ class DataStudioWindow(QMainWindow):
                 foreground = "#b42318"
                 detail = "缺少：" + "、".join(missing)
             else:
-                text = "齐全"
-                background = "#e3f5e9"
-                foreground = "#20a35a"
-                detail = "动捕 .c3d 与测力台 .txt 均已就位"
+                if bool(node.get("solve_solved")):
+                    qc_status = node.get("solve_qc_status")
+                    text = f"齐全 · 已解算 · QC {qc_status or '未知'}"
+                    background, foreground = {
+                        "PASS": ("#e3f5e9", "#20a35a"),
+                        "FAIL": ("#fdecea", "#b42318"),
+                    }.get(qc_status, ("#fef7e0", "#b26a00"))
+                    detail = "动捕 .c3d 与测力台 .txt 均已就位；已解算（ground_truth.csv 存在）"
+                else:
+                    text = "齐全 · 未解算"
+                    background = "#e8f0fe"
+                    foreground = "#1a73e8"
+                    detail = "动捕 .c3d 与测力台 .txt 均已就位；尚未解算"
         item.setText(4, text)
         item.setTextAlignment(4, Qt.AlignmentFlag.AlignCenter)
         item.setBackground(4, QBrush(QColor(background)))

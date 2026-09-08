@@ -5,7 +5,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from exo_collection.apps.data_studio.sync_data import (
+    check_all_trial_solved,
     check_all_trial_sync,
+    check_trial_solved,
     check_trial_sync_data,
     load_cap_names,
     sync_sidecar_files,
@@ -211,6 +213,59 @@ def test_check_all_trial_sync_only_finalized(tmp_path: Path) -> None:
     statuses = check_all_trial_sync([finalized, nonfinalized])
     assert len(statuses) == 1
     assert statuses[0].complete
+
+
+# ── check_trial_solved ──────────────────────────────────────────
+
+
+def test_check_trial_solved_complete_and_solved(tmp_path: Path) -> None:
+    trial_root = tmp_path / "trial"
+    trial_root.mkdir()
+    _write_trigger(trial_root, CAP_NAME)
+    (trial_root / f"{CAP_NAME}.c3d").write_text("x")
+    (trial_root / f"{CAP_NAME}.txt").write_text("y")
+    (trial_root / "ground_truth.csv").write_text("time_s\n1\n")
+    status = check_trial_solved(_manifest_path(trial_root))
+    assert status.complete
+    assert status.solved
+    assert status.missing == ()
+
+
+def test_check_trial_solved_complete_but_unsolved(tmp_path: Path) -> None:
+    trial_root = tmp_path / "trial"
+    trial_root.mkdir()
+    _write_trigger(trial_root, CAP_NAME)
+    (trial_root / f"{CAP_NAME}.c3d").write_text("x")
+    (trial_root / f"{CAP_NAME}.txt").write_text("y")
+    status = check_trial_solved(_manifest_path(trial_root))
+    assert status.complete
+    assert not status.solved
+    assert status.missing == ()
+
+
+def test_check_trial_solved_incomplete_lists_missing(tmp_path: Path) -> None:
+    trial_root = tmp_path / "trial"
+    trial_root.mkdir()
+    _write_trigger(trial_root, CAP_NAME)
+    (trial_root / f"{CAP_NAME}.c3d").write_text("x")  # missing txt
+    status = check_trial_solved(_manifest_path(trial_root))
+    assert not status.complete
+    assert status.missing == ("txt",)
+
+
+def test_check_all_trial_solved_only_finalized(tmp_path: Path) -> None:
+    trial_root = tmp_path / "trial"
+    trial_root.mkdir()
+    _write_trigger(trial_root, CAP_NAME)
+    (trial_root / f"{CAP_NAME}.c3d").write_text("x")
+    (trial_root / f"{CAP_NAME}.txt").write_text("y")
+    (trial_root / "ground_truth.csv").write_text("time_s\n1\n")
+    manifest_path = _manifest_path(trial_root)
+    finalized = SimpleNamespace(state="FINALIZED", manifest_path=manifest_path)
+    nonfinalized = SimpleNamespace(state="RECORDING", manifest_path=manifest_path)
+    statuses = check_all_trial_solved([finalized, nonfinalized])
+    assert len(statuses) == 1
+    assert statuses[0].solved
 
 
 # ── sync_sidecar_files ──────────────────────────────────────────

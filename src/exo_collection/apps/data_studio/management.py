@@ -48,7 +48,7 @@ from .quality_reviews import (
     list_quality_reviews,
 )
 from .service import DataStudioSnapshot, load_catalog_snapshot
-from .sync_data import SyncDataStatus, check_all_trial_sync
+from .sync_data import SyncDataStatus, SolveStatus, check_all_trial_solved, check_all_trial_sync
 
 
 UPLOAD_AUDIT_DIRECTORY = ".upload-audit"
@@ -341,6 +341,7 @@ class ManagementRefreshResult:
     index: ManagementIndex
     annex_scan: AnnexScanResult
     sync_statuses: tuple[SyncDataStatus, ...] = ()
+    solve_statuses: tuple[SolveStatus, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1393,10 +1394,12 @@ def load_management_refresh(snapshot: DataStudioSnapshot) -> ManagementRefreshRe
     index = build_management_index(snapshot)
     annex_scan = scan_external_annexes(index.data_root)
     sync_statuses = check_all_trial_sync(index.records)
+    solve_statuses = check_all_trial_solved(index.records)
     return ManagementRefreshResult(
         index=index,
         annex_scan=annex_scan,
         sync_statuses=sync_statuses,
+        solve_statuses=solve_statuses,
     )
 
 
@@ -1625,6 +1628,7 @@ __all__ = [
     "PackageState",
     "PackageStatusRecord",
     "QualityReviewStatus",
+    "SolveStatus",
     "SubjectCoverage",
     "SyncDataStatus",
     "TrialFilter",

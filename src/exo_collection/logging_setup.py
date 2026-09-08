@@ -163,6 +163,13 @@ def calculate_log_path() -> Path:
     )
 
 
+def process_log_path() -> Path:
+    """Return this Exo Process process launch's absolute log path."""
+    return _default_log_dir() / (
+        f"ExoProcess_{_PROCESS_LAUNCH_TOKEN}_pid{os.getpid()}.log"
+    )
+
+
 def setup_collector_logging(
     *,
     level: int = logging.INFO,
@@ -259,6 +266,25 @@ def setup_calculate_logging(
         level=level,
         console=console,
         log_path=log_path or calculate_log_path(),
+        max_bytes=max_bytes,
+        backup_count=backup_count,
+    )
+
+
+def setup_process_logging(
+    *,
+    level: int = logging.INFO,
+    console: bool = False,
+    log_path: Path | None = None,
+    max_bytes: int = DEFAULT_MAX_BYTES,
+    backup_count: int = DEFAULT_BACKUP_COUNT,
+) -> None:
+    """Configure Exo Process logging using the shared protected handler."""
+
+    setup_collector_logging(
+        level=level,
+        console=console,
+        log_path=log_path or process_log_path(),
         max_bytes=max_bytes,
         backup_count=backup_count,
     )

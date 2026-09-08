@@ -223,6 +223,59 @@ def check_all_trial_sync(records: Iterable[Any]) -> tuple[SyncDataStatus, ...]:
     return tuple(statuses)
 
 
+@dataclass(frozen=True, slots=True)
+class SolveStatus:
+    """一个 trial 的解算标注：齐全性（c3d+txt）与是否已解算（ground_truth.csv）。
+
+    只读判定，复用 :class:`SyncDataStatus` 的「齐全」口径；``solved`` 由
+    ``ground_truth.csv`` 是否存在决定（run_process 批量解算的产物）。
+    """
+
+    manifest_path: Path
+    trial_root: Path
+    complete: bool
+    missing: tuple[str, ...]
+    solved: bool
+    qc_status: str | None = None
+
+
+def check_trial_solved(manifest_path: Path) -> SolveStatus:
+    """检查一个 trial 的「已解算 / 未解算」标注（复用 c3d+txt 齐全判定）。"""
+    from exo_collection.apps.calculate.ground_truth_status import read_ground_truth_qc
+
+    sync = check_trial_sync_data(manifest_path)
+    missing: list[str] = []
+    if not sync.c3d_present:
+        missing.append("c3d")
+    if not sync.txt_present:
+        missing.append("txt")
+    solved = (sync.trial_root / "ground_truth.csv").is_file()
+    return SolveStatus(
+        manifest_path=sync.manifest_path,
+        trial_root=sync.trial_root,
+        complete=sync.complete,
+        missing=tuple(missing),
+        solved=solved,
+        qc_status=read_ground_truth_qc(sync.trial_root) if solved else None,
+    )
+
+
+def check_all_trial_solved(records: Iterable[Any]) -> tuple[SolveStatus, ...]:
+    """对每个 FINALIZED 记录判定解算状态（单个失败记录跳过）。"""
+    statuses: list[SolveStatus] = []
+    for record in records:
+        if getattr(record, "state", None) != TrialState.FINALIZED.value:
+            continue
+        manifest_path = getattr(record, "manifest_path", None)
+        if manifest_path is None:
+            continue
+        try:
+            statuses.append(check_trial_solved(Path(manifest_path)))
+        except Exception as exc:
+            _log.warning("解算状态检查失败 %s: %s", manifest_path, exc)
+    return tuple(statuses)
+
+
 def sync_sidecar_files(
     scan_root: Path,
     manifest_paths: Iterable[Path],
@@ -296,9 +349,12 @@ def sync_sidecar_files(
 
 __all__ = [
     "SYNC_MANIFEST_RELATIVE_PATH",
+    "SolveStatus",
     "SyncCopyResult",
     "SyncDataStatus",
+    "check_all_trial_solved",
     "check_all_trial_sync",
+    "check_trial_solved",
     "check_trial_sync_data",
     "load_cap_names",
     "sync_sidecar_files",
