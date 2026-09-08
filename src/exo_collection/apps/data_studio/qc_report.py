@@ -25,6 +25,7 @@ import pyqtgraph as pg
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QFileDialog,
     QHBoxLayout,
@@ -398,7 +399,7 @@ class GaitQCReportWindow(QMainWindow):
         # S1 GRF 同步图（右 Fz + 右髋力矩，x 联动）。
         fz_plot = self._graphics.addPlot(row=row, col=0)
         row += 1
-        fz_plot.setTitle("GRF 同步 · 右 Fz 与右髋力矩", color="#000000", size="10pt")
+        fz_plot.setTitle("GRF 同步 · 右 Fz", color="#000000", size="10pt")
         fz_plot.setLabel("left", "Fz", units="N")
         fz_plot.getAxis("bottom").setStyle(showValues=False)
         fz_plot.showGrid(x=True, y=True, alpha=0.25)
@@ -407,6 +408,7 @@ class GaitQCReportWindow(QMainWindow):
         moment_plot = self._graphics.addPlot(row=row, col=0)
         row += 1
         moment_plot.getViewBox().setXLink(fz_plot.getViewBox())
+        moment_plot.setTitle("右髋力矩", color="#000000", size="10pt")
         moment_plot.setLabel("left", "力矩", units="N·m")
         moment_plot.setLabel("bottom", "时间", units="s")
         moment_plot.showGrid(x=True, y=True, alpha=0.25)
@@ -420,11 +422,10 @@ class GaitQCReportWindow(QMainWindow):
         hip_plot = self._graphics.addPlot(row=row, col=0)
         row += 1
         hip_plot.getViewBox().setXLink(fz_plot.getViewBox())
-        hip_plot.setTitle("髋关节力矩真值", color="#000000", size="10pt")
+        hip_plot.setTitle("髋关节力矩真值 · 右髋(橙) 左髋(绿)", color="#000000", size="10pt")
         hip_plot.setLabel("left", "力矩", units="N·m")
         hip_plot.getAxis("bottom").setStyle(showValues=False)
         hip_plot.showGrid(x=True, y=True, alpha=0.25)
-        hip_plot.addLegend(offset=(10, 10))
         self._hip_curves: dict[str, pg.PlotDataItem] = {}
         for index, channel in enumerate(("hip_flexion_r", "hip_flexion_l")):
             label = _MOMENT_LABELS[channel]
@@ -443,7 +444,7 @@ class GaitQCReportWindow(QMainWindow):
         imu_plot = self._graphics.addPlot(row=row, col=0)
         row += 1
         imu_plot.getViewBox().setXLink(fz_plot.getViewBox())
-        imu_plot.setTitle("IMU 姿态角（右腿）", color="#000000", size="10pt")
+        imu_plot.setTitle("IMU 姿态角（右腿）· pitch(蓝) roll(绿) yaw(红)", color="#000000", size="10pt")
         imu_plot.setLabel("left", "角度", units="deg")
         imu_plot.getAxis("bottom").setStyle(showValues=False)
         imu_plot.showGrid(x=True, y=True, alpha=0.25)
@@ -459,11 +460,10 @@ class GaitQCReportWindow(QMainWindow):
         if self._heel_idx.size >= 2:
             mom_plot = self._graphics.addPlot(row=row, col=0)
             row += 1
-            mom_plot.setTitle("归一化步态周期 · 力矩（mean ± std）", color="#000000", size="10pt")
+            mom_plot.setTitle("归一化步态周期 · 力矩 mean±std · 右髋(橙) 左髋(绿)", color="#000000", size="10pt")
             mom_plot.setLabel("left", "力矩", units="N·m")
             mom_plot.setLabel("bottom", "步态周期", units="%")
             mom_plot.showGrid(x=True, y=True, alpha=0.25)
-            mom_plot.addLegend(offset=(10, 10))
             for index, channel in enumerate(("hip_flexion_r", "hip_flexion_l")):
                 x, mean, std = normalize_gait_cycles(data.time_s, data.moments[:, index], self._heel_idx)
                 self._add_mean_std(mom_plot, x, mean, std, _MOMENT_COLORS[channel], _MOMENT_LABELS[channel])
@@ -472,11 +472,10 @@ class GaitQCReportWindow(QMainWindow):
         if self._heel_idx.size >= 2 and data.angles is not None:
             ang_plot = self._graphics.addPlot(row=row, col=0)
             row += 1
-            ang_plot.setTitle("归一化步态周期 · 角度（mean ± std）", color="#000000", size="10pt")
+            ang_plot.setTitle("归一化步态周期 · 角度 mean±std · 右髋(橙) 右膝(蓝) 右踝(绿)", color="#000000", size="10pt")
             ang_plot.setLabel("left", "角度", units="deg")
             ang_plot.setLabel("bottom", "步态周期", units="%")
             ang_plot.showGrid(x=True, y=True, alpha=0.25)
-            ang_plot.addLegend(offset=(10, 10))
             for index, channel in enumerate(("hip_flexion_r", "knee_angle_r", "ankle_angle_r")):
                 if channel not in data.angle_names:
                     continue
@@ -488,11 +487,10 @@ class GaitQCReportWindow(QMainWindow):
         if self._heel_idx.size >= 2:
             lr_plot = self._graphics.addPlot(row=row, col=0)
             row += 1
-            lr_plot.setTitle("左右髋对比（代表性步态周期）", color="#000000", size="10pt")
+            lr_plot.setTitle("左右髋对比 · 右(橙) 左(绿)", color="#000000", size="10pt")
             lr_plot.setLabel("left", "力矩", units="N·m")
             lr_plot.setLabel("bottom", "步态周期", units="%")
             lr_plot.showGrid(x=True, y=True, alpha=0.25)
-            lr_plot.addLegend(offset=(10, 10))
             for index, channel in enumerate(("hip_flexion_r", "hip_flexion_l")):
                 rep = representative_cycle(data.time_s, data.moments[:, index], self._heel_idx)
                 if rep is None:
@@ -586,9 +584,10 @@ class GaitQCReportWindow(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(self, "导出 PNG", "qc_report.png", "PNG 图片 (*.png)")
         if not path:
             return
-        # 直接抓取整个 GraphicsLayoutWidget 位图。widget 已按内容撑到完整高度，
-        # grab() 会截取全部 section；pyqtgraph.ImageExporter 在部分平台（offscreen/
-        # 无 GL）会段错误且无法被 except 捕获，故不走那条路径。
+        # 抓取前先让图形场景完成布局（legend 等 scene item 若未初始化就 grab 会段错误，
+        # 且无法被 except 捕获）。直接抓取整个 GraphicsLayoutWidget 位图，widget 已按
+        # 内容撑到完整高度，grab() 会截取全部 section。
+        QApplication.processEvents()
         self._graphics.grab().save(path, "PNG")
         QMessageBox.information(self, "导出成功", f"已导出：\n{path}")
 
