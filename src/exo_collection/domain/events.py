@@ -153,6 +153,7 @@ class HealthSnapshot(EventModel):
     sampled_at_utc: UTCDateTime = Field(default_factory=utc_now)
     host_monotonic_ns: int = Field(default_factory=perf_counter_ns, ge=0)
     last_data_host_monotonic_ns: int | None = Field(default=None, ge=0)
+    last_publish_host_monotonic_ns: int | None = Field(default=None, ge=0)
     actual_sample_rate_hz: float | None = Field(default=None, ge=0)
     nominal_sample_rate_hz: float | None = Field(default=None, ge=0)
     queue_depth: int = Field(default=0, ge=0)

@@ -3796,14 +3796,31 @@ class CollectorWindow(QMainWindow):
             return "已连接，等待数据", None, None
 
         data_age_s: float | None = None
-        last_data_ns = payload.get("last_data_host_monotonic_ns")
+        sampled_ns = payload.get("host_monotonic_ns")
+        last_publish_ns = payload.get("last_publish_host_monotonic_ns")
+        if last_publish_ns is None:
+            # Older preview workers only report the capture time of the last
+            # published frame; fall back to it.
+            last_publish_ns = payload.get("last_data_host_monotonic_ns")
         try:
-            if last_data_ns is not None and int(last_data_ns) > 0:
-                data_age_s = max(
-                    0.0,
-                    (time.perf_counter_ns() - int(last_data_ns))
-                    / 1_000_000_000,
-                )
+            if last_publish_ns is not None and int(last_publish_ns) > 0:
+                # Compute staleness against the *sample* time (the monotonic
+                # clock captured inside the preview worker when health() ran),
+                # NOT against the UI's clock here.  The UI may process this
+                # event well after it was emitted (queue latency), which would
+                # otherwise inflate the age and produce a false 「数据中断」.
+                if sampled_ns is not None and int(sampled_ns) > 0:
+                    data_age_s = max(
+                        0.0,
+                        (int(sampled_ns) - int(last_publish_ns))
+                        / 1_000_000_000,
+                    )
+                else:
+                    data_age_s = max(
+                        0.0,
+                        (time.perf_counter_ns() - int(last_publish_ns))
+                        / 1_000_000_000,
+                    )
         except (TypeError, ValueError):
             data_age_s = None
         nominal_rate = payload.get("nominal_sample_rate_hz")
@@ -4552,9 +4569,6 @@ class CollectorWindow(QMainWindow):
                 values = self._numeric_values(raw_channel)
                 if values:
                     prepared_channels.append((target_index, values))
-            if prepared_channels:
-                targets = [idx for idx, _ in prepared_channels]
-                LOG.debug("超声预览更新通道: %s (channel_index=%s)", targets, channel_index)
             self._lock_preview_y_axis("ultrasound", [values for _, values in prepared_channels], self._us_plots)
             for index, values in prepared_channels:
                 self._us_curves[index].setData(self._us_x, self._fixed_ultrasound_frame(values))

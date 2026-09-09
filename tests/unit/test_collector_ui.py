@@ -2906,6 +2906,56 @@ def test_connection_lamp_combines_connection_data_and_health_states(
     window.close()
 
 
+def test_preview_health_uses_publish_time_not_capture_time(tmp_path: Path) -> None:
+    """健康判定用「发布时刻」而非「采集时刻」，避免采集→worker 积压被误判为数据中断。"""
+    _app, window, _created = _window_with_fake(tmp_path)
+    now_ns = time.perf_counter_ns()
+
+    # 场景一：采集时刻已陈旧（inbound 队列积压，最多 256 帧 ≈ 3.2s），
+    # 但发布时刻是新的——数据仍在流动，不应判「数据中断」。
+    state, reason, age = window._classify_preview_health(
+        {
+            "status": "RECORDING",
+            "health_status": "HEALTHY",
+            "connected": True,
+            "sample_count": 100,
+            "actual_sample_rate_hz": 20.0,
+            "nominal_sample_rate_hz": 20.0,
+            "queue_depth": 1,
+            "queue_capacity": 64,
+            "dropped_packets": 0,
+            "host_monotonic_ns": now_ns,
+            "last_data_host_monotonic_ns": now_ns - 5_000_000_000,
+            "last_publish_host_monotonic_ns": now_ns - 50_000_000,
+        }
+    )
+    assert state == "数据正常"
+    assert reason is None
+    assert age is not None and age < 1.0
+
+    # 场景二：发布时刻也陈旧（设备真的停止输出），才判「数据中断」。
+    state, reason, age = window._classify_preview_health(
+        {
+            "status": "RECORDING",
+            "health_status": "HEALTHY",
+            "connected": True,
+            "sample_count": 100,
+            "actual_sample_rate_hz": 20.0,
+            "nominal_sample_rate_hz": 20.0,
+            "queue_depth": 0,
+            "queue_capacity": 64,
+            "dropped_packets": 0,
+            "host_monotonic_ns": now_ns,
+            "last_data_host_monotonic_ns": now_ns - 5_000_000_000,
+            "last_publish_host_monotonic_ns": now_ns - 5_000_000_000,
+        }
+    )
+    assert state == "数据中断"
+    assert "未收到新数据" in str(reason)
+    assert age is not None and age >= 3.0
+    window.close()
+
+
 def test_status_overview_strip_paints_state_colors() -> None:
     """状态条每个方块按状态着色，reset 回到灰色「未连接」。"""
     QApplication.instance() or QApplication(["test-exo-collector"])

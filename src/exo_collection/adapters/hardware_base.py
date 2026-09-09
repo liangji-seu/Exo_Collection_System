@@ -55,6 +55,7 @@ class QueuedHardwareAdapter(ABC):
         self._raw_queue_overflows = 0
         self._first_data_ns: int | None = None
         self._last_data_ns: int | None = None
+        self._last_publish_ns: int | None = None
         self._rate_started_at: float | None = None
         self._last_device_status = DeviceStatus.DISCONNECTED
 
@@ -133,6 +134,7 @@ class QueuedHardwareAdapter(ABC):
             self._raw_queue_overflows = 0
             self._first_data_ns = None
             self._last_data_ns = None
+            self._last_publish_ns = None
             self._rate_started_at = None
             self._reset_trial_state()
             self._state = AdapterState.PREPARED
@@ -254,6 +256,12 @@ class QueuedHardwareAdapter(ABC):
         if self._first_data_ns is None:
             self._first_data_ns = host_monotonic_ns
         self._last_data_ns = host_monotonic_ns
+        # Publish time reflects when the frame actually flowed through the
+        # pipeline; it stays fresh even when a capture->worker backlog makes
+        # the *capture* timestamp above look stale.  Health uses this instead
+        # of ``_last_data_ns`` so a buffered-but-flowing device is not misread
+        # as a data interruption.
+        self._last_publish_ns = perf_counter_ns()
 
     def _set_fault(self, exc: BaseException) -> None:
         with self._state_lock:
@@ -304,6 +312,7 @@ class QueuedHardwareAdapter(ABC):
             queue_depth=depth,
             queue_capacity=self._queue_capacity,
             last_data_host_monotonic_ns=self._last_data_ns,
+            last_publish_host_monotonic_ns=self._last_publish_ns,
             actual_sample_rate_hz=actual_rate,
             nominal_sample_rate_hz=descriptor.nominal_rate_hz,
             dropped_packets=self._dropped_packets(),

@@ -489,6 +489,10 @@ def _preview_runner_target(
                         "last_data_host_monotonic_ns": (
                             health.last_data_host_monotonic_ns
                         ),
+                        "host_monotonic_ns": health.host_monotonic_ns,
+                        "last_publish_host_monotonic_ns": (
+                            health.last_publish_host_monotonic_ns
+                        ),
                         "message": health.message,
                         "sampled_at_utc": health.sampled_at_utc.isoformat(),
                         "marker_count": health.metrics.get("marker_count"),
