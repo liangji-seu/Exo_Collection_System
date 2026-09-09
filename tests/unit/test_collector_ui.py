@@ -1789,6 +1789,48 @@ def test_start_trial_rejects_locked_subject(tmp_path: Path, monkeypatch) -> None
     window.close()
 
 
+def test_start_trial_rejects_locked_or_skipped_day(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """第几天必须等于第一个未锁定的天：已锁天或跳天都拦截。"""
+    from PySide6.QtWidgets import QMessageBox
+
+    from exo_collection.storage.subject_lock import lock_day
+
+    app, window, created = _window_with_fake(tmp_path)
+    _connect_all_previews_for_trial(window)
+    assert window.subject_code_edit.text() == "001"
+    # 第 1 天已锁 → 期望第 2 天。
+    lock_day(tmp_path, "001", 1)
+
+    warnings: list[tuple[str, str]] = []
+
+    def fake_warning(parent, title, text, *_args, **_kwargs):
+        del parent
+        warnings.append((str(title), str(text)))
+        return QMessageBox.StandardButton.Ok
+
+    monkeypatch.setattr(QMessageBox, "warning", fake_warning)
+
+    # 跳天：第 1 天锁了、直接填第 3 天 → 拦截（提示期望第 2 天）。
+    window.day_spin.setValue(3)
+    window.start_trial()
+    assert created == []
+    assert len(warnings) == 1
+    assert "天次" in warnings[0][0]
+    assert "跳天" in warnings[0][1]
+    assert "第 2 天" in warnings[0][1]
+
+    # 写已锁天：填第 1 天 → 拦截。
+    window.day_spin.setValue(1)
+    window.start_trial()
+    assert created == []
+    assert len(warnings) == 2
+    assert "第 1 天已被锁定" in warnings[-1][1]
+
+    window.close()
+
+
 def test_condition_combo_exposes_all_meeting_protocol_conditions(
     tmp_path: Path,
 ) -> None:

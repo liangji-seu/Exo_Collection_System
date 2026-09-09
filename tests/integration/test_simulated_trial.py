@@ -34,7 +34,7 @@ from exo_collection.quality import DiskSpaceEvidence, InsufficientDiskSpaceError
 from exo_collection.readers.binary_block import BlockBinaryReader
 from exo_collection.readers.binary_block import scan_binary_file
 from exo_collection.storage.activity import AcquisitionLock
-from exo_collection.storage.subject_lock import SubjectLockedError, lock_subject
+from exo_collection.storage.subject_lock import SubjectLockedError, lock_day, lock_subject
 from exo_collection.storage.checksum import sha256_file, verify_checksum_manifest
 from exo_collection.storage.manifest import MANIFEST_SCHEMA_VERSION, load_manifest
 from exo_collection.writers.block_binary_process import BlockBinaryWriterProcess
@@ -666,6 +666,17 @@ def test_locked_subject_fails_before_trial_side_effects(tmp_path) -> None:
     request = TrialRunRequest(data_root=tmp_path, duration_s=0.1)
     with pytest.raises(SubjectLockedError):
         run_simulated_trial(request)
+    assert not list(tmp_path.rglob("*.recording"))
+    assert not (tmp_path / "catalog.sqlite3").exists()
+
+
+def test_locked_or_skipped_day_fails_before_trial_side_effects(tmp_path) -> None:
+    # 第 1 天已锁 → 期望第 2 天；写第 1 天（已锁）或第 3 天（跳天）都拒绝。
+    lock_day(tmp_path, "001", 1)
+    for day in (1, 3):
+        request = TrialRunRequest(data_root=tmp_path, duration_s=0.1, day=day)
+        with pytest.raises(SubjectLockedError):
+            run_simulated_trial(request)
     assert not list(tmp_path.rglob("*.recording"))
     assert not (tmp_path / "catalog.sqlite3").exists()
 

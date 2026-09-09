@@ -18,6 +18,7 @@ from pathlib import Path
 from uuid import uuid4
 
 SUBJECT_LOCK_SCHEMA = "exo.subject-lock/v1"
+DAY_LOCK_SCHEMA = "exo.subject-day-lock/v1"
 _SUBJECT_LOCKS_RELATIVE_DIR = ".exo/subject-locks"
 _SUBJECT_CODE_RE = re.compile(r"\d{3}")
 
@@ -34,12 +35,30 @@ class SubjectLock:
     reason: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class DayLock:
+    """A per-collection-day freeze inside one subject (``d{day}``)."""
+
+    subject_code: str
+    day: int
+    locked_at_utc: str
+    locked_by: str = "Data Studio"
+    reason: str | None = None
+
+
 def _validate_subject_code(subject_code: str) -> str:
     """Normalize and validate the three-digit subject code (path-safety guard)."""
     code = str(subject_code).strip()
     if _SUBJECT_CODE_RE.fullmatch(code) is None:
         raise ValueError("subject_code must contain exactly three digits")
     return code
+
+
+def _validate_day(day: object) -> int:
+    """Validate the collection-day index (positive integer, no bools)."""
+    if isinstance(day, bool) or not isinstance(day, int) or day < 1:
+        raise ValueError("day must be a positive integer")
+    return day
 
 
 def _locks_root(dataset_root: str | Path) -> Path:
@@ -129,13 +148,139 @@ def list_locked_subjects(dataset_root: str | Path) -> list[str]:
     return sorted(codes)
 
 
+# ---------------------------------------------------------------------------
+# Per-day locks
+# ---------------------------------------------------------------------------
+
+
+def day_lock_path(dataset_root: str | Path, subject_code: str, day: int) -> Path:
+    code = _validate_subject_code(subject_code)
+    day = _validate_day(day)
+    return _locks_root(dataset_root) / f"{code}.d{day}.json"
+
+
+def lock_day(
+    dataset_root: str | Path,
+    subject_code: str,
+    day: int,
+    *,
+    locked_by: str = "Data Studio",
+    reason: str | None = None,
+) -> DayLock:
+    """Atomically write a per-day lock file and return the recorded lock."""
+    code = _validate_subject_code(subject_code)
+    day = _validate_day(day)
+    lock = DayLock(
+        subject_code=code,
+        day=day,
+        locked_at_utc=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        locked_by=locked_by,
+        reason=reason,
+    )
+    path = day_lock_path(dataset_root, code, day)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema": DAY_LOCK_SCHEMA,
+        "subject_code": lock.subject_code,
+        "day": lock.day,
+        "locked_at_utc": lock.locked_at_utc,
+        "locked_by": lock.locked_by,
+        "reason": lock.reason,
+    }
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+            json.dump(payload, stream, ensure_ascii=False, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return lock
+
+
+def read_day_lock(
+    dataset_root: str | Path, subject_code: str, day: int
+) -> DayLock | None:
+    """Return the recorded day lock, or ``None`` when absent or unreadable."""
+    path = day_lock_path(dataset_root, subject_code, day)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    try:
+        recorded_day = int(data.get("day", day))
+    except (TypeError, ValueError):
+        recorded_day = day
+    return DayLock(
+        subject_code=str(data.get("subject_code", _validate_subject_code(subject_code))),
+        day=recorded_day,
+        locked_at_utc=str(data.get("locked_at_utc", "")),
+        locked_by=str(data.get("locked_by", "Data Studio")),
+        reason=(str(data["reason"]) if data.get("reason") is not None else None),
+    )
+
+
+def is_day_locked(dataset_root: str | Path, subject_code: str, day: int) -> bool:
+    return day_lock_path(dataset_root, subject_code, day).is_file()
+
+
+def unlock_day(dataset_root: str | Path, subject_code: str, day: int) -> bool:
+    """Remove the day lock file; returns ``False`` when there was nothing to unlock."""
+    path = day_lock_path(dataset_root, subject_code, day)
+    try:
+        path.unlink()
+        return True
+    except FileNotFoundError:
+        return False
+
+
+def list_locked_days(dataset_root: str | Path, subject_code: str) -> list[int]:
+    code = _validate_subject_code(subject_code)
+    root = _locks_root(dataset_root)
+    if not root.is_dir():
+        return []
+    prefix = f"{code}.d"
+    days: list[int] = []
+    for path in root.glob("*.json"):
+        stem = path.stem
+        if stem.startswith(prefix) and stem[len(prefix):].isdigit():
+            days.append(int(stem[len(prefix):]))
+    return sorted(days)
+
+
+def next_expected_day(dataset_root: str | Path, subject_code: str) -> int:
+    """Smallest collection day (starting at 1) that is not yet locked.
+
+    Days are collected and locked in order, so the next writable day is the
+    first unlocked one — locking d1 and d2 yields 3, none locked yields 1.
+    """
+    locked = set(list_locked_days(dataset_root, subject_code))
+    day = 1
+    while day in locked:
+        day += 1
+    return day
+
+
 __all__ = [
+    "DAY_LOCK_SCHEMA",
+    "DayLock",
     "SubjectLock",
     "SubjectLockedError",
+    "day_lock_path",
+    "is_day_locked",
     "is_subject_locked",
+    "list_locked_days",
     "list_locked_subjects",
+    "lock_day",
     "lock_subject",
+    "next_expected_day",
+    "read_day_lock",
     "read_subject_lock",
     "subject_lock_path",
+    "unlock_day",
     "unlock_subject",
 ]

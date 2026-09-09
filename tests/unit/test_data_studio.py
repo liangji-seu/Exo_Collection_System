@@ -289,6 +289,33 @@ def test_render_tree_preserves_user_expansion_across_rebuild(
     app.processEvents()
 
 
+def test_day_node_lock_reflects_in_tree(tmp_path: Path) -> None:
+    """按天锁在该 dX 节点显示 🔒；uuid 可解析出受试者与天次。"""
+    from exo_collection.storage.subject_lock import lock_day
+
+    app = QApplication.instance() or QApplication(["test-day-lock-tree"])
+    window = DataStudioWindow(tmp_path, autostart_refresh=False)
+
+    assert DataStudioWindow._parse_day_uuid("001:d2") == ("001", 2)
+    assert DataStudioWindow._parse_day_uuid("001:未分日") is None
+    assert DataStudioWindow._parse_day_uuid("no-colon") is None
+
+    day_node = {
+        "type": "day",
+        "uuid": "001:d1",
+        "label": "d1",
+        "children": [],
+    }
+    assert window._make_tree_item(day_node).text(0) == "d1"
+
+    lock_day(tmp_path, "001", 1)
+    locked_item = window._make_tree_item(day_node)
+    assert locked_item.text(0) == "🔒 d1"
+    assert "锁定" in locked_item.toolTip(0)
+    window.close()
+    app.processEvents()
+
+
 def test_saved_password_builds_direct_remote_request_without_dialog(
     tmp_path: Path,
     monkeypatch: object,

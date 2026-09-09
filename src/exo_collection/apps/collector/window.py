@@ -126,7 +126,10 @@ from exo_collection.domain.prompt_labels import PromptLabelEvent, PromptLabelSou
 from exo_collection.domain.xingying_trigger import XingYingTriggerKind
 from exo_collection.protocols import load_default_protocol
 from exo_collection.quality import load_storage_policy
-from exo_collection.storage.subject_lock import is_subject_locked
+from exo_collection.storage.subject_lock import (
+    is_subject_locked,
+    next_expected_day,
+)
 
 LOG = logging.getLogger("exo_collection.collector.ui")
 
@@ -2542,7 +2545,24 @@ class CollectorWindow(QMainWindow):
         raw = self.subject_code_edit.text().strip()
         if raw.isascii() and raw.isdigit() and 1 <= len(raw) <= 3:
             self.subject_code_edit.setText(raw.zfill(3))
+        self._sync_day_spin_to_lock_state()
         self._update_start_button()
+
+    def _sync_day_spin_to_lock_state(self) -> None:
+        """Auto-suggest the next writable collection day for the current subject.
+
+        Purely a convenience hint: ``start_trial`` re-validates the day against
+        the on-disk lock files, so this can never by itself authorise a write.
+        """
+        root_text = self.data_root_edit.text().strip()
+        code = self.subject_code_edit.text().strip()
+        if not root_text or not (code.isascii() and code.isdigit() and len(code) == 3):
+            return
+        try:
+            root = Path(root_text).expanduser().resolve()
+            self.day_spin.setValue(next_expected_day(root, code))
+        except Exception:
+            return
 
     def _subject_code(self) -> str:
         raw = self.subject_code_edit.text().strip()
@@ -4029,6 +4049,25 @@ class CollectorWindow(QMainWindow):
                 "请先在 Data Studio 中解锁该受试者。",
             )
             self.statusBar().showMessage(f"受试者 {request.subject_code} 已锁定，禁止写入。")
+            return
+
+        # Collection-day sequence guard: the chosen day must be the first
+        # unlocked day — neither a locked day nor a skipped one.
+        expected_day = next_expected_day(request.data_root, request.subject_code)
+        if request.day != expected_day:
+            if request.day < expected_day:
+                reason_text = f"第 {request.day} 天已被锁定"
+            else:
+                reason_text = "不能跳天采集"
+            QMessageBox.warning(
+                self,
+                "采集天次不正确",
+                f"受试者 {request.subject_code}：{reason_text}，本次应采集第 {expected_day} 天。\n"
+                "请检查 Data Studio 中的按天锁状态，或把「第几天」改为该天次。",
+            )
+            self.statusBar().showMessage(
+                f"第 {request.day} 天不可写入，应采集第 {expected_day} 天。"
+            )
             return
 
         # Only require at least one connected modality.

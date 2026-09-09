@@ -47,8 +47,11 @@ from exo_collection.configuration import SharedAppSettings
 from exo_collection.external import ExternalImportRequest, ExternalImportResult
 from exo_collection.storage.activity import AcquisitionActivity, read_activity
 from exo_collection.storage.subject_lock import (
+    is_day_locked,
     is_subject_locked,
+    lock_day,
     lock_subject,
+    unlock_day,
     unlock_subject,
 )
 
@@ -2723,6 +2726,16 @@ class DataStudioWindow(QMainWindow):
                     item.setToolTip(0, "该受试者已锁定，采集端禁止写入")
             except ValueError:
                 pass
+        elif node_type == "day":
+            parsed = self._parse_day_uuid(str(node.get("uuid") or ""))
+            if parsed is not None:
+                code, day = parsed
+                try:
+                    if is_day_locked(self._data_root, code, day):
+                        item.setText(0, f"🔒 {item.text(0)}")
+                        item.setToolTip(0, "该天已锁定，采集端禁止写入该天数据")
+                except ValueError:
+                    pass
         elif node_type == "trial":
             item.setData(
                 0,
@@ -2793,45 +2806,97 @@ class DataStudioWindow(QMainWindow):
                 item.addChild(self._make_tree_item(child))
         return item
 
-    def _current_subject_code(self) -> str | None:
+    @staticmethod
+    def _parse_day_uuid(uuid: str) -> tuple[str, int] | None:
+        """Parse a day-node uuid ``"001:d2"`` into ``(subject_code, day)``.
+
+        Returns ``None`` when the uuid is not a subject-day pair (e.g. legacy
+        ``"001:未分日"``), which has no numeric collection day to lock.
+        """
+        if not uuid or ":" not in uuid:
+            return None
+        code, _, day_label = uuid.partition(":")
+        day_label = day_label.strip().lower()
+        if len(code) != 3 or not code.isdigit():
+            return None
+        if not day_label.startswith("d"):
+            return None
+        digits = day_label[1:]
+        if not digits.isdigit():
+            return None
+        return code, int(digits)
+
+    def _current_lock_target(self) -> tuple[str, ...] | None:
         item = self.tree_widget.currentItem()
         if item is None:
             return None
-        if str(item.data(1, Qt.ItemDataRole.UserRole) or "") != "subject":
-            return None
-        code = str(item.data(0, Qt.ItemDataRole.UserRole) or "").strip()
-        return code or None
+        node_type = str(item.data(1, Qt.ItemDataRole.UserRole) or "")
+        identity = str(item.data(0, Qt.ItemDataRole.UserRole) or "").strip()
+        if node_type == "subject" and identity:
+            return ("subject", identity)
+        if node_type == "day":
+            parsed = self._parse_day_uuid(identity)
+            if parsed is not None:
+                return ("day", parsed[0], parsed[1])
+        return None
 
     def _update_subject_lock_action(self, *_args: object) -> None:
-        code = self._current_subject_code()
-        if code is None:
+        target = self._current_lock_target()
+        if target is None:
             self.lock_subject_button.setEnabled(False)
-            self.lock_subject_button.setText("锁定受试者")
+            self.lock_subject_button.setText("锁定受试者/天")
             return
-        try:
-            locked = is_subject_locked(self._data_root, code)
-        except ValueError:
-            locked = False
+        if target[0] == "subject":
+            _kind, code = target
+            try:
+                locked = is_subject_locked(self._data_root, code)
+            except ValueError:
+                locked = False
+            self.lock_subject_button.setText(
+                f"解锁受试者 {code}" if locked else f"锁定受试者 {code}"
+            )
+        else:
+            _kind, code, day = target
+            try:
+                locked = is_day_locked(self._data_root, code, day)
+            except ValueError:
+                locked = False
+            self.lock_subject_button.setText(
+                f"解锁第 {day} 天" if locked else f"锁定第 {day} 天"
+            )
         self.lock_subject_button.setEnabled(True)
-        self.lock_subject_button.setText(
-            f"解锁受试者 {code}" if locked else f"锁定受试者 {code}"
-        )
 
     @Slot()
     def toggle_subject_lock(self) -> None:
-        code = self._current_subject_code()
-        if code is None:
+        target = self._current_lock_target()
+        if target is None:
             return
-        try:
-            locked = is_subject_locked(self._data_root, code)
-        except ValueError:
-            return
-        if locked:
-            unlock_subject(self._data_root, code)
-            self.statusBar().showMessage(f"已解锁受试者 {code}。")
+        if target[0] == "subject":
+            _kind, code = target
+            try:
+                locked = is_subject_locked(self._data_root, code)
+            except ValueError:
+                return
+            if locked:
+                unlock_subject(self._data_root, code)
+                self.statusBar().showMessage(f"已解锁受试者 {code}。")
+            else:
+                lock_subject(self._data_root, code)
+                self.statusBar().showMessage(f"已锁定受试者 {code}，采集端禁止写入。")
         else:
-            lock_subject(self._data_root, code)
-            self.statusBar().showMessage(f"已锁定受试者 {code}，采集端禁止写入。")
+            _kind, code, day = target
+            try:
+                locked = is_day_locked(self._data_root, code, day)
+            except ValueError:
+                return
+            if locked:
+                unlock_day(self._data_root, code, day)
+                self.statusBar().showMessage(f"已解锁受试者 {code} 第 {day} 天。")
+            else:
+                lock_day(self._data_root, code, day)
+                self.statusBar().showMessage(
+                    f"已锁定受试者 {code} 第 {day} 天，采集端禁止写入。"
+                )
         self._update_subject_lock_action()
         if self._catalog_tree:
             self._render_tree(self._catalog_tree)

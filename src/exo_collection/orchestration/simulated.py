@@ -91,7 +91,11 @@ from exo_collection.reporting.preview_png import (
     publish_quality_preview_pngs,
 )
 from exo_collection.storage.activity import AcquisitionLock
-from exo_collection.storage.subject_lock import SubjectLockedError, is_subject_locked
+from exo_collection.storage.subject_lock import (
+    SubjectLockedError,
+    is_subject_locked,
+    next_expected_day,
+)
 from exo_collection.storage.checksum import sha256_file
 from exo_collection.storage.layout import TrialLayout
 from exo_collection.storage.manifest import (
@@ -705,6 +709,18 @@ def run_trial(
         raise SubjectLockedError(
             f"subject {request.subject_code} is locked; refusing to write "
             f"{layout.subject_directory}"
+        )
+    # Collection-day sequence guard: the day must be the first unlocked day, so
+    # the operator can neither re-write a locked day nor skip ahead.
+    expected_day = next_expected_day(root, request.subject_code)
+    if request.day != expected_day:
+        if request.day < expected_day:
+            reason_text = f"第 {request.day} 天已锁定"
+        else:
+            reason_text = f"不能跳天采集"
+        raise SubjectLockedError(
+            f"subject {request.subject_code} 第 {request.day} 天不可写入："
+            f"{reason_text}，应采集第 {expected_day} 天"
         )
     machine = TrialStateMachine()
     device_profile = load_device_profile(request.device_profile_key)
