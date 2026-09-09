@@ -95,7 +95,28 @@ ProcessWindow（UI 线程，所有 Qt 对象）
 
 ## 4. 数据规格与格式
 
-### 4.1 输入（每个动态 session）
+### 4.1 数据文件树（session 定位）
+
+Process 与 Data Studio / Calculate 共享同一数据根，按五级层级定位 session（受试者 / 第几天 / 主工况 / 详细工况 / session）：
+
+```text
+{data_root}/
+└── {subject}/                          # 受试者，如 103
+    └── d{day}/                         # 第几天（采集天次），如 d1
+        └── {project}/                  # 主工况，如 F_STEADY
+            └── {condition}/            # 详细工况，如 WALK_0P6_EXO
+                └── session{repeat}_{YYYYmmdd_HHMMSS}/   # session（最小数据单元）
+                    ├── <capture>.c3d / <capture>.txt    # 动态输入（XINGYING + Gaitway）
+                    ├── mocap.h5 / imu.h5                # 动捕 / IMU（HDF5）
+                    ├── ground_truth.csv                 # 训练真值（Process 输出）
+                    ├── ground_truth.qc.json             # QC 溯源 sidecar
+                    ├── .exo/manifest.json               # 采集契约
+                    └── derived/opensim/run_*/           # 解算中间产物（viewer/*.npy + result.json）
+```
+
+静态标定 session（STAND 主工况）也位于同一树内，Process 通过 `recommend_static_for_subject` 自动推荐本受试者最近的静态 session。
+
+### 4.2 输入（每个动态 session）
 
 | 文件 | 内容 | 来源 |
 |---|---|---|
@@ -106,7 +127,7 @@ ProcessWindow（UI 线程，所有 Qt 对象）
 
 输入校验（[batch.py:229-234](src/exo_collection/apps/process/batch.py)）：`has_dynamic_inputs`（c3d + txt + mocap.h5 + imu.h5 齐全）且静态 C3D 存在，否则 `ValueError`。
 
-### 4.2 输出
+### 4.3 输出
 
 | 文件 | 位置 | 内容 |
 |---|---|---|

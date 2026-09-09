@@ -103,7 +103,23 @@ Data Studio 与采集端 Exo Collector 构成双桌面程序架构，二者共�
 
 ### 4.1 目录布局与 Catalog
 
-- trial 目录：`{root}/{subject}/d{day}/{project}/{condition}/session{repeat}_{ts}/`；`.exo/` 存 `manifest.json` + `checksums.sha256`；未发布后缀 `.recording/.partial/.aborted/.building`。
+**数据文件树**（五级：受试者 / 第几天 / 主工况 / 详细工况 / session）：
+
+```text
+{data_root}/
+└── {subject}/                          # 受试者，如 103
+    └── d{day}/                         # 第几天（采集天次），如 d1
+        └── {project}/                  # 主工况，如 F_STEADY
+            └── {condition}/            # 详细工况，如 WALK_0P6_EXO
+                └── session{repeat}_{YYYYmmdd_HHMMSS}/   # session，如 session1_20260908_055822
+                    ├── .exo/
+                    │   ├── manifest.json                # 采集契约（schema 1.2.0，含四级 UUID）
+                    │   └── checksums.sha256             # 每文件 SHA-256
+                    ├── (设备原始数据：超声 / IMU / EMG / mocap / 测力台…)
+                    └── derived/opensim/run_*/           # 解算产物（viewer/*.npy、result.json）
+```
+
+- 未发布 session 目录带后缀 `.recording/.partial/.aborted/.building`，FINALIZED 后去掉。
 - **Catalog**：SQLite `.exo/catalog.sqlite3`，WAL、`busy_timeout 5000`、`foreign_keys ON`、Alembic 迁移 + `.migrate.lock` 文件锁（Windows `msvcrt.locking`）。trial 真实主键是 UUID，人类可读名仅展示。
 - 外部 annex：`external_annexes/<trial_uuid>/<annex_uuid>/`。
 - 审核链：`.studio-records/quality-reviews/{trial_uuid}/`，文件名 `{timestamp}-{review_uuid}-{digest}.json`。
@@ -111,7 +127,7 @@ Data Studio 与采集端 Exo Collector 构成双桌面程序架构，二者共�
 
 ### 4.2 远端目录与同步索引
 
-- 远端目录：`remote_workdir/{project}/{subject}/{session}/trials/{trial_uuid}/`（镜像本地相对路径）。`validate_remote_directory()` 要求绝对 POSIX 路径，每段只允许 `[A-Za-z0-9._-]`。
+- 远端目录：`remote_workdir/{subject}/d{day}/{project}/{condition}/session{repeat}_{ts}/`（[upload.py:578-603](src/exo_collection/apps/data_studio/upload.py) `build_remote_trial_directory` 精确镜像本地相对路径，含「第几天」层级）。`validate_remote_directory()` 要求绝对 POSIX 路径，每段只允许 `[A-Za-z0-9._-]`。
 - 同步索引：远端 `data/.exo/exo_sync_index.json`（schema `exo.remote-sync-index/v1`）+ 本地 `data/.exo/exo_sync_cache.json`（`exo.local-sync-cache/v1`）。状态同步只读并对比这两个小索引，不通过网络重算大文件 SHA-256。
 - 包指纹：`_package_fingerprint()` = 对 `relpath\0size\0sha256\n` 按 relpath 排序后整体 SHA-256，作为上传去重/合并单元指纹。
 
