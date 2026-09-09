@@ -5,19 +5,28 @@
 生成的 ``{subject}_{condition}_r{repeat}_{uuid8}``）。
 
 本控件嵌在 Collector 主界面左下角（左控制列底部），不是 dock：点「开始写盘」时由窗口
-调用 :meth:`set_filename` 填入主干，操作员停止写盘后点「复制主干」或「复制 .txt」把名字
-写进剪贴板去命名 gaitway3d 导出的 txt。
+调用 :meth:`set_filename` 填入主干，操作员停止写盘后点「复制文件名」把名字写进剪贴板，
+同时弹出一个 1 秒后自动消失的「复制成功」小提示。
 """
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QLineEdit, QPushButton, QWidget
+from PySide6.QtCore import QTimer, Qt
+from PySide6.QtWidgets import (
+    QApplication,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QWidget,
+)
 
 _PLACEHOLDER = "开始写盘后生成"
+_COPY_CONFIRM_MS = 1000
 
 
 class SyncFilenameBar(QWidget):
-    """一行「同步文件名」：文本框 + 两个复制按钮。"""
+    """一行「同步文件名」：文本框 + 一个「复制文件名」按钮。"""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -31,15 +40,12 @@ class SyncFilenameBar(QWidget):
         self.line_edit.setReadOnly(True)
         self.line_edit.setPlaceholderText(_PLACEHOLDER)
 
-        self.copy_stem_button = QPushButton("复制主干", self)
+        self.copy_stem_button = QPushButton("复制文件名", self)
         self.copy_stem_button.setObjectName("copy_sync_stem")
         self.copy_stem_button.setToolTip("复制文件名主干（不含扩展名）")
+        self.copy_stem_button.setMinimumHeight(32)
+        self.copy_stem_button.setMinimumWidth(96)
         self.copy_stem_button.clicked.connect(self._copy_stem)
-
-        self.copy_txt_button = QPushButton("复制 .txt", self)
-        self.copy_txt_button.setObjectName("copy_sync_txt")
-        self.copy_txt_button.setToolTip("复制带 .txt 后缀的完整文件名")
-        self.copy_txt_button.clicked.connect(self._copy_txt)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -47,7 +53,32 @@ class SyncFilenameBar(QWidget):
         layout.addWidget(self._label)
         layout.addWidget(self.line_edit, 1)
         layout.addWidget(self.copy_stem_button)
-        layout.addWidget(self.copy_txt_button)
+
+        # 复制成功小弹窗：独立小窗，点击复制后显示 1 秒自动消失。
+        self.copy_toast = QLabel(
+            "复制成功",
+            self,
+            Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint,
+        )
+        self.copy_toast.setObjectName("copy_toast")
+        self.copy_toast.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.copy_toast.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.copy_toast.setStyleSheet(
+            "QLabel {"
+            "background-color:#E6F4EA;"
+            "color:#1F5D36;"
+            "border:1px solid #79B78C;"
+            "border-radius:6px;"
+            "font-size:12px;"
+            "font-weight:600;"
+            "padding:6px 14px;"
+            "}"
+        )
+        self.copy_toast.adjustSize()
+
+        self._copy_toast_timer = QTimer(self)
+        self._copy_toast_timer.setSingleShot(True)
+        self._copy_toast_timer.timeout.connect(self.copy_toast.hide)
 
         self.set_filename(None)
 
@@ -63,7 +94,6 @@ class SyncFilenameBar(QWidget):
             self.line_edit.clear()
             self.line_edit.setToolTip("")
         self.copy_stem_button.setEnabled(self._name is not None)
-        self.copy_txt_button.setEnabled(self._name is not None)
 
     def filename(self) -> str | None:
         """当前显示的文件名主干（无 trial 时为 ``None``）。"""
@@ -72,12 +102,27 @@ class SyncFilenameBar(QWidget):
     # ── copy ─────────────────────────────────────────────────────────────
 
     def _copy_stem(self) -> None:
-        if self._name:
-            QApplication.clipboard().setText(self._name)
+        if not self._name:
+            return
+        QApplication.clipboard().setText(self._name)
+        self._show_copy_toast()
 
-    def _copy_txt(self) -> None:
-        if self._name:
-            QApplication.clipboard().setText(f"{self._name}.txt")
+    def _show_copy_toast(self) -> None:
+        """在复制按钮上方弹出「复制成功」，1 秒后自动消失。"""
+        top_left = self.copy_stem_button.mapToGlobal(
+            self.copy_stem_button.rect().topLeft()
+        )
+        bottom_right = self.copy_stem_button.mapToGlobal(
+            self.copy_stem_button.rect().bottomRight()
+        )
+        self.copy_toast.adjustSize()
+        self.copy_toast.move(
+            bottom_right.x() - self.copy_toast.width(),
+            top_left.y() - self.copy_toast.height() - 6,
+        )
+        self.copy_toast.show()
+        self.copy_toast.raise_()
+        self._copy_toast_timer.start(_COPY_CONFIRM_MS)
 
 
 __all__ = ["SyncFilenameBar"]

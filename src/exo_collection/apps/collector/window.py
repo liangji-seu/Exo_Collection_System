@@ -1912,7 +1912,7 @@ class CollectorWindow(QMainWindow):
 
         # ── 同步文件名条（左下角空档）：开始写盘时生成文件名主干，供复制命名 txt ──
         self._sync_filename_bar = SyncFilenameBar()
-        self._sync_filename_bar.setFixedHeight(28)
+        self._sync_filename_bar.setFixedHeight(38)
         controls_layout.addWidget(self._sync_filename_bar)
 
         # ── Toast overlay for alerts ──
