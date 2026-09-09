@@ -29,6 +29,7 @@ from exo_collection.apps.calculate.discovery import (
     distinct_days,
     recommend_static_for_subject,
 )
+from exo_collection.apps.calculate.ground_truth_status import read_ground_truth_qc
 from exo_collection.apps.calculate.models import SessionRecord
 
 _log = logging.getLogger(__name__)
@@ -43,20 +44,49 @@ def _format_condition_parameters(record: SessionRecord) -> str:
     return " ".join(pieces)
 
 
-def _short_date(started_at_utc: str) -> str:
-    # ISO 字符串形如 2026-09-02T14:58:32(+00:00)；只取日期部分。
-    return started_at_utc[:10] if started_at_utc else ""
+def _completeness(record: SessionRecord) -> tuple[bool, tuple[str, ...]]:
+    """返回 ``(是否齐全, 缺失标签)``。
+
+    动态工况要求 c3d + Gaitway txt + mocap.h5 + imu.h5 四件套齐全；静态标定
+    只需 c3d（不参与测力台 / IMU 解算），避免把静态试次误报成「缺 txt」。
+    """
+    if record.is_stand:
+        missing = () if record.files.c3d_path is not None else ("C3D",)
+    else:
+        missing = record.files.missing()
+    return (not missing, missing)
+
+
+def _solve_status(record: SessionRecord) -> str:
+    """Data Studio 同款的「齐全 / 是否已解算」短标签。
+
+    「已解算」以 ``ground_truth.csv`` 存在为准（run_process 批量解算的产物），
+    QC 结论来自 ``read_ground_truth_qc``；与 Data Studio 的
+    ``齐全 · 已解算 · QC XXX / 齐全 · 未解算 / 缺 …`` 口径一致。
+    """
+    complete, missing = _completeness(record)
+    if not complete:
+        return "缺 " + "、".join(missing)
+    if record.is_stand:
+        return "齐全"  # 静态标定没有「解算」概念
+    if (record.session_dir / "ground_truth.csv").is_file():
+        qc = read_ground_truth_qc(record.session_dir)
+        return f"齐全 · 已解算 · QC {qc or '未知'}"
+    return "齐全 · 未解算"
 
 
 def _dynamic_label(record: SessionRecord) -> str:
     return (
         f"{record.condition_code} {_format_condition_parameters(record)} · "
-        f"r{record.repeat_index} · {_short_date(record.started_at_utc)}"
+        f"r{record.repeat_index} · {record.session_name} · {_solve_status(record)}"
     ).strip()
 
 
 def _static_label(record: SessionRecord) -> str:
-    return f"{record.condition_code} · r{record.repeat_index} · {_short_date(record.started_at_utc)}"
+    return (
+        f"{record.condition_code} · r{record.repeat_index} · "
+        f"{record.session_name} · {_solve_status(record)}"
+    ).strip()
 
 
 class SessionSelector(QWidget):
