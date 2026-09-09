@@ -602,3 +602,79 @@ def test_session_selector_auto_binds_static_and_dynamic(tmp_path: Path, monkeypa
     assert selector.current_static() is not None
     assert selector.current_static().is_stand
     assert selector.current_static().started_at_utc.startswith("2026-09-02")
+
+
+def test_day_from_session_dir_parses_canonical_layout() -> None:
+    from exo_collection.apps.calculate.discovery import day_from_session_dir
+
+    assert day_from_session_dir(Path("data/001/d2/F_STEADY/WALK/session1")) == 2
+    assert day_from_session_dir(Path("data/001/d10/F_STEADY/WALK/session1")) == 10
+
+
+def test_day_from_session_dir_returns_none_without_day_dir() -> None:
+    from exo_collection.apps.calculate.discovery import day_from_session_dir
+
+    assert day_from_session_dir(Path("data/001/F_STEADY/WALK/session1")) is None
+
+
+def test_distinct_days_sorted_with_none_last() -> None:
+    from dataclasses import replace
+
+    from exo_collection.apps.calculate.discovery import distinct_days
+
+    records = [
+        replace(_make_session(), day=2),
+        replace(_make_session(), day=1),
+        replace(_make_session(), day=None),
+        replace(_make_session(), day=3),
+    ]
+    assert distinct_days(records) == [1, 2, 3, None]
+
+
+def test_recommend_static_for_subject_day_scoped() -> None:
+    from dataclasses import replace
+
+    from exo_collection.apps.calculate.discovery import recommend_static_for_subject
+
+    static_d1 = replace(_stand_session(date="2026-08-01T00:00:00"), day=1)
+    static_d2 = replace(_stand_session(date="2026-09-02T00:00:00"), day=2)
+    dynamic = replace(_make_session(subject="003", condition="WALK_STEADY_1P00"), day=2)
+    sessions = [static_d1, static_d2, dynamic]
+
+    assert recommend_static_for_subject("003", sessions, day=1) == static_d1
+    assert recommend_static_for_subject("003", sessions, day=2) == static_d2
+    assert recommend_static_for_subject("003", sessions, day=3) is None
+    # 省略 day 时仍返回该受试者最近静态，不受天数过滤影响。
+    assert recommend_static_for_subject("003", sessions) == static_d2
+
+
+def test_session_selector_scopes_by_day(tmp_path: Path, monkeypatch) -> None:
+    from dataclasses import replace
+
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+
+    from exo_collection.apps.calculate import session_selector
+
+    sessions = [
+        replace(_stand_session(date="2026-08-01T00:00:00"), day=1),
+        replace(_stand_session(date="2026-09-02T00:00:00"), day=2),
+        replace(_make_session(subject="003", condition="WALK_STEADY_1P00"), day=1),
+        replace(_make_session(subject="003", condition="WALK_FAST_1P50"), day=2),
+    ]
+    monkeypatch.setattr(session_selector, "discover_sessions", lambda root: sessions)
+
+    selector = session_selector.SessionSelector(tmp_path)
+
+    # 默认选中 d1：动态/静态只含 d1。
+    assert selector._day_combo.currentData() == 1
+    assert selector.current_dynamic().condition_code == "WALK_STEADY_1P00"
+    assert selector.current_static().day == 1
+
+    # 切到 d2：动态/静态只含 d2。
+    selector._day_combo.setCurrentIndex(1)
+    assert selector._day_combo.currentData() == 2
+    assert selector.current_dynamic().condition_code == "WALK_FAST_1P50"
+    assert selector.current_static().day == 2
+    selector.close()

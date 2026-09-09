@@ -169,6 +169,7 @@ def test_process_window_dispatches_report_for_selected_subject(
         assert len(started) == 1
         assert started[0]._subject == "103"
         assert not window._report_button.isEnabled()
-        assert "按 d1/d2 分开" in window._log.toPlainText()
+        assert "数据质量报告" in window._log.toPlainText()
+        assert "未分日" in window._log.toPlainText()
     finally:
         window.close()

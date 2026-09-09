@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 from exo_collection.apps.calculate._pipeline import pipeline_root
 from exo_collection.apps.calculate.discovery import (
     discover_sessions,
+    distinct_days,
     recommend_static_for_subject,
 )
 from exo_collection.apps.calculate.models import SessionRecord
@@ -68,6 +69,7 @@ class ProcessWindow(QMainWindow):
 
         self._sessions: list[SessionRecord] = []
         self._subject_sessions: list[SessionRecord] = []
+        self._day_sessions: list[SessionRecord] = []
         self._static_candidates: list[SessionRecord] = []
         self._opensim_python: Path | None = None
         self._generic_model: Path | None = None
@@ -101,6 +103,12 @@ class ProcessWindow(QMainWindow):
         self._subject_combo.currentIndexChanged.connect(self._on_subject_changed)
         row.addWidget(self._subject_combo)
 
+        row.addWidget(QLabel("天数："))
+        self._day_combo = QComboBox()
+        self._day_combo.setMinimumWidth(100)
+        self._day_combo.currentIndexChanged.connect(self._on_day_changed)
+        row.addWidget(self._day_combo)
+
         static_row = QHBoxLayout()
         static_row.addWidget(QLabel("静态标定："))
         self._static_combo = QComboBox()
@@ -110,7 +118,9 @@ class ProcessWindow(QMainWindow):
         self._cross_subject_check.setToolTip("用于手动选择其他受试者编号下的标定；仅影响静态模型来源。")
         self._cross_subject_check.toggled.connect(
             lambda _: self._rebuild_static(
-                self._subject_combo.currentText(), preserve_selection=True
+                self._subject_combo.currentText(),
+                day=self._selected_day(),
+                preserve_selection=True,
             )
         )
         static_row.addWidget(self._cross_subject_check)
@@ -130,7 +140,7 @@ class ProcessWindow(QMainWindow):
 
         self._report_button = QPushButton("导出质量报告 PNG")
         self._report_button.setToolTip(
-            "按当前受试者的 d1/d2 分别汇总全部 session，并保存到对应受试者/dx 目录。"
+            "按当前受试者所选天数汇总该天全部 session，并保存到对应受试者/dx 目录。"
         )
         self._report_button.clicked.connect(self._on_report_clicked)
         row.addWidget(self._report_button)
@@ -222,6 +232,8 @@ class ProcessWindow(QMainWindow):
         else:
             self._tree.clear()
             self._static_combo.clear()
+            self._day_combo.clear()
+            self._day_sessions = []
 
     def _on_subject_changed(self, index: int) -> None:
         code = self._subject_combo.itemText(index)
@@ -230,15 +242,36 @@ class ProcessWindow(QMainWindow):
         self._subject_sessions = [
             s for s in self._sessions if s.subject_code == code
         ]
-        self._rebuild_tree()
-        self._rebuild_static(code)
+        days = distinct_days(self._subject_sessions)
+        self._day_combo.blockSignals(True)
+        self._day_combo.clear()
+        for day in days:
+            label = f"d{day}" if day is not None else "未分日"
+            self._day_combo.addItem(label, day)
+        self._day_combo.setCurrentIndex(0)
+        self._day_combo.blockSignals(False)
+        self._on_day_changed(self._day_combo.currentIndex())
 
-    def _rebuild_static(self, subject_code: str, *, preserve_selection: bool = False) -> None:
+    def _selected_day(self) -> int | None:
+        return self._day_combo.currentData()
+
+    def _on_day_changed(self, index: int) -> None:
+        day = self._day_combo.itemData(index)
+        self._day_sessions = [
+            s for s in self._subject_sessions if s.day == day
+        ]
+        self._rebuild_tree()
+        self._rebuild_static(self._subject_combo.currentText(), day=day)
+
+    def _rebuild_static(
+        self, subject_code: str, *, day: int | None, preserve_selection: bool = False
+    ) -> None:
         previous = self._selected_static() if preserve_selection else None
         self._static_candidates = [
             s
             for s in self._sessions
             if s.is_stand and s.files.c3d_path is not None
+            and s.day == day
             and (s.subject_code == subject_code or self._cross_subject_check.isChecked())
         ]
         self._static_combo.blockSignals(True)
@@ -252,7 +285,7 @@ class ProcessWindow(QMainWindow):
         self._static_combo.setCurrentIndex(-1)
         self._static_combo.blockSignals(False)
 
-        recommended = recommend_static_for_subject(subject_code, self._sessions)
+        recommended = recommend_static_for_subject(subject_code, self._sessions, day=day)
         if previous is not None and any(
             s.manifest_path == previous.manifest_path for s in self._static_candidates
         ):
@@ -269,7 +302,7 @@ class ProcessWindow(QMainWindow):
         self._item_by_session_name.clear()
         # 按工况分组（保持数据树结构）。
         groups: dict[str, list[SessionRecord]] = {}
-        for record in self._subject_sessions:
+        for record in self._day_sessions:
             key = record.condition_code or record.condition_name or "(未命名工况)"
             groups.setdefault(key, []).append(record)
 
@@ -355,7 +388,7 @@ class ProcessWindow(QMainWindow):
 
         overwrite = self._overwrite_check.isChecked()
         targets: list[SessionRecord] = []
-        for record in self._subject_sessions:
+        for record in self._day_sessions:
             state = session_solve_status(record)
             if state is SessionSolveState.UNSOLVED:
                 targets.append(record)
@@ -389,7 +422,8 @@ class ProcessWindow(QMainWindow):
         self._log.clear()
         self._set_running(True)
         self._append_log(
-            f"开始批量解算 {len(targets)} 个 session（动态受试者 {self._subject_combo.currentText()}；"
+            f"开始批量解算 {len(targets)} 个 session（动态受试者 {self._subject_combo.currentText()} / "
+            f"{self._day_combo.currentText()}；"
             f"静态来源 {static.subject_code} / {static.condition_code} / {static.session_name}）。"
         )
         self._append_log(f"静态 C3D：{static.files.c3d_path}")
@@ -397,6 +431,7 @@ class ProcessWindow(QMainWindow):
 
     def _set_running(self, running: bool) -> None:
         self._subject_combo.setEnabled(not running)
+        self._day_combo.setEnabled(not running)
         self._static_combo.setEnabled(not running)
         self._cross_subject_check.setEnabled(not running)
         self._overwrite_check.setEnabled(not running)
@@ -412,12 +447,12 @@ class ProcessWindow(QMainWindow):
         if self._batch_worker is not None or self._quality_report_worker is not None:
             return
         subject = self._subject_combo.currentText()
-        if not subject or not self._subject_sessions:
-            QMessageBox.information(self, "没有数据", "当前没有可汇总的受试者 session。")
+        if not subject or not self._day_sessions:
+            QMessageBox.information(self, "没有数据", "当前所选天数没有可汇总的 session。")
             return
 
         self._quality_report_worker = QualityReportWorker(
-            self._subject_sessions,
+            self._day_sessions,
             self._data_root,
             subject,
         )
@@ -426,13 +461,15 @@ class ProcessWindow(QMainWindow):
         self._quality_report_worker.signals.failed.connect(self._on_report_failed)
         self._set_report_running(True)
         self._progress.setRange(0, 0)
+        day_label = self._day_combo.currentText()
         self._append_log(
-            f"开始导出 {subject} 的数据质量报告；将按 d1/d2 分开，并重新复核独立 MTw 同步。"
+            f"开始导出 {subject} / {day_label} 的数据质量报告；并重新复核独立 MTw 同步。"
         )
         self._thread_pool.start(self._quality_report_worker)
 
     def _set_report_running(self, running: bool) -> None:
         self._subject_combo.setEnabled(not running)
+        self._day_combo.setEnabled(not running)
         self._static_combo.setEnabled(not running)
         self._cross_subject_check.setEnabled(not running)
         self._overwrite_check.setEnabled(not running)

@@ -86,6 +86,12 @@ class SessionRecord:
     started_at_utc: str
     condition_parameters: dict[str, Any] = field(default_factory=dict)
     files: SessionFiles = field(default_factory=SessionFiles)
+    day: int | None = None
+
+    @property
+    def day_label(self) -> str:
+        """采集日标签：``d{day}`` 或旧数据无 day 时的 ``未分日``。"""
+        return f"d{self.day}" if self.day is not None else "未分日"
 
     @property
     def is_stand(self) -> bool:

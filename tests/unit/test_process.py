@@ -391,3 +391,58 @@ def test_cross_subject_static_is_explicit_and_reaches_batch(tmp_path, monkeypatc
         assert "静态来源 102" in window._log.toPlainText()
     finally:
         window.close()
+
+
+def test_day_scoping_scopes_tree_and_batch(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from PySide6.QtWidgets import QApplication
+    from exo_collection.apps.process import window as window_module
+
+    app = QApplication.instance() or QApplication([])
+    static_d1 = replace(
+        _static_session(tmp_path / "s1"), day=1, condition_code="STATIC_CALIB"
+    )
+    static_d2 = replace(
+        _static_session(tmp_path / "s2"), day=2, condition_code="STATIC_CALIB"
+    )
+    dynamic_d1 = replace(
+        _make_session(tmp_path, files=_complete_files(), name="walk_d1"), day=1
+    )
+    dynamic_d2 = replace(
+        _make_session(tmp_path, files=_complete_files(), name="walk_d2"), day=2
+    )
+    monkeypatch.setattr(
+        window_module, "discover_sessions",
+        lambda _: [static_d1, static_d2, dynamic_d1, dynamic_d2],
+    )
+    monkeypatch.setattr(window_module.ProcessWindow, "_resolve_opensim_env", lambda _: None)
+    window = window_module.ProcessWindow(tmp_path, settings=None)
+    try:
+        # 天数下拉列出 d1/d2，默认 d1；静态候选只含 d1。
+        labels = [window._day_combo.itemText(i) for i in range(window._day_combo.count())]
+        assert labels == ["d1", "d2"]
+        assert window._day_combo.currentData() == 1
+        assert {r.session_name for r in window._day_sessions} == {"static", "walk_d1"}
+        assert window._static_candidates == [static_d1]
+
+        # 切到 d2：树/批量只含 d2，静态只绑定 d2 的 STAND。
+        window._day_combo.setCurrentIndex(1)
+        assert window._day_combo.currentData() == 2
+        assert {r.session_name for r in window._day_sessions} == {"static", "walk_d2"}
+        assert window._static_candidates == [static_d2]
+
+        window._opensim_python = Path("python")
+        window._generic_model = Path("model")
+        started = []
+
+        class Pool:
+            def start(self, worker):
+                started.append(worker)
+
+        window._thread_pool = Pool()
+        window._on_batch_clicked()
+        assert len(started) == 1
+        assert {r.session_name for r in started[0]._sessions} == {"walk_d2"}
+        assert started[0]._static == static_d2
+    finally:
+        window.close()

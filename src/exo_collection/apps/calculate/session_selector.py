@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 
 from exo_collection.apps.calculate.discovery import (
     discover_sessions,
+    distinct_days,
     recommend_static_for_subject,
 )
 from exo_collection.apps.calculate.models import SessionRecord
@@ -69,11 +70,15 @@ class SessionSelector(QWidget):
         super().__init__(parent)
         self._data_root = Path(data_root)
         self._sessions: list[SessionRecord] = []
+        self._subject_sessions: list[SessionRecord] = []
         self._dynamic: SessionRecord | None = None
         self._static: SessionRecord | None = None
 
         self._subject_combo = QComboBox()
         self._subject_combo.currentIndexChanged.connect(self._on_subject_changed)
+
+        self._day_combo = QComboBox()
+        self._day_combo.currentIndexChanged.connect(self._on_day_changed)
 
         self._dynamic_combo = QComboBox()
         self._dynamic_combo.currentIndexChanged.connect(self._on_dynamic_changed)
@@ -89,6 +94,7 @@ class SessionSelector(QWidget):
 
         form = QFormLayout()
         form.addRow("受试者：", self._subject_combo)
+        form.addRow("天数：", self._day_combo)
         form.addRow("动态工况：", self._dynamic_combo)
         form.addRow("静态标定：", self._static_combo)
 
@@ -159,18 +165,33 @@ class SessionSelector(QWidget):
     # ------------------------------------------------------------------
     def _apply_subject(self) -> None:
         code = self._subject_combo.currentData()
-        subject_sessions = [s for s in self._sessions if s.subject_code == code]
+        self._subject_sessions = [s for s in self._sessions if s.subject_code == code]
+
+        days = distinct_days(self._subject_sessions)
+        self._day_combo.blockSignals(True)
+        self._day_combo.clear()
+        for day in days:
+            label = f"d{day}" if day is not None else "未分日"
+            self._day_combo.addItem(label, day)
+        self._day_combo.setCurrentIndex(0)
+        self._day_combo.blockSignals(False)
+        self._apply_day()
+
+    def _apply_day(self) -> None:
+        code = self._subject_combo.currentData()
+        day = self._day_combo.currentData()
+        day_sessions = [s for s in self._subject_sessions if s.day == day]
 
         dynamics = sorted(
-            [s for s in subject_sessions if not s.is_stand],
+            [s for s in day_sessions if not s.is_stand],
             key=lambda s: (s.condition_code, s.repeat_index, s.started_at_utc),
         )
         statics = sorted(
-            [s for s in subject_sessions if s.is_stand],
+            [s for s in day_sessions if s.is_stand],
             key=lambda s: s.started_at_utc,
             reverse=True,
         )
-        recommended = recommend_static_for_subject(code, self._sessions)
+        recommended = recommend_static_for_subject(code, self._sessions, day=day)
 
         self._populate_combo(self._dynamic_combo, dynamics, _dynamic_label)
         self._populate_combo(
@@ -190,6 +211,9 @@ class SessionSelector(QWidget):
 
     def _on_subject_changed(self, _index: int) -> None:
         self._apply_subject()
+
+    def _on_day_changed(self, _index: int) -> None:
+        self._apply_day()
 
     def _on_dynamic_changed(self, _index: int) -> None:
         self._sync_dynamic()

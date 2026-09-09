@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
+from typing import Iterable
 
 from exo_collection.apps.calculate.models import (
     InputCheckReport,
@@ -26,6 +28,30 @@ from exo_collection.storage.layout import iter_finalized_manifest_paths
 _log = logging.getLogger(__name__)
 
 _SIDECAR_SUFFIXES = (".c3d", ".txt")
+
+# 天数过滤哨兵：``recommend_static_for_subject`` 的默认值表示「不按天过滤」，
+# 与「过滤到 day=None（未分日）」区分开。
+_ANY_DAY = object()
+
+
+def day_from_session_dir(session_dir: str | Path) -> int | None:
+    """从 session 目录解析采集日（``d{day}``）编号，无 day 目录时返回 ``None``。
+
+    Canonical 布局 ``{root}/{subject}/d{day}/{project}/{condition}/session{repeat}_{ts}``
+    下，``session_dir.parents[2]`` 即 ``d{day}`` 目录（与 ``catalog._trial_day`` 一致）；
+    旧布局（无 day 目录）该层是受试者目录，不匹配 ``d\\d+``，返回 ``None``。
+    """
+    day_dir = Path(session_dir).parents[2]
+    match = re.fullmatch(r"d(\d+)", day_dir.name, flags=re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
+def distinct_days(records: Iterable[SessionRecord]) -> list[int | None]:
+    """返回记录中不重复的采集日（升序 ``int``），末尾补 ``None`` 表示未分日。"""
+    days = sorted({record.day for record in records if record.day is not None})
+    if any(record.day is None for record in records):
+        days.append(None)
+    return days
 
 
 def _trial_root_from_manifest_path(manifest_path: Path) -> Path:
@@ -84,7 +110,8 @@ def discover_sessions(data_root: str | Path) -> list[SessionRecord]:
             continue
         if record is not None:
             records.append(record)
-    records.sort(key=lambda r: (r.subject_code, r.project_code, r.condition_code,
+    records.sort(key=lambda r: (r.subject_code, r.day is None, r.day or 0,
+                                r.project_code, r.condition_code,
                                 r.repeat_index, r.started_at_utc))
     return records
 
@@ -123,16 +150,20 @@ def _record_from_document(manifest_path: Path, document: dict) -> SessionRecord 
         started_at_utc=str(timing.get("started_at_utc") or ""),
         condition_parameters=dict(parameters),
         files=files,
+        day=day_from_session_dir(session_dir),
     )
 
 
 def recommend_static_for_subject(
-    subject_code: str, sessions: list[SessionRecord]
+    subject_code: str,
+    sessions: list[SessionRecord],
+    day: int | None | object = _ANY_DAY,
 ) -> SessionRecord | None:
     """为某受试者推荐静态标定 Session。
 
     优先 ``STAND`` 工况、有 C3D、日期最近；宁可返回 ``None`` 也不在不同受试者间
-    误用旧静态模型。
+    误用旧静态模型。``day`` 省略时（``_ANY_DAY``）不按天过滤；传入具体 ``int`` 或
+    ``None``（未分日）时只在该采集日内推荐静态。
     """
     candidates = [
         s
@@ -141,6 +172,8 @@ def recommend_static_for_subject(
         and s.is_stand
         and s.files.c3d_path is not None
     ]
+    if day is not _ANY_DAY:
+        candidates = [s for s in candidates if s.day == day]
     if not candidates:
         return None
     # 显式静态标定（STATIC_CALIB）优先于旧协议的 STAND 基线；同优先级的按日期
@@ -267,7 +300,9 @@ __all__ = [
     "SessionFiles",
     "SessionRecord",
     "check_inputs",
+    "day_from_session_dir",
     "discover_sessions",
+    "distinct_days",
     "recommend_static_for_subject",
     "recommend_static_session",
 ]
