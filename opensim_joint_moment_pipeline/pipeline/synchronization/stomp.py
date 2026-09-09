@@ -24,7 +24,9 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.signal import butter, find_peaks, sosfiltfilt
 
-_MIN_PEAK_DISTANCE_S = 0.45      # 峰间最小真实时间间隔（s）；按时间轴判定，兼容 IMU 掉帧
+_MIN_PEAK_DISTANCE_S = 0.40      # 峰间最小真实时间间隔（s）；按时间轴判定，兼容 IMU 掉帧。
+                                 # 跺脚节律实际约 0.45~0.66s，高通包络会把相邻跺脚的峰位
+                                 # 压缩到 0.447s（< 0.45），过严会漏掉第 2 次跺脚（SPEED_RAMP s3）。
 _MAX_INTERVAL_CV = 0.50          # 爆发段相邻间隔的变异系数上界（容忍漏检一个峰）
 _PAIR_BAND_S = 0.30              # 配对时允许的 offset 离散半径（s）；真实跺脚峰定位噪声可达 ~0.2s
 _HIGH_MAD_S = 0.05               # 高可信：MAD ≤ 50 ms
@@ -94,6 +96,20 @@ class StompRejection:
     align_reason: str | None = None   # 两侧均选出爆发段、但单调配对失败时非 None
 
 
+def _quiet_baseline(envelope: np.ndarray, window_end: int | None = None) -> float:
+    """估计安静基线（站立/摆腿期的包络低分位）。
+
+    取 |包络| 的低分位作为基线：真实包络（|高通| 输出）非负，此处 abs 仅是
+    为了容忍合成测试里可能出现的负噪声；低分位代表站立/摆腿期的安静水平。
+    ``window_end`` 非 None 时只取包络前 ``window_end`` 个样本（即采集开头、
+    正式走路之前的窗口），避免整段走路抬高低分位。
+    """
+    env = np.abs(np.asarray(envelope, dtype=np.float64))
+    if window_end is not None:
+        env = env[:window_end]
+    return float(np.percentile(env, 25))
+
+
 def highpass_envelope(values: np.ndarray, rate_hz: float, cutoff_hz: float = 2.0) -> np.ndarray:
     """对一维信号做高通后取绝对值包络（突出冲击，去除缓慢基线）。"""
     v = np.asarray(values, dtype=np.float64)
@@ -149,6 +165,7 @@ def _stomp_burst(
     envelope: np.ndarray,
     *,
     search_window_s: float | None = None,
+    baseline_from_window: bool = True,
 ) -> tuple[list[Peak] | None, str]:
     """选出「采集开头、正式走路之前」的跺脚爆发段，返回 ``(爆发段, 拒绝原因)``。
 
@@ -178,10 +195,20 @@ def _stomp_burst(
     if len(subset) < _MIN_PAIRS:
         return None, "前置窗口内峰数不足"
 
-    # 取 |包络| 的低分位作为安静基线：真实包络（|高通| 输出）非负，此处 abs 仅
-    # 是为了容忍合成测试里可能出现的负噪声；低分位代表站立/摆腿期的安静水平，
-    # 不受正式走路足跟冲击（抬高高分位）影响。
-    noise_ref = float(np.percentile(np.abs(envelope), 25))
+    # 取包络低分位作为安静基线（见 _quiet_baseline 说明）。是否只在搜索窗口
+    # （采集开头）内取由 ``baseline_from_window`` 决定：
+    # - 力台（总垂直力）：正式走路（尤其变速工况 COP/Tz 大幅波动）会抬高整段
+    #   包络低分位，把「硬跺脚」阈值虚高、导致开头真正的跺脚被误判为称重/挪步
+    #   （SPEED_RAMP 里跺脚仅 ~10× 整段低分位、却 ~100× 采集开头的安静基线）。
+    #   故应在窗口内取。
+    # - 加速度（IMU）：摆腿期加速度本就接近站立噪声，整段低分位已是很好的安静
+    #   基线；若改成窗口内（更安静的开头）会偏低，把跺脚前/后的称重/反弹伪峰也
+    #   判成「硬冲击」，破坏前置静默/隔离判定。故应取整段。
+    if baseline_from_window and search_window_s is not None and subset:
+        win_end = max(p.index for p in subset) + 1
+    else:
+        win_end = None
+    noise_ref = _quiet_baseline(envelope, window_end=win_end)
     if noise_ref <= 0:
         return None, "包络基线为 0，无有效冲击"
 
@@ -233,6 +260,20 @@ def _stomp_burst(
             if med > 0 and burst_gaps[g] > _SPLIT_GAP_RATIO * med:
                 burst = burst[: g + 1]
                 break
+
+        # 前导截断（对称于尾部截断）：采集开头偶有一个孤立的前导伪峰（称重 / 上板 /
+        # 起跳），比真跺脚提前 1.5s+、幅值仅勉强跨过「硬冲击」阈值，却仍落在
+        # ``_BURST_SPAN_S`` 内；它把首间隙拉成其余间隔的 2.5 倍以上，若不剪掉会把
+        # 间隔 CV 顶破，且它离真跺脚首峰 < ``_PRE_QUIET_S`` 会反过来破坏从真跺脚
+        # 起算的前置静默（SPEED_RAMP s1 就是这种孤立前导峰）。反复剪掉首峰，直到
+        # 首间隙不再异常，让爆发段从真正规律的跺脚开始。
+        while len(burst) >= _MIN_PAIRS + 1:
+            lead_gaps = np.diff([p.time_s for p in burst])
+            lead_med = float(np.median(lead_gaps[1:])) if lead_gaps.size > 1 else 0.0
+            if lead_med > 0 and lead_gaps[0] > _SPLIT_GAP_RATIO * lead_med:
+                burst = burst[1:]
+            else:
+                break
         if len(burst) < _MIN_PAIRS:
             continue
 
@@ -252,12 +293,19 @@ def _stomp_burst(
         # 至少 2 个）；单个反弹/挪步伪峰即便幅值勉强达到硬冲击阈值（如 IMU 侧的反弹
         # 恰好跨过 ``_IMPACT_RATIO`` 基线），也只有 1 个，不构成「后续活动」。统计该
         # 窗口内的硬冲击数，≥2 才判为未隔离，避免把单个反弹误当成走路起始。
+        #
+        # 但安静的起步类工况（START_LEFT/RIGHT，站立时间长、整段 IMU 基线极低）会
+        # 让「硬冲击」阈值低到把跺脚后的反弹/挪步伪峰（幅值仅 ~3~9% 真跺脚）也判成
+        # 硬冲击，两个连续反弹就误触发「走路继续」，反而漏掉真正的跺脚爆发段。走路
+        # 步态幅值与跺脚同量级，故「后续活动」还须与爆发段同量级（≥ ``_MIN_BURST_AMP_RATIO``
+        # 倍最大峰），排除比跺脚小一个量级的反弹伪峰。
         last_pos = impacts.index(burst[-1])
         follow_hard = [
             q
             for q in impacts[last_pos + 1:]
             if q.time_s - burst[-1].time_s <= _ISOLATION_GAP_S
             and q.amplitude >= _IMPACT_RATIO * noise_ref
+            and q.amplitude >= _MIN_BURST_AMP_RATIO * burst_ref
         ]
         if len(follow_hard) >= _ISOLATION_MIN_STEPS:
             continue
@@ -336,8 +384,14 @@ def pair_stomps_diagnosed(
     imu_peaks = _detect_peaks(imu_times, imu_envelope, prominence=prominence)
     gait_peaks = _detect_peaks(gaitway_times, gaitway_envelope, prominence=prominence)
 
-    imu_sel, imu_reason = _stomp_burst(imu_peaks, imu_envelope, search_window_s=_SYNC_SEARCH_WINDOW_S)
-    gait_sel, gait_reason = _stomp_burst(gait_peaks, gaitway_envelope, search_window_s=_SYNC_SEARCH_WINDOW_S)
+    imu_sel, imu_reason = _stomp_burst(
+        imu_peaks, imu_envelope, search_window_s=_SYNC_SEARCH_WINDOW_S,
+        baseline_from_window=False,
+    )
+    gait_sel, gait_reason = _stomp_burst(
+        gait_peaks, gaitway_envelope, search_window_s=_SYNC_SEARCH_WINDOW_S,
+        baseline_from_window=True,
+    )
 
     def _rejection(align_reason: str | None = None) -> StompRejection:
         return StompRejection(
