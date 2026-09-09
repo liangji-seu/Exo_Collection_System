@@ -75,6 +75,7 @@ def _load_sync_data(
     from pipeline.synchronization.c3d_h5 import match_c3d_to_h5
     from pipeline.synchronization.clock import (
         find_imu_sensor,
+        imu_sample_rate_hz,
         read_host_monotonic_ns,
     )
     from pipeline.synchronization.stomp import highpass_envelope
@@ -99,15 +100,23 @@ def _load_sync_data(
         c3d_t0_host_ns = int(mocap_host_ns[match.start_frame])
 
         sensor_index, sensor_label = find_imu_sensor(imu_h5, side="right")
-        imu_host_ns = read_host_monotonic_ns(imu_h5)
+        # MTw direct-USB 的三个传感器是「独立流按包交错」存储：一行只属于一个
+        # 传感器，其它传感器槽位为 NaN（``alignment_mode=none_independent_streams``）。
+        # 必须像 ``sync.run_auto_sync`` 一样先丢弃本传感器为 NaN 的行，否则会把
+        # 其它传感器的空档当成缺帧，导致时间轴混入 3 倍点数、加速度满是 NaN、
+        # 采样率被估成 300+ Hz，手动标定视图的 IMU 显示就会变得支离破碎。
+        imu_host_all_ns = read_host_monotonic_ns(imu_h5)
+        acc_all = np.asarray(imu_h5["samples/data"][:, sensor_index, :3], dtype=np.float64)
+        imu_valid = np.isfinite(acc_all).all(axis=1)
+        if int(imu_valid.sum()) < 2:
+            raise ValueError(f"IMU 传感器 {sensor_label} 有效样本不足，无法展示")
+        imu_host_ns = imu_host_all_ns[imu_valid]
         imu_time_s = (imu_host_ns - c3d_t0_host_ns) / 1e9
-        acc = np.asarray(imu_h5["samples/data"][:, sensor_index, :3], dtype=np.float64)
+        acc = acc_all[imu_valid]
         acc_norm = np.linalg.norm(acc, axis=1)
-        # 采样率由映射后的时间轴估计
-        if imu_time_s.size >= 2:
-            rate = 1.0 / float(np.median(np.diff(imu_time_s)))
-        else:
-            rate = 100.0
+        # 采样率用跨度/样本数估计（与 sync 一致），而非 median(diff)：主机时间戳
+        # 会因 USB 到达突发而抖动，median(diff) 会把健康的 100 Hz 估成 ~67 Hz。
+        rate = imu_sample_rate_hz(imu_time_s)
         imu_envelope = highpass_envelope(acc_norm, rate)
 
     total_fz = gaitway.columns["GRFz vertical (N)"]

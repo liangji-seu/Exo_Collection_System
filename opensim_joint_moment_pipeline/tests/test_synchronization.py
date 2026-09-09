@@ -288,6 +288,89 @@ def test_pair_stomps_returns_none_without_stomps():
     assert pair_stomps(imu_t, imu_env, force_t, force_env) is None
 
 
+def test_stomp_burst_drops_weak_trailing_peak():
+    """跺脚后紧跟的弱伪峰（≈8% 最大峰）不得混入爆发段破坏间隔规律。
+
+    回归：真实采集里 3 次跺脚后常有 ~8% 幅值的小抖动（称重/挪步），若被当作
+    第 4 个跺脚会把间隔 CV 顶破 ``_MAX_INTERVAL_CV``，导致整段被误拒。弱伪峰
+    与真跺脚相差超过一个量级，应在相对幅值过滤中被剔除。
+    """
+    from pipeline.synchronization.stomp import Peak, _stomp_burst
+
+    env = np.ones(1000)  # 恒定包络 → noise_ref = 1.0
+    peaks = [
+        Peak(0, 2.0, 100.0, 0.9),
+        Peak(1, 2.5, 100.0, 0.9),
+        Peak(2, 3.0, 100.0, 0.9),
+        Peak(3, 4.7, 8.0, 0.2),  # 8% 最大峰、距末峰 1.7s
+    ]
+    burst, reason = _stomp_burst(peaks, env, search_window_s=25.0)
+    assert burst is not None, reason
+    assert [p.time_s for p in burst] == [2.0, 2.5, 3.0]
+
+
+def test_stomp_burst_truncates_at_trailing_gap():
+    """跺脚后 ~1.9s 的反弹伪峰（非硬冲击，但 > 10% 最大峰）不得并入爆发段。
+
+    回归：真实采集 3 次跺脚（间隔 ~0.5s）后常有一次反弹/挪步（幅值约最大峰
+    12%，落在 ``_BURST_SPAN_S`` 窗口内），其与前一个跺脚的间隔是节律的 3 倍以上。
+    若按固定跨度并入会顶破 ``_MAX_INTERVAL_CV`` 导致整段被误拒。间隔截断应在该
+    间隙处截掉伪峰，保留 3 个真跺脚。
+    """
+    from pipeline.synchronization.stomp import Peak, _stomp_burst
+
+    env = np.ones(1000)  # 恒定包络 → noise_ref = 1.0，impact = 15，activate = 5
+    peaks = [
+        Peak(0, 2.0, 100.0, 0.9),
+        Peak(1, 2.5, 100.0, 0.9),
+        Peak(2, 3.0, 100.0, 0.9),
+        Peak(3, 4.8, 12.0, 0.3),  # 12% 最大峰、距末峰 1.8s（非硬冲击反弹）
+    ]
+    burst, reason = _stomp_burst(peaks, env, search_window_s=25.0)
+    assert burst is not None, reason
+    assert [p.time_s for p in burst] == [2.0, 2.5, 3.0]
+
+
+def test_stomp_burst_isolation_ignores_single_rebound():
+    """单个反弹伪峰（即便勉强达到硬冲击阈值）不得破坏隔离。
+
+    回归：3 次跺脚后紧跟一次反弹（IMU 侧反弹幅值可恰好跨过 ``_IMPACT_RATIO``
+    基线，成为「单个硬冲击」），但真正的走路在 ≥2s 之后才出现。隔离判定要求
+    窗口内 ≥2 个硬冲击才判「走路继续」，单个反弹应被忽略，仍选出 3 个真跺脚。
+    """
+    from pipeline.synchronization.stomp import Peak, _stomp_burst
+
+    env = np.ones(1000) * (50.0 / 15.0)  # noise_ref ≈ 3.33，impact = 50，activate ≈ 16.7
+    peaks = [
+        Peak(0, 2.0, 100.0, 0.9),
+        Peak(1, 2.5, 100.0, 0.9),
+        Peak(2, 3.0, 100.0, 0.9),
+        Peak(3, 4.8, 60.0, 0.5),  # 单个硬反弹（60 ≥ 50），距末峰 1.8s，其后 2s 内无其它硬冲击
+        Peak(4, 8.0, 100.0, 0.9),  # 走路首步（硬冲击），距末峰 5.0s
+    ]
+    burst, reason = _stomp_burst(peaks, env, search_window_s=25.0)
+    assert burst is not None, reason
+    assert [p.time_s for p in burst] == [2.0, 2.5, 3.0]
+
+
+def test_stomp_burst_isolation_rejects_continuous_walking():
+    """无安静期的「连续走路」不得被当成跺脚爆发段（隔离判定拒绝）。
+
+    与真正跺脚的区别在于：跺脚后是安静站立，而走路会在末峰后 ``_ISOLATION_GAP_S``
+    内连续出现 ≥2 个硬冲击。此处构造一路规律的硬冲击（首峰也硬、间隔规律），
+    必须因「未隔离」被拒绝，而不是被当成 3~5 次跺脚。
+    """
+    from pipeline.synchronization.stomp import Peak, _stomp_burst
+
+    env = np.ones(1000) * (50.0 / 15.0)  # impact = 50
+    peaks = [
+        Peak(k, 2.0 + 0.5 * k, 100.0, 0.9) for k in range(9)  # 一路规律硬冲击，无停顿
+    ]
+    burst, reason = _stomp_burst(peaks, env, search_window_s=25.0)
+    assert burst is None
+    assert "隔离" in reason or "未找到" in reason
+
+
 # --------------------------------------------------------------------------
 # 漂移估计：短记录 → UNASSESSED（None）
 # --------------------------------------------------------------------------

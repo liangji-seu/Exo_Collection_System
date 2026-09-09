@@ -35,9 +35,10 @@ _SYNC_SEARCH_WINDOW_S = 25.0     # 跺脚在采集开头（站立→跺脚→走
 _BURST_SPAN_S = 3.5              # 一次跺脚爆发段最大时间跨度（5 次 0.8s 跺脚 ≈ 3.2s）
 _ACTIVATE_RATIO = 5.0            # 「冲击级」= 幅值 ≥ 5× 包络 P25（去站立噪声，保留弱跺脚）
 _IMPACT_RATIO = 15.0             # 爆发段须从 ≥15× 包络 P25 的「硬跺脚」开始（去称重/挪步）
-_MIN_BURST_AMP_RATIO = 0.05      # 爆发段内峰须 ≥ 5% 最大峰：剔除比真跺脚小一个量级的噪声伪峰
-_NEXT_ACTIVITY_RATIO = 0.25      # 隔离判定忽略弱过渡伪峰：后续活动须 ≥ 0.25× 爆发段中位幅值
-_ISOLATION_GAP_S = 2.0           # 爆发段后需 ≥2s 无后续活动，才算「前置同步动作」而非走路
+_MIN_BURST_AMP_RATIO = 0.10      # 爆发段内峰须 ≥ 10% 最大峰：剔除比真跺脚小一个量级的噪声伪峰
+_SPLIT_GAP_RATIO = 2.5           # 段内间隔若 > 2.5× 其余间隔中位数即截断（漏检一峰只 2 倍，不误截）
+_ISOLATION_GAP_S = 2.0           # 爆发段后需 ≥2s 无「硬冲击」，才算「前置同步动作」而非走路
+_ISOLATION_MIN_STEPS = 2         # 隔离窗口内硬冲击数 ≥ 2 才判「走路继续」（单个反弹伪峰不算）
 _PRE_QUIET_S = 2.0               # 爆发段前需 ≥2s 无「硬冲击」，排除走路中段的伪爆发段
 
 
@@ -163,8 +164,9 @@ def _stomp_burst(
        - 从「硬跺脚」开始（首峰幅值 ≥ ``_IMPACT_RATIO`` × 基线，排除称重/挪步）；
        - 前置静默（首峰前 ``_PRE_QUIET_S`` 内无「硬冲击」，排除走路中段伪爆发段）；
        - 段内峰幅值同量级（剔除不足 ``_MIN_BURST_AMP_RATIO`` × 最大峰的噪声伪峰）；
-       - 相邻间隔规律（变异系数 ≤ ``_MAX_INTERVAL_CV``）；
-       - 与后续活动隔离（段后下一个同量级活动峰至少 ``_ISOLATION_GAP_S`` 之外）。
+       - 相邻间隔规律（变异系数 ≤ ``_MAX_INTERVAL_CV``，且首个 > ``_SPLIT_GAP_RATIO``
+         倍其余间隔中位数的间隙处截断，剔除跺脚结束后的反弹/挪步伪峰）；
+       - 与后续活动隔离（段后 ``_ISOLATION_GAP_S`` 内硬冲击数 < ``_ISOLATION_MIN_STEPS``）。
 
     「硬跺脚 + 前置静默」排除称重/挪步与走路中段，「隔离」排除连续走路，两者
     合起来确保无跺脚的 Session 不会伪造出高可信结果，而是返回 ``None`` 交由
@@ -218,6 +220,22 @@ def _stomp_burst(
         if len(burst) < _MIN_PAIRS:
             continue
 
+        # 间隔截断：跺脚结束后 1.5~2s 常有一个反弹/挪步的弱伪峰仍落在
+        # ``_BURST_SPAN_S`` 窗口内，与真跺脚 ~0.5s 的节律相差 3 倍以上；若按固定
+        # 跨度把它并入爆发段，会把间隔 CV 顶破 ``_MAX_INTERVAL_CV`` 导致整段被
+        # 误拒。找到首个「远大于其余间隔中位数」的间隙并把其后伪峰截掉。漏检一个
+        # 跺脚造成的 2 倍间隔（< 2.5 倍）不会被误截，仍交给 CV 判定是否容忍。
+        burst_times = [p.time_s for p in burst]
+        burst_gaps = np.diff(burst_times)
+        for g in range(1, len(burst_gaps)):
+            rest = np.delete(burst_gaps, g)
+            med = float(np.median(rest)) if rest.size else 0.0
+            if med > 0 and burst_gaps[g] > _SPLIT_GAP_RATIO * med:
+                burst = burst[: g + 1]
+                break
+        if len(burst) < _MIN_PAIRS:
+            continue
+
         intervals = np.diff([p.time_s for p in burst])
         if intervals.min() <= 0:
             continue
@@ -229,21 +247,19 @@ def _stomp_burst(
         if max(p.amplitude for p in burst) < _IMPACT_RATIO * noise_ref:
             continue
 
-        # 隔离判定：爆发段后下一个「同量级」活动峰（幅值 ≥ _NEXT_ACTIVITY_RATIO×
-        # 爆发段中位幅值）需离最后一个跺脚足够远。跺脚后迈出第一步前往往有一个
-        # 幅值远低于跺脚的过渡伪峰（摆腿/轻触板），它不该破坏隔离——真正的走路
-        # 足跟冲击才是「后续活动」。
-        burst_amp_ref = float(np.median([p.amplitude for p in burst]))
-        nxt = None
-        # 隔离判定要从爆发段「真实末峰」之后找，不能按 `i + len(burst)` 起跳：相对
-        # 幅值过滤会在爆发段内部挖掉噪声伪峰，使 `len(burst)` 小于末峰在 ``impacts``
-        # 里的实际位置，导致把末峰自身误判成「后续活动」。
+        # 隔离判定：跺脚后应有一段安静期，之后才是正式走路。「走路继续」的特征是
+        # 爆发段末峰后 ``_ISOLATION_GAP_S`` 内**连续**出现硬冲击（步态 ~0.5~1s 一步，
+        # 至少 2 个）；单个反弹/挪步伪峰即便幅值勉强达到硬冲击阈值（如 IMU 侧的反弹
+        # 恰好跨过 ``_IMPACT_RATIO`` 基线），也只有 1 个，不构成「后续活动」。统计该
+        # 窗口内的硬冲击数，≥2 才判为未隔离，避免把单个反弹误当成走路起始。
         last_pos = impacts.index(burst[-1])
-        for q in impacts[last_pos + 1:]:
-            if q.amplitude >= _NEXT_ACTIVITY_RATIO * burst_amp_ref:
-                nxt = q
-                break
-        if nxt is not None and nxt.time_s - burst[-1].time_s < _ISOLATION_GAP_S:
+        follow_hard = [
+            q
+            for q in impacts[last_pos + 1:]
+            if q.time_s - burst[-1].time_s <= _ISOLATION_GAP_S
+            and q.amplitude >= _IMPACT_RATIO * noise_ref
+        ]
+        if len(follow_hard) >= _ISOLATION_MIN_STEPS:
             continue
         return burst, "ok"
 
