@@ -2,7 +2,8 @@
 
 复用 Exo Calculate 的解算管线（自动同步 / 预处理 / OpenSim / 真值导出），但按
 受试者批量处理：指定受试者 + 静态标定后，逐 session 自动跺脚同步、解算，并把
-力矩真值 CSV 写进各 session 目录。
+力矩真值 CSV 写进各 session 目录；也可按受试者/dX 导出逐 session 指标和汇总
+统计的数据质量报告 PNG。
 """
 
 from pathlib import Path

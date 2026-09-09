@@ -44,6 +44,7 @@ from exo_collection.apps.process.batch import (
     erase_ground_truth,
     session_solve_status,
 )
+from exo_collection.apps.process.quality_report import QualityReportWorker
 from exo_collection.configuration import SharedAppSettings
 
 _log = logging.getLogger(__name__)
@@ -71,6 +72,7 @@ class ProcessWindow(QMainWindow):
         self._opensim_python: Path | None = None
         self._generic_model: Path | None = None
         self._batch_worker: BatchWorker | None = None
+        self._quality_report_worker: QualityReportWorker | None = None
         self._item_by_session_name: dict[str, QTreeWidgetItem] = {}
 
         self.setWindowTitle("Exo Process —— 批量解算")
@@ -125,6 +127,13 @@ class ProcessWindow(QMainWindow):
         self._batch_button = QPushButton("批量解算")
         self._batch_button.clicked.connect(self._on_batch_clicked)
         row.addWidget(self._batch_button)
+
+        self._report_button = QPushButton("导出质量报告 PNG")
+        self._report_button.setToolTip(
+            "按当前受试者的 d1/d2 分别汇总全部 session，并保存到对应受试者/dx 目录。"
+        )
+        self._report_button.clicked.connect(self._on_report_clicked)
+        row.addWidget(self._report_button)
 
         self._cancel_button = QPushButton("取消")
         self._cancel_button.setEnabled(False)
@@ -392,8 +401,65 @@ class ProcessWindow(QMainWindow):
         self._cross_subject_check.setEnabled(not running)
         self._overwrite_check.setEnabled(not running)
         self._batch_button.setEnabled(not running)
+        self._report_button.setEnabled(not running)
         self._cancel_button.setEnabled(running)
         self._erase_button.setEnabled(not running)
+
+    # ------------------------------------------------------------------
+    # 受试者 / dX 数据质量报告
+    # ------------------------------------------------------------------
+    def _on_report_clicked(self) -> None:
+        if self._batch_worker is not None or self._quality_report_worker is not None:
+            return
+        subject = self._subject_combo.currentText()
+        if not subject or not self._subject_sessions:
+            QMessageBox.information(self, "没有数据", "当前没有可汇总的受试者 session。")
+            return
+
+        self._quality_report_worker = QualityReportWorker(
+            self._subject_sessions,
+            self._data_root,
+            subject,
+        )
+        self._quality_report_worker.signals.progress.connect(self._append_log)
+        self._quality_report_worker.signals.finished.connect(self._on_report_finished)
+        self._quality_report_worker.signals.failed.connect(self._on_report_failed)
+        self._set_report_running(True)
+        self._progress.setRange(0, 0)
+        self._append_log(
+            f"开始导出 {subject} 的数据质量报告；将按 d1/d2 分开，并重新复核独立 MTw 同步。"
+        )
+        self._thread_pool.start(self._quality_report_worker)
+
+    def _set_report_running(self, running: bool) -> None:
+        self._subject_combo.setEnabled(not running)
+        self._static_combo.setEnabled(not running)
+        self._cross_subject_check.setEnabled(not running)
+        self._overwrite_check.setEnabled(not running)
+        self._batch_button.setEnabled(not running)
+        self._report_button.setEnabled(not running)
+        self._erase_button.setEnabled(not running)
+        self._cancel_button.setEnabled(False)
+
+    def _on_report_finished(self, outputs: object) -> None:
+        paths = [str(path) for path in outputs] if isinstance(outputs, list) else []
+        self._quality_report_worker = None
+        self._set_report_running(False)
+        self._progress.setRange(0, 100)
+        self._progress.setValue(100)
+        message = "\n".join(paths) if paths else "未找到可导出的 dX 数据。"
+        self._append_log(f"质量报告导出完成：{len(paths)} 张 PNG。")
+        self.statusBar().showMessage(f"已导出 {len(paths)} 张数据质量报告")
+        QMessageBox.information(self, "质量报告导出完成", message)
+
+    def _on_report_failed(self, message: str) -> None:
+        self._quality_report_worker = None
+        self._set_report_running(False)
+        self._progress.setRange(0, 100)
+        self._progress.setValue(0)
+        self._append_log(f"质量报告导出失败：{message}")
+        self.statusBar().showMessage("质量报告导出失败")
+        QMessageBox.warning(self, "质量报告导出失败", message)
 
     def _on_cancel_clicked(self) -> None:
         if self._batch_worker is not None:
