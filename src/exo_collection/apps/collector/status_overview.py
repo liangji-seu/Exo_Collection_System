@@ -18,15 +18,19 @@ from PySide6.QtWidgets import (
 
 # 方块状态 → (背景色, 前景色)。配色与 COLLECTOR_STYLESHEET 保持一致：
 # 绿=#0f766e、红=#a53f3f、黄=#d97706、灰=#d3d0c7。
-# 「录制红」#dc2626 是更鲜亮、更饱和的红，写盘期间用来覆盖全部方块，
-# 与单模态故障红 #a53f3f 明显区分。
 _BLOCK_PALETTE = {
     "off": ("#d3d0c7", "#5b6470"),
     "transition": ("#d97706", "#ffffff"),
     "ok": ("#0f766e", "#ffffff"),
     "bad": ("#a53f3f", "#ffffff"),
-    "recording": ("#dc2626", "#ffffff"),
 }
+
+# 写盘指示用「录制红」#dc2626（更鲜亮），只作用于五个方块所在框的底色，
+# 与单个方块的故障红 #a53f3f 明显区分；方块本身保持各自状态色不变。
+_FRAME_BG_NORMAL = "#f5f2ea"
+_FRAME_BG_RECORDING = "#dc2626"
+_FRAME_BORDER_NORMAL = "#c8c5ba"
+_FRAME_BORDER_RECORDING = "#dc2626"
 
 _BLOCK_HEIGHT = 72
 _BLOCK_RADIUS = 12
@@ -41,13 +45,8 @@ class ModalityStatusStrip(QFrame):
     def __init__(self, modalities: dict[str, str], parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("modality_status_strip")
-        self.setStyleSheet(
-            "QFrame#modality_status_strip {"
-            " background: #f5f2ea;"
-            " border: 1px solid #c8c5ba;"
-            " border-radius: 6px;"
-            "}"
-        )
+        self._recording = False
+        self._apply_frame_style()
         layout = QHBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(8)
@@ -55,7 +54,6 @@ class ModalityStatusStrip(QFrame):
         self._names: dict[str, str] = dict(modalities)
         self._blocks: dict[str, QLabel] = {}
         self._last: dict[str, tuple[str, str]] = {}
-        self._recording = False
         for modality, name in self._names.items():
             block = QLabel()
             block.setObjectName(f"status_block_{modality}")
@@ -71,7 +69,7 @@ class ModalityStatusStrip(QFrame):
     def set_state(self, modality: str, state: str, status_text: str) -> None:
         """记录单个方块的期望状态并重绘；状态未变化时不重绘。
 
-        写盘期间期望状态仍会被记录（``_last``），只是不显示，待写盘结束后恢复。
+        写盘期间方块仍显示各自状态；写盘指示由所在框底色（``set_recording``）承担。
         """
         if modality not in self._blocks:
             return
@@ -81,25 +79,31 @@ class ModalityStatusStrip(QFrame):
         self._render(modality)
 
     def set_recording(self, recording: bool) -> None:
-        """写盘期间用「录制红」覆盖全部方块背景；结束后恢复各自状态。"""
+        """写盘期间把五个方块所在框的底色变为「录制红」；方块颜色不变。"""
         if recording == self._recording:
             return
         self._recording = recording
-        for modality in self._blocks:
-            self._render(modality)
+        self._apply_frame_style()
+
+    def _apply_frame_style(self) -> None:
+        background = _FRAME_BG_RECORDING if self._recording else _FRAME_BG_NORMAL
+        border = _FRAME_BORDER_RECORDING if self._recording else _FRAME_BORDER_NORMAL
+        self.setStyleSheet(
+            "QFrame#modality_status_strip {"
+            f" background: {background};"
+            f" border: 1px solid {border};"
+            " border-radius: 6px;"
+            "}"
+        )
 
     def _render(self, modality: str) -> None:
         block = self._blocks.get(modality)
         if block is None:
             return
-        if self._recording:
-            background, foreground = _BLOCK_PALETTE["recording"]
-            status_text = "正在写入"
-        else:
-            state, status_text = self._last.get(modality, ("off", "未连接"))
-            background, foreground = _BLOCK_PALETTE.get(
-                state, _BLOCK_PALETTE["off"]
-            )
+        state, status_text = self._last.get(modality, ("off", "未连接"))
+        background, foreground = _BLOCK_PALETTE.get(
+            state, _BLOCK_PALETTE["off"]
+        )
         name = self._names.get(modality, modality)
         block.setStyleSheet(
             f"QLabel {{ background: {background}; color: {foreground}; "

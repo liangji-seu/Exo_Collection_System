@@ -2961,8 +2961,8 @@ def test_status_overview_blocks_reflect_modality_state(tmp_path: Path) -> None:
     window.close()
 
 
-def test_status_overview_recording_override_distinct_red() -> None:
-    """写盘期间方块整体变「录制红」，结束后恢复各自状态，且与故障红区分。"""
+def test_status_overview_recording_tints_frame_not_blocks() -> None:
+    """写盘期间只有五个方块所在框的底色变「录制红」，方块保持各自状态色。"""
     QApplication.instance() or QApplication(["test-exo-collector"])
     strip = ModalityStatusStrip({"imu": "IMU", "encoder": "电机编码器"})
 
@@ -2970,31 +2970,36 @@ def test_status_overview_recording_override_distinct_red() -> None:
     strip.set_state("encoder", "bad", "数据中断")
 
     strip.set_recording(True)
-    for modality in ("imu", "encoder"):
-        stylesheet = strip._blocks[modality].styleSheet()
-        assert "#dc2626" in stylesheet
-        assert "#a53f3f" not in stylesheet
-        assert "#0f766e" not in stylesheet
-        assert "正在写入" in strip._blocks[modality].text()
+    # 所在框底色变为录制红（#dc2626），不再是最初的米白 #f5f2ea。
+    assert "#dc2626" in strip.styleSheet()
+    assert "#f5f2ea" not in strip.styleSheet()
+    # 方块保持各自状态色，不被覆盖为录制红。
+    assert "#0f766e" in strip._blocks["imu"].styleSheet()
+    assert "#a53f3f" in strip._blocks["encoder"].styleSheet()
+    assert "#dc2626" not in strip._blocks["imu"].styleSheet()
+    assert "#dc2626" not in strip._blocks["encoder"].styleSheet()
 
     strip.set_recording(False)
+    assert "#f5f2ea" in strip.styleSheet()
+    assert "#dc2626" not in strip.styleSheet()
     assert "#0f766e" in strip._blocks["imu"].styleSheet()
     assert "#a53f3f" in strip._blocks["encoder"].styleSheet()
     assert strip._last["imu"] == ("ok", "正常采集")
 
 
 def test_window_recording_state_drives_overview(tmp_path: Path) -> None:
-    """进入 RECORDING 时五方块进入录制红，回到 IDLE 时恢复。"""
+    """进入 RECORDING 时五方块所在框底色变录制红，回到 IDLE 时恢复。"""
     _app, window, _created = _window_with_fake(tmp_path)
     overview = window._status_overview
     assert overview is not None
 
     window._set_trial_state("RECORDING")
     assert overview._recording is True
-    assert "#dc2626" in overview._blocks["imu"].styleSheet()
+    assert "#dc2626" in overview.styleSheet()
 
     window._set_trial_state("IDLE")
     assert overview._recording is False
+    assert "#f5f2ea" in overview.styleSheet()
 
     window.close()
 
