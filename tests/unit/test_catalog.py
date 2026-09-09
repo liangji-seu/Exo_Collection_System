@@ -219,7 +219,7 @@ def test_manifest_scan_rebuilds_tree_and_statistics(tmp_path) -> None:
     assert report.indexed == 1
     assert not report.failures
     assert len(tree) == 1
-    artifact = tree[0]["children"][0]["children"][0]["children"][0]["children"][0]
+    artifact = tree[0]["children"][0]["children"][0]["children"][0]["children"][0]["children"][0]
     assert artifact["label"] == "raw/imu.h5"
     assert statistics["trial_count"] == 1
     assert statistics["finalized_count"] == 1
@@ -252,7 +252,10 @@ def test_manifest_scan_accepts_day_level_human_readable_layout(tmp_path) -> None
     subject_node = tree[0]
     assert subject_node["label"] == "001"
     assert len(subject_node["children"]) == 1
-    assert subject_node["children"][0]["label"] == "F"
+    day_node = subject_node["children"][0]
+    assert day_node["type"] == "day"
+    assert day_node["label"] == "d2"
+    assert [node["label"] for node in day_node["children"]] == ["F"]
 
 
 def test_tree_groups_session_directories_under_one_condition(tmp_path: Path) -> None:
@@ -284,7 +287,11 @@ def test_tree_groups_session_directories_under_one_condition(tmp_path: Path) -> 
     subject_node = tree[0]
     assert subject_node["label"] == "001"
     assert len(subject_node["children"]) == 1
-    project_node = subject_node["children"][0]
+    day_node = subject_node["children"][0]
+    assert day_node["type"] == "day"
+    assert day_node["label"] == "未分日"
+    assert len(day_node["children"]) == 1
+    project_node = day_node["children"][0]
     assert project_node["label"] == "F"
     assert len(project_node["children"]) == 1
     condition_node = project_node["children"][0]
@@ -334,8 +341,12 @@ def test_tree_groups_one_subject_across_multiple_projects(tmp_path: Path) -> Non
     assert subject_node["type"] == "subject"
     assert subject_node["label"] == "001"
     assert subject_node["uuid"] == "001"
-    assert [node["label"] for node in subject_node["children"]] == ["F", "T"]
-    for project_node in subject_node["children"]:
+    assert len(subject_node["children"]) == 1
+    day_node = subject_node["children"][0]
+    assert day_node["type"] == "day"
+    assert day_node["label"] == "未分日"
+    assert [node["label"] for node in day_node["children"]] == ["F", "T"]
+    for project_node in day_node["children"]:
         assert project_node["type"] == "project"
         assert len(project_node["children"]) == 1
         assert project_node["children"][0]["label"] == "WALK_LEVEL"

@@ -113,11 +113,12 @@ from .upload_dialog import (
 
 
 _TYPE_LABELS = {
-    "project": "项目",
+    "project": "主工况",
     "subject": "受试者",
     # Catalog keeps these compatibility type names, while the visible tree
-    # mirrors the current on-disk subject/project/condition/session layout.
-    "session": "工况",
+    # mirrors the current on-disk subject/day/project/condition/session layout.
+    "day": "第几天",
+    "session": "详细工况",
     "trial": "Session",
     "modality": "模态数据集",
     "supporting_files": "辅助资料",
@@ -977,7 +978,7 @@ class DataStudioWindow(QMainWindow):
                 if isinstance(child, dict)
                 and (child_result := retained(child)) is not None
             ]
-            if node_type in {"project", "subject", "session"} and not children:
+            if node_type in {"project", "subject", "day", "session"} and not children:
                 return None
             result = {key: deepcopy(value) for key, value in node.items() if key != "children"}
             result["children"] = children
@@ -1167,11 +1168,11 @@ class DataStudioWindow(QMainWindow):
         item = self.tree_widget.currentItem()
         if item is None:
             QMessageBox.information(
-                self, "请选择上传范围", "请在数据树中选择项目、受试者、工况、Session 或 Trial。"
+                self, "请选择上传范围", "请在数据树中选择主工况、受试者、第几天、详细工况、Session 或 Trial。"
             )
             return ()
         node_type = str(item.data(1, Qt.ItemDataRole.UserRole) or "")
-        if node_type not in {"project", "subject", "session", "trial"}:
+        if node_type not in {"project", "subject", "day", "session", "trial"}:
             QMessageBox.information(
                 self, "请选择目录层级", "文件或模态节点不能作为上传范围，请选择其所属 Session 或上级目录。"
             )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -455,6 +456,30 @@ class CatalogRepository:
         return p.parent.name[:8]
 
     @staticmethod
+    def _trial_day(manifest_path: str | None) -> str:
+        """Extract the collection-day folder (d1/d2/...) from a manifest path.
+
+        New layout: ``.../<subject>/d2/<project>/<condition>/session.../.exo/manifest.json``.
+        Legacy layout (no ``.exo``) or a missing day folder returns ``"未分日"``.
+        """
+        if not manifest_path:
+            return "未分日"
+        p = Path(manifest_path)
+        if p.parent.name != ".exo":
+            return "未分日"  # legacy ``.../trials/<uuid>/manifest.json``
+        session_dir = p.parent.parent  # session{repeat}_{timestamp}
+        day_dir = session_dir.parent.parent.parent  # d{day} or the subject itself
+        if re.fullmatch(r"d\d+", day_dir.name, flags=re.IGNORECASE):
+            return day_dir.name
+        return "未分日"
+
+    @staticmethod
+    def _day_sort_key(day: str) -> tuple[int, int]:
+        if re.fullmatch(r"d\d+", day, flags=re.IGNORECASE):
+            return (0, int(day[1:]))
+        return (1, 0)  # 未分日 last
+
+    @staticmethod
     def _condition_label(trials: list[TrialRow]) -> str:
         """Return the on-disk condition directory represented by ``trials``."""
         if not trials:
@@ -462,14 +487,15 @@ class CatalogRepository:
         return trials[0].condition_code or "?"
 
     def tree(self) -> list[dict[str, object]]:
-        """Return a Subject→Project→Condition→Session→Artifact tree.
+        """Return a Subject→Day→Project→Condition→Session→Artifact tree.
 
         The top level is the human subject code, so a subject who participated
         in several projects appears exactly once with every project nested
         beneath it — mirroring the on-disk ``data/`` layout
-        (``<subject>/<project>/<condition>/<session>/...``) rather than internal
-        UUIDs.  Labels are derived from the filesystem directory names (via
-        ``manifest_path``).
+        (``<subject>/<day>/<project>/<condition>/<session>/...``) rather than
+        internal UUIDs.  The ``day`` segment (d1/d2/...) is derived from each
+        trial's filesystem path; trials without a collection-day folder fall
+        back to a single ``未分日`` group.
         """
 
         with self.catalog.session() as db:
@@ -482,62 +508,68 @@ class CatalogRepository:
         artifacts_by_trial: dict[str, list[ArtifactRow]] = {}
         for item in artifacts:
             artifacts_by_trial.setdefault(item.trial_uuid, []).append(item)
-        trials_by_subject_condition: dict[tuple[str, str], list[TrialRow]] = {}
+        trials_by_key: dict[tuple[str, str, str, str], list[TrialRow]] = {}
         for item in trials:
-            trials_by_subject_condition.setdefault(
-                (item.subject_uuid, item.condition_code), []
+            day = self._trial_day(item.manifest_path)
+            trials_by_key.setdefault(
+                (item.subject_uuid, item.project_uuid, day, item.condition_code), []
             ).append(item)
         project_by_uuid: dict[str, ProjectRow] = {
             item.project_uuid: item for item in projects
         }
 
-        def _condition_nodes(subject_uuid: str) -> list[dict[str, object]]:
+        def _trial_node(trial: TrialRow) -> dict[str, object]:
+            return {
+                "type": "trial",
+                "uuid": trial.trial_uuid,
+                "label": self._trial_leaf_label(trial.manifest_path),
+                "state": trial.state,
+                "quality_grade": trial.quality_grade,
+                "duration_s": trial.duration_s,
+                "manifest_path": trial.manifest_path,
+                "modality_count": len(
+                    {
+                        artifact.modality
+                        for artifact in artifacts_by_trial.get(trial.trial_uuid, [])
+                        if artifact.modality not in {"trial", "prompt_label"}
+                    }
+                ),
+                "children": [
+                    {
+                        "type": "artifact",
+                        "uuid": artifact.artifact_uuid,
+                        "label": artifact.relative_path,
+                        "modality": artifact.modality,
+                        "size_bytes": artifact.size_bytes,
+                        "sha256": artifact.sha256,
+                        "children": [],
+                    }
+                    for artifact in artifacts_by_trial.get(trial.trial_uuid, [])
+                ],
+            }
+
+        def _condition_nodes(
+            subject_uuid: str, project_uuid: str, day: str
+        ) -> list[dict[str, object]]:
             nodes: list[dict[str, object]] = []
-            for (_subject_uuid, _condition), condition_trials in sorted(
-                trials_by_subject_condition.items(),
-                key=lambda item: item[0][1],
+            for (_subject_uuid, _project_uuid, _day, condition_code), condition_trials in sorted(
+                trials_by_key.items(),
+                key=lambda item: item[0][3],
             ):
-                if _subject_uuid != subject_uuid or not condition_trials:
+                if (
+                    _subject_uuid != subject_uuid
+                    or _project_uuid != project_uuid
+                    or _day != day
+                ):
+                    continue
+                if not condition_trials:
                     continue
                 nodes.append(
                     {
                         "type": "session",
                         "uuid": condition_trials[0].condition_uuid,
                         "label": self._condition_label(condition_trials),
-                        "children": [
-                            {
-                                "type": "trial",
-                                "uuid": trial.trial_uuid,
-                                "label": self._trial_leaf_label(trial.manifest_path),
-                                "state": trial.state,
-                                "quality_grade": trial.quality_grade,
-                                "duration_s": trial.duration_s,
-                                "manifest_path": trial.manifest_path,
-                                "modality_count": len(
-                                    {
-                                        artifact.modality
-                                        for artifact in artifacts_by_trial.get(
-                                            trial.trial_uuid, []
-                                        )
-                                        if artifact.modality
-                                        not in {"trial", "prompt_label"}
-                                    }
-                                ),
-                                "children": [
-                                    {
-                                        "type": "artifact",
-                                        "uuid": artifact.artifact_uuid,
-                                        "label": artifact.relative_path,
-                                        "modality": artifact.modality,
-                                        "size_bytes": artifact.size_bytes,
-                                        "sha256": artifact.sha256,
-                                        "children": [],
-                                    }
-                                    for artifact in artifacts_by_trial.get(trial.trial_uuid, [])
-                                ],
-                            }
-                            for trial in condition_trials
-                        ],
+                        "children": [_trial_node(trial) for trial in condition_trials],
                     }
                 )
             return nodes
@@ -564,22 +596,43 @@ class CatalogRepository:
                     project_rows.append(project)
             project_rows.sort(key=lambda p: (p.project_code or "", p.name))
 
+            subject_uuids = set(subject_uuid_by_project.values())
+            days = sorted(
+                {key[2] for key in trials_by_key if key[0] in subject_uuids},
+                key=self._day_sort_key,
+            )
+
+            day_nodes: list[dict[str, object]] = []
+            for day in days:
+                project_nodes: list[dict[str, object]] = []
+                for project in project_rows:
+                    subject_uuid = subject_uuid_by_project[project.project_uuid]
+                    conditions = _condition_nodes(subject_uuid, project.project_uuid, day)
+                    if conditions:
+                        project_nodes.append(
+                            {
+                                "type": "project",
+                                "uuid": project.project_uuid,
+                                "label": project.project_code or project.name,
+                                "children": conditions,
+                            }
+                        )
+                if project_nodes:
+                    day_nodes.append(
+                        {
+                            "type": "day",
+                            "uuid": f"{code}:{day}",
+                            "label": day,
+                            "children": project_nodes,
+                        }
+                    )
+
             tree.append(
                 {
                     "type": "subject",
                     "uuid": code,
                     "label": code,
-                    "children": [
-                        {
-                            "type": "project",
-                            "uuid": project.project_uuid,
-                            "label": project.project_code or project.name,
-                            "children": _condition_nodes(
-                                subject_uuid_by_project[project.project_uuid]
-                            ),
-                        }
-                        for project in project_rows
-                    ],
+                    "children": day_nodes,
                 }
             )
         return tree

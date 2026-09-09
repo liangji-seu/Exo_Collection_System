@@ -1439,31 +1439,38 @@ def compute_full_statistics(data_root: str | Path) -> FullStatistics:
     by_quality: dict[str, int] = {}
     by_modality: dict[str, dict[str, int]] = {}
     finalized_count = 0
+
+    def _walk(node: dict[str, Any]) -> None:
+        nonlocal project_count, session_count, trial_count
+        nonlocal artifact_count, artifact_bytes, finalized_count
+        node_type = str(node.get("type") or "")
+        if node_type == "project":
+            project_count += 1
+        elif node_type == "session":
+            session_count += 1
+        elif node_type == "trial":
+            trial_count += 1
+            state = str(node.get("state") or "UNKNOWN")
+            if state == TrialState.FINALIZED.value:
+                finalized_count += 1
+            quality = str(node.get("quality_grade") or "UNASSESSED")
+            by_quality[quality] = by_quality.get(quality, 0) + 1
+        elif node_type == "artifact":
+            artifact_count += 1
+            size = int(node.get("size_bytes") or 0)
+            artifact_bytes += size
+            modality = str(node.get("modality") or "unknown")
+            bucket = by_modality.setdefault(
+                modality, {"artifact_count": 0, "size_bytes": 0}
+            )
+            bucket["artifact_count"] += 1
+            bucket["size_bytes"] += size
+        for child in node.get("children", []):
+            if isinstance(child, dict):
+                _walk(child)
+
     for subject in snapshot.tree:
-        projects = subject.get("children", [])
-        project_count += len(projects)
-        for project in projects:
-            sessions = project.get("children", [])
-            session_count += len(sessions)
-            for session in sessions:
-                trials = session.get("children", [])
-                trial_count += len(trials)
-                for trial in trials:
-                    state = str(trial.get("state") or "UNKNOWN")
-                    if state == TrialState.FINALIZED.value:
-                        finalized_count += 1
-                    quality = str(trial.get("quality_grade") or "UNASSESSED")
-                    by_quality[quality] = by_quality.get(quality, 0) + 1
-                    for artifact in trial.get("children", []):
-                        artifact_count += 1
-                        size = int(artifact.get("size_bytes") or 0)
-                        artifact_bytes += size
-                        modality = str(artifact.get("modality") or "unknown")
-                        bucket = by_modality.setdefault(
-                            modality, {"artifact_count": 0, "size_bytes": 0}
-                        )
-                        bucket["artifact_count"] += 1
-                        bucket["size_bytes"] += size
+        _walk(subject)
     statistics = snapshot.statistics
     return FullStatistics(
         projects=project_count,
