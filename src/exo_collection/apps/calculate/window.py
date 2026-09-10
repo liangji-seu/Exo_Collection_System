@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from exo_collection.apps.calculate.controller import CalculateController
+from exo_collection.apps.calculate.manual_review import is_discarded, write_discard
 from exo_collection.apps.calculate.models import InputCheckReport, SessionRecord, SyncMethod, SyncResult
 from exo_collection.apps.calculate.operation import OperationContext
 from exo_collection.apps.calculate.processing_view import ProcessingView
@@ -121,6 +122,7 @@ class CalculateWindow(QMainWindow):
         self._selector.dynamic_selected.connect(self._on_dynamic)
         self._selector.static_selected.connect(self._on_static)
         self._selector.check_requested.connect(self._on_check_inputs)
+        self._selector.discard_requested.connect(self._on_discard_requested)
 
         self._sync_view.auto_sync_requested.connect(self._run_auto_sync)
         self._sync_view.manual_data_requested.connect(self._run_load_sync_data)
@@ -234,6 +236,36 @@ class CalculateWindow(QMainWindow):
 
     def _on_static(self, record: SessionRecord | None) -> None:
         self._controller.set_static(record)
+
+    def _on_discard_requested(self, record: SessionRecord) -> None:
+        """人工复核：确认后把该 session 标记为「丢弃」。"""
+        if record is None:
+            return
+        if is_discarded(record.session_dir):
+            message = f"Session「{record.session_name}」已被标记为丢弃，是否再次确认？"
+        else:
+            message = (
+                f"确认丢弃 Session「{record.session_name}」？\n\n"
+                "丢弃后 run_data_studio / run_process 会显示「丢弃」；\n"
+                "run_process 重新解算成功后会覆盖（清除）此标记。"
+            )
+        answer = QMessageBox.question(
+            self,
+            "丢弃 Session",
+            message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            write_discard(record.session_dir)
+        except OSError as exc:  # noqa: BLE001
+            _log.warning("写入丢弃标记失败 %s：%s", record.session_name, exc)
+            QMessageBox.warning(self, "丢弃失败", f"写入丢弃标记失败：\n{exc}")
+            return
+        self._selector.refresh_labels()
+        self.statusBar().showMessage(f"已丢弃：{record.session_name}")
 
     def _on_check_inputs(self, dynamic: SessionRecord | None, static: SessionRecord | None) -> None:
         if dynamic is None:

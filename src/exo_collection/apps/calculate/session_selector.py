@@ -30,6 +30,7 @@ from exo_collection.apps.calculate.discovery import (
     recommend_static_for_subject,
 )
 from exo_collection.apps.calculate.ground_truth_status import read_ground_truth_qc
+from exo_collection.apps.calculate.manual_review import is_discarded
 from exo_collection.apps.calculate.models import SessionRecord
 
 _log = logging.getLogger(__name__)
@@ -64,6 +65,8 @@ def _solve_status(record: SessionRecord) -> str:
     QC 结论来自 ``read_ground_truth_qc``；与 Data Studio 的
     ``齐全 · 已解算 · QC XXX / 齐全 · 未解算 / 缺 …`` 口径一致。
     """
+    if not record.is_stand and is_discarded(record.session_dir):
+        return "丢弃"  # 人工复核结论优先于解算状态
     complete, missing = _completeness(record)
     if not complete:
         return "缺 " + "、".join(missing)
@@ -95,6 +98,7 @@ class SessionSelector(QWidget):
     dynamic_selected = Signal(object)   # SessionRecord | None
     static_selected = Signal(object)    # SessionRecord | None
     check_requested = Signal(object, object)  # (dynamic, static)
+    discard_requested = Signal(object)  # 动态 SessionRecord（请求人工丢弃）
 
     def __init__(self, data_root: Path, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -119,6 +123,9 @@ class SessionSelector(QWidget):
         self._check_button = QPushButton("检查输入")
         self._check_button.clicked.connect(self._request_check)
 
+        self._discard_button = QPushButton("丢弃此 Session")
+        self._discard_button.clicked.connect(self._request_discard)
+
         self._status_label = QLabel("")
         self._status_label.setWordWrap(True)
 
@@ -132,6 +139,7 @@ class SessionSelector(QWidget):
         layout.addLayout(form)
         buttons = QHBoxLayout()
         buttons.addWidget(self._check_button)
+        buttons.addWidget(self._discard_button)
         buttons.addStretch(1)
         layout.addLayout(buttons)
         layout.addWidget(self._status_label)
@@ -184,11 +192,13 @@ class SessionSelector(QWidget):
     @staticmethod
     def _select_record(combo: QComboBox, record: SessionRecord) -> None:
         # 不用 findData：PySide6 对任意 Python 对象的 QVariant 相等比较不可靠，
-        # 这里按 itemData() 逐项用 Python ``==`` 匹配。
+        # 这里按 itemData() 逐项用 Python ``==`` 匹配；未命中则回退到第一项。
         for index in range(combo.count()):
             if combo.itemData(index) == record:
                 combo.setCurrentIndex(index)
                 return
+        if combo.count() > 0:
+            combo.setCurrentIndex(0)
 
     # ------------------------------------------------------------------
     # 受试者 → 动态工况 + 静态标定（自动绑定）
@@ -207,7 +217,7 @@ class SessionSelector(QWidget):
         self._day_combo.blockSignals(False)
         self._apply_day()
 
-    def _apply_day(self) -> None:
+    def _apply_day(self, preserve: bool = False) -> None:
         code = self._subject_combo.currentData()
         day = self._day_combo.currentData()
         day_sessions = [s for s in self._subject_sessions if s.day == day]
@@ -223,9 +233,15 @@ class SessionSelector(QWidget):
         )
         recommended = recommend_static_for_subject(code, self._sessions, day=day)
 
-        self._populate_combo(self._dynamic_combo, dynamics, _dynamic_label)
+        dynamic_selected = self._dynamic if preserve else None
+        static_selected = self._static if preserve else None
+
         self._populate_combo(
-            self._static_combo, statics, _static_label, selected=recommended
+            self._dynamic_combo, dynamics, _dynamic_label, selected=dynamic_selected
+        )
+        self._populate_combo(
+            self._static_combo, statics, _static_label,
+            selected=static_selected or recommended,
         )
 
         # 填充期间信号被 block，这里显式同步当前选择并 emit 一次。
@@ -254,6 +270,7 @@ class SessionSelector(QWidget):
     # ------------------------------------------------------------------
     def _set_dynamic(self, record: SessionRecord | None) -> None:
         self._dynamic = record
+        self._discard_button.setEnabled(record is not None)
         self.dynamic_selected.emit(record)
         self._update_status()
 
@@ -270,7 +287,8 @@ class SessionSelector(QWidget):
         if self._dynamic is not None:
             missing = self._dynamic.files.missing()
             completeness = "齐全" if not missing else "缺 " + "、".join(missing)
-            lines.append(f"动态：{self._dynamic.subject_and_condition}（输入 {completeness}）")
+            discarded = "，已丢弃" if is_discarded(self._dynamic.session_dir) else ""
+            lines.append(f"动态：{self._dynamic.subject_and_condition}（输入 {completeness}{discarded}）")
         else:
             lines.append("动态：该受试者没有非静态工况。")
         if self._static is not None:
@@ -281,6 +299,16 @@ class SessionSelector(QWidget):
 
     def _request_check(self) -> None:
         self.check_requested.emit(self._dynamic, self._static)
+
+    def _request_discard(self) -> None:
+        if self._dynamic is not None:
+            self.discard_requested.emit(self._dynamic)
+
+    def refresh_labels(self) -> None:
+        """丢弃/撤销后刷新下拉标签（保留当前受试者 / 天数 / 选择）。"""
+        if self._subject_combo.count() == 0:
+            return
+        self._apply_day(preserve=True)
 
     # ------------------------------------------------------------------
     def current_dynamic(self) -> SessionRecord | None:

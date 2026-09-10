@@ -33,6 +33,7 @@ from exo_collection.apps.calculate.discovery import (
     distinct_days,
     recommend_static_for_subject,
 )
+from exo_collection.apps.calculate.manual_review import is_discarded
 from exo_collection.apps.calculate.models import SessionRecord
 from exo_collection.apps.calculate.opensim_env import (
     discover_opensim_python,
@@ -56,6 +57,7 @@ _RED = ("#fdecea", "#b42318")
 _GRAY = ("#f1f3f5", "#9aa3ad")
 _BLUE = ("#e8f0fe", "#1a73e8")
 _ORANGE = ("#fef7e0", "#b26a00")
+_PURPLE = ("#f3e8fd", "#7c3aed")
 
 
 class ProcessWindow(QMainWindow):
@@ -324,6 +326,10 @@ class ProcessWindow(QMainWindow):
         complete_text, complete_bg, complete_fg = self._completeness(record)
         self._paint_cell(item, 1, complete_text, complete_bg, complete_fg)
 
+        # 人工复核「丢弃」优先于解算状态展示（重新解算成功后标记会被清除）。
+        if is_discarded(record.session_dir):
+            self._paint_cell(item, 2, "丢弃", *_PURPLE)
+            return
         solve_text, solve_bg, solve_fg = self._solve_text(state)
         self._paint_cell(item, 2, solve_text, solve_bg, solve_fg)
 

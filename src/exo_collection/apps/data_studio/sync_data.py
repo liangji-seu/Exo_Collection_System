@@ -237,11 +237,13 @@ class SolveStatus:
     missing: tuple[str, ...]
     solved: bool
     qc_status: str | None = None
+    discarded: bool = False
 
 
 def check_trial_solved(manifest_path: Path) -> SolveStatus:
     """检查一个 trial 的「已解算 / 未解算」标注（复用 c3d+txt 齐全判定）。"""
     from exo_collection.apps.calculate.ground_truth_status import read_ground_truth_qc
+    from exo_collection.apps.calculate.manual_review import is_discarded
 
     sync = check_trial_sync_data(manifest_path)
     missing: list[str] = []
@@ -257,6 +259,7 @@ def check_trial_solved(manifest_path: Path) -> SolveStatus:
         missing=tuple(missing),
         solved=solved,
         qc_status=read_ground_truth_qc(sync.trial_root) if solved else None,
+        discarded=is_discarded(sync.trial_root),
     )
 
 

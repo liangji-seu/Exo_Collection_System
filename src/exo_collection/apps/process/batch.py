@@ -20,6 +20,7 @@ from typing import Any, Callable
 from PySide6.QtCore import QObject, QRunnable, Signal
 
 from exo_collection.apps.calculate._pipeline import ensure_pipeline_on_path, pipeline_root
+from exo_collection.apps.calculate.manual_review import clear_manual_review
 from exo_collection.apps.calculate.models import SessionRecord
 
 _log = logging.getLogger(__name__)
@@ -304,6 +305,8 @@ def solve_one_session(
     from exo_collection.apps.calculate.ground_truth_status import write_ground_truth_qc
 
     write_ground_truth_qc(out_path, qc_status, run_dir)
+    # 成功解算覆盖人工复核结论：清除「丢弃」标记（run_process 覆盖结果）。
+    clear_manual_review(dynamic.session_dir)
     progress(f"计算完成，QC：{qc_status or '未评估'}")
     return {
         "run_dir": run_dir,

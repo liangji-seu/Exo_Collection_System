@@ -678,3 +678,34 @@ def test_session_selector_scopes_by_day(tmp_path: Path, monkeypatch) -> None:
     assert selector.current_dynamic().condition_code == "WALK_FAST_1P50"
     assert selector.current_static().day == 2
     selector.close()
+
+
+def test_session_selector_discard_button_and_label(tmp_path: Path, monkeypatch) -> None:
+    from dataclasses import replace
+
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+
+    from exo_collection.apps.calculate import session_selector
+    from exo_collection.apps.calculate.manual_review import write_discard
+
+    dynamic = replace(
+        _make_session(subject="003", condition="WALK_STEADY_1P00"),
+        session_dir=tmp_path / "003" / "walk",
+    )
+    monkeypatch.setattr(session_selector, "discover_sessions", lambda root: [dynamic])
+
+    selector = session_selector.SessionSelector(tmp_path)
+
+    # 丢弃按钮发出信号，携带当前动态 session。
+    emitted: list[SessionRecord] = []
+    selector.discard_requested.connect(emitted.append)
+    selector._discard_button.click()
+    assert emitted == [dynamic]
+
+    # 丢弃后刷新标签，下拉显示「丢弃」。
+    write_discard(dynamic.session_dir)
+    selector.refresh_labels()
+    assert "丢弃" in selector._dynamic_combo.currentText()
+    selector.close()

@@ -253,6 +253,21 @@ def test_check_trial_solved_incomplete_lists_missing(tmp_path: Path) -> None:
     assert status.missing == ("txt",)
 
 
+def test_check_trial_solved_discarded(tmp_path: Path) -> None:
+    from exo_collection.apps.calculate.manual_review import write_discard
+
+    trial_root = tmp_path / "trial"
+    trial_root.mkdir()
+    _write_trigger(trial_root, CAP_NAME)
+    (trial_root / f"{CAP_NAME}.c3d").write_text("x")
+    (trial_root / f"{CAP_NAME}.txt").write_text("y")
+    write_discard(trial_root)
+    status = check_trial_solved(_manifest_path(trial_root))
+    assert status.complete
+    assert status.discarded
+    assert not status.solved  # 未解算，但被标记为丢弃
+
+
 def test_check_all_trial_solved_only_finalized(tmp_path: Path) -> None:
     trial_root = tmp_path / "trial"
     trial_root.mkdir()
