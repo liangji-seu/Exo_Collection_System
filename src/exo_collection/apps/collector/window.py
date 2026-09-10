@@ -1000,7 +1000,7 @@ class RingTrace:
         self._marker_lines: dict[int, "pg.InfiniteLine"] = {}
         self.plot = plot
         self.curve = plot.plot(pen=pg.mkPen(pen, width=1.2))
-        self.cursor_line = pg.InfiniteLine(pos=0.0, angle=90, pen=pg.mkPen("#dc3545", width=2))
+        self.cursor_line = pg.InfiniteLine(pos=0.0, angle=90, pen=pg.mkPen("#dc3545", width=6))
         plot.addItem(self.cursor_line)
         plot.setTitle(label)
         plot.setBackground("w")
