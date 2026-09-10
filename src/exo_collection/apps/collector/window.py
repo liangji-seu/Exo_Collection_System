@@ -1235,6 +1235,9 @@ class CollectorWindow(QMainWindow):
         self._us_curves: list["pg.PlotDataItem"] = []
         self._us_x = np.arange(ULTRASOUND_PREVIEW_SAMPLES, dtype=np.float64)
         self._ultrasound_format_alerted: set[tuple[int, str]] = set()
+        # 采集→显示端到端延迟打点（诊断超声预览 1s 延迟用）。
+        self._ultrasound_latency_last_log_s = 0.0
+        self._ultrasound_latency_max_ms = 0.0
         self._imu_traces: dict[str, RingTrace] = {}
         self._enc_traces: dict[str, RingTrace] = {}
         self._emg_traces: dict[str, RingTrace] = {}
@@ -4569,6 +4572,23 @@ class CollectorWindow(QMainWindow):
         if self.preview_workspace is not None:
             self.preview_workspace.set_stream_state(modality, "live")
         if modality == "ultrasound":
+            # 采集→显示端到端延迟打点（诊断超声预览 1s 延迟用）。
+            # host_monotonic_ns 在预览 worker 抓包瞬间用 perf_counter_ns() 记录，
+            # perf_counter_ns 是系统级单调钟，跨进程可比。
+            _us_latency_ns = event.payload.get("host_monotonic_ns")
+            if isinstance(_us_latency_ns, int):
+                _latency_ms = (time.perf_counter_ns() - _us_latency_ns) / 1e6
+                if _latency_ms > self._ultrasound_latency_max_ms:
+                    self._ultrasound_latency_max_ms = _latency_ms
+                _now_s = time.monotonic()
+                if _now_s - self._ultrasound_latency_last_log_s >= 2.0:
+                    LOG.info(
+                        "ultrasound 预览延迟: 当前 %.1f ms / 近 2 s 峰值 %.1f ms",
+                        _latency_ms,
+                        self._ultrasound_latency_max_ms,
+                    )
+                    self._ultrasound_latency_last_log_s = _now_s
+                    self._ultrasound_latency_max_ms = 0.0
             raw_channels = event.payload.get("channels")
             if not isinstance(raw_channels, (list, tuple)):
                 legacy_values = event.payload.get("values")
