@@ -378,6 +378,20 @@ class ImuDeviceSettingsDialog(ModalityDeviceSettingsDialog):
         self.id_mid_edit = self.id_2_edit
         self.id_right_edit = self.id_3_edit
         form.addRow("MTw 传感器 ID：", ids_layout)
+
+        self.stall_check = QCheckBox("启用 IMU 掉线检测（单个传感器长时间无数据时告警/作废）")
+        self.stall_check.setObjectName("imu_stall_detection_enabled")
+        self.stall_check.setChecked(bool(current.get("stall_detection_enabled", True)))
+        form.addRow("", self.stall_check)
+
+        self.stall_duration_spin = QDoubleSpinBox()
+        self.stall_duration_spin.setObjectName("imu_stall_duration_s")
+        self.stall_duration_spin.setRange(0.1, 3_600.0)
+        self.stall_duration_spin.setDecimals(1)
+        self.stall_duration_spin.setSuffix(" s")
+        self.stall_duration_spin.setValue(float(current.get("stall_duration_s", 5.0)))
+        form.addRow("掉线判定时长：", self.stall_duration_spin)
+
         outer.addLayout(form)
         outer.addWidget(self._button_box())
 
@@ -393,6 +407,8 @@ class ImuDeviceSettingsDialog(ModalityDeviceSettingsDialog):
                 "radio_channel": self.channel_spin.value(),
                 "sample_rate_hz": self.rate_spin.value(),
                 "sensor_ids": sensor_ids,
+                "stall_detection_enabled": self.stall_check.isChecked(),
+                "stall_duration_s": self.stall_duration_spin.value(),
             }
         )
 

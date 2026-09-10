@@ -225,6 +225,22 @@ def test_hardware_imu_empty_sensor_ids_keeps_default_count() -> None:
     assert params.expected_device_count == 3
 
 
+def test_hardware_imu_stall_detection_defaults() -> None:
+    """Per-sensor stall detection defaults to enabled with a 5 s threshold."""
+    from exo_collection.configuration.device_profiles import HardwareImuParameters
+
+    params = HardwareImuParameters()
+    assert params.stall_detection_enabled is True
+    assert params.stall_duration_s == 5.0
+
+
+def test_hardware_imu_rejects_nonpositive_stall_duration() -> None:
+    from exo_collection.configuration.device_profiles import HardwareImuParameters
+
+    with pytest.raises(ValidationError, match="stall_duration_s"):
+        HardwareImuParameters(stall_duration_s=0.0)
+
+
 def test_hardware_imu_override_with_slot_preservation() -> None:
     """Config override with slot-based IDs is validated correctly."""
     profile = load_device_profile("hardware")

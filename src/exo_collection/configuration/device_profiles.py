@@ -304,6 +304,11 @@ class HardwareImuParameters(ProfileModel):
     poll_interval_s: float = Field(default=0.1, gt=0)
     pending_group_limit: int = Field(default=128, gt=0)
     queue_capacity: int = Field(default=256, gt=0)
+    # Per-sensor stall detection (USB MTw only): flag a fault when one wired
+    # MTw stops delivering packets for ``stall_duration_s``.  The Awinda
+    # wireless backend ignores these fields (its config filters unknown keys).
+    stall_detection_enabled: bool = True
+    stall_duration_s: float = Field(default=5.0, gt=0)
 
     @field_validator("sensor_ids", mode="before")
     @classmethod

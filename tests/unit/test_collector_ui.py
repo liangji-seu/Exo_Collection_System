@@ -421,6 +421,38 @@ def test_encoder_frozen_detection_settings_round_trip(tmp_path: Path) -> None:
     assert reread.encoder_frozen_detection == {"enabled": True, "duration_s": 5.0}
 
 
+def test_imu_dialog_stall_detection_defaults_and_restores() -> None:
+    app = QApplication.instance() or QApplication(["test-imu-stall"])
+
+    # Default: checkbox checked, 5.0 s threshold.
+    default = ImuDeviceSettingsDialog({})
+    assert default.stall_check.isChecked()
+    assert default.stall_duration_spin.value() == 5.0
+
+    # Restore an explicit override.
+    restored = ImuDeviceSettingsDialog(
+        {"stall_detection_enabled": False, "stall_duration_s": 12.5}
+    )
+    assert not restored.stall_check.isChecked()
+    assert restored.stall_duration_spin.value() == 12.5
+
+    for dialog in (default, restored):
+        dialog.close()
+    app.processEvents()
+
+
+def test_imu_dialog_accept_emits_stall_fields() -> None:
+    app = QApplication.instance() or QApplication(["test-imu-stall-accept"])
+    dialog = ImuDeviceSettingsDialog({})
+    dialog.stall_check.setChecked(True)
+    dialog.stall_duration_spin.setValue(7.5)
+    dialog.accept()
+    assert dialog.validated_override["stall_detection_enabled"] is True
+    assert dialog.validated_override["stall_duration_s"] == 7.5
+    dialog.close()
+    app.processEvents()
+
+
 def test_imu_dialog_preserves_disabled_middle_slot() -> None:
     app = QApplication.instance() or QApplication(["test-imu-slot-settings"])
     dialog = ImuDeviceSettingsDialog(

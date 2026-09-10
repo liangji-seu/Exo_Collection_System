@@ -54,6 +54,11 @@ class XsensMtwUsbConfig:
     sensor_ids: tuple[str, ...] = ()
     pending_group_limit: int = 128
     queue_capacity: int = 256
+    # Per-sensor stall detection: flag a fault when one wired MTw stops
+    # delivering packets for ``stall_duration_s`` while the pipeline is
+    # otherwise alive (a silent USB/dongle drop-out, not a symmetric stop).
+    stall_detection_enabled: bool = True
+    stall_duration_s: float = 5.0
 
     def __post_init__(self) -> None:
         ids = tuple(str(item).strip() for item in self.sensor_ids)
@@ -78,6 +83,8 @@ class XsensMtwUsbConfig:
         object.__setattr__(self, "sensor_ids", ids)
         if self.pending_group_limit <= 0 or self.queue_capacity <= 0:
             raise ValueError("pending_group_limit and queue_capacity must be positive")
+        if self.stall_duration_s <= 0:
+            raise ValueError("stall_duration_s must be positive")
 
     @property
     def active_sensor_ids(self) -> tuple[str, ...]:
@@ -397,6 +404,7 @@ class XsensMtwUsbImuAdapter(QueuedHardwareAdapter):
 
         self._per_device_last_counter: dict[str, int] = {}
         self._per_device_sample_count: dict[str, int] = {}
+        self._per_device_last_packet_ns: dict[str, int] = {}
 
         self._sample_index = 0
         self._batch_sequence = 0
@@ -491,6 +499,7 @@ class XsensMtwUsbImuAdapter(QueuedHardwareAdapter):
 
     def _reset_trial_state(self) -> None:
         self._per_device_last_counter = {}
+        self._per_device_last_packet_ns = {}
         self._per_device_sample_count = {did: 0 for did in self._use_device_ids}
         self._sample_index = 0
         self._batch_sequence = 0
@@ -580,6 +589,11 @@ class XsensMtwUsbImuAdapter(QueuedHardwareAdapter):
             self._set_fault(AdapterError(f"收到未配置 MTw {device_id} 的数据"))
             return
 
+        # Record the receive instant so the consumer loop can detect a silent
+        # per-sensor stall.  Uses the callback's own clock, independent of any
+        # host_mono_ns value the caller passed.
+        self._per_device_last_packet_ns[device_id] = perf_counter_ns()
+
         mono_ns = perf_counter_ns() if host_mono_ns is None else int(host_mono_ns)
         utc_ns = time_ns() if host_utc_ns is None else int(host_utc_ns)
         try:
@@ -594,6 +608,7 @@ class XsensMtwUsbImuAdapter(QueuedHardwareAdapter):
 
     def _consumer_loop(self) -> None:
         while True:
+            self._check_stall()
             try:
                 item = self._packet_queue.get(timeout=0.05)
             except Empty:
@@ -604,6 +619,33 @@ class XsensMtwUsbImuAdapter(QueuedHardwareAdapter):
                 self._process_one_packet(*item)
             except BaseException as exc:
                 self._set_fault(exc)
+
+    def _check_stall(self) -> None:
+        """Fault if any wired MTw has gone silent for longer than the threshold.
+
+        Only devices that have already delivered at least one packet are
+        considered, so a device still warming up at connect time is not
+        misread as a stall.  A fault here is adapter-level: one dead sensor
+        means the IMU array is incomplete, so the whole modality is flagged.
+        """
+        if not self._config.stall_detection_enabled:
+            return
+        if not self._accepting_packets or self._last_error is not None:
+            return
+        threshold_ns = int(self._config.stall_duration_s * 1_000_000_000)
+        now = perf_counter_ns()
+        for device_id in self._use_device_ids:
+            last = self._per_device_last_packet_ns.get(device_id)
+            if last is None:
+                continue
+            if now - last > threshold_ns:
+                self._set_fault(
+                    AdapterError(
+                        f"IMU 传感器 {device_id} 超过 "
+                        f"{self._config.stall_duration_s:.0f} s 未收到数据，疑似掉线"
+                    )
+                )
+                return
 
     def _process_one_packet(
         self,

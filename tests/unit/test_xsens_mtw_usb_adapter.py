@@ -9,7 +9,7 @@ Focuses on the two things that differ from the Awinda wireless adapter:
 from __future__ import annotations
 
 import sys
-from time import monotonic, sleep
+from time import monotonic, perf_counter_ns, sleep
 from uuid import uuid4
 
 import numpy as np
@@ -186,6 +186,8 @@ def test_config_defaults_are_valid() -> None:
     assert cfg.radio_channel == 25
     assert cfg.pending_group_limit == 128
     assert cfg.queue_capacity == 256
+    assert cfg.stall_detection_enabled is True
+    assert cfg.stall_duration_s == 5.0
 
 
 def test_config_slot_preservation_with_empty_middle() -> None:
@@ -201,6 +203,82 @@ def test_config_rejects_invalid_sensor_ids() -> None:
         XsensMtwUsbConfig(sensor_ids=("A", "B", "C", "D"))  # > 3 slots
     with pytest.raises(ValueError):
         XsensMtwUsbConfig(sensor_ids=("A", "B", "B"))  # duplicate
+
+
+def test_config_rejects_nonpositive_stall_duration() -> None:
+    with pytest.raises(ValueError, match="stall_duration_s"):
+        XsensMtwUsbConfig(stall_duration_s=0.0)
+
+
+# ──────────────────────────────────────────────────────────────
+#  Per-sensor stall detection
+# ──────────────────────────────────────────────────────────────
+
+
+def test_stall_detection_flags_fault_when_one_sensor_goes_silent() -> None:
+    """One MTw dropping off the bus while the others keep flowing must fault.
+
+    The modality-level ``last_publish`` clock stays fresh (the surviving units
+    keep emitting), so only a per-sensor check can catch this — this is the
+    exact silent drop-out reported in the field for 10B42626/10B4260D.
+    """
+    backend = FakeMtwUsbBackend(("A", "B", "C"))
+    adapter = XsensMtwUsbImuAdapter(
+        backend=backend,
+        config={"queue_capacity": 64, "stall_duration_s": 0.1},
+    )
+    adapter.connect()
+    adapter.prepare(context())
+    adapter.start()
+
+    # All three deliver one packet, then C goes silent while A/B keep flowing.
+    backend.emit("A", Packet(1), perf_counter_ns())
+    backend.emit("B", Packet(1), perf_counter_ns())
+    backend.emit("C", Packet(1), perf_counter_ns())
+    _drain_events(adapter, timeout=0.3)
+
+    for k in range(8):
+        backend.emit("A", Packet(k + 2), perf_counter_ns())
+        backend.emit("B", Packet(k + 2), perf_counter_ns())
+        sleep(0.05)
+
+    with pytest.raises(AdapterError, match="掉线"):
+        adapter.raise_if_faulted()
+    adapter.stop()
+    adapter.close()
+
+
+def test_stall_check_does_not_fault_before_first_packet() -> None:
+    """A device still warming up (no packet yet) must not be flagged."""
+    backend = FakeMtwUsbBackend(("A", "B", "C"))
+    adapter = XsensMtwUsbImuAdapter(
+        backend=backend, config={"stall_duration_s": 0.01}
+    )
+    adapter.connect()
+    adapter.prepare(context())
+    adapter._accepting_packets = True
+    adapter._check_stall()
+    adapter.raise_if_faulted()  # must not raise
+    adapter.close()
+
+
+def test_stall_check_disabled_does_not_fault() -> None:
+    backend = FakeMtwUsbBackend(("A",))
+    adapter = XsensMtwUsbImuAdapter(
+        backend=backend,
+        config={
+            "stall_detection_enabled": False,
+            "stall_duration_s": 0.01,
+            "expected_device_count": 1,
+        },
+    )
+    adapter.connect()
+    adapter.prepare(context())
+    adapter._accepting_packets = True
+    adapter._per_device_last_packet_ns["A"] = perf_counter_ns() - 10_000_000_000
+    adapter._check_stall()
+    adapter.raise_if_faulted()  # disabled → no fault
+    adapter.close()
 
 
 # ──────────────────────────────────────────────────────────────
