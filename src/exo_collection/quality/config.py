@@ -88,6 +88,11 @@ class SignalQualityRules(QualityConfigModel):
     maximum_absolute_jump: float | None = Field(default=None, gt=0)
     calibration_reference: NonEmptyStr | None = None
     calibrated_violation_severity: Literal["WARNING", "ERROR"] = "WARNING"
+    # Motor encoder stall detection: flag one side whose position *and* velocity
+    # are bit-identical for at least ``frozen_duration_s`` while the other side
+    # keeps moving (a stale CAN feed, not a symmetric stand-still).
+    frozen_detection_enabled: bool = False
+    frozen_duration_s: float = Field(default=5.0, gt=0)
 
     @model_validator(mode="after")
     def validate_calibrated_thresholds(self) -> SignalQualityRules:

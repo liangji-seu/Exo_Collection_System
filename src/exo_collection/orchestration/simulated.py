@@ -684,6 +684,22 @@ def run_trial(
         quality_rules = quality_rules.model_copy(
             update={"required_modalities": tuple(sorted(enabled_modalities))}
         )
+    if request.encoder_frozen_detection:
+        override = request.encoder_frozen_detection
+        quality_rules = quality_rules.model_copy(
+            update={
+                "encoder": quality_rules.encoder.model_copy(
+                    update={
+                        "frozen_detection_enabled": bool(
+                            override.get("enabled", True)
+                        ),
+                        "frozen_duration_s": float(
+                            override.get("duration_s", 5.0)
+                        ),
+                    }
+                )
+            }
+        )
     storage_policy = load_storage_policy()
     # A failed disk-space preflight occurs before Catalog, Session, acquisition
     # lock, or Trial-directory side effects.  It cannot create a misleading

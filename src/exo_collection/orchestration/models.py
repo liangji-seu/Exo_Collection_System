@@ -155,6 +155,11 @@ class TrialRunRequest(OrchestrationModel):
     # worker preserves backward behaviour and connects everything in the
     # profile.  The collector UI sets this from the currently-previewed set.
     enabled_modalities: frozenset[str] | None = None
+    # Optional encoder frozen-detection override forwarded from the Collector
+    # UI.  None means the operator never toggled the checkbox, so the built-in
+    # quality-rule default applies; a dict overrides the encoder rule before
+    # the Trial is evaluated.
+    encoder_frozen_detection: dict[str, Any] | None = None
 
     @field_validator("device_overrides")
     @classmethod

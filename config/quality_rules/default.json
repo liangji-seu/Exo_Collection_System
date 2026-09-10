@@ -34,6 +34,8 @@
     "calibrated_maximum": null,
     "maximum_absolute_jump": null,
     "calibration_reference": null,
-    "calibrated_violation_severity": "WARNING"
+    "calibrated_violation_severity": "WARNING",
+    "frozen_detection_enabled": true,
+    "frozen_duration_s": 5.0
   }
 }

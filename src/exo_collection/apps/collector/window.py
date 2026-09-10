@@ -2325,10 +2325,19 @@ class CollectorWindow(QMainWindow):
 
         current = self._settings.hardware_device_overrides.get(modality, {})
         dialog_type = DEVICE_SETTINGS_DIALOGS[modality]
-        dialog = dialog_type(current, self)
+        if modality == "encoder":
+            dialog = dialog_type(
+                current,
+                frozen_detection=self._settings.encoder_frozen_detection,
+                parent=self,
+            )
+        else:
+            dialog = dialog_type(current, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         self._settings.set_hardware_device_override(modality, dialog.validated_override)
+        if modality == "encoder":
+            self._settings.set_encoder_frozen_detection(dialog.frozen_detection)
         # Saving any per-device settings is an explicit request to use the
         # laboratory hardware profile. The choice and values are both synced
         # immediately by SharedAppSettings and survive process restarts.
@@ -4019,6 +4028,7 @@ class CollectorWindow(QMainWindow):
             "protocol_version": _PROTOCOL.protocol_version,
             "config_version": "1.0.0",
             "experiment_metadata": self._experiment_metadata.model_dump(mode="python"),
+            "encoder_frozen_detection": self._settings.encoder_frozen_detection,
         }
         return TrialRunRequest.model_validate(payload)
 

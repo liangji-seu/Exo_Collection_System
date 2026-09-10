@@ -381,6 +381,46 @@ def test_each_modality_dialog_restores_its_own_settings() -> None:
     app.processEvents()
 
 
+def test_encoder_dialog_frozen_detection_defaults_and_restores() -> None:
+    app = QApplication.instance() or QApplication(["test-encoder-frozen"])
+
+    # Default: checkbox checked, 5.0 s threshold.
+    default = EncoderDeviceSettingsDialog({})
+    assert default.frozen_check.isChecked()
+    assert default.frozen_duration_spin.value() == 5.0
+    assert default.frozen_detection == {"enabled": True, "duration_s": 5.0}
+
+    # Restore an explicit override.
+    restored = EncoderDeviceSettingsDialog(
+        {}, frozen_detection={"enabled": False, "duration_s": 12.5}
+    )
+    assert not restored.frozen_check.isChecked()
+    assert restored.frozen_duration_spin.value() == 12.5
+    assert restored.frozen_detection == {"enabled": False, "duration_s": 12.5}
+
+    for dialog in (default, restored):
+        dialog.close()
+    app.processEvents()
+
+
+def test_encoder_frozen_detection_settings_round_trip(tmp_path: Path) -> None:
+    ini = tmp_path / "frozen-settings.ini"
+    settings = SharedAppSettings(
+        QSettings(str(ini), QSettings.Format.IniFormat)
+    )
+    assert settings.encoder_frozen_detection is None
+    saved = settings.set_encoder_frozen_detection(
+        {"enabled": True, "duration_s": 5.0}
+    )
+    assert saved == {"enabled": True, "duration_s": 5.0}
+
+    # A fresh settings object over the same file re-reads the persisted choice.
+    reread = SharedAppSettings(
+        QSettings(str(ini), QSettings.Format.IniFormat)
+    )
+    assert reread.encoder_frozen_detection == {"enabled": True, "duration_s": 5.0}
+
+
 def test_imu_dialog_preserves_disabled_middle_slot() -> None:
     app = QApplication.instance() or QApplication(["test-imu-slot-settings"])
     dialog = ImuDeviceSettingsDialog(

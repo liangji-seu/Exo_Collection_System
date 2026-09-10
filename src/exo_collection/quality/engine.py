@@ -80,6 +80,10 @@ class SignalEvidence(QualityEvidenceModel):
     minimum: list[float | None] = Field(default_factory=list)
     maximum: list[float | None] = Field(default_factory=list)
     maximum_absolute_jump: float | None = Field(default=None, ge=0)
+    # Channel names (from ``metadata/channels``) and the longest bit-identical
+    # run per channel, in seconds, for asymmetric motor-stall detection.
+    channel_names: list[str] = Field(default_factory=list)
+    channel_max_run_s: list[float] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_channel_extrema(self) -> SignalEvidence:
@@ -172,10 +176,25 @@ def scan_hdf5_signal_evidence(
     maxima: np.ndarray | None = None
     maximum_jump: float | None = None
     previous: np.ndarray | None = None
+    first_ts: int | None = None
+    last_ts: int | None = None
+    run_length: np.ndarray | None = None
+    max_run: np.ndarray | None = None
+    nominal_rate_hz: float | None = None
+    channel_names: list[str] = []
     with h5py.File(Path(path), "r") as file:
         data = file["samples/data"]
         timestamps = file["samples/host_monotonic_ns"]
         chunk_rows = int(data.chunks[0] if data.chunks else 4096)
+        nominal_rate_attr = file.attrs.get("nominal_rate_hz")
+        if nominal_rate_attr is not None and float(nominal_rate_attr) > 0:
+            nominal_rate_hz = float(nominal_rate_attr)
+        channels_dataset = file.get("metadata/channels")
+        if channels_dataset is not None:
+            channel_names = [
+                value.decode("utf-8") if isinstance(value, bytes) else str(value)
+                for value in channels_dataset[...]
+            ]
         for start in range(0, int(data.shape[0]), chunk_rows):
             stop = min(int(data.shape[0]), start + chunk_rows)
             chunk_times = np.asarray(timestamps[start:stop], dtype=np.uint64)
@@ -183,6 +202,10 @@ def scan_hdf5_signal_evidence(
             if not np.any(keep):
                 continue
             values = np.asarray(data[start:stop])[keep].reshape(int(np.sum(keep)), -1)
+            kept_times = chunk_times[keep]
+            if first_ts is None:
+                first_ts = int(kept_times[0])
+            last_ts = int(kept_times[-1])
             sample_count += int(values.shape[0])
             finite = np.isfinite(values)
             nonfinite_count += int(values.size - np.count_nonzero(finite))
@@ -193,8 +216,9 @@ def scan_hdf5_signal_evidence(
             minima = chunk_min if minima is None else np.fmin(minima, chunk_min)
             maxima = chunk_max if maxima is None else np.fmax(maxima, chunk_max)
 
-            if previous is not None:
-                joined = np.vstack((previous, safe))
+            carry = previous  # last kept row of the prior chunk (None on first)
+            if carry is not None:
+                joined = np.vstack((carry, safe))
             else:
                 joined = safe
             if joined.shape[0] > 1:
@@ -204,6 +228,21 @@ def scan_hdf5_signal_evidence(
                     maximum_jump = (
                         candidate if maximum_jump is None else max(maximum_jump, candidate)
                     )
+
+            # Track the longest bit-identical run per channel (in samples) to
+            # support asymmetric motor-stall detection.  Non-finite samples are
+            # encoded as NaN, which never compares equal, so they break a run.
+            if run_length is None:
+                run_length = np.ones(safe.shape[1], dtype=np.int64)
+                max_run = np.ones(safe.shape[1], dtype=np.int64)
+            prior = carry[0] if carry is not None else None
+            for k in range(safe.shape[0]):
+                same = safe[k] == prior if prior is not None else np.zeros(
+                    safe.shape[1], dtype=bool
+                )
+                run_length = np.where(same, run_length + 1, 1)
+                max_run = np.maximum(max_run, run_length)
+                prior = safe[k]
             previous = safe[-1:]
 
         discontinuities = file.get("events/discontinuities")
@@ -226,6 +265,18 @@ def scan_hdf5_signal_evidence(
             return []
         return [float(value) if np.isfinite(value) else None for value in values]
 
+    if nominal_rate_hz is not None:
+        interval_s = 1.0 / nominal_rate_hz
+    elif sample_count > 1 and first_ts is not None and last_ts is not None and last_ts > first_ts:
+        interval_s = float(last_ts - first_ts) / (sample_count - 1)
+    else:
+        interval_s = 0.0
+    channel_max_run_s = (
+        [float((int(count) - 1) * interval_s) for count in max_run]
+        if max_run is not None
+        else []
+    )
+
     return SignalEvidence(
         formal_sample_count=sample_count,
         sequence_gap_count=sequence_gap_count,
@@ -233,6 +284,8 @@ def scan_hdf5_signal_evidence(
         minimum=serialise(minima),
         maximum=serialise(maxima),
         maximum_absolute_jump=maximum_jump,
+        channel_names=channel_names,
+        channel_max_run_s=channel_max_run_s,
     )
 
 
@@ -309,6 +362,88 @@ def _range_result(
         modality=modality,
         metric=metric,
         observed_value=values,
+        threshold=threshold,
+        required_for_grade_a=True,
+    )
+
+
+def _channel_index(names: list[str], target: str, default: int) -> int:
+    if names:
+        for index, name in enumerate(names):
+            if name == target:
+                return index
+    return default
+
+
+def _motor_frozen_result(
+    evidence: SignalEvidence,
+    rules: SignalQualityRules,
+) -> RuleResult:
+    """Flag one motor side whose position+velocity froze while the other moved.
+
+    A symmetric stand-still (both sides frozen, e.g. a STAND trial) is *not* a
+    fault and is deliberately ignored, so the rule only fires on the asymmetric
+    signature of a stale CAN feed where one joint keeps receiving the same
+    encoder values while the other side remains active.
+    """
+
+    threshold = rules.frozen_duration_s
+    if not rules.frozen_detection_enabled:
+        return _result(
+            "SIGNAL_MOTOR_FROZEN",
+            RuleStatus.UNASSESSED,
+            "signal",
+            "encoder motor frozen detection is disabled",
+            modality="encoder",
+            metric="max_frozen_run_s",
+            observed_value=[],
+            threshold=threshold,
+        )
+    runs = evidence.channel_max_run_s
+    if len(runs) < 5:
+        return _result(
+            "SIGNAL_MOTOR_FROZEN",
+            RuleStatus.UNASSESSED,
+            "signal",
+            "insufficient channel evidence to evaluate motor freeze",
+            modality="encoder",
+            metric="max_frozen_run_s",
+            observed_value=runs,
+            threshold=threshold,
+        )
+
+    def run_at(name: str, default: int) -> float:
+        index = _channel_index(evidence.channel_names, name, default)
+        return runs[index] if 0 <= index < len(runs) else 0.0
+
+    left_frozen = min(run_at("left_position", 0), run_at("left_velocity", 1))
+    right_frozen = min(run_at("right_position", 3), run_at("right_velocity", 4))
+    observed = {"left_frozen_run_s": left_frozen, "right_frozen_run_s": right_frozen}
+    left_stuck = left_frozen >= threshold and right_frozen < threshold
+    right_stuck = right_frozen >= threshold and left_frozen < threshold
+    if left_stuck:
+        message = (
+            f"left motor froze for {left_frozen:.1f}s (>= {threshold:.1f}s) "
+            "while the right motor remained active"
+        )
+        status = RuleStatus.WARNING
+    elif right_stuck:
+        message = (
+            f"right motor froze for {right_frozen:.1f}s (>= {threshold:.1f}s) "
+            "while the left motor remained active"
+        )
+        status = RuleStatus.WARNING
+    else:
+        message = "no asymmetric motor freeze detected"
+        status = RuleStatus.PASS
+    return _result(
+        "SIGNAL_MOTOR_FROZEN",
+        status,
+        "signal",
+        message,
+        modality="encoder",
+        metric="max_frozen_run_s",
+        observed_value=observed,
         threshold=threshold,
         required_for_grade_a=True,
     )
@@ -458,6 +593,8 @@ def _signal_results(
                 required_for_grade_a=True,
             )
         )
+    if modality == "encoder":
+        results.append(_motor_frozen_result(evidence, rules))
     return results
 
 

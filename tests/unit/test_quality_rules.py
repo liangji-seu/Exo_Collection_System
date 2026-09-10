@@ -439,3 +439,93 @@ def test_hdf5_signal_scan_uses_only_formal_window_and_detects_nonfinite(tmp_path
     # Jumps crossing a non-finite sample are not invented; the non-finite rule
     # already fails independently and only adjacent finite pairs are measured.
     assert evidence.maximum_absolute_jump == 2.0
+
+
+ENCODER_CHANNEL_NAMES = [
+    "left_position",
+    "left_velocity",
+    "left_torque",
+    "right_position",
+    "right_velocity",
+    "right_torque",
+]
+
+
+def _encoder_evidence(**updates) -> SignalEvidence:
+    payload = {
+        "formal_sample_count": 1600,
+        "nonfinite_value_count": 0,
+        "minimum": [0.5, 0.0, 0.0, -1.0, -0.5, 0.0],
+        "maximum": [0.5, 0.0, 0.0, 1.0, 0.5, 0.0],
+        "channel_names": list(ENCODER_CHANNEL_NAMES),
+        "channel_max_run_s": [0.1, 0.1, 8.0, 0.1, 0.1, 8.0],
+    }
+    payload.update(updates)
+    return SignalEvidence.model_validate(payload)
+
+
+def _evaluate_with_encoder(evidence: SignalEvidence):
+    signals = dict(clean_evidence().signals)
+    signals["encoder"] = evidence
+    return evaluate_trial_quality(clean_evidence(signals=signals), load_quality_rules())
+
+
+def test_motor_frozen_rule_flags_asymmetric_stall() -> None:
+    encoder = _encoder_evidence(channel_max_run_s=[8.0, 8.0, 8.0, 0.1, 0.2, 8.0])
+    evaluation = _evaluate_with_encoder(encoder)
+    frozen = next(r for r in evaluation.results if r.code == "SIGNAL_MOTOR_FROZEN")
+    assert frozen.status is RuleStatus.WARNING
+    assert "left motor" in frozen.message
+    assert any(issue.code == "SIGNAL_MOTOR_FROZEN" for issue in evaluation.issues)
+    assert evaluation.grade is QualityGrade.B
+
+
+def test_motor_frozen_rule_ignores_symmetric_stillness() -> None:
+    encoder = _encoder_evidence(channel_max_run_s=[10.0, 10.0, 10.0, 10.0, 10.0, 10.0])
+    evaluation = _evaluate_with_encoder(encoder)
+    frozen = next(r for r in evaluation.results if r.code == "SIGNAL_MOTOR_FROZEN")
+    assert frozen.status is RuleStatus.PASS
+    assert not any(issue.code == "SIGNAL_MOTOR_FROZEN" for issue in evaluation.issues)
+
+
+def test_motor_frozen_rule_unassessed_when_disabled() -> None:
+    payload = load_quality_rules().model_dump(mode="json")
+    payload["encoder"]["frozen_detection_enabled"] = False
+    rules = QualityRulesDocument.model_validate(payload)
+    evaluation = evaluate_trial_quality(clean_evidence(), rules)
+    frozen = next(r for r in evaluation.results if r.code == "SIGNAL_MOTOR_FROZEN")
+    assert frozen.status is RuleStatus.UNASSESSED
+
+
+def test_hdf5_signal_scan_tracks_per_channel_frozen_run(tmp_path) -> None:
+    path = tmp_path / "encoder.h5"
+    rate = 200.0
+    count = 2000
+    times = (np.arange(count, dtype=np.uint64) * (1_000_000_000 / rate)).astype(np.uint64)
+    data = np.zeros((count, 6), dtype=np.float32)
+    data[:, 0] = 0.5  # left_position frozen
+    data[:, 1] = 0.0  # left_velocity frozen
+    data[:, 3] = np.sin(np.arange(count) * 0.1)  # right_position active
+    with h5py.File(path, "w") as file:
+        file.attrs["nominal_rate_hz"] = rate
+        samples = file.create_group("samples")
+        samples.create_dataset("data", data=data, chunks=(256, 6))
+        samples.create_dataset("host_monotonic_ns", data=times, chunks=(256,))
+        metadata = file.create_group("metadata")
+        string_dtype = h5py.string_dtype(encoding="utf-8")
+        metadata.create_dataset(
+            "channels",
+            data=np.asarray(ENCODER_CHANNEL_NAMES, dtype=object),
+            dtype=string_dtype,
+        )
+
+    evidence = scan_hdf5_signal_evidence(
+        path,
+        formal_start_ns=0,
+        formal_stop_ns=int(times[-1]),
+    )
+    assert evidence.channel_names == ENCODER_CHANNEL_NAMES
+    assert len(evidence.channel_max_run_s) == 6
+    # left_position froze for the full ~10 s window; right_position stayed active.
+    assert evidence.channel_max_run_s[0] > 9.0
+    assert evidence.channel_max_run_s[3] < 0.1

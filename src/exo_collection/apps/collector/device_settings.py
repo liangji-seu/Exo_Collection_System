@@ -425,6 +425,7 @@ class EncoderDeviceSettingsDialog(ModalityDeviceSettingsDialog):
     def __init__(
         self,
         current: Mapping[str, Any],
+        frozen_detection: Mapping[str, Any] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -472,6 +473,20 @@ class EncoderDeviceSettingsDialog(ModalityDeviceSettingsDialog):
         self.rate_spin.setValue(float(current.get("nominal_rate_hz", 200.0)))
         form.addRow("标称采样率：", self.rate_spin)
 
+        frozen = frozen_detection or {}
+        self.frozen_check = QCheckBox("启用电机编码器冻结检测（单侧位置/速度长时间不变时告警）")
+        self.frozen_check.setObjectName("encoder_frozen_detection_enabled")
+        self.frozen_check.setChecked(bool(frozen.get("enabled", True)))
+        form.addRow("", self.frozen_check)
+
+        self.frozen_duration_spin = QDoubleSpinBox()
+        self.frozen_duration_spin.setObjectName("encoder_frozen_duration_s")
+        self.frozen_duration_spin.setRange(0.1, 3_600.0)
+        self.frozen_duration_spin.setDecimals(1)
+        self.frozen_duration_spin.setSuffix(" s")
+        self.frozen_duration_spin.setValue(float(frozen.get("duration_s", 5.0)))
+        form.addRow("冻结判定时长：", self.frozen_duration_spin)
+
         outer.addLayout(form)
         outer.addWidget(self._button_box())
         self._populate_ports(preferred=str(current.get("port") or ""))
@@ -501,6 +516,13 @@ class EncoderDeviceSettingsDialog(ModalityDeviceSettingsDialog):
         if self.port_combo.currentIndex() == 0 and text == "自动发现（按 VID/PID）":
             return ""
         return text
+
+    @property
+    def frozen_detection(self) -> dict[str, Any]:
+        return {
+            "enabled": self.frozen_check.isChecked(),
+            "duration_s": self.frozen_duration_spin.value(),
+        }
 
     @Slot()
     def accept(self) -> None:

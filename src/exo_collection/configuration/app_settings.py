@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from math import isfinite
 import sys
 from pathlib import Path
 from typing import Any, Literal, Mapping
@@ -18,6 +19,7 @@ SETTINGS_APPLICATION_NAME = "Shared Settings"
 DATA_ROOT_KEY = "storage/data_root"
 DEVICE_PROFILE_KEY = "collector/device_profile"
 HARDWARE_OVERRIDES_KEY = "collector/hardware_device_overrides_json"
+ENCODER_FROZEN_DETECTION_KEY = "collector/encoder_frozen_detection_json"
 PREVIEW_LAYOUT_KEY = "collector/preview_workspace_state"
 UPLOAD_ENDPOINT_KEY = "data_studio/upload_endpoint_json"
 OPENSIM_PYTHON_KEY = "calculate/opensim_python_executable"
@@ -193,6 +195,48 @@ class SharedAppSettings:
         merged[normalized_modality] = dict(values)
         persisted = self.set_hardware_device_overrides(merged)
         return dict(persisted[normalized_modality])
+
+    @property
+    def encoder_frozen_detection(self) -> dict[str, Any] | None:
+        """Return the operator's encoder frozen-detection override, if set.
+
+        ``None`` means the operator has never toggled the checkbox, so the
+        built-in quality-rule default (``default.json``) applies.  A dict is
+        returned only once the operator has explicitly saved a choice.
+        """
+
+        stored = self._backend.value(ENCODER_FROZEN_DETECTION_KEY, None)
+        if stored is None:
+            return None
+        try:
+            payload = json.loads(str(stored))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        return {
+            "enabled": bool(payload.get("enabled", True)),
+            "duration_s": float(payload.get("duration_s", 5.0)),
+        }
+
+    def set_encoder_frozen_detection(
+        self, values: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Persist the operator's encoder frozen-detection toggle and duration."""
+
+        duration_s = float(values.get("duration_s", 5.0))
+        if duration_s <= 0 or not isfinite(duration_s):
+            raise ValueError("frozen duration must be positive and finite")
+        payload = {
+            "enabled": bool(values.get("enabled", True)),
+            "duration_s": duration_s,
+        }
+        self._backend.setValue(
+            ENCODER_FROZEN_DETECTION_KEY,
+            json.dumps(payload, ensure_ascii=False, sort_keys=True),
+        )
+        self._sync_checked("encoder frozen detection")
+        return payload
 
     @property
     def preview_workspace_state(self) -> QByteArray:
