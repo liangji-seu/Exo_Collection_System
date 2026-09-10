@@ -7,7 +7,7 @@ sharing a single global timeline across every panel:
 - 超声: waterfall (reused sweep plot);
 - 力矩 CSV: real-time line plot with the shared vertical cursor;
 - IMU: 3 devices × 3 measurements on independent real-time axes;
-- EMG: one window with stacked channels and a fixed y-range;
+- EMG: one window per channel (collector-style) with a shared fixed y-range;
 - 编码器: migrated encoder curve.
 """
 
@@ -23,6 +23,7 @@ from PySide6.QtCore import QSignalBlocker, Qt, QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -44,6 +45,13 @@ from .local_tools import MocapPlayback, TrialPlayback
 from .plots import TimeSeriesPlot
 
 _WINDOW_SECONDS = 10.0
+
+# EMG 每通道配色，与 run_collector 的 EMG 预览（_SIGNAL_COLORS）保持一致，
+# 使数据工作室全屏可视化的 EMG 窗口与采集端观感统一。
+_EMG_CHANNEL_COLORS = (
+    "#0d6efd", "#dc3545", "#198754", "#d97706",
+    "#6f42c1", "#0dcaf0", "#fd7e14", "#20c997",
+)
 
 # Bone segments are matched by marker-name *suffix* (after the marker-set prefix,
 # e.g. ``010_no_exo_dynamic/R.ASIS`` → ``R.ASIS``), case-insensitively.  The
@@ -377,20 +385,49 @@ class FullscreenViewer(PreviewWorkspace):
         channel_count = values.shape[1]
         finite = values[np.isfinite(values)]
         if finite.size:
-            low, high = np.percentile(finite, (1.0, 99.0))
+            minimum = float(np.min(finite))
+            maximum = float(np.max(finite))
+            extent = max(abs(minimum), abs(maximum), 1e-6) * 1.1
         else:
-            low, high = -1.0, 1.0
-        plot = TimeSeriesPlot(
-            "EMG · 4 通道",
-            emg.time_s,
-            values,
-            emg.channels,
-            self._window_s,
-            fixed_yrange=(float(low), float(high)),
-            offset_per_channel=max(float(high - low), 1e-6) * 1.4,
-        )
-        self._panels.append(plot)
-        layout.addWidget(plot)
+            extent = 1.0
+        grid = QGridLayout()
+        grid.setContentsMargins(6, 6, 6, 6)
+        grid.setSpacing(8)
+        columns = 2
+        for index in range(channel_count):
+            name = (
+                emg.channels[index]
+                if index < len(emg.channels)
+                else f"ch_{index + 1}"
+            )
+            cell = QWidget()
+            cell_layout = QVBoxLayout(cell)
+            cell_layout.setContentsMargins(0, 0, 0, 0)
+            cell_layout.setSpacing(2)
+            name_label = QLabel(name)
+            name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            name_label.setStyleSheet("QLabel { font-weight: 700; color: #374151; }")
+            cell_layout.addWidget(name_label)
+            plot = TimeSeriesPlot(
+                name,
+                emg.time_s,
+                values[:, [index]],
+                (name,),
+                self._window_s,
+                fixed_yrange=(-extent, extent),
+            )
+            plot.set_channel_pen(
+                0,
+                pg.mkPen(
+                    _EMG_CHANNEL_COLORS[index % len(_EMG_CHANNEL_COLORS)],
+                    width=2.0,
+                ),
+            )
+            plot.setLabel("left", "幅值")
+            self._panels.append(plot)
+            cell_layout.addWidget(plot, 1)
+            grid.addWidget(cell, index // columns, index % columns)
+        layout.addLayout(grid)
         return holder
 
     def _build_encoder_panel(self) -> QWidget:

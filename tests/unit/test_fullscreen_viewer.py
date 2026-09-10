@@ -439,3 +439,50 @@ def test_imu_panel_lays_out_sensors_horizontally() -> None:
 
     viewer.close()
     app.processEvents()
+
+
+def test_emg_panel_is_one_window_per_channel_with_shared_fixed_y_range() -> None:
+    app = QApplication.instance() or QApplication(["test-emg-panel"])
+    n = 200
+    time_s = np.linspace(0.0, 2.0, n, dtype=np.float64)
+    emg = SignalPlayback(
+        time_s=time_s,
+        values=np.random.default_rng(0).normal(0.0, 100.0, (n, 4)).astype(np.float64),
+        channels=("股直肌", "股内侧肌", "股外侧肌", "胫骨前肌"),
+        units=("µV",) * 4,
+    )
+    playback = TrialPlayback(
+        manifest_path=Path("manifest.json"),
+        trial_uuid="00000000-0000-0000-0000-000000000011",
+        condition_code="WALK_LEVEL",
+        formal_t0_host_monotonic_ns=0,
+        ultrasound=None,
+        imu=None,
+        encoder=None,
+        sync=None,
+        sync_trigger_times_s=np.empty(0),
+        emg=emg,
+    )
+
+    viewer = FullscreenViewer(playback)
+    dock = viewer.dock_for("emg")
+    assert dock is not None
+    panel = dock.widget()
+
+    plots = panel.findChildren(TimeSeriesPlot)
+    assert len(plots) == 4
+    ranges = [tuple(float(v) for v in plot.viewRange()[1]) for plot in plots]
+    # 四条通道共用同一个固定的、关于零点对称的纵轴范围。
+    assert all(low == ranges[0][0] and high == ranges[0][1] for low, high in ranges)
+    assert ranges[0][0] == -ranges[0][1]
+
+    # 每通道一条曲线，且配色各不相同（沿用采集端 EMG 预览配色）。
+    pens = [
+        plot._curves[0].opts["pen"].color().name().lower()
+        for plot in plots
+    ]
+    assert all(len(plot._curves) == 1 for plot in plots)
+    assert len(set(pens)) == 4
+
+    viewer.close()
+    app.processEvents()

@@ -138,7 +138,9 @@ def _write_emg_bin(path: Path, columns: int = 4, count: int = 100) -> None:
             sample_index += size
 
 
-def _build_finalized_trial(data_root: Path) -> tuple[Path, TrialManifest]:
+def _build_finalized_trial(
+    data_root: Path, *, emg_count: int = 100
+) -> tuple[Path, TrialManifest]:
     now = datetime(2026, 7, 15, tzinfo=timezone.utc)
     project_uuid = uuid4()
     subject_uuid = uuid4()
@@ -177,7 +179,7 @@ def _build_finalized_trial(data_root: Path) -> tuple[Path, TrialManifest]:
     _write_hdf5(raw / "imu.h5", "imu", 6)
     _write_hdf5(raw / "encoder.h5", "encoder", 2)
     _write_hdf5(raw / "sync_pulse.h5", "sync_pulse", 1)
-    _write_emg_bin(raw / "emg.bin", 4)
+    _write_emg_bin(raw / "emg.bin", 4, count=emg_count)
 
     (reports / "quality_report.json").write_text(
         json.dumps(
@@ -327,6 +329,7 @@ def test_playback_is_bounded_and_contains_all_four_modalities(tmp_path: Path) ->
         manifest_path,
         data_root=tmp_path,
         max_signal_points=20,
+        max_emg_points=20,
         max_ultrasound_frames=10,
         max_ultrasound_depth_points=16,
     )
@@ -339,6 +342,26 @@ def test_playback_is_bounded_and_contains_all_four_modalities(tmp_path: Path) ->
     assert playback.sync is not None and playback.sync.values.shape == (20, 1)
     assert playback.emg is not None and playback.emg.values.shape == (20, 4)
     np.testing.assert_allclose(playback.sync_trigger_times_s, [0.5])
+
+
+def test_emg_playback_keeps_more_points_than_shared_signal_budget(
+    tmp_path: Path,
+) -> None:
+    """默认不降采样：EMG 保留原始 4 kHz 样本，不受共享 max_signal_points 削点。"""
+    manifest_path, _manifest = _build_finalized_trial(tmp_path, emg_count=5000)
+    # 仅把共享信号预算压到 20 点；EMG 用默认上限（None = 不降采样）。
+    playback = load_trial_playback(
+        manifest_path,
+        data_root=tmp_path,
+        max_signal_points=20,
+        max_ultrasound_frames=10,
+        max_ultrasound_depth_points=16,
+    )
+
+    assert playback.imu is not None and playback.imu.values.shape == (20, 6)
+    assert playback.emg is not None
+    # 5000 个样本若按旧的 4000 点共享上限会被削到 4000，现应全部保留。
+    assert playback.emg.values.shape == (5000, 4)
 
 
 def test_ultrasound_downsampling_preserves_source_frame_time_offsets(

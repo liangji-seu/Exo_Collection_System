@@ -1208,21 +1208,47 @@ def _read_emg(
         )
 
 
+# 点预算哨兵：真实采样的点数/帧数永远远小于此值，传入后 _even_indices 会原样保留，
+# 即「不降采样、展示原始帧率」。任何显式上限仍可覆盖，用于测试或超大录制的内存保护。
+_UNBOUNDED = 1 << 40
+
+
+def _resolve_limit(value: int | None) -> int:
+    """``None`` 表示不降采样（保留原始帧率）。"""
+    return _UNBOUNDED if value is None else value
+
+
 def load_trial_playback(
     manifest_path: str | Path,
     *,
     data_root: str | Path | None = None,
-    max_signal_points: int = 4000,
-    max_ultrasound_frames: int = 4000,
-    max_ultrasound_depth_points: int = 1000,
+    max_signal_points: int | None = None,
+    max_emg_points: int | None = None,
+    max_ultrasound_frames: int | None = None,
+    max_ultrasound_depth_points: int | None = None,
 ) -> TrialPlayback:
-    """Load a bounded, plot-ready view of one finalized Trial."""
+    """Load a plot-ready view of one finalized Trial at its original rate.
+
+    默认（``None``）不降采样，各模态都保留原始帧率：IMU/编码器/动捕按自身采样率、
+    超声按原始帧数与 A-line 深度、EMG 按 4 kHz 全采样。需要人为限制点/帧数时
+    （例如超大录制或测试）再传入对应 ``max_*`` 显式上限。
+    """
 
     _log.info("=== load_trial_playback 开始 ===")
     _log.info("manifest_path=%s, data_root=%s", manifest_path, data_root)
 
-    if min(max_signal_points, max_ultrasound_frames, max_ultrasound_depth_points) <= 0:
-        raise ValueError("playback limits must be positive")
+    for name, value in (
+        ("max_signal_points", max_signal_points),
+        ("max_emg_points", max_emg_points),
+        ("max_ultrasound_frames", max_ultrasound_frames),
+        ("max_ultrasound_depth_points", max_ultrasound_depth_points),
+    ):
+        if value is not None and value <= 0:
+            raise ValueError(f"playback limit must be positive: {name}")
+    max_signal_points = _resolve_limit(max_signal_points)
+    max_emg_points = _resolve_limit(max_emg_points)
+    max_ultrasound_frames = _resolve_limit(max_ultrasound_frames)
+    max_ultrasound_depth_points = _resolve_limit(max_ultrasound_depth_points)
     path, trial_root, manifest = _load_finalized_trial(manifest_path)
     _log.info("Manifest 已加载: trial_uuid=%s, trial_root=%s", manifest.trial_uuid, trial_root)
     dataset_root = (
@@ -1337,7 +1363,7 @@ def load_trial_playback(
             meta_path=_artifact_path(trial_root, companion_relatives[0]),
             index_path=_artifact_path(trial_root, companion_relatives[1]),
             formal_t0_ns=formal_t0_ns,
-            max_points=max_signal_points,
+            max_points=max_emg_points,
             idle_check=idle_check,
         )
         _log.info("[emg] 加载完成: time_s=%d points, values shape=%s",
