@@ -24,7 +24,7 @@ from exo_collection.quality import (
     scan_hdf5_signal_evidence,
 )
 from exo_collection.quality.config import QualityRulesDocument
-from exo_collection.quality.engine import RuleStatus
+from exo_collection.quality.engine import RuleStatus, _advance_identical_runs
 
 
 def clean_evidence(**updates) -> TrialQualityEvidence:
@@ -529,3 +529,23 @@ def test_hdf5_signal_scan_tracks_per_channel_frozen_run(tmp_path) -> None:
     # left_position froze for the full ~10 s window; right_position stayed active.
     assert evidence.channel_max_run_s[0] > 9.0
     assert evidence.channel_max_run_s[3] < 0.1
+
+
+def test_advance_identical_runs_breaks_on_nan_and_carries_across_chunks() -> None:
+    # NaN never compares equal, so it must break a run; the carried last row
+    # must continue a run across chunk boundaries.
+    first = np.array([[1.0, 2.0], [1.0, 2.0], [np.nan, 2.0]], dtype=np.float64)
+    second = np.array([[1.0, 2.0], [1.0, 2.0]], dtype=np.float64)
+
+    run_length, max_run = _advance_identical_runs(first, None, None, None)
+    # channel 0: run of 2 (1.0, 1.0), then NaN breaks -> final length 1, max 2.
+    # channel 1: run of 3 (2.0, 2.0, 2.0) -> final length 3, max 3.
+    assert run_length.tolist() == [1, 3]
+    assert max_run.tolist() == [2, 3]
+
+    # Second chunk: channel 0's leading 1.0 does not equal the carried NaN, so
+    # the run resets and only reaches 2; channel 1 continues the carried 2.0
+    # run, extending it to 3 + 2 = 5.
+    run_length, max_run = _advance_identical_runs(second, first[-1:], run_length, max_run)
+    assert run_length.tolist() == [2, 5]
+    assert max_run.tolist() == [2, 5]

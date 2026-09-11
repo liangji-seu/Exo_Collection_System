@@ -161,6 +161,73 @@ def check_disk_space(path: str | Path, policy: StoragePolicyDocument) -> DiskSpa
     return evidence
 
 
+def _advance_identical_runs(
+    safe: np.ndarray,
+    carry: np.ndarray | None,
+    run_length: np.ndarray | None,
+    max_run: np.ndarray | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Advance per-channel longest-identical-run state across one chunk.
+
+    ``safe`` is the float64 chunk ``(n_samples, n_channels)`` with non-finite
+    values already encoded as NaN (which never compares equal, so it breaks a
+    run).  ``carry`` is the last kept row of the previous chunk (``None`` on
+    the first chunk); ``run_length`` / ``max_run`` are the per-channel run
+    length ending at the previous chunk's last sample and the longest run seen
+    so far respectively.  Returns the updated ``(run_length, max_run)``.
+
+    Fully vectorized per channel (the channel count is small, so a per-channel
+    loop is fine); the previous implementation looped over every sample in
+    Python, which dominated finalization for medium-rate signals.
+    """
+
+    channel_count = safe.shape[1]
+    if run_length is None:
+        run_length = np.ones(channel_count, dtype=np.int64)
+        max_run = np.ones(channel_count, dtype=np.int64)
+    rows = safe.shape[0]
+    if rows == 0:
+        return run_length, max_run
+    # The value each row is compared against: the previous row, or the carried
+    # last row for the chunk's first row.
+    previous_values = np.empty_like(safe, dtype=np.float64)
+    if carry is not None:
+        previous_values[0] = carry[0]
+    else:
+        previous_values[0] = np.nan
+    if rows > 1:
+        previous_values[1:] = safe[:-1]
+    same = safe == previous_values  # (rows, channels); NaN never equals anything
+    for channel in range(channel_count):
+        column = same[:, channel]
+        boundaries = np.flatnonzero(~column)
+        if boundaries.size == 0:
+            # Every row matches its predecessor and the carry: the carried run
+            # simply extends across the whole chunk.
+            run_length[channel] += rows
+            if run_length[channel] > max_run[channel]:
+                max_run[channel] = run_length[channel]
+            continue
+        # Leading identical run extends the carried run length.
+        leading = int(boundaries[0])
+        if leading:
+            candidate = run_length[channel] + leading
+            if candidate > max_run[channel]:
+                max_run[channel] = candidate
+        # Interior identical runs start fresh (length 1) and grow by one per
+        # matching row, so a run of ``length`` rows peaks at ``1 + length``.
+        padded = np.concatenate(([False], column, [False]))
+        flips = np.flatnonzero(padded[1:] != padded[:-1])
+        true_runs = flips[1::2] - flips[0::2]
+        if true_runs.size:
+            candidate = int(true_runs.max()) + 1
+            if candidate > max_run[channel]:
+                max_run[channel] = candidate
+        # Run length at the chunk's last row, carried into the next chunk.
+        run_length[channel] = rows - boundaries[-1]
+    return run_length, max_run
+
+
 def scan_hdf5_signal_evidence(
     path: str | Path,
     *,
@@ -232,17 +299,9 @@ def scan_hdf5_signal_evidence(
             # Track the longest bit-identical run per channel (in samples) to
             # support asymmetric motor-stall detection.  Non-finite samples are
             # encoded as NaN, which never compares equal, so they break a run.
-            if run_length is None:
-                run_length = np.ones(safe.shape[1], dtype=np.int64)
-                max_run = np.ones(safe.shape[1], dtype=np.int64)
-            prior = carry[0] if carry is not None else None
-            for k in range(safe.shape[0]):
-                same = safe[k] == prior if prior is not None else np.zeros(
-                    safe.shape[1], dtype=bool
-                )
-                run_length = np.where(same, run_length + 1, 1)
-                max_run = np.maximum(max_run, run_length)
-                prior = safe[k]
+            run_length, max_run = _advance_identical_runs(
+                safe, carry, run_length, max_run
+            )
             previous = safe[-1:]
 
         discontinuities = file.get("events/discontinuities")
