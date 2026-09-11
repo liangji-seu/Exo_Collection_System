@@ -21,12 +21,11 @@ from ..gaitway import read_gaitway_ascii
 from .c3d_h5 import match_c3d_to_h5
 from .clock import (
     clock_health,
-    find_imu_sensor,
     imu_sample_rate_hz,
-    imu_sensor_on_c3d_time,
+    imu_sensor_candidates,
     read_host_monotonic_ns,
 )
-from .stomp import highpass_envelope, pair_stomps_diagnosed, StompRejection
+from .stomp import highpass_envelope, pair_stomps_diagnosed
 
 
 def _read_h5_marker_names(handle) -> list[str]:
@@ -59,18 +58,43 @@ class StompSyncError(RuntimeError):
         self.diagnostics = diagnostics
 
 
-def _format_rejection(rej: StompRejection) -> str:
-    """把 ``StompRejection`` 转成带数值的可读说明（单行，供 UI/日志展示）。"""
-    def side(label: str, peak_count: int, burst_count: int, reason: str) -> str:
-        return f"{label}：检测到 {peak_count} 个峰、选中 {burst_count} 个爆发段（原因：{reason}）"
+def _format_multi_rejection(
+    sensor_envs: list[dict[str, Any]],
+    force_names: list[str],
+    attempts: list[dict[str, Any]],
+) -> str:
+    """把多组合跺脚失败总结成带数值的可读说明（单行，供 UI/日志展示）。
 
+    自动同步会逐一尝试「每个 IMU 传感器 × 每个测力台信号」的组合；全部失败时，
+    这里先给一句总量概述，再展开历史默认组合（右腿 × 总垂直力）的峰数/爆发段数
+    与拒绝原因，作为人工标定的数值证据。
+    """
+    head = (
+        f"跺脚自动同步失败：已尝试 {len(sensor_envs)} 个 IMU 传感器 × "
+        f"{len(force_names)} 个测力台信号组合，均无法找到 ≥3 对跺脚峰（需人工标定）"
+    )
+    detail = next(
+        (
+            a
+            for a in attempts
+            if a["imu"] == "imu_right_leg" and a["force"] == "GRFz vertical (N)"
+        ),
+        attempts[0] if attempts else None,
+    )
+    if detail is None:
+        return head
     parts = [
-        "跺脚峰不足 3 对，无法自动同步（需人工标定）",
-        side("IMU", rej.imu_peak_count, rej.imu_burst_count, rej.imu_reason),
-        side("Gaitway", rej.gaitway_peak_count, rej.gaitway_burst_count, rej.gaitway_reason),
+        head,
+        (
+            f"参考组合 {detail['imu']}×{detail['force']}："
+            f"IMU {detail['imu_peak_count']} 峰/{detail['imu_burst_count']} 段"
+            f"（{detail['imu_reason']}）；"
+            f"测力台 {detail['gaitway_peak_count']} 峰/{detail['gaitway_burst_count']} 段"
+            f"（{detail['gaitway_reason']}）"
+        ),
     ]
-    if rej.align_reason is not None:
-        parts.append(rej.align_reason)
+    if detail.get("align_reason"):
+        parts.append(detail["align_reason"])
     return "；".join(parts)
 
 
@@ -106,51 +130,107 @@ def run_auto_sync(
         mocap_health = clock_health(mocap_host_ns)
         mocap_period_ms = float(mocap_health.median_period_ns) / 1e6
 
-        sensor_index, sensor_label = find_imu_sensor(imu_h5, side="right")
-        # MTw direct-USB records are an interleaved union of independent
-        # per-device streams: each row belongs to one sensor and the other
-        # sensor slots are NaN.  Clock health, rate estimation and stomp
-        # detection must use the selected sensor's rows only.  Evaluating the
-        # merged axis makes a healthy 100 Hz sensor appear to run at ~300 Hz
-        # (or worse, depending on host batching) and falsely counts slot
-        # interleaving as packet gaps.
+        # 枚举所有 IMU 传感器，各自算出「加速度模长 → 高通冲击包络」。MTw 直连
+        # USB 的 samples/data 是多个独立设备流的并集（每行只属于一个传感器、其余
+        # 槽位为 NaN），所以每个传感器只取自己的有效行；否则 100 Hz 的传感器会被
+        # 混叠成 ~300 Hz 并误报丢帧（详见 clock.py 注释）。自动同步不再只依赖右腿，
+        # 而是把所有可用传感器（左腿/右腿/盆骨…）都作为候选，由跺脚配对择优。
         imu_host_all_ns = read_host_monotonic_ns(imu_h5)
-        acc_all = np.asarray(imu_h5["samples/data"][:, sensor_index, :3], dtype=np.float64)
-        imu_valid = np.isfinite(acc_all).all(axis=1)
-        if int(imu_valid.sum()) < 2:
-            raise ValueError(f"IMU 传感器 {sensor_label} 有效样本不足，无法同步")
-        imu_host_ns = imu_host_all_ns[imu_valid]
-        imu_health = clock_health(imu_host_ns)
-        imu_time_c3d = (imu_host_ns - c3d_t0_host_ns) / 1e9
-        acc = acc_all[imu_valid]
-        imu_rate = imu_sample_rate_hz(imu_time_c3d)
-        acc_norm = np.linalg.norm(acc, axis=1)
-        imu_envelope = highpass_envelope(acc_norm, imu_rate)
+        imu_data = imu_h5["samples/data"]
+        sensor_envs: list[dict[str, Any]] = []
+        for idx, label in imu_sensor_candidates(imu_h5):
+            acc = np.asarray(imu_data[:, idx, :3], dtype=np.float64)
+            valid = np.isfinite(acc).all(axis=1)
+            if int(valid.sum()) < 2:
+                continue
+            host_ns = imu_host_all_ns[valid]
+            health = clock_health(host_ns)
+            time_c3d = (host_ns - c3d_t0_host_ns) / 1e9
+            rate = imu_sample_rate_hz(time_c3d)
+            acc_norm = np.linalg.norm(acc[valid], axis=1)
+            sensor_envs.append(
+                {
+                    "index": idx,
+                    "label": label,
+                    "time_c3d": time_c3d,
+                    "envelope": highpass_envelope(acc_norm, rate),
+                    "rate": rate,
+                    "health": health,
+                }
+            )
+        if not sensor_envs:
+            raise ValueError("IMU 无有效传感器样本，无法同步")
 
-    total_fz = gaitway.columns["GRFz vertical (N)"]
+    # 测力台候选信号：总垂直力是主信号；双侧 Fz 之和 / 单侧 Fz 作为备选（受试者
+    # 可能以单脚为主跺脚，或个别导出的「总垂直力」列异常）。逐一与每个 IMU 传感器
+    # 配对，按置信度 → 峰对数 → MAD 取最优；平手时优先历史默认「右腿 × 总垂直力」，
+    # 保证结果可复现。
     force_rate = gaitway.sample_rate_hz
-    force_envelope = highpass_envelope(total_fz, force_rate)
+    force_candidates: list[tuple[str, np.ndarray]] = [
+        ("GRFz vertical (N)", gaitway.columns["GRFz vertical (N)"]),
+        ("FzL(N)+FzR(N)", gaitway.columns["FzL(N)"] + gaitway.columns["FzR(N)"]),
+        ("FzL(N)", gaitway.columns["FzL(N)"]),
+        ("FzR(N)", gaitway.columns["FzR(N)"]),
+    ]
+    force_envs = [
+        (name, highpass_envelope(values, force_rate))
+        for name, values in force_candidates
+    ]
 
-    alignment, rejection = pair_stomps_diagnosed(
-        imu_time_c3d, imu_envelope, gaitway.time_s, force_envelope, prominence=prominence
-    )
-    if alignment is None:
+    conf_rank = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
+    best: tuple[tuple[int, int, float, int], Any, dict[str, Any], str] | None = None
+    attempts: list[dict[str, Any]] = []
+    for senv in sensor_envs:
+        for fname, fenv in force_envs:
+            alignment, rejection = pair_stomps_diagnosed(
+                senv["time_c3d"], senv["envelope"], gaitway.time_s, fenv,
+                prominence=prominence,
+            )
+            if alignment is None:
+                attempts.append(
+                    {
+                        "imu": senv["label"],
+                        "force": fname,
+                        "imu_peak_count": rejection.imu_peak_count,
+                        "imu_burst_count": rejection.imu_burst_count,
+                        "imu_reason": rejection.imu_reason,
+                        "gaitway_peak_count": rejection.gaitway_peak_count,
+                        "gaitway_burst_count": rejection.gaitway_burst_count,
+                        "gaitway_reason": rejection.gaitway_reason,
+                        "align_reason": rejection.align_reason,
+                    }
+                )
+                continue
+            canonical = (
+                senv["label"] == "imu_right_leg" and fname == "GRFz vertical (N)"
+            )
+            key = (
+                conf_rank[alignment.confidence],
+                -len(alignment.pairs),
+                alignment.mad_s,
+                0 if canonical else 1,
+            )
+            if best is None or key < best[0]:
+                best = (key, alignment, senv, fname)
+
+    if best is None:
         raise StompSyncError(
-            _format_rejection(rejection),
+            _format_multi_rejection(
+                sensor_envs, [name for name, _ in force_candidates], attempts
+            ),
             {
-                "imu": {
-                    "peak_count": rejection.imu_peak_count,
-                    "burst_count": rejection.imu_burst_count,
-                    "reason": rejection.imu_reason,
-                },
-                "gaitway": {
-                    "peak_count": rejection.gaitway_peak_count,
-                    "burst_count": rejection.gaitway_burst_count,
-                    "reason": rejection.gaitway_reason,
-                },
-                "align_reason": rejection.align_reason,
+                "attempted_imu_sensors": [s["label"] for s in sensor_envs],
+                "attempted_force_signals": [name for name, _ in force_candidates],
+                "n_combinations": len(attempts),
+                "combos": attempts,
             },
         )
+
+    _, alignment, senv, force_signal = best
+    sensor_index = senv["index"]
+    sensor_label = senv["label"]
+    imu_rate = senv["rate"]
+    imu_health = senv["health"]
 
     final_offset = alignment.median_offset_s + final_adjustment_ms / 1000.0
     peak_pairs = [
@@ -189,6 +269,7 @@ def run_auto_sync(
         "imu_clock_monotonic": imu_health.monotonic,
         "imu_clock_gaps": imu_health.n_gaps,
         "gaitway_sample_rate_hz": force_rate,
+        "force_signal": force_signal,
         "imu_peak_times_on_c3d_s": [p.imu_time_s for p in alignment.pairs],
         "gaitway_peak_times_s": [p.gaitway_time_s for p in alignment.pairs],
         "peak_pairs": peak_pairs,

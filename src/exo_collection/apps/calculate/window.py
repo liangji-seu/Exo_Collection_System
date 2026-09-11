@@ -374,14 +374,20 @@ class CalculateWindow(QMainWindow):
     def _on_load_sync_data_done(self, bundle, ctx: OperationContext) -> None:
         if not self._is_current(ctx):
             return
-        self._sync_view.set_manual_data(bundle)
-        self._end_task(ctx)
+        try:
+            self._sync_view.set_manual_data(bundle)
+        finally:
+            # 绘图若抛异常（如 marker 曲线 x/y 长度不一致）也必须解锁，否则
+            # ``_busy`` 一直卡在 load_sync_data，后续「解算」被永久拒绝。
+            self._end_task(ctx)
 
     def _on_load_sync_data_failed(self, message: str, ctx: OperationContext) -> None:
         if not self._is_current(ctx):
             return
-        self._sync_view.set_auto_failed(message)
-        self._end_task(ctx)
+        try:
+            self._sync_view.set_auto_failed(message)
+        finally:
+            self._end_task(ctx)
 
     def _on_manual_applied(self, result: SyncResult) -> None:
         self._controller.set_sync(result, method=SyncMethod.MANUAL_PAIRED)

@@ -219,6 +219,7 @@ class SyncView(QWidget):
             f"C3D 第 0 帧 = mocap.h5 第 {start} 帧（RMS {rms:.4g} mm）",
             f"最终 gaitway_offset = {raw.get('gaitway_offset_s'):.4f} s",
             f"IMU 传感器：{raw.get('imu_sensor_label')}（下标 {raw.get('imu_sensor_index')}）",
+            f"测力台信号：{raw.get('force_signal', 'GRFz vertical (N)')}",
         ]
         peak_pairs = raw.get("peak_pairs") or []
         for pair in peak_pairs:
@@ -288,8 +289,8 @@ class SyncView(QWidget):
 
         # marker 第三证据（若可用）
         if bundle.marker_acc_norm is not None and bundle.marker_time_s is not None:
-            _, marker_env = _downsample(bundle.marker_time_s, bundle.marker_acc_norm)
-            self._imu_plot.plot(bundle.marker_time_s, marker_env,
+            mt, marker_env = _downsample(bundle.marker_time_s, bundle.marker_acc_norm)
+            self._imu_plot.plot(mt, marker_env,
                                 pen=pg.mkPen("#9a5b13", width=1, style=Qt.PenStyle.DashLine),
                                 name=f"marker {bundle.marker_name}")
 

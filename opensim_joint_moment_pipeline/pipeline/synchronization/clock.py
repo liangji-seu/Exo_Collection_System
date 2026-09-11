@@ -68,6 +68,27 @@ def _device_metadata(handle) -> dict:
     return raw
 
 
+def imu_sensor_candidates(handle) -> list[tuple[int, str]]:
+    """返回所有 IMU 传感器的 ``(index, label)``，供自动同步逐一尝试。
+
+    依据 ``metadata/device.preview_labels``（形如 ``imu_left_leg`` /
+    ``imu_right_leg`` / ``imu_pelvis``）定位；没有 ``imu_`` 前缀标签时按
+    ``samples/data`` 第 1 维传感器数兜底枚举 ``sensor_{i}``。顺序与数组下标
+    一致，调用方仍要按 ``samples/data[:, index, :3]`` 的有效行逐个提取。
+    """
+    meta = _device_metadata(handle)
+    labels = list(meta.get("preview_labels", []))
+    candidates = [
+        (i, str(lab))
+        for i, lab in enumerate(labels)
+        if str(lab).casefold().startswith("imu_")
+    ]
+    if candidates:
+        return candidates
+    n_sensors = int(handle["samples/data"].shape[1])
+    return [(i, f"sensor_{i}") for i in range(n_sensors)]
+
+
 def find_imu_sensor(handle, *, side: str = "right") -> tuple[int, str]:
     """返回「右/左腿」IMU 在 ``samples/data`` 第 1 维的下标及其标签。
 
@@ -138,6 +159,7 @@ __all__ = [
     "clock_health",
     "find_imu_sensor",
     "imu_sample_rate_hz",
+    "imu_sensor_candidates",
     "imu_sensor_on_c3d_time",
     "read_host_monotonic_ns",
 ]
