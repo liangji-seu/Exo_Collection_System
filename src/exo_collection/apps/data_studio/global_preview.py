@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,6 +30,8 @@ _COLOR_LEFT = "#59A14F"
 _COLOR_PITCH = "#1F77B4"
 _COLOR_ROLL = "#2CA02C"
 _COLOR_YAW = "#D62728"
+_COLOR_SPEED = "#9467BD"
+_COLOR_SPEED_TARGET = "#7F7F7F"
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +43,15 @@ class TruthPreview:
     moment_values: np.ndarray          # (n, len(moment_channels))
     imu_channels: tuple[str, ...]      # 存在的 IMU 姿态通道名（imu_roll/pitch/yaw）
     imu_values: np.ndarray             # (n, len(imu_channels))
+
+
+@dataclass(frozen=True, slots=True)
+class SpeedTrace:
+    """Gaitway 跑台速度，时间轴已换算到 C3D（``ground_truth.csv`` 的）时间。"""
+
+    time_s_c3d: np.ndarray        # 采样时间（C3D 时间轴）
+    speed: np.ndarray             # 实际速度（m/s）
+    speed_target: np.ndarray      # 目标速度（m/s）；导出无此列时为空数组
 
 
 def read_truth_preview(path: Path) -> TruthPreview | None:
@@ -119,6 +131,120 @@ def read_truth_preview(path: Path) -> TruthPreview | None:
     )
 
 
+def _parse_speed_txt(
+    path: Path,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """从单个 Gaitway 跑台导出解析 ``(t_gaitway, speed, speed_target)``。
+
+    列名行以 ``Time (s)`` 开头、含 ``Speed (m/s)`` 列的文件即跑台导出；逐行取
+    ``Time (s)`` / ``Speed (m/s)`` / ``Speed target (m/s)``（目标列缺失则返回空
+    数组），坏行跳过。非跑台文件 / 列缺失 / 样本不足返回 ``None``。
+    """
+    try:
+        lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+    except OSError:
+        return None
+    try:
+        records = list(csv.reader(lines, delimiter="\t"))
+    except csv.Error:
+        return None
+    header_index = next(
+        (
+            i
+            for i, row in enumerate(records)
+            if row and row[0].strip().casefold() == "time (s)"
+        ),
+        None,
+    )
+    if header_index is None:
+        return None
+    names = [str(name).strip().casefold() for name in records[header_index]]
+    if "time (s)" not in names or "speed (m/s)" not in names:
+        return None
+    t_idx = names.index("time (s)")
+    s_idx = names.index("speed (m/s)")
+    st_idx = names.index("speed target (m/s)") if "speed target (m/s)" in names else None
+
+    times: list[float] = []
+    speeds: list[float] = []
+    targets: list[float] = []
+    for row in records[header_index + 1 :]:
+        try:
+            times.append(float(row[t_idx]))
+            speeds.append(float(row[s_idx]))
+            if st_idx is not None:
+                targets.append(float(row[st_idx]))
+        except (ValueError, IndexError):
+            continue
+    if len(times) < 2:
+        return None
+    return (
+        np.asarray(times, dtype=np.float64),
+        np.asarray(speeds, dtype=np.float64),
+        np.asarray(targets, dtype=np.float64),
+    )
+
+
+def _load_json(path: Path) -> dict | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _find_gaitway_offset_s(session_dir: Path) -> float:
+    """读同步偏移（秒），用于把 gaitway 时间换算到 C3D 时间。
+
+    优先 ``derived/opensim/*/manifest.json`` → ``sync.gaitway_offset_s``，回退
+    ``derived/opensim/sync_calibration.json`` → ``result.gaitway_offset_s``，都无则 0。
+    """
+    opensim_dir = Path(session_dir) / "derived" / "opensim"
+    if opensim_dir.is_dir():
+        for run_manifest in sorted(opensim_dir.glob("*/manifest.json")):
+            data = _load_json(run_manifest)
+            if data is None:
+                continue
+            sync = data.get("sync") if isinstance(data, dict) else None
+            offset = sync.get("gaitway_offset_s") if isinstance(sync, dict) else None
+            if isinstance(offset, (int, float)) and np.isfinite(offset):
+                return float(offset)
+    calib = _load_json(opensim_dir / "sync_calibration.json")
+    if calib is not None:
+        result = calib.get("result") if isinstance(calib, dict) else None
+        offset = result.get("gaitway_offset_s") if isinstance(result, dict) else None
+        if isinstance(offset, (int, float)) and np.isfinite(offset):
+            return float(offset)
+    return 0.0
+
+
+def read_gaitway_speed(
+    session_dir: Path, *, offset_s: float | None = None
+) -> SpeedTrace | None:
+    """从 session 目录提取跑台速度，时间轴对齐到 C3D（``ground_truth.csv``）时间。
+
+    遍历 ``*.txt`` 找第一个跑台导出，按约定 ``t_c3d = t_gaitway - offset_s`` 换算。
+    ``offset_s`` 为 ``None`` 时用 :func:`_find_gaitway_offset_s` 自动求；找不到有效
+    速度数据返回 ``None``。
+    """
+    for txt in sorted(Path(session_dir).glob("*.txt")):
+        parsed = _parse_speed_txt(txt)
+        if parsed is None:
+            continue
+        t_gaitway, speed, speed_target = parsed
+        shift = (
+            _find_gaitway_offset_s(session_dir)
+            if offset_s is None
+            else float(offset_s)
+        )
+        return SpeedTrace(
+            time_s_c3d=t_gaitway - shift,
+            speed=speed,
+            speed_target=speed_target,
+        )
+    return None
+
+
 _MOMENT_LABELS = {"hip_flexion_r": "右髋", "hip_flexion_l": "左髋"}
 _MOMENT_COLORS = {"hip_flexion_r": _COLOR_RIGHT, "hip_flexion_l": _COLOR_LEFT}
 _IMU_LABELS = {"imu_roll": "roll", "imu_pitch": "pitch", "imu_yaw": "yaw"}
@@ -128,7 +254,14 @@ _IMU_COLORS = {"imu_roll": _COLOR_ROLL, "imu_pitch": _COLOR_PITCH, "imu_yaw": _C
 class GlobalPreviewWindow(QMainWindow):
     """静态全时间轴真值预览：上为髋力矩（左右可勾选），下为 IMU 姿态角。"""
 
-    def __init__(self, preview: TruthPreview, title: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        preview: TruthPreview,
+        title: str,
+        parent: QWidget | None = None,
+        *,
+        speed: SpeedTrace | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.setWindowTitle(f"全局预览 · {title}")
@@ -160,8 +293,45 @@ class GlobalPreviewWindow(QMainWindow):
             curve.setData(preview.time_s, preview.moment_values[:, index])
             self._moment_curves[label] = curve
 
+        # ── 中：跑台速度（x 轴与力矩图联动，便于圈选速度区间对应力矩）────
+        self._speed_plot = self._graphics.addPlot(row=1, col=0)
+        self._speed_plot.getViewBox().setXLink(self._moment_plot.getViewBox())
+        self._speed_plot.setTitle("跑台速度", color="#000000", size="10pt")
+        self._speed_plot.setLabel("left", "速度", units="m/s")
+        self._speed_plot.getAxis("bottom").setStyle(showValues=False)
+        self._speed_plot.showGrid(x=True, y=True, alpha=0.25)
+        if speed is not None and speed.speed.size:
+            self._speed_plot.addLegend(offset=(10, 10))
+            self._speed_plot.plot(
+                preview.time_s,
+                np.interp(
+                    preview.time_s,
+                    speed.time_s_c3d,
+                    speed.speed,
+                    left=np.nan,
+                    right=np.nan,
+                ),
+                pen=pg.mkPen(_COLOR_SPEED, width=2),
+                name="实际速度",
+            )
+            if speed.speed_target.size == speed.speed.size:
+                self._speed_plot.plot(
+                    preview.time_s,
+                    np.interp(
+                        preview.time_s,
+                        speed.time_s_c3d,
+                        speed.speed_target,
+                        left=np.nan,
+                        right=np.nan,
+                    ),
+                    pen=pg.mkPen(
+                        _COLOR_SPEED_TARGET, width=1, style=Qt.PenStyle.DashLine
+                    ),
+                    name="目标速度",
+                )
+
         # ── 下：IMU 姿态角（x 轴与力矩图联动缩放/平移）────────────────────
-        self._imu_plot = self._graphics.addPlot(row=1, col=0)
+        self._imu_plot = self._graphics.addPlot(row=2, col=0)
         self._imu_plot.getViewBox().setXLink(self._moment_plot.getViewBox())
         self._imu_plot.setTitle("IMU 姿态角（右腿）", color="#000000", size="10pt")
         self._imu_plot.setLabel("left", "角度", units="deg")
@@ -192,4 +362,10 @@ class GlobalPreviewWindow(QMainWindow):
         self.setCentralWidget(central)
 
 
-__all__ = ["GlobalPreviewWindow", "TruthPreview", "read_truth_preview"]
+__all__ = [
+    "GlobalPreviewWindow",
+    "SpeedTrace",
+    "TruthPreview",
+    "read_gaitway_speed",
+    "read_truth_preview",
+]

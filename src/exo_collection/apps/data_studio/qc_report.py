@@ -38,7 +38,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .global_preview import read_truth_preview
+from .global_preview import read_gaitway_speed, read_truth_preview
 from .opensim_overlay import _parse_mot, find_latest_run_dir
 
 # 与 run_calculate 回放一致：右=橙、左=绿。
@@ -47,6 +47,8 @@ _COLOR_LEFT = "#59A14F"
 _COLOR_PITCH = "#1F77B4"
 _COLOR_ROLL = "#2CA02C"
 _COLOR_YAW = "#D62728"
+_COLOR_SPEED = "#9467BD"
+_COLOR_SPEED_TARGET = "#7F7F7F"
 # QC 状态徽标配色（与 data_studio 树列一致）。
 _QC_COLORS = {"PASS": "#20a35a", "FAIL": "#b42318", "WARN": "#b26a00"}
 
@@ -110,6 +112,8 @@ class GaitQCData:
     imu_yaw: np.ndarray | None = None
     run_dir: Path | None = None
     n_frames: int = 0
+    speed: np.ndarray | None = None          # 跑台实际速度（m/s，已插值到 time_s）
+    speed_target: np.ndarray | None = None   # 跑台目标速度（m/s，已插值到 time_s）
 
 
 def _read_angles(ik_path: Path, time_s: np.ndarray) -> tuple[np.ndarray | None, tuple[str, ...]]:
@@ -210,6 +214,21 @@ def load_gait_qc(session_dir: Path) -> GaitQCData | None:
             elif channel == "imu_yaw":
                 imu_yaw = value
 
+    # 跑台速度（Gaitway 导出），同样插值到 viewer 时间轴，保证与力矩/GRF 严格对齐。
+    speed = speed_target = None
+    speed_trace = read_gaitway_speed(session_dir)
+    if speed_trace is not None and speed_trace.speed.size >= 2:
+        if bool(np.all(np.diff(speed_trace.time_s_c3d) > 0)):
+            speed = np.interp(
+                time_s, speed_trace.time_s_c3d, speed_trace.speed,
+                left=np.nan, right=np.nan,
+            )
+            if speed_trace.speed_target.size == speed_trace.speed.size:
+                speed_target = np.interp(
+                    time_s, speed_trace.time_s_c3d, speed_trace.speed_target,
+                    left=np.nan, right=np.nan,
+                )
+
     frame_rate = float((result.get("viewer") or {}).get("frame_rate_hz") or 100.0)
 
     return GaitQCData(
@@ -234,6 +253,8 @@ def load_gait_qc(session_dir: Path) -> GaitQCData | None:
         imu_yaw=imu_yaw,
         run_dir=run_dir,
         n_frames=n,
+        speed=speed,
+        speed_target=speed_target,
     )
 
 
@@ -418,7 +439,28 @@ class GaitQCReportWindow(QMainWindow):
         self._mark_heel_strikes(fz_plot)
         self._mark_heel_strikes(moment_plot)
 
-        # S2 髋力矩真值（全时间轴，左右可勾选）。
+        # S2 跑台速度（实际 vs 目标，x 联动；便于圈选速度区间对应力矩真值）。
+        if data.speed is not None:
+            speed_plot = self._graphics.addPlot(row=row, col=0)
+            row += 1
+            speed_plot.getViewBox().setXLink(fz_plot.getViewBox())
+            speed_plot.setTitle("跑台速度 · 实际(紫) 目标(灰)", color="#000000", size="10pt")
+            speed_plot.setLabel("left", "速度", units="m/s")
+            speed_plot.getAxis("bottom").setStyle(showValues=False)
+            speed_plot.showGrid(x=True, y=True, alpha=0.25)
+            speed_plot.addLegend(offset=(10, 10))
+            speed_plot.plot(
+                data.time_s, data.speed, pen=pg.mkPen(_COLOR_SPEED, width=2), name="实际速度"
+            )
+            if data.speed_target is not None:
+                speed_plot.plot(
+                    data.time_s,
+                    data.speed_target,
+                    pen=pg.mkPen(_COLOR_SPEED_TARGET, width=1, style=Qt.PenStyle.DashLine),
+                    name="目标速度",
+                )
+
+        # S3 髋力矩真值（全时间轴，左右可勾选）。
         hip_plot = self._graphics.addPlot(row=row, col=0)
         row += 1
         hip_plot.getViewBox().setXLink(fz_plot.getViewBox())
@@ -440,7 +482,7 @@ class GaitQCReportWindow(QMainWindow):
                 lambda checked, c=self._hip_curves[channel]: c.setVisible(checked)
             )
 
-        # S3 IMU pitch。
+        # S4 IMU pitch。
         imu_plot = self._graphics.addPlot(row=row, col=0)
         row += 1
         imu_plot.getViewBox().setXLink(fz_plot.getViewBox())
@@ -456,7 +498,7 @@ class GaitQCReportWindow(QMainWindow):
             if data.imu_yaw is not None:
                 imu_plot.plot(data.imu_time_s, data.imu_yaw, pen=pg.mkPen(_COLOR_YAW, width=1), name="yaw")
 
-        # S4a 归一化力矩 mean±std（hip_r / hip_l）。
+        # S5a 归一化力矩 mean±std（hip_r / hip_l）。
         if self._heel_idx.size >= 2:
             mom_plot = self._graphics.addPlot(row=row, col=0)
             row += 1
@@ -468,7 +510,7 @@ class GaitQCReportWindow(QMainWindow):
                 x, mean, std = normalize_gait_cycles(data.time_s, data.moments[:, index], self._heel_idx)
                 self._add_mean_std(mom_plot, x, mean, std, _MOMENT_COLORS[channel], _MOMENT_LABELS[channel])
 
-        # S4b 归一化角度 mean±std（hip_r / knee_r / ankle_r）。
+        # S5b 归一化角度 mean±std（hip_r / knee_r / ankle_r）。
         if self._heel_idx.size >= 2 and data.angles is not None:
             ang_plot = self._graphics.addPlot(row=row, col=0)
             row += 1
@@ -483,7 +525,7 @@ class GaitQCReportWindow(QMainWindow):
                 x, mean, std = normalize_gait_cycles(data.time_s, data.angles[:, col], self._heel_idx)
                 self._add_mean_std(ang_plot, x, mean, std, _ANGLE_COLORS[channel], _MOMENT_LABELS[channel])
 
-        # S5 左右髋对比（代表性周期，右 vs 左）。
+        # S6 左右髋对比（代表性周期，右 vs 左）。
         if self._heel_idx.size >= 2:
             lr_plot = self._graphics.addPlot(row=row, col=0)
             row += 1

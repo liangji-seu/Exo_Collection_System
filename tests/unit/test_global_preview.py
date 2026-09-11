@@ -6,6 +6,7 @@ IMU 姿态（imu_roll/pitch/yaw），缺失某列时该组为空、不抛异常�
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -13,7 +14,10 @@ import numpy as np
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from exo_collection.apps.data_studio.global_preview import read_truth_preview  # noqa: E402
+from exo_collection.apps.data_studio.global_preview import (  # noqa: E402
+    read_gaitway_speed,
+    read_truth_preview,
+)
 
 
 def _write_gt(path: Path, header: str, rows: list[str]) -> Path:
@@ -68,3 +72,87 @@ def test_read_truth_preview_returns_none_for_no_matching_columns(tmp_path: Path)
         ["0.00,1.0,2.0"],
     )
     assert read_truth_preview(path) is None
+
+
+_SPEED_HEADER = "Time (s)\tSpeed (m/s)\tSpeed target (m/s)"
+
+
+def _write_speed_txt(
+    path: Path, header: str, rows: list[str], preamble: str = ""
+) -> Path:
+    text = (preamble + "\n" if preamble else "") + header + "\n" + "\n".join(rows) + "\n"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_read_gaitway_speed_parses_and_shifts(tmp_path: Path) -> None:
+    _write_speed_txt(
+        tmp_path / "trial.txt",
+        _SPEED_HEADER,
+        ["0.000\t0.0\t0.0", "0.001\t0.5\t0.5", "0.002\t1.0\t1.0"],
+    )
+    trace = read_gaitway_speed(tmp_path, offset_s=2.5)
+    assert trace is not None
+    np.testing.assert_allclose(trace.time_s_c3d, [-2.5, -2.499, -2.498])
+    np.testing.assert_allclose(trace.speed, [0.0, 0.5, 1.0])
+    np.testing.assert_allclose(trace.speed_target, [0.0, 0.5, 1.0])
+
+
+def test_read_gaitway_speed_reads_offset_from_manifest(tmp_path: Path) -> None:
+    _write_speed_txt(
+        tmp_path / "trial.txt", _SPEED_HEADER, ["0.000\t0.0\t0.0", "0.001\t0.5\t0.5"]
+    )
+    run_dir = tmp_path / "derived" / "opensim" / "run_x"
+    run_dir.mkdir(parents=True)
+    (run_dir / "manifest.json").write_text(
+        json.dumps({"sync": {"gaitway_offset_s": 2.5}}), encoding="utf-8"
+    )
+    trace = read_gaitway_speed(tmp_path)
+    assert trace is not None
+    np.testing.assert_allclose(trace.time_s_c3d, [-2.5, -2.499])
+
+
+def test_read_gaitway_speed_offset_falls_back_to_zero(tmp_path: Path) -> None:
+    _write_speed_txt(
+        tmp_path / "trial.txt", _SPEED_HEADER, ["1.000\t0.0\t0.0", "1.001\t0.5\t0.5"]
+    )
+    trace = read_gaitway_speed(tmp_path)
+    assert trace is not None
+    np.testing.assert_allclose(trace.time_s_c3d, [1.0, 1.001])
+
+
+def test_read_gaitway_speed_target_is_optional(tmp_path: Path) -> None:
+    _write_speed_txt(
+        tmp_path / "trial.txt",
+        "Time (s)\tSpeed (m/s)",
+        ["0.000\t0.0", "0.001\t0.5"],
+    )
+    trace = read_gaitway_speed(tmp_path, offset_s=0.0)
+    assert trace is not None
+    np.testing.assert_allclose(trace.speed, [0.0, 0.5])
+    assert trace.speed_target.size == 0
+
+
+def test_read_gaitway_speed_skips_non_gaitway_txt(tmp_path: Path) -> None:
+    _write_speed_txt(tmp_path / "a_force.txt", "Time (s)\tFoo", ["0.000\t1.0"])
+    _write_speed_txt(
+        tmp_path / "b_speed.txt",
+        _SPEED_HEADER,
+        ["0.000\t0.0\t0.0", "0.001\t1.0\t1.0"],
+    )
+    trace = read_gaitway_speed(tmp_path, offset_s=0.0)
+    assert trace is not None
+    np.testing.assert_allclose(trace.speed, [0.0, 1.0])
+
+
+def test_read_gaitway_speed_returns_none_without_txt(tmp_path: Path) -> None:
+    assert read_gaitway_speed(tmp_path) is None
+
+
+def test_read_gaitway_speed_returns_none_without_speed_column(tmp_path: Path) -> None:
+    _write_speed_txt(
+        tmp_path / "force.txt",
+        "Time (s)\tFzL(N)\tGRFz vertical (N)",
+        ["0.000\t1.0\t2.0"],
+    )
+    assert read_gaitway_speed(tmp_path) is None

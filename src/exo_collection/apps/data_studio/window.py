@@ -59,7 +59,7 @@ from .data_view import DataViewWidget
 from .external_import_dialog import ExternalImportDialog
 from .external_import_worker import ExternalImportWorker
 from .fullscreen_viewer import FullscreenViewer
-from .global_preview import GlobalPreviewWindow, read_truth_preview
+from .global_preview import GlobalPreviewWindow, read_gaitway_speed, read_truth_preview
 from .qc_report import GaitQCReportWindow, load_gait_qc
 from .local_dialogs import (
     ChecksumDialog,
@@ -1506,7 +1506,8 @@ class DataStudioWindow(QMainWindow):
                 self, "无法解析真值", f"ground_truth.csv 解析失败：\n{gt_path}"
             )
             return
-        window = GlobalPreviewWindow(preview, title, self)
+        speed = read_gaitway_speed(session_dir)
+        window = GlobalPreviewWindow(preview, title, self, speed=speed)
         self._global_preview_windows.append(window)
         window.destroyed.connect(
             lambda _obj=None, w=window: self._forget_global_preview(w)
