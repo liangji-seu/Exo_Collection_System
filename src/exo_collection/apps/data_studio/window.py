@@ -110,6 +110,7 @@ from .sync_data import (
 from .credential_store import load_password
 from .upload import (
     BatchOfflineUploadResult,
+    DatasetMirrorResult,
     DownloadResult,
     HostKeyInfo,
     OfflineUploadResult,
@@ -122,6 +123,7 @@ from .upload import (
     decide_one_click_upload,
 )
 from .upload_dialog import (
+    DatasetUploadSettingsDialog,
     OfflineUploadDialog,
     SelectiveUploadDialog,
     UploadProgressDialog,
@@ -235,6 +237,7 @@ class _UploadTaskContext:
     progress_dialog: UploadProgressDialog
     silent: bool = False
     one_click: bool = False
+    operation: UploadOperation = UploadOperation.UPLOAD
     terminal_handled: bool = False
     cancel_requested: bool = False
     empty_exit_polls: int = 0
@@ -620,6 +623,18 @@ class DataStudioWindow(QMainWindow):
         self.remove_from_dataset_button.setVisible(False)
         self.remove_from_dataset_button.clicked.connect(self._remove_from_dataset)
         dataset_row.addWidget(self.remove_from_dataset_button)
+        self.dataset_upload_settings_button = QPushButton("数据集上传设置")
+        self.dataset_upload_settings_button.setToolTip(
+            "配置一个独立于「上传/下载」的服务器目录，用于存放训练/测试数据集。"
+        )
+        self.dataset_upload_settings_button.clicked.connect(self.configure_dataset_upload)
+        dataset_row.addWidget(self.dataset_upload_settings_button)
+        self.dataset_upload_button = QPushButton("数据集上传")
+        self.dataset_upload_button.setToolTip(
+            "把全部「已接收」session 镜像到数据集服务器目录（增量上传 + 删除不再接收的 session）。"
+        )
+        self.dataset_upload_button.clicked.connect(self.upload_dataset)
+        dataset_row.addWidget(self.dataset_upload_button)
         dataset_row.addStretch(1)
         outer.addLayout(dataset_row)
 
@@ -1199,6 +1214,27 @@ class DataStudioWindow(QMainWindow):
             tree = self._filter_catalog_tree(tree, self._accepted_trial_uuids)
         return tree
 
+    def _accepted_manifest_paths(self) -> tuple[Path, ...]:
+        """Return the manifest paths of every FINALIZED trial marked accepted."""
+        paths: list[Path] = []
+
+        def visit(node: dict[str, Any]) -> None:
+            if (
+                str(node.get("type")) == "trial"
+                and bool(node.get("dataset_accepted"))
+                and str(node.get("state")) == "FINALIZED"
+            ):
+                manifest_path = node.get("manifest_path")
+                if manifest_path:
+                    paths.append(Path(str(manifest_path)))
+            for child in node.get("children", []):
+                if isinstance(child, dict) and child.get("type") != "external_annex":
+                    visit(child)
+
+        for root_node in self._catalog_tree:
+            visit(root_node)
+        return tuple(dict.fromkeys(paths))
+
     def _selected_finalized_manifest_path(self) -> Path | None:
         item = self.tree_widget.currentItem()
         if item is None or item.data(1, Qt.ItemDataRole.UserRole) != "trial":
@@ -1486,6 +1522,8 @@ class DataStudioWindow(QMainWindow):
                         self._upload_succeeded(event.result)
                     elif isinstance(event.result, DownloadResult):
                         self._download_succeeded(event.result)
+                    elif isinstance(event.result, DatasetMirrorResult):
+                        self._dataset_mirror_succeeded(event.result)
                     else:
                         self._upload_failed(
                             "INVALID_RESULT",
@@ -2070,6 +2108,45 @@ class DataStudioWindow(QMainWindow):
                 return
             dialog.deleteLater()
 
+        if one_click:
+            title, cancel_text = "一键上传", "取消一键上传"
+        elif download_target_root is not None:
+            title, cancel_text = "从服务器拉取数据", "取消拉取"
+        elif status_only:
+            title, cancel_text = "同步云端状态", "取消状态同步"
+        else:
+            title, cancel_text = None, None
+        status_message = (
+            "已启动从服务器拉取数据进程。"
+            if download_target_root is not None
+            else (
+                "已启动只读云端状态同步进程。"
+                if status_only
+                else f"已启动批量 SSH/SCP 上传进程（{len(manifest_paths)} 个 Trial）。"
+            )
+        )
+        self._spawn_upload_worker(
+            request,
+            title=title,
+            cancel_text=cancel_text,
+            status_message=status_message,
+            silent=silent,
+            one_click=one_click,
+        )
+
+    def _spawn_upload_worker(
+        self,
+        request: OfflineUploadRequest,
+        *,
+        title: str | None = None,
+        cancel_text: str | None = None,
+        status_message: str,
+        silent: bool = False,
+        one_click: bool = False,
+        operation: UploadOperation = UploadOperation.UPLOAD,
+    ) -> None:
+        """Create the isolated worker + progress dialog, start it, report status."""
+
         # Re-check immediately before process creation; selection and dialog
         # entry may have taken long enough for Collector to become active.
         if read_activity(self._data_root) is not None:
@@ -2085,20 +2162,16 @@ class DataStudioWindow(QMainWindow):
 
         worker = self._upload_worker_factory()
         progress_dialog = UploadProgressDialog(self)
-        if one_click:
-            progress_dialog.setWindowTitle("一键上传")
-            progress_dialog.cancel_button.setText("取消一键上传")
-        elif download_target_root is not None:
-            progress_dialog.setWindowTitle("从服务器拉取数据")
-            progress_dialog.cancel_button.setText("取消拉取")
-        elif status_only:
-            progress_dialog.setWindowTitle("同步云端状态")
-            progress_dialog.cancel_button.setText("取消状态同步")
+        if title is not None:
+            progress_dialog.setWindowTitle(title)
+        if cancel_text is not None:
+            progress_dialog.cancel_button.setText(cancel_text)
         context = _UploadTaskContext(
             worker=worker,
             progress_dialog=progress_dialog,
             silent=silent,
             one_click=one_click,
+            operation=operation,
         )
         progress_dialog.cancel_requested.connect(self._cancel_active_upload)
         self._active_upload = context
@@ -2132,14 +2205,91 @@ class DataStudioWindow(QMainWindow):
         # The request (and credentials) is intentionally not stored by the
         # window. UploadWorkerHandle has already sent it through its memory pipe.
         request = None
-        self.statusBar().showMessage(
-            "已启动从服务器拉取数据进程。"
-            if download_target_root is not None
-            else (
-                "已启动只读云端状态同步进程。"
-                if status_only
-                else f"已启动批量 SSH/SCP 上传进程（{len(manifest_paths)} 个 Trial）。"
+        self.statusBar().showMessage(status_message)
+
+    @Slot()
+    def configure_dataset_upload(self) -> None:
+        dialog = DatasetUploadSettingsDialog(self._settings, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.statusBar().showMessage("数据集上传设置已保存。")
+
+    def _dataset_upload_request(
+        self,
+        manifest_paths: tuple[Path, ...],
+        *,
+        quiet: bool = False,
+    ) -> OfflineUploadRequest | None:
+        """Build a DATASET_MIRROR request from the separate dataset endpoint."""
+
+        endpoint = self._settings.dataset_upload_endpoint
+        host = str(endpoint.get("host", "")).strip()
+        username = str(endpoint.get("username", "")).strip()
+        remote_workdir = str(endpoint.get("remote_workdir", "")).strip()
+        if not host or not username or not remote_workdir:
+            return None
+        authentication = str(endpoint.get("authentication", "PASSWORD"))
+        password: str | None = None
+        private_key_path: Path | None = None
+        if authentication == "PRIVATE_KEY":
+            raw_key = str(endpoint.get("private_key_path", "")).strip()
+            if not raw_key:
+                return None
+            private_key_path = Path(raw_key)
+        else:
+            try:
+                password = load_password(host, int(endpoint.get("port", 22)), username)
+            except RuntimeError as exc:
+                if not quiet:
+                    QMessageBox.warning(self, "无法读取已保存密码", str(exc))
+                else:
+                    _log.warning("数据集上传无法读取已保存密码：%s", exc)
+                return None
+            if not password:
+                return None
+        try:
+            return OfflineUploadRequest(
+                dataset_root=self._data_root,
+                manifest_path=manifest_paths[0],
+                additional_manifest_paths=manifest_paths[1:],
+                operation=UploadOperation.DATASET_MIRROR,
+                host=host,
+                port=int(endpoint.get("port", 22)),
+                username=username,
+                remote_workdir=remote_workdir,
+                password=password,
+                private_key_path=private_key_path,
             )
+        except (TypeError, ValueError):
+            return None
+
+    @Slot()
+    def upload_dataset(self) -> None:
+        paths = self._accepted_manifest_paths()
+        if not paths:
+            QMessageBox.information(
+                self,
+                "数据集上传",
+                "尚未接收任何 session，请先右键接收要纳入训练/测试集的 session。",
+            )
+            return
+        request = self._dataset_upload_request(paths)
+        if request is None:
+            QMessageBox.warning(
+                self,
+                "数据集上传",
+                "尚未配置数据集服务器目录，或无法读取已保存密码。\n"
+                "请先点击「数据集上传设置」。",
+            )
+            return
+        self._start_dataset_mirror(request, len(paths))
+
+    def _start_dataset_mirror(self, request: OfflineUploadRequest, count: int) -> None:
+        self._spawn_upload_worker(
+            request,
+            title="数据集上传",
+            cancel_text="取消数据集上传",
+            status_message=f"已启动数据集镜像进程（{count} 个 session）。",
+            operation=UploadOperation.DATASET_MIRROR,
         )
 
     @Slot()
@@ -2185,20 +2335,35 @@ class DataStudioWindow(QMainWindow):
             return
         context.progress_dialog.waiting_for_delete_confirmation()
         listing = "\n".join(f"  · {name}" for name in remote_only_files)
+        dataset_mirror = context.operation is UploadOperation.DATASET_MIRROR
         box = QMessageBox(self)
-        box.setWindowTitle("云端多余文件删除确认")
         box.setIcon(QMessageBox.Icon.Warning)
-        box.setText(f"云端存在 {len(remote_only_files)} 个本地已缺失的文件。")
-        box.setInformativeText(
-            "确认后将删除云端这些文件，然后继续增量上传；"
-            "拒绝则保留这些文件、仅上传本地新增内容。"
-        )
+        if dataset_mirror:
+            box.setWindowTitle("云端多余 session 目录删除确认")
+            box.setText(
+                f"云端数据集中存在 {len(remote_only_files)} 个本地已不再接收的 session 目录。"
+            )
+            box.setInformativeText(
+                "确认后将删除云端这些 session 目录，使数据集与本地「已接收」集合严格一致；"
+                "拒绝则保留这些目录、仅上传新增内容。"
+            )
+        else:
+            box.setWindowTitle("云端多余文件删除确认")
+            box.setText(f"云端存在 {len(remote_only_files)} 个本地已缺失的文件。")
+            box.setInformativeText(
+                "确认后将删除云端这些文件，然后继续增量上传；"
+                "拒绝则保留这些文件、仅上传本地新增内容。"
+            )
         box.setDetailedText(listing)
         box.setStyleSheet(
             "QMessageBox QLabel { font-size: 18px; font-weight: 700; color: #7F1D1D; }"
         )
-        delete_button = box.addButton("删除并继续上传", QMessageBox.ButtonRole.AcceptRole)
-        keep_button = box.addButton("保留，仅增量上传", QMessageBox.ButtonRole.RejectRole)
+        if dataset_mirror:
+            delete_button = box.addButton("删除并完成镜像", QMessageBox.ButtonRole.AcceptRole)
+            keep_button = box.addButton("保留这些 session", QMessageBox.ButtonRole.RejectRole)
+        else:
+            delete_button = box.addButton("删除并继续上传", QMessageBox.ButtonRole.AcceptRole)
+            keep_button = box.addButton("保留，仅增量上传", QMessageBox.ButtonRole.RejectRole)
         box.setDefaultButton(keep_button)
         box.exec()
         clicked = box.clickedButton()
@@ -2210,6 +2375,20 @@ class DataStudioWindow(QMainWindow):
                 self._cancel_active_upload()
         else:
             context.worker.confirm_remote_delete(())
+
+    def _dataset_mirror_succeeded(self, result: DatasetMirrorResult) -> None:
+        QMessageBox.information(
+            self,
+            "数据集镜像完成",
+            f"上传 session：{result.uploaded_trials} 个\n"
+            f"删除 session：{result.deleted_trials} 个\n"
+            f"保留 session：{result.kept_trials} 个\n"
+            f"文件：{result.uploaded_files} 个，{result.total_bytes:,} B\n\n"
+            "服务器数据集目录已与本地「已接收」集合严格一致。",
+        )
+        self.statusBar().showMessage("数据集镜像上传完成。", 8000)
+        self.upload_finished.emit(True)
+        self._schedule_catalog_refresh()
 
     def _upload_succeeded(
         self, result: OfflineUploadResult | BatchOfflineUploadResult

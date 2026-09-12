@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QSpinBox,
@@ -36,7 +37,172 @@ from .upload import (
     RemoteTrialStatusRecord,
     UploadOperation,
     UploadProgress,
+    validate_remote_directory,
 )
+
+
+class _EndpointFormWidget(QGroupBox):
+    """Reusable SSH/SCP endpoint form shared by upload and dataset-mirror dialogs.
+
+    Owns the fields, restore/collect/validate, and the Windows Credential
+    Manager password round-trip. It is deliberately settings-agnostic: the
+    caller supplies the endpoint dict to restore and the persistence setter.
+    """
+
+    def __init__(self, title: str, parent: QWidget | None = None) -> None:
+        super().__init__(title, parent)
+        form = QFormLayout(self)
+        self.host_edit = QLineEdit()
+        self.host_edit.setObjectName("endpoint_host")
+        self.host_edit.setPlaceholderText("主机名或 IP（无默认值）")
+        form.addRow("主机：", self.host_edit)
+
+        self.port_spin = QSpinBox()
+        self.port_spin.setObjectName("endpoint_port")
+        self.port_spin.setRange(1, 65535)
+        self.port_spin.setValue(22)
+        form.addRow("端口：", self.port_spin)
+
+        self.username_edit = QLineEdit()
+        self.username_edit.setObjectName("endpoint_username")
+        self.username_edit.setPlaceholderText("用户名（无默认值）")
+        form.addRow("用户名：", self.username_edit)
+
+        self.remote_workdir_edit = QLineEdit()
+        self.remote_workdir_edit.setObjectName("endpoint_remote_workdir")
+        self.remote_workdir_edit.setPlaceholderText("/absolute/path/to/data")
+        form.addRow("远程 data 根目录：", self.remote_workdir_edit)
+
+        self.authentication_combo = QComboBox()
+        self.authentication_combo.setObjectName("endpoint_authentication")
+        self.authentication_combo.addItem("密码", "PASSWORD")
+        self.authentication_combo.addItem("SSH 私钥", "PRIVATE_KEY")
+        self.authentication_combo.currentIndexChanged.connect(
+            self.apply_authentication_mode
+        )
+        form.addRow("认证方式：", self.authentication_combo)
+
+        self.password_edit = QLineEdit()
+        self.password_edit.setObjectName("endpoint_password")
+        self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.password_edit.setPlaceholderText("可安全保存到当前 Windows 用户的凭据管理器")
+        form.addRow("密码：", self.password_edit)
+
+        self.remember_password_check = QCheckBox("记住密码（保存到 Windows 凭据管理器）")
+        self.remember_password_check.setObjectName("endpoint_remember_password")
+        self.remember_password_check.setChecked(True)
+        form.addRow("", self.remember_password_check)
+
+        key_row = QWidget()
+        key_layout = QHBoxLayout(key_row)
+        key_layout.setContentsMargins(0, 0, 0, 0)
+        self.private_key_edit = QLineEdit()
+        self.private_key_edit.setObjectName("endpoint_private_key")
+        self.private_key_edit.setReadOnly(True)
+        self.private_key_edit.setPlaceholderText("选择本地 SSH 私钥文件")
+        key_layout.addWidget(self.private_key_edit, 1)
+        self.private_key_button = QPushButton("选择…")
+        self.private_key_button.setObjectName("endpoint_browse_private_key")
+        self.private_key_button.clicked.connect(self.choose_private_key)
+        key_layout.addWidget(self.private_key_button)
+        form.addRow("SSH 私钥：", key_row)
+
+        self.passphrase_edit = QLineEdit()
+        self.passphrase_edit.setObjectName("endpoint_private_key_passphrase")
+        self.passphrase_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.passphrase_edit.setPlaceholderText("可选；仅本次使用并立即清空")
+        form.addRow("私钥口令：", self.passphrase_edit)
+
+        self.host_edit.editingFinished.connect(self.load_saved_password)
+        self.username_edit.editingFinished.connect(self.load_saved_password)
+        self.port_spin.valueChanged.connect(self.load_saved_password)
+
+    def restore(self, endpoint: dict) -> None:
+        self.host_edit.setText(str(endpoint.get("host", "")))
+        self.port_spin.setValue(int(endpoint.get("port", 22)))
+        self.username_edit.setText(str(endpoint.get("username", "")))
+        self.remote_workdir_edit.setText(str(endpoint.get("remote_workdir", "")))
+        self.private_key_edit.setText(str(endpoint.get("private_key_path", "")))
+        authentication = str(endpoint.get("authentication", "PASSWORD"))
+        index = self.authentication_combo.findData(authentication)
+        self.authentication_combo.setCurrentIndex(max(0, index))
+        self.remember_password_check.setChecked(
+            bool(endpoint.get("remember_password", True))
+        )
+        if authentication == "PASSWORD":
+            self.load_saved_password()
+
+    def collect(self) -> dict:
+        return {
+            "host": self.host_edit.text().strip(),
+            "port": self.port_spin.value(),
+            "username": self.username_edit.text().strip(),
+            "remote_workdir": self.remote_workdir_edit.text().strip(),
+            "authentication": self.authentication_combo.currentData(),
+            "private_key_path": self.private_key_edit.text().strip(),
+            "remember_password": self.remember_password_check.isChecked(),
+        }
+
+    def validate(self) -> str | None:
+        """Return a human-readable error, or ``None`` when the form is usable."""
+
+        if not self.host_edit.text().strip():
+            return "主机不能为空。"
+        if not self.username_edit.text().strip():
+            return "用户名不能为空。"
+        try:
+            validate_remote_directory(self.remote_workdir_edit.text())
+        except ValueError as exc:
+            return str(exc)
+        if (
+            self.authentication_combo.currentData() == "PRIVATE_KEY"
+            and not self.private_key_edit.text().strip()
+        ):
+            return "请选择 SSH 私钥文件。"
+        return None
+
+    def use_private_key(self) -> bool:
+        return self.authentication_combo.currentData() == "PRIVATE_KEY"
+
+    def apply_authentication_mode(self) -> None:
+        use_private_key = self.use_private_key()
+        self.password_edit.setEnabled(not use_private_key)
+        self.private_key_edit.setEnabled(use_private_key)
+        self.private_key_button.setEnabled(use_private_key)
+        self.passphrase_edit.setEnabled(use_private_key)
+        self.remember_password_check.setEnabled(not use_private_key)
+        if not use_private_key:
+            self.load_saved_password()
+
+    def load_saved_password(self, *_args: object) -> None:
+        if self.use_private_key() or not self.remember_password_check.isChecked():
+            return
+        try:
+            password = load_password(
+                self.host_edit.text(),
+                self.port_spin.value(),
+                self.username_edit.text(),
+            )
+        except RuntimeError as exc:
+            self.remember_password_check.setToolTip(str(exc))
+            return
+        if password is not None:
+            self.password_edit.setText(password)
+            self.remember_password_check.setToolTip("已从 Windows 凭据管理器加载密码。")
+
+    def choose_private_key(self) -> None:
+        selected, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "选择 SSH 私钥",
+            str(Path.home() / ".ssh"),
+            "SSH 私钥 (*)",
+        )
+        if selected:
+            self.private_key_edit.setText(selected)
+
+    def clear_secrets(self) -> None:
+        self.password_edit.clear()
+        self.passphrase_edit.clear()
 
 
 class OfflineUploadDialog(QDialog):
@@ -104,74 +270,24 @@ class OfflineUploadDialog(QDialog):
         trial_form.addRow("拉取范围：" if self._download else "本地范围：", trial_path)
         outer.addWidget(trial_group)
 
-        endpoint_group = QGroupBox("SSH/SCP 目标（每次手工输入）")
-        endpoint_form = QFormLayout(endpoint_group)
-        self.host_edit = QLineEdit()
-        self.host_edit.setObjectName("upload_host")
-        self.host_edit.setPlaceholderText("主机名或 IP（无默认值）")
-        endpoint_form.addRow("主机：", self.host_edit)
-
-        self.port_spin = QSpinBox()
-        self.port_spin.setObjectName("upload_port")
-        self.port_spin.setRange(1, 65535)
-        self.port_spin.setValue(22)
-        endpoint_form.addRow("端口：", self.port_spin)
-
-        self.username_edit = QLineEdit()
-        self.username_edit.setObjectName("upload_username")
-        self.username_edit.setPlaceholderText("用户名（无默认值）")
-        endpoint_form.addRow("用户名：", self.username_edit)
-
-        self.remote_workdir_edit = QLineEdit()
-        self.remote_workdir_edit.setObjectName("upload_remote_workdir")
-        self.remote_workdir_edit.setPlaceholderText("/absolute/path/to/data")
-        endpoint_form.addRow("远程 data 根目录：", self.remote_workdir_edit)
-
-        self.authentication_combo = QComboBox()
-        self.authentication_combo.setObjectName("upload_authentication")
-        self.authentication_combo.addItem("密码", "PASSWORD")
-        self.authentication_combo.addItem("SSH 私钥", "PRIVATE_KEY")
-        self.authentication_combo.currentIndexChanged.connect(
-            self._apply_authentication_mode
-        )
-        endpoint_form.addRow("认证方式：", self.authentication_combo)
-
-        self.password_edit = QLineEdit()
-        self.password_edit.setObjectName("upload_password")
-        self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.password_edit.setPlaceholderText("可安全保存到当前 Windows 用户的凭据管理器")
-        endpoint_form.addRow("密码：", self.password_edit)
-
-        self.remember_password_check = QCheckBox("记住密码（保存到 Windows 凭据管理器）")
-        self.remember_password_check.setObjectName("remember_upload_password")
-        self.remember_password_check.setChecked(True)
-        endpoint_form.addRow("", self.remember_password_check)
-
-        key_row = QWidget()
-        key_layout = QHBoxLayout(key_row)
-        key_layout.setContentsMargins(0, 0, 0, 0)
-        self.private_key_edit = QLineEdit()
-        self.private_key_edit.setObjectName("upload_private_key")
-        self.private_key_edit.setReadOnly(True)
-        self.private_key_edit.setPlaceholderText("选择本地 SSH 私钥文件")
-        key_layout.addWidget(self.private_key_edit, 1)
-        self.private_key_button = QPushButton("选择…")
-        self.private_key_button.setObjectName("browse_upload_private_key")
-        self.private_key_button.clicked.connect(self._choose_private_key)
-        key_layout.addWidget(self.private_key_button)
-        endpoint_form.addRow("SSH 私钥：", key_row)
-
-        self.passphrase_edit = QLineEdit()
-        self.passphrase_edit.setObjectName("upload_private_key_passphrase")
-        self.passphrase_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.passphrase_edit.setPlaceholderText("可选；仅本次使用并立即清空")
-        endpoint_form.addRow("私钥口令：", self.passphrase_edit)
-        outer.addWidget(endpoint_group)
-        self._restore_endpoint()
-        self._apply_authentication_mode()
-        self.host_edit.editingFinished.connect(self._load_saved_password)
-        self.username_edit.editingFinished.connect(self._load_saved_password)
-        self.port_spin.valueChanged.connect(self._load_saved_password)
+        self.endpoint_form = _EndpointFormWidget("SSH/SCP 目标（每次手工输入）", self)
+        outer.addWidget(self.endpoint_form)
+        self.endpoint_form.restore(self._settings.upload_endpoint)
+        self.endpoint_form.apply_authentication_mode()
+        # Backward-compatible aliases so callers and tests reach the fields directly.
+        for _name in (
+            "host_edit",
+            "port_spin",
+            "username_edit",
+            "remote_workdir_edit",
+            "authentication_combo",
+            "password_edit",
+            "remember_password_check",
+            "private_key_edit",
+            "private_key_button",
+            "passphrase_edit",
+        ):
+            setattr(self, _name, getattr(self.endpoint_form, _name))
 
         safety = QLabel(
             "首次连接时系统会显示 SSH SHA-256 主机指纹。"
@@ -242,71 +358,77 @@ class OfflineUploadDialog(QDialog):
         elif not use_private_key:
             delete_password(request.host, request.port, request.username)
         if not self.remember_password_check.isChecked():
-            self._clear_secrets()
+            self.endpoint_form.clear_secrets()
         return request
 
-    def _apply_authentication_mode(self) -> None:
-        use_private_key = self.authentication_combo.currentData() == "PRIVATE_KEY"
-        self.password_edit.setEnabled(not use_private_key)
-        self.private_key_edit.setEnabled(use_private_key)
-        self.private_key_button.setEnabled(use_private_key)
-        self.passphrase_edit.setEnabled(use_private_key)
-        self.remember_password_check.setEnabled(not use_private_key)
-        if not use_private_key:
-            self._load_saved_password()
-
-    def _restore_endpoint(self) -> None:
-        endpoint = self._settings.upload_endpoint
-        self.host_edit.setText(str(endpoint.get("host", "")))
-        self.port_spin.setValue(int(endpoint.get("port", 22)))
-        self.username_edit.setText(str(endpoint.get("username", "")))
-        self.remote_workdir_edit.setText(str(endpoint.get("remote_workdir", "")))
-        self.private_key_edit.setText(str(endpoint.get("private_key_path", "")))
-        authentication = str(endpoint.get("authentication", "PASSWORD"))
-        index = self.authentication_combo.findData(authentication)
-        self.authentication_combo.setCurrentIndex(max(0, index))
-        self.remember_password_check.setChecked(
-            bool(endpoint.get("remember_password", True))
-        )
-        if authentication == "PASSWORD":
-            self._load_saved_password()
-
-    def _load_saved_password(self, *_args: object) -> None:
-        if (
-            self.authentication_combo.currentData() != "PASSWORD"
-            or not self.remember_password_check.isChecked()
-        ):
-            return
-        try:
-            password = load_password(
-                self.host_edit.text(),
-                self.port_spin.value(),
-                self.username_edit.text(),
-            )
-        except RuntimeError as exc:
-            self.remember_password_check.setToolTip(str(exc))
-            return
-        if password is not None:
-            self.password_edit.setText(password)
-            self.remember_password_check.setToolTip("已从 Windows 凭据管理器加载密码。")
-
-    def _choose_private_key(self) -> None:
-        selected, _selected_filter = QFileDialog.getOpenFileName(
-            self,
-            "选择 SSH 私钥",
-            str(Path.home() / ".ssh"),
-            "SSH 私钥 (*)",
-        )
-        if selected:
-            self.private_key_edit.setText(selected)
-
-    def _clear_secrets(self) -> None:
-        self.password_edit.clear()
-        self.passphrase_edit.clear()
-
     def reject(self) -> None:
-        self._clear_secrets()
+        self.endpoint_form.clear_secrets()
         super().reject()
+
+
+class DatasetUploadSettingsDialog(QDialog):
+    """Configure the separate dataset-mirror server directory (no upload)."""
+
+    def __init__(
+        self,
+        settings: SharedAppSettings | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._settings = settings if settings is not None else SharedAppSettings()
+        self.setWindowTitle("数据集上传设置")
+        self.setModal(True)
+        self.resize(560, 360)
+
+        outer = QVBoxLayout(self)
+        explanation = QLabel(
+            "配置一个独立于「上传/下载」的服务器目录，用于镜像全部「已接收」session"
+            "（保留本地文件树结构，增量上传 + 删除不再接收的 session）。\n"
+            "勾选记住密码时只保存到 Windows 凭据管理器，不写入配置或日志。"
+        )
+        explanation.setWordWrap(True)
+        outer.addWidget(explanation)
+
+        self.endpoint_form = _EndpointFormWidget("数据集服务器目录（独立于上传/下载）", self)
+        outer.addWidget(self.endpoint_form)
+        self.endpoint_form.restore(self._settings.dataset_upload_endpoint)
+        self.endpoint_form.apply_authentication_mode()
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Cancel
+            | QDialogButtonBox.StandardButton.Ok
+        )
+        save_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        save_button.setText("保存")
+        save_button.setObjectName("save_dataset_upload_endpoint")
+        buttons.accepted.connect(self._save)
+        buttons.rejected.connect(self._reject)
+        outer.addWidget(buttons)
+        self.endpoint_form.host_edit.setFocus()
+
+    def _save(self) -> None:
+        error = self.endpoint_form.validate()
+        if error is not None:
+            QMessageBox.warning(self, "数据集上传参数无效", error)
+            return
+        values = self.endpoint_form.collect()
+        self._settings.set_dataset_upload_endpoint(values)
+        use_private_key = self.endpoint_form.use_private_key()
+        if not use_private_key and values["remember_password"]:
+            save_password(
+                values["host"],
+                values["port"],
+                values["username"],
+                self.endpoint_form.password_edit.text(),
+            )
+        elif not use_private_key:
+            delete_password(values["host"], values["port"], values["username"])
+        self.endpoint_form.clear_secrets()
+        self.accept()
+
+    def _reject(self) -> None:
+        self.endpoint_form.clear_secrets()
+        self.reject()
 
 
 class SelectiveUploadDialog(QDialog):

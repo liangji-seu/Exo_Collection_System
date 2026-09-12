@@ -117,6 +117,7 @@ class UploadOperation(StrEnum):
     UPLOAD = "UPLOAD"
     SYNC_REMOTE_STATUS = "SYNC_REMOTE_STATUS"
     DOWNLOAD = "DOWNLOAD"
+    DATASET_MIRROR = "DATASET_MIRROR"
 
 
 class RemoteTrialStatus(StrEnum):
@@ -302,6 +303,17 @@ class RemoteOnlyTrial:
 class RemoteStatusSyncResult:
     records: tuple[RemoteTrialStatusRecord, ...]
     remote_only: tuple[RemoteOnlyTrial, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetMirrorResult:
+    """Aggregated outcome of mirroring accepted Trials to the dataset server."""
+
+    uploaded_trials: int
+    deleted_trials: int
+    kept_trials: int
+    uploaded_files: int
+    total_bytes: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -714,6 +726,48 @@ def _update_local_sync_cache(
         temporary.unlink(missing_ok=True)
 
 
+def _remove_local_sync_cache_entries(
+    request: OfflineUploadRequest, index_keys: set[str]
+) -> None:
+    """Drop the given trial keys from this endpoint's local sync cache."""
+
+    path = _local_sync_cache_path(request.dataset_root)
+    if not path.is_file():
+        return
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+        return
+    if not isinstance(payload, dict) or payload.get("schema") != LOCAL_SYNC_CACHE_SCHEMA:
+        return
+    endpoints = payload.get("endpoints", {})
+    if not isinstance(endpoints, dict):
+        return
+    endpoint = endpoints.get(_endpoint_cache_key(request))
+    if not isinstance(endpoint, dict):
+        return
+    trials = endpoint.get("trials", {})
+    if not isinstance(trials, dict):
+        return
+    changed = False
+    for key in index_keys:
+        if key in trials:
+            trials.pop(key)
+            changed = True
+    if not changed:
+        return
+    payload["updated_at_utc_ns"] = time.time_ns()
+    temporary = path.with_name(f".{path.name}.partial-{uuid4().hex}")
+    try:
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _local_download_cache_path(target_root: Path) -> Path:
     return target_root / ".exo" / LOCAL_DOWNLOAD_CACHE_FILENAME
 
@@ -841,6 +895,48 @@ def _update_remote_sync_index(
             raise UploadError("REMOTE_INDEX_VERIFY_FAILED", "云端同步索引校验失败。")
         session.replace_file(remote_temporary, remote_path)
         _update_local_sync_cache(request, plan, entry)
+    finally:
+        if local_temporary is not None:
+            local_temporary.unlink(missing_ok=True)
+        session.remove_file(remote_temporary)
+
+
+def _remove_remote_sync_index_entries(
+    session: RemoteUploadSession,
+    request: OfflineUploadRequest,
+    index_keys: set[str],
+) -> None:
+    """Delete the given trial entries from the remote sync index atomically.
+
+    Mirrors :func:`_update_remote_sync_index` (staging file + SHA-256 verify +
+    replace) so a dataset-mirror deletion is all-or-nothing on the index.
+    """
+
+    remote_path, entries = _read_remote_sync_index(session, request.remote_workdir)
+    for key in index_keys:
+        entries.pop(key, None)
+    payload = json.dumps(
+        {
+            "schema": REMOTE_SYNC_INDEX_SCHEMA,
+            "updated_at_utc_ns": time.time_ns(),
+            "trials": entries,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8") + b"\n"
+    remote_parent = str(PurePosixPath(remote_path).parent)
+    session.ensure_directory(remote_parent)
+    remote_temporary = f"{remote_path}.partial-{uuid4().hex}"
+    local_temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix="exo-sync-index-", suffix=".json", delete=False) as stream:
+            stream.write(payload)
+            local_temporary = Path(stream.name)
+        session.upload_file(local_temporary, remote_temporary)
+        if session.remote_sha256(remote_temporary) != hashlib.sha256(payload).hexdigest():
+            raise UploadError("REMOTE_INDEX_VERIFY_FAILED", "云端同步索引校验失败。")
+        session.replace_file(remote_temporary, remote_path)
     finally:
         if local_temporary is not None:
             local_temporary.unlink(missing_ok=True)
@@ -2011,6 +2107,126 @@ class RemoteDatasetStatusScanner:
             session.close()
 
 
+class DatasetMirrorUploader:
+    """Mirror every accepted Trial to the dataset server directory exactly.
+
+    Upload is incremental (reusing :class:`SshScpTrialUploader`); remote trials
+    whose local session is no longer accepted are deleted after operator
+    confirmation, so the remote tree stays a strict mirror of the accepted set.
+    """
+
+    def __init__(self, session_factory: RemoteSessionFactory | None = None) -> None:
+        self._session_factory = session_factory or _default_remote_session
+
+    def mirror(
+        self,
+        request: OfflineUploadRequest,
+        *,
+        progress: ProgressCallback | None = None,
+        cancelled: CancelCheck | None = None,
+        confirm_remote_delete: (
+            Callable[[tuple[str, ...]], tuple[str, ...]] | None
+        ) = None,
+    ) -> DatasetMirrorResult:
+        report = progress or (lambda _update: None)
+        is_cancelled = cancelled or (lambda: False)
+        if read_activity(request.dataset_root) is not None:
+            raise UploadError("COLLECTOR_ACTIVE", "采集期间不能执行数据集镜像上传。")
+        report(UploadProgress(UploadPhase.CONNECTING, "正在连接数据集服务器…"))
+        session = self._session_factory(request)
+        uploaded_trials = 0
+        uploaded_files = 0
+        total_bytes = 0
+        deleted_trials = 0
+        kept_trials = 0
+        try:
+            _index_path, remote_entries = _read_remote_sync_index(
+                session, request.remote_workdir
+            )
+            local_index_keys: set[str] = set()
+            total = len(request.manifest_paths)
+            uploader = SshScpTrialUploader(self._session_factory)
+            for trial_index, manifest_path in enumerate(request.manifest_paths, start=1):
+                if is_cancelled():
+                    raise UploadCancelled()
+                trial_directory = manifest_path.parent
+                if trial_directory.name == ".exo":
+                    trial_directory = trial_directory.parent
+                try:
+                    index_key = trial_directory.relative_to(
+                        request.dataset_root
+                    ).as_posix()
+                except ValueError as exc:
+                    raise UploadError(
+                        "TRIAL_OUTSIDE_DATA_ROOT",
+                        "Manifest 不在当前 data 根目录内。",
+                    ) from exc
+                local_index_keys.add(index_key)
+                subrequest = replace(
+                    request,
+                    manifest_path=manifest_path,
+                    additional_manifest_paths=(),
+                )
+
+                def batch_progress(
+                    update: UploadProgress,
+                    current: int = trial_index,
+                ) -> None:
+                    report(
+                        replace(
+                            update,
+                            message=f"[Trial {current}/{total}] {update.message}",
+                        )
+                    )
+
+                result = uploader.upload(
+                    subrequest,
+                    progress=batch_progress,
+                    cancelled=is_cancelled,
+                    confirm_remote_delete=None,
+                )
+                uploaded_trials += 1
+                uploaded_files += result.file_count
+                total_bytes += result.total_bytes
+
+            remote_only_keys = set(remote_entries) - local_index_keys
+            if remote_only_keys:
+                confirmed = (
+                    confirm_remote_delete(tuple(sorted(remote_only_keys)))
+                    if confirm_remote_delete is not None
+                    else ()
+                )
+                confirmed_set = set(confirmed)
+                kept_trials = len(remote_only_keys) - len(confirmed_set)
+                for key in sorted(confirmed_set):
+                    remote_dir = _remote_join(
+                        request.remote_workdir, *PurePosixPath(key).parts
+                    )
+                    if session.exists(remote_dir):
+                        session.remove_directory(remote_dir)
+                    deleted_trials += 1
+                if confirmed_set:
+                    _remove_remote_sync_index_entries(session, request, confirmed_set)
+                    _remove_local_sync_cache_entries(request, confirmed_set)
+            report(
+                UploadProgress(
+                    UploadPhase.COMPLETED,
+                    "数据集镜像完成。",
+                    total,
+                    total,
+                )
+            )
+            return DatasetMirrorResult(
+                uploaded_trials=uploaded_trials,
+                deleted_trials=deleted_trials,
+                kept_trials=kept_trials,
+                uploaded_files=uploaded_files,
+                total_bytes=total_bytes,
+            )
+        finally:
+            session.close()
+
+
 class RemoteDatasetDownloader:
     """Recursively mirror the remote data/ tree into a local target folder.
 
@@ -2218,7 +2434,7 @@ class UploadWorkerEventType(StrEnum):
 class UploadWorkerEvent:
     event_type: UploadWorkerEventType
     progress: UploadProgress | None = None
-    result: OfflineUploadResult | BatchOfflineUploadResult | RemoteStatusSyncResult | DownloadResult | None = None
+    result: OfflineUploadResult | BatchOfflineUploadResult | RemoteStatusSyncResult | DownloadResult | DatasetMirrorResult | None = None
     host_key: HostKeyInfo | None = None
     remote_only_files: tuple[str, ...] = ()
     error_code: str | None = None
@@ -2290,6 +2506,13 @@ def _upload_worker_main(command: Connection, events: Connection) -> None:
                         target_root,
                         progress=send_progress,
                         cancelled=cancelled,
+                    )
+                elif request.operation is UploadOperation.DATASET_MIRROR:
+                    result = DatasetMirrorUploader().mirror(
+                        request,
+                        progress=send_progress,
+                        cancelled=cancelled,
+                        confirm_remote_delete=confirm_remote_delete,
                     )
                 else:
                     uploader = SshScpTrialUploader()

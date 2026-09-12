@@ -79,6 +79,45 @@ def test_upload_endpoint_persists_only_non_secret_fields(tmp_path: Path) -> None
     assert "must-never-be-written" not in settings_path.read_text(encoding="utf-8")
 
 
+def test_dataset_upload_endpoint_persists_only_non_secret_fields(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.ini"
+    settings = _file_settings(settings_path)
+
+    settings.set_dataset_upload_endpoint(
+        {
+            "host": "10.192.26.253",
+            "port": 22,
+            "username": "liangji",
+            "remote_workdir": "/home/liangji/dataset",
+            "authentication": "PRIVATE_KEY",
+            "private_key_path": "C:/Users/liangji/.ssh/id_ed25519",
+            "remember_password": False,
+            "password": "must-never-be-written",
+        }
+    )
+
+    assert settings.dataset_upload_endpoint == {
+        "host": "10.192.26.253",
+        "port": 22,
+        "username": "liangji",
+        "remote_workdir": "/home/liangji/dataset",
+        "authentication": "PRIVATE_KEY",
+        "private_key_path": "C:/Users/liangji/.ssh/id_ed25519",
+        "remember_password": False,
+    }
+    assert "must-never-be-written" not in settings_path.read_text(encoding="utf-8")
+    # The dataset endpoint must not clobber the ordinary upload endpoint.
+    assert settings.upload_endpoint == {
+        "host": "",
+        "port": 22,
+        "username": "",
+        "remote_workdir": "",
+        "authentication": "PASSWORD",
+        "private_key_path": "",
+        "remember_password": True,
+    }
+
+
 def test_data_studio_launcher_switches_from_incomplete_python(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

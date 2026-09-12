@@ -22,6 +22,7 @@ HARDWARE_OVERRIDES_KEY = "collector/hardware_device_overrides_json"
 ENCODER_FROZEN_DETECTION_KEY = "collector/encoder_frozen_detection_json"
 PREVIEW_LAYOUT_KEY = "collector/preview_workspace_state"
 UPLOAD_ENDPOINT_KEY = "data_studio/upload_endpoint_json"
+DATASET_UPLOAD_ENDPOINT_KEY = "data_studio/dataset_upload_endpoint_json"
 OPENSIM_PYTHON_KEY = "calculate/opensim_python_executable"
 ELONXI_RUNTIME_RELATIVE_PATH = (
     Path("SDK_Transfer")
@@ -310,6 +311,59 @@ class SharedAppSettings:
             json.dumps(payload, ensure_ascii=False, sort_keys=True),
         )
         self._sync_checked("Data Studio upload endpoint")
+        return payload
+
+    @property
+    def dataset_upload_endpoint(self) -> dict[str, Any]:
+        """Return non-secret dataset-mirror SSH endpoint preferences.
+
+        This is a separate server directory from :attr:`upload_endpoint`; the
+        two settings never share a QSettings key, so configuring one does not
+        clobber the other.
+        """
+
+        stored = self._backend.value(DATASET_UPLOAD_ENDPOINT_KEY, "{}")
+        try:
+            payload = json.loads(str(stored))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        return {
+            "host": str(payload.get("host", "")).strip(),
+            "port": int(payload.get("port", 22)),
+            "username": str(payload.get("username", "")).strip(),
+            "remote_workdir": str(payload.get("remote_workdir", "")).strip(),
+            "authentication": (
+                "PRIVATE_KEY"
+                if payload.get("authentication") == "PRIVATE_KEY"
+                else "PASSWORD"
+            ),
+            "private_key_path": str(payload.get("private_key_path", "")).strip(),
+            "remember_password": bool(payload.get("remember_password", True)),
+        }
+
+    def set_dataset_upload_endpoint(self, values: Mapping[str, Any]) -> dict[str, Any]:
+        """Persist dataset-mirror SSH endpoint fields, excluding all secrets."""
+
+        payload = {
+            "host": str(values.get("host", "")).strip(),
+            "port": int(values.get("port", 22)),
+            "username": str(values.get("username", "")).strip(),
+            "remote_workdir": str(values.get("remote_workdir", "")).strip(),
+            "authentication": (
+                "PRIVATE_KEY"
+                if values.get("authentication") == "PRIVATE_KEY"
+                else "PASSWORD"
+            ),
+            "private_key_path": str(values.get("private_key_path", "")).strip(),
+            "remember_password": bool(values.get("remember_password", True)),
+        }
+        self._backend.setValue(
+            DATASET_UPLOAD_ENDPOINT_KEY,
+            json.dumps(payload, ensure_ascii=False, sort_keys=True),
+        )
+        self._sync_checked("Data Studio dataset upload endpoint")
         return payload
 
     @property

@@ -29,12 +29,16 @@ from exo_collection.apps.data_studio.upload import (
     UploadOperation,
     UploadWorkerHandle,
     UploadWorkerEventType,
+    DatasetMirrorResult,
+    DatasetMirrorUploader,
+    LOCAL_SYNC_CACHE_SCHEMA,
     REMOTE_SYNC_INDEX_RELATIVE_PATH,
     REMOTE_SYNC_INDEX_SCHEMA,
     _endpoint_cache_key,
     _package_fingerprint,
     _read_local_download_cache,
     _remote_index_key,
+    _remove_local_sync_cache_entries,
     _update_local_sync_cache,
     _remote_join,
     build_remote_trial_directory,
@@ -1589,3 +1593,196 @@ def test_download_is_blocked_while_collector_active(tmp_path: Path) -> None:
             RemoteDatasetDownloader(forbidden_factory).download(request, target)
     assert captured.value.code == "COLLECTOR_ACTIVE"
     assert not factory_called
+
+
+def _mirror_request(
+    root: Path, manifest_path: Path, secret: str = "mirror-secret"
+) -> OfflineUploadRequest:
+    return OfflineUploadRequest(
+        dataset_root=root,
+        manifest_path=manifest_path,
+        host="dataset.internal",
+        port=22,
+        username="researcher",
+        remote_workdir="/srv/dataset",
+        password=secret,
+        operation=UploadOperation.DATASET_MIRROR,
+    )
+
+
+def _remote_index_payload(trials: dict) -> bytes:
+    return (
+        json.dumps(
+            {
+                "schema": REMOTE_SYNC_INDEX_SCHEMA,
+                "updated_at_utc_ns": time.time_ns(),
+                "trials": trials,
+            },
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _remote_only_entry() -> dict:
+    return {
+        "trial_uuid": "old",
+        "package_fingerprint": "deadbeef",
+        "file_count": 1,
+        "total_bytes": 10,
+        "verified_at_utc_ns": 1,
+    }
+
+
+def test_dataset_mirror_uploads_accepted_and_preserves_directory(
+    tmp_path: Path,
+) -> None:
+    manifest_path = _publish_trial(tmp_path)
+    request = _mirror_request(tmp_path, manifest_path)
+    session = _FakeRemoteSession()
+
+    result = DatasetMirrorUploader(lambda _request: session).mirror(request)
+
+    plan = build_upload_plan(manifest_path)
+    index_key = plan.trial_directory.relative_to(tmp_path).as_posix()
+    remote_dir = "/srv/dataset/" + index_key
+    assert isinstance(result, DatasetMirrorResult)
+    assert result.uploaded_trials == 1
+    assert result.deleted_trials == 0
+    assert result.kept_trials == 0
+    assert f"{remote_dir}/raw/imu.h5" in session.files
+    assert f"{remote_dir}/manifest.json" in session.files
+    index_path = "/srv/dataset/" + REMOTE_SYNC_INDEX_RELATIVE_PATH.as_posix()
+    assert index_path in session.files
+    index = json.loads(session.files[index_path].decode("utf-8"))
+    assert index_key in index["trials"]
+    assert session.closed
+
+
+def test_dataset_mirror_deletes_confirmed_remote_only_and_drops_index_entries(
+    tmp_path: Path,
+) -> None:
+    manifest_path = _publish_trial(tmp_path)
+    request = _mirror_request(tmp_path, manifest_path)
+    session = _FakeRemoteSession()
+    remote_only_key = "legacy/subject/day/old-session"
+    remote_dir = "/srv/dataset/" + remote_only_key
+    session.ensure_directory(remote_dir)
+    index_path = "/srv/dataset/" + REMOTE_SYNC_INDEX_RELATIVE_PATH.as_posix()
+    session.ensure_directory(str(PurePosixPath(index_path).parent))
+    session.files[index_path] = _remote_index_payload(
+        {remote_only_key: _remote_only_entry()}
+    )
+
+    seen: list[tuple[str, ...]] = []
+
+    def confirm(keys: tuple[str, ...]) -> tuple[str, ...]:
+        seen.append(keys)
+        return keys
+
+    result = DatasetMirrorUploader(lambda _request: session).mirror(
+        request, confirm_remote_delete=confirm
+    )
+
+    assert result.deleted_trials == 1
+    assert result.kept_trials == 0
+    assert result.uploaded_trials == 1
+    assert seen == [(remote_only_key,)]
+    assert remote_dir not in session.directories
+    rewritten = json.loads(session.files[index_path].decode("utf-8"))
+    assert remote_only_key not in rewritten["trials"]
+
+
+def test_dataset_mirror_keeps_remote_only_when_confirmation_rejected(
+    tmp_path: Path,
+) -> None:
+    manifest_path = _publish_trial(tmp_path)
+    request = _mirror_request(tmp_path, manifest_path)
+    session = _FakeRemoteSession()
+    remote_only_key = "legacy/subject/day/old-session"
+    remote_dir = "/srv/dataset/" + remote_only_key
+    session.ensure_directory(remote_dir)
+    index_path = "/srv/dataset/" + REMOTE_SYNC_INDEX_RELATIVE_PATH.as_posix()
+    session.ensure_directory(str(PurePosixPath(index_path).parent))
+    session.files[index_path] = _remote_index_payload(
+        {remote_only_key: _remote_only_entry()}
+    )
+
+    result = DatasetMirrorUploader(lambda _request: session).mirror(
+        request, confirm_remote_delete=lambda keys: ()
+    )
+
+    assert result.deleted_trials == 0
+    assert result.kept_trials == 1
+    assert remote_dir in session.directories
+    rewritten = json.loads(session.files[index_path].decode("utf-8"))
+    assert remote_only_key in rewritten["trials"]
+
+
+def test_remove_local_sync_cache_entries_drops_only_given_keys(tmp_path: Path) -> None:
+    manifest_path = _publish_trial(tmp_path)
+    request = _mirror_request(tmp_path, manifest_path)
+    endpoint_key = _endpoint_cache_key(request)
+    cache_path = tmp_path / ".exo" / "exo_sync_cache.json"
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(
+        json.dumps(
+            {
+                "schema": LOCAL_SYNC_CACHE_SCHEMA,
+                "endpoints": {
+                    endpoint_key: {
+                        "trials": {"keep": {"x": 1}, "drop": {"y": 2}},
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    _remove_local_sync_cache_entries(request, {"drop"})
+
+    payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    trials = payload["endpoints"][endpoint_key]["trials"]
+    assert "keep" in trials
+    assert "drop" not in trials
+
+
+def test_dataset_upload_settings_dialog_persists_endpoint_and_saves_password(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QSettings
+    from PySide6.QtWidgets import QApplication
+
+    from exo_collection.apps.data_studio import upload_dialog as dialog_module
+    from exo_collection.apps.data_studio.upload_dialog import (
+        DatasetUploadSettingsDialog,
+    )
+    from exo_collection.configuration import SharedAppSettings
+
+    _app = QApplication.instance() or QApplication(["test-dataset-upload-dialog"])
+    settings = SharedAppSettings(
+        QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    )
+    saved: list[tuple[str, int, str, str]] = []
+    monkeypatch.setattr(dialog_module, "load_password", lambda *_args: None)
+    monkeypatch.setattr(
+        dialog_module,
+        "save_password",
+        lambda host, port, username, password: saved.append(
+            (host, port, username, password)
+        ),
+    )
+    dialog = DatasetUploadSettingsDialog(settings)
+
+    assert dialog.endpoint_form.host_edit.text() == ""
+    dialog.endpoint_form.host_edit.setText("dataset.internal")
+    dialog.endpoint_form.username_edit.setText("researcher")
+    dialog.endpoint_form.remote_workdir_edit.setText("/srv/dataset")
+    dialog.endpoint_form.password_edit.setText("dataset-secret")
+    dialog._save()
+
+    assert saved == [("dataset.internal", 22, "researcher", "dataset-secret")]
+    assert settings.dataset_upload_endpoint["host"] == "dataset.internal"
+    assert "dataset-secret" not in settings.dataset_upload_endpoint
+    dialog.close()
