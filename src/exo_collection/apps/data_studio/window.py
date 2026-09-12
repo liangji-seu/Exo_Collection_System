@@ -14,7 +14,7 @@ from typing import Any
 
 _log = logging.getLogger(__name__)
 
-from PySide6.QtCore import QDate, QModelIndex, QObject, QRect, QRunnable, QSize, QThreadPool, QTimer, Qt, Signal, Slot
+from PySide6.QtCore import QDate, QModelIndex, QObject, QPoint, QRect, QRunnable, QSize, QThreadPool, QTimer, Qt, Signal, Slot
 from PySide6.QtGui import QAction, QBrush, QCloseEvent, QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QSplitter,
@@ -43,6 +44,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from exo_collection.apps.calculate.manual_review import is_discarded, write_discard
 from exo_collection.configuration import SharedAppSettings
 from exo_collection.external import ExternalImportRequest, ExternalImportResult
 from exo_collection.storage.activity import AcquisitionActivity, read_activity
@@ -55,6 +57,11 @@ from exo_collection.storage.subject_lock import (
     unlock_subject,
 )
 
+from .dataset_selection import (
+    clear_dataset_selection,
+    is_accepted,
+    write_accepted,
+)
 from .data_view import DataViewWidget
 from .external_import_dialog import ExternalImportDialog
 from .external_import_worker import ExternalImportWorker
@@ -93,7 +100,13 @@ from .process_workers import DataStudioProcessWorker, ProcessOperation
 from .quality_reviews import append_quality_review
 from .recovery_dialog import RecoveryDialog
 from .service import DataStudioSnapshot
-from .sync_data import SolveStatus, SyncCopyResult, SyncDataStatus, sync_sidecar_files
+from .sync_data import (
+    SolveStatus,
+    SyncCopyResult,
+    SyncDataStatus,
+    _trial_root_from_manifest_path,
+    sync_sidecar_files,
+)
 from .credential_store import load_password
 from .upload import (
     BatchOfflineUploadResult,
@@ -280,6 +293,8 @@ class DataStudioWindow(QMainWindow):
         self._sync_status_by_manifest: dict[str, SyncDataStatus] = {}
         self._solve_status_by_manifest: dict[str, SolveStatus] = {}
         self._filtered_records: tuple[TrialManagementRecord, ...] = ()
+        self._train_test_view = False
+        self._accepted_trial_uuids: set[str] = set()
         self._populating_filters = False
         self._catalog_summary_text = "尚未刷新。"
         self._last_snapshot: DataStudioSnapshot | None = None
@@ -574,6 +589,8 @@ class DataStudioWindow(QMainWindow):
         self.tree_widget.setColumnWidth(1, 90)
         self.tree_widget.setColumnWidth(2, 70)
         outer.addWidget(self.tree_widget, 1)
+        self.tree_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree_widget.customContextMenuRequested.connect(self._on_tree_context_menu)
 
         # 精简界面不再展示统计面板；保留标签供 _render_statistics 写入。
         self.trial_count_label = QLabel("Trial 总数：0")
@@ -586,6 +603,25 @@ class DataStudioWindow(QMainWindow):
         self.scan_summary_label = QLabel("尚未刷新。")
         self.scan_summary_label.setObjectName("scan_summary")
         outer.addWidget(self.scan_summary_label)
+
+        # 左下角：训练测试集视角切换 + 移出（仅在视角内可见）。
+        dataset_row = QHBoxLayout()
+        self.train_test_view_button = QPushButton("训练测试集视角")
+        self.train_test_view_button.setCheckable(True)
+        self.train_test_view_button.setToolTip(
+            "只显示被「接收」作为训练/测试集的 session，树结构保持不变。"
+        )
+        self.train_test_view_button.toggled.connect(self._toggle_train_test_view)
+        dataset_row.addWidget(self.train_test_view_button)
+        self.remove_from_dataset_button = QPushButton("移出")
+        self.remove_from_dataset_button.setToolTip(
+            "撤销当前选中 session 的「接收」标记，仅保留在数据仓库中。"
+        )
+        self.remove_from_dataset_button.setVisible(False)
+        self.remove_from_dataset_button.clicked.connect(self._remove_from_dataset)
+        dataset_row.addWidget(self.remove_from_dataset_button)
+        dataset_row.addStretch(1)
+        outer.addLayout(dataset_row)
 
         # 精简界面不再使用双 Tab；数据查看控件保留为隐藏引用，供 _inspect_selected_trial。
         self.data_view_widget = DataViewWidget(self._inspect_selected_trial)
@@ -662,12 +698,12 @@ class DataStudioWindow(QMainWindow):
             self._refresh_failed("Catalog worker returned an invalid snapshot")
             return
         self._last_snapshot = snapshot
-        self._catalog_tree = deepcopy(snapshot.tree)
+        self._catalog_tree = self._attach_dataset_flags(deepcopy(snapshot.tree))
         self._management_index = None
         self._annex_scan = None
         self._filtered_records = ()
         self._reset_filter_options()
-        self._render_tree(self._catalog_tree)
+        self._render_tree(self._visible_tree())
         self._statistics = dict(snapshot.statistics)
         self._render_statistics(self._statistics)
         self._apply_activity(snapshot.acquisition_activity)
@@ -741,6 +777,7 @@ class DataStudioWindow(QMainWindow):
             self._catalog_tree,
             self._solve_status_by_manifest,
         )
+        self._catalog_tree = self._attach_dataset_flags(self._catalog_tree)
         self._populate_filter_options(result.index.records)
         self._apply_management_filters()
         invalid_annexes = sum(
@@ -955,8 +992,7 @@ class DataStudioWindow(QMainWindow):
             self._management_index.records,
             criteria,
         )
-        allowed = {record.trial_uuid for record in self._filtered_records}
-        self._render_tree(self._filter_catalog_tree(self._catalog_tree, allowed))
+        self._render_tree(self._visible_tree())
         total = len(self._management_index.records)
         total_bytes = sum(record.artifact_total_bytes for record in self._filtered_records)
         total_duration = sum(record.duration_s for record in self._filtered_records)
@@ -1117,6 +1153,51 @@ class DataStudioWindow(QMainWindow):
         for root_node in result:
             visit(root_node)
         return result
+
+    def _attach_dataset_flags(self, tree: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """把每 trial 的接收/丢弃标记直接注入树（不依赖管理索引，轻量模式也能显示）。
+
+        同时刷新 ``self._accepted_trial_uuids``，供「训练测试集视角」过滤使用。
+        """
+        result = deepcopy(tree)
+        accepted_uuids: set[str] = set()
+
+        def visit(node: dict[str, Any]) -> None:
+            if str(node.get("type")) == "trial":
+                manifest_path = node.get("manifest_path")
+                session_dir = (
+                    _trial_root_from_manifest_path(Path(str(manifest_path)))
+                    if manifest_path
+                    else None
+                )
+                node["dataset_accepted"] = bool(
+                    session_dir and is_accepted(session_dir)
+                )
+                node["dataset_discarded"] = bool(
+                    session_dir and is_discarded(session_dir)
+                )
+                if node["dataset_accepted"]:
+                    accepted_uuids.add(str(node.get("uuid")))
+            for child in node.get("children", []):
+                if isinstance(child, dict) and child.get("type") != "external_annex":
+                    visit(child)
+
+        for root_node in result:
+            visit(root_node)
+        self._accepted_trial_uuids = accepted_uuids
+        return result
+
+    def _visible_tree(self) -> list[dict[str, Any]]:
+        """组合「管理筛选 + 训练测试集筛选」后的当前可见树。"""
+        tree = self._catalog_tree
+        if self._management_index is not None:
+            tree = self._filter_catalog_tree(
+                tree,
+                {record.trial_uuid for record in self._filtered_records},
+            )
+        if self._train_test_view:
+            tree = self._filter_catalog_tree(tree, self._accepted_trial_uuids)
+        return tree
 
     def _selected_finalized_manifest_path(self) -> Path | None:
         item = self.tree_widget.currentItem()
@@ -2207,13 +2288,7 @@ class DataStudioWindow(QMainWindow):
                     visit(children)
 
         visit(self._catalog_tree)
-        visible_tree = self._catalog_tree
-        if self._management_index is not None:
-            visible_tree = self._filter_catalog_tree(
-                self._catalog_tree,
-                {record.trial_uuid for record in self._filtered_records},
-            )
-        self._render_tree(visible_tree)
+        self._render_tree(self._visible_tree())
 
     def _remote_sync_succeeded(
         self, result: RemoteStatusSyncResult, *, silent: bool = False
@@ -2222,13 +2297,7 @@ class DataStudioWindow(QMainWindow):
             str(record.manifest_path.expanduser().resolve()): (record.status, record.detail)
             for record in result.records
         }
-        visible_tree = self._catalog_tree
-        if self._management_index is not None:
-            visible_tree = self._filter_catalog_tree(
-                self._catalog_tree,
-                {record.trial_uuid for record in self._filtered_records},
-            )
-        self._render_tree(visible_tree)
+        self._render_tree(self._visible_tree())
         counts = {status: 0 for status in RemoteTrialStatus}
         for record in result.records:
             counts[record.status] += 1
@@ -2270,13 +2339,7 @@ class DataStudioWindow(QMainWindow):
             )
             for record in result.records
         }
-        visible_tree = self._catalog_tree
-        if self._management_index is not None:
-            visible_tree = self._filter_catalog_tree(
-                self._catalog_tree,
-                {record.trial_uuid for record in self._filtered_records},
-            )
-        self._render_tree(visible_tree)
+        self._render_tree(self._visible_tree())
 
         decision = decide_one_click_upload(result)
         if decision.is_subset:
@@ -2793,6 +2856,9 @@ class DataStudioWindow(QMainWindow):
                 item.setBackground(column, QBrush(QColor(row_backgrounds[status])))
             item.setText(3, f"{details} · 云端：{labels[status]}")
             self._apply_sync_column(item, node)
+            if bool(node.get("dataset_accepted")):
+                item.setForeground(0, QBrush(QColor("#1e7e34")))
+                item.setToolTip(0, f"{item.toolTip(0)}\n已接收（训练测试集）")
         elif node_type == "external_annex":
             item.setData(
                 0,
@@ -2903,7 +2969,107 @@ class DataStudioWindow(QMainWindow):
                 )
         self._update_subject_lock_action()
         if self._catalog_tree:
-            self._render_tree(self._catalog_tree)
+            self._render_tree(self._visible_tree())
+
+    # ── 数据集接收/丢弃（训练测试集筛选）──────────────────────────────
+
+    @staticmethod
+    def _trial_context(
+        item: QTreeWidgetItem | None,
+    ) -> tuple[Path, Path] | None:
+        """从右键命中的树项解析 ``(manifest_path, session_dir)``；非 FINALIZED trial 返回 ``None``。"""
+        if item is None or item.data(1, Qt.ItemDataRole.UserRole) != "trial":
+            return None
+        state = str(item.data(0, Qt.ItemDataRole.UserRole + 2) or "")
+        if state != "FINALIZED":
+            return None
+        raw_path = item.data(0, Qt.ItemDataRole.UserRole + 1)
+        if not raw_path:
+            return None
+        manifest_path = Path(str(raw_path))
+        return manifest_path, _trial_root_from_manifest_path(manifest_path)
+
+    def _on_tree_context_menu(self, pos: QPoint) -> None:
+        item = self.tree_widget.itemAt(pos)
+        context = self._trial_context(item)
+        if context is None:
+            return
+        _manifest_path, session_dir = context
+        menu = QMenu(self)
+        accept_action = QAction("接收", self)
+        accept_action.setEnabled(not is_discarded(session_dir))
+        if is_discarded(session_dir):
+            accept_action.setToolTip("已丢弃的 session 不可接收")
+        accept_action.triggered.connect(
+            lambda checked=False, sd=session_dir: self._accept_session(sd)
+        )
+        menu.addAction(accept_action)
+        discard_action = QAction("丢弃", self)
+        discard_action.triggered.connect(
+            lambda checked=False, sd=session_dir: self._discard_session(sd)
+        )
+        menu.addAction(discard_action)
+        menu.exec(self.tree_widget.viewport().mapToGlobal(pos))
+
+    def _accept_session(self, session_dir: Path) -> None:
+        if is_discarded(session_dir):
+            QMessageBox.warning(self, "不可接收", "该 session 已被标记为丢弃，不能接收。")
+            return
+        try:
+            write_accepted(session_dir)
+        except OSError as exc:
+            QMessageBox.warning(self, "接收失败", f"写入接收标记失败：\n{exc}")
+            return
+        self._catalog_tree = self._attach_dataset_flags(self._catalog_tree)
+        self._render_tree(self._visible_tree())
+        self.statusBar().showMessage(f"已接收：{session_dir.name}")
+
+    def _discard_session(self, session_dir: Path) -> None:
+        if is_discarded(session_dir):
+            message = f"Session「{session_dir.name}」已被标记为丢弃，是否再次确认？"
+        else:
+            message = (
+                f"确认丢弃 Session「{session_dir.name}」？\n\n"
+                "丢弃后 run_data_studio / run_process 会显示「丢弃」，且不可再接收。"
+            )
+        answer = QMessageBox.question(
+            self,
+            "丢弃 Session",
+            message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            write_discard(session_dir)
+            if is_accepted(session_dir):
+                clear_dataset_selection(session_dir)
+        except OSError as exc:
+            QMessageBox.warning(self, "丢弃失败", f"写入丢弃标记失败：\n{exc}")
+            return
+        self._catalog_tree = self._attach_dataset_flags(self._catalog_tree)
+        self._render_tree(self._visible_tree())
+        self.statusBar().showMessage(f"已丢弃：{session_dir.name}")
+
+    @Slot()
+    def _toggle_train_test_view(self, checked: bool) -> None:
+        self._train_test_view = checked
+        self.remove_from_dataset_button.setVisible(checked)
+        self._render_tree(self._visible_tree())
+
+    @Slot()
+    def _remove_from_dataset(self) -> None:
+        manifest_path = self._selected_finalized_manifest_path()
+        if manifest_path is None:
+            return
+        session_dir = _trial_root_from_manifest_path(manifest_path)
+        if not is_accepted(session_dir):
+            return
+        clear_dataset_selection(session_dir)
+        self._catalog_tree = self._attach_dataset_flags(self._catalog_tree)
+        self._render_tree(self._visible_tree())
+        self.statusBar().showMessage(f"已移出训练测试集：{session_dir.name}")
 
     @staticmethod
     def _status_light_icon(color: str) -> QIcon:
@@ -2927,7 +3093,7 @@ class DataStudioWindow(QMainWindow):
             background = "#f1f3f5"
             foreground = "#9aa3ad"
             detail = "无 cap 记录，无需校验"
-        elif bool(node.get("solve_discarded")):
+        elif bool(node.get("solve_discarded") or node.get("dataset_discarded")):
             text = "丢弃"
             background = "#f3e8fd"
             foreground = "#7c3aed"
