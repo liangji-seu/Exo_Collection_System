@@ -139,7 +139,10 @@ def _load_sync_data(
             pos = c3d.points_mm[:, idx, :]
             vel = np.gradient(pos, axis=0) * c3d.point_rate_hz
             accel = np.gradient(vel, axis=0) * c3d.point_rate_hz
-            marker_acc_norm = np.linalg.norm(accel, axis=1)
+            # ``points_mm`` 是毫米，二阶差分得到的 marker 加速度单位是 mm/s²，
+            # 而 IMU 加速度是 m/s²。若不换算，marker 曲线数值（~10³）会把同轴
+            # 显示的 IMU 曲线（~10）压成一条贴在底部的直线，人工标定看不到跺脚峰。
+            marker_acc_norm = np.linalg.norm(accel, axis=1) / 1000.0
             marker_time_s = c3d.time_s
             marker_name = candidate
             break
