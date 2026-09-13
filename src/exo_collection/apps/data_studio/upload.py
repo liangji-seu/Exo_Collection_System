@@ -19,8 +19,10 @@ import logging
 import multiprocessing
 import os
 import re
+import shutil
 import stat
 import sys
+import tarfile
 import tempfile
 import time
 from collections.abc import Callable, Iterator
@@ -70,6 +72,19 @@ def _is_safe_remote_segment(value: str) -> bool:
         value not in {"", ".", ".."}
         and _SAFE_REMOTE_SEGMENT.fullmatch(value) is not None
     )
+
+
+def _sh_quote(value: str) -> str:
+    """Single-quote a remote path for a fixed shell command.
+
+    Every value passed here is already validated by
+    :func:`validate_remote_directory` / :func:`_is_safe_remote_segment`, whose
+    allowed charset excludes the single quote, so wrapping is injection-safe.
+    """
+
+    if "'" in value:
+        raise ValueError("远程路径不能包含单引号。")
+    return f"'{value}'"
 
 
 class UploadError(RuntimeError):
@@ -433,6 +448,8 @@ class RemoteUploadSession(Protocol):
 
     def remove_directory(self, remote_path: str) -> None: ...
 
+    def extract_archive(self, remote_archive: str, target_dir: str) -> None: ...
+
     def close(self) -> None: ...
 
 
@@ -726,48 +743,6 @@ def _update_local_sync_cache(
         temporary.unlink(missing_ok=True)
 
 
-def _remove_local_sync_cache_entries(
-    request: OfflineUploadRequest, index_keys: set[str]
-) -> None:
-    """Drop the given trial keys from this endpoint's local sync cache."""
-
-    path = _local_sync_cache_path(request.dataset_root)
-    if not path.is_file():
-        return
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
-        return
-    if not isinstance(payload, dict) or payload.get("schema") != LOCAL_SYNC_CACHE_SCHEMA:
-        return
-    endpoints = payload.get("endpoints", {})
-    if not isinstance(endpoints, dict):
-        return
-    endpoint = endpoints.get(_endpoint_cache_key(request))
-    if not isinstance(endpoint, dict):
-        return
-    trials = endpoint.get("trials", {})
-    if not isinstance(trials, dict):
-        return
-    changed = False
-    for key in index_keys:
-        if key in trials:
-            trials.pop(key)
-            changed = True
-    if not changed:
-        return
-    payload["updated_at_utc_ns"] = time.time_ns()
-    temporary = path.with_name(f".{path.name}.partial-{uuid4().hex}")
-    try:
-        temporary.write_text(
-            json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
 def _local_download_cache_path(target_root: Path) -> Path:
     return target_root / ".exo" / LOCAL_DOWNLOAD_CACHE_FILENAME
 
@@ -901,20 +876,18 @@ def _update_remote_sync_index(
         session.remove_file(remote_temporary)
 
 
-def _remove_remote_sync_index_entries(
+def _write_remote_sync_index_entries(
     session: RemoteUploadSession,
     request: OfflineUploadRequest,
-    index_keys: set[str],
+    entries: dict[str, dict[str, Any]],
 ) -> None:
-    """Delete the given trial entries from the remote sync index atomically.
+    """Atomically replace the remote sync index with the given trial entries.
 
     Mirrors :func:`_update_remote_sync_index` (staging file + SHA-256 verify +
-    replace) so a dataset-mirror deletion is all-or-nothing on the index.
+    replace) so a dataset-mirror index rewrite is all-or-nothing.
     """
 
-    remote_path, entries = _read_remote_sync_index(session, request.remote_workdir)
-    for key in index_keys:
-        entries.pop(key, None)
+    remote_path, _ = _read_remote_sync_index(session, request.remote_workdir)
     payload = json.dumps(
         {
             "schema": REMOTE_SYNC_INDEX_SCHEMA,
@@ -1285,6 +1258,28 @@ class ParamikoScpSession:
                 or getattr(exc, "errno", None) == 2
             ):
                 raise
+
+    def extract_archive(self, remote_archive: str, target_dir: str) -> None:
+        """Extract a gzipped tar on the server into ``target_dir``.
+
+        This is the one remote command the session runs.  Both paths are already
+        validated (safe POSIX segments, no single quote), so the fixed
+        ``tar -xzf … -C …`` string is injection-safe.
+        """
+
+        command = (
+            f"tar -xzf {_sh_quote(remote_archive)} -C {_sh_quote(target_dir)}"
+        )
+        _stdin, stdout, stderr = self._client.exec_command(command)
+        exit_status = int(stdout.channel.recv_exit_status())
+        if exit_status != 0:
+            detail = stderr.read().decode("utf-8", "replace").strip()
+            if len(detail) > 500:
+                detail = detail[:500] + "…"
+            raise UploadError(
+                "REMOTE_EXTRACT_FAILED",
+                f"服务器解压失败（退出码 {exit_status}）：{detail or '无错误信息'}",
+            )
 
     def close(self) -> None:
         if self._scp is not None:
@@ -2107,12 +2102,70 @@ class RemoteDatasetStatusScanner:
             session.close()
 
 
+def _build_mirror_archive(
+    manifest_paths: tuple[Path, ...],
+    dataset_root: Path,
+) -> tuple[Path, dict[str, dict[str, Any]], int, int]:
+    """Package every accepted Trial into one local ``mirror.tar.gz``.
+
+    Reuses :func:`build_upload_plan` so the archive contains exactly the
+    validated, integrity-checked file set with the same tree the server must
+    mirror (``<index_key>/<relative_path>``).  Returns ``(archive_path,
+    index_entries, uploaded_files, total_bytes)``; the caller owns and must
+    delete ``archive_path.parent`` when finished.
+    """
+
+    root = Path(dataset_root).expanduser().resolve()
+    staging_dir = Path(tempfile.mkdtemp(prefix="exo-dataset-mirror-"))
+    archive_path = staging_dir / "mirror.tar.gz"
+    entries: dict[str, dict[str, Any]] = {}
+    uploaded_files = 0
+    total_bytes = 0
+    try:
+        with tarfile.open(archive_path, "w:gz", compresslevel=6) as archive:
+            for manifest_path in manifest_paths:
+                plan = build_upload_plan(manifest_path)
+                try:
+                    relative = plan.trial_directory.relative_to(root)
+                except ValueError as exc:
+                    raise UploadError(
+                        "TRIAL_OUTSIDE_DATA_ROOT",
+                        "Manifest 不在当前 data 根目录内。",
+                    ) from exc
+                if not relative.parts:
+                    raise UploadError(
+                        "INVALID_TRIAL_PATH",
+                        "Trial 目录不能等于 data 根目录。",
+                    )
+                index_key = relative.as_posix()
+                for item in plan.files:
+                    archive.add(
+                        item.local_path,
+                        arcname=f"{index_key}/{item.relative_path.as_posix()}",
+                        recursive=False,
+                    )
+                entries[index_key] = {
+                    "trial_uuid": str(plan.trial_uuid),
+                    "package_fingerprint": _package_fingerprint(plan),
+                    "file_count": len(plan.files),
+                    "total_bytes": plan.total_bytes,
+                    "verified_at_utc_ns": time.time_ns(),
+                }
+                uploaded_files += len(plan.files)
+                total_bytes += plan.total_bytes
+        return archive_path, entries, uploaded_files, total_bytes
+    except BaseException:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        raise
+
+
 class DatasetMirrorUploader:
     """Mirror every accepted Trial to the dataset server directory exactly.
 
-    Upload is incremental (reusing :class:`SshScpTrialUploader`); remote trials
-    whose local session is no longer accepted are deleted after operator
-    confirmation, so the remote tree stays a strict mirror of the accepted set.
+    The accepted set is packaged into a single ``tar.gz`` locally, uploaded as
+    one file, then extracted on the server; remote trials whose local session is
+    no longer accepted are deleted after operator confirmation, so the remote
+    tree stays a strict mirror of the accepted set.
     """
 
     def __init__(self, session_factory: RemoteSessionFactory | None = None) -> None:
@@ -2134,62 +2187,69 @@ class DatasetMirrorUploader:
             raise UploadError("COLLECTOR_ACTIVE", "采集期间不能执行数据集镜像上传。")
         report(UploadProgress(UploadPhase.CONNECTING, "正在连接数据集服务器…"))
         session = self._session_factory(request)
-        uploaded_trials = 0
-        uploaded_files = 0
-        total_bytes = 0
+        remote_archive: str | None = None
+        local_staging_dir: Path | None = None
         deleted_trials = 0
         kept_trials = 0
         try:
             _index_path, remote_entries = _read_remote_sync_index(
                 session, request.remote_workdir
             )
-            local_index_keys: set[str] = set()
-            total = len(request.manifest_paths)
-            uploader = SshScpTrialUploader(self._session_factory)
-            for trial_index, manifest_path in enumerate(request.manifest_paths, start=1):
-                if is_cancelled():
-                    raise UploadCancelled()
-                trial_directory = manifest_path.parent
-                if trial_directory.name == ".exo":
-                    trial_directory = trial_directory.parent
-                try:
-                    index_key = trial_directory.relative_to(
-                        request.dataset_root
-                    ).as_posix()
-                except ValueError as exc:
-                    raise UploadError(
-                        "TRIAL_OUTSIDE_DATA_ROOT",
-                        "Manifest 不在当前 data 根目录内。",
-                    ) from exc
-                local_index_keys.add(index_key)
-                subrequest = replace(
-                    request,
-                    manifest_path=manifest_path,
-                    additional_manifest_paths=(),
+            if is_cancelled():
+                raise UploadCancelled()
+            report(
+                UploadProgress(
+                    UploadPhase.VALIDATING,
+                    f"正在校验并打包 {len(request.manifest_paths)} 个 Trial…",
                 )
+            )
+            archive_path, local_entries, uploaded_files, total_bytes = (
+                _build_mirror_archive(request.manifest_paths, request.dataset_root)
+            )
+            local_staging_dir = archive_path.parent
+            uploaded_trials = len(local_entries)
+            if is_cancelled():
+                raise UploadCancelled()
+            report(
+                UploadProgress(
+                    UploadPhase.UPLOADING,
+                    "正在上传数据集压缩包…",
+                    0,
+                    total_bytes,
+                )
+            )
+            remote_archive = _remote_join(
+                request.remote_workdir,
+                ".exo",
+                f"mirror-{uuid4().hex}.tar.gz",
+            )
+            session.ensure_directory(_remote_join(request.remote_workdir, ".exo"))
 
-                def batch_progress(
-                    update: UploadProgress,
-                    current: int = trial_index,
-                ) -> None:
-                    report(
-                        replace(
-                            update,
-                            message=f"[Trial {current}/{total}] {update.message}",
-                        )
+            def archive_progress(transferred: int, byte_total: int) -> None:
+                report(
+                    UploadProgress(
+                        UploadPhase.UPLOADING,
+                        "正在上传数据集压缩包…",
+                        transferred,
+                        byte_total,
                     )
-
-                result = uploader.upload(
-                    subrequest,
-                    progress=batch_progress,
-                    cancelled=is_cancelled,
-                    confirm_remote_delete=None,
                 )
-                uploaded_trials += 1
-                uploaded_files += result.file_count
-                total_bytes += result.total_bytes
 
-            remote_only_keys = set(remote_entries) - local_index_keys
+            session.upload_file(
+                archive_path, remote_archive, progress=archive_progress
+            )
+            if is_cancelled():
+                raise UploadCancelled()
+            report(
+                UploadProgress(
+                    UploadPhase.PUBLISHING,
+                    "正在服务器端解压并更新同步索引…",
+                )
+            )
+            session.extract_archive(remote_archive, request.remote_workdir)
+
+            final_entries = dict(remote_entries)
+            remote_only_keys = set(remote_entries) - set(local_entries)
             if remote_only_keys:
                 confirmed = (
                     confirm_remote_delete(tuple(sorted(remote_only_keys)))
@@ -2205,17 +2265,10 @@ class DatasetMirrorUploader:
                     if session.exists(remote_dir):
                         session.remove_directory(remote_dir)
                     deleted_trials += 1
-                if confirmed_set:
-                    _remove_remote_sync_index_entries(session, request, confirmed_set)
-                    _remove_local_sync_cache_entries(request, confirmed_set)
-            report(
-                UploadProgress(
-                    UploadPhase.COMPLETED,
-                    "数据集镜像完成。",
-                    total,
-                    total,
-                )
-            )
+                    final_entries.pop(key, None)
+            final_entries.update(local_entries)
+            _write_remote_sync_index_entries(session, request, final_entries)
+            report(UploadProgress(UploadPhase.COMPLETED, "数据集镜像完成。"))
             return DatasetMirrorResult(
                 uploaded_trials=uploaded_trials,
                 deleted_trials=deleted_trials,
@@ -2224,7 +2277,17 @@ class DatasetMirrorUploader:
                 total_bytes=total_bytes,
             )
         finally:
-            session.close()
+            if remote_archive is not None:
+                try:
+                    session.remove_file(remote_archive)
+                except Exception:
+                    pass
+            if local_staging_dir is not None:
+                shutil.rmtree(local_staging_dir, ignore_errors=True)
+            try:
+                session.close()
+            except Exception:
+                pass
 
 
 class RemoteDatasetDownloader:

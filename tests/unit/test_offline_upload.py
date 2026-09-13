@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
+import shutil
 import sys
+import tarfile
 import time
 from datetime import datetime, timedelta, timezone
 from dataclasses import replace
@@ -31,14 +34,13 @@ from exo_collection.apps.data_studio.upload import (
     UploadWorkerEventType,
     DatasetMirrorResult,
     DatasetMirrorUploader,
-    LOCAL_SYNC_CACHE_SCHEMA,
     REMOTE_SYNC_INDEX_RELATIVE_PATH,
     REMOTE_SYNC_INDEX_SCHEMA,
+    _build_mirror_archive,
     _endpoint_cache_key,
     _package_fingerprint,
     _read_local_download_cache,
     _remote_index_key,
-    _remove_local_sync_cache_entries,
     _update_local_sync_cache,
     _remote_join,
     build_remote_trial_directory,
@@ -136,10 +138,14 @@ def _publish_trial(root: Path) -> Path:
 
 
 class _FakeRemoteSession:
-    def __init__(self, *, corrupt_remote_hash: bool = False) -> None:
+    def __init__(
+        self, *, corrupt_remote_hash: bool = False, extract_fails: bool = False
+    ) -> None:
         self.directories = {"/"}
         self.files: dict[str, bytes] = {}
         self.corrupt_remote_hash = corrupt_remote_hash
+        self.extract_fails = extract_fails
+        self.extract_calls: list[tuple[str, str]] = []
         self.closed = False
 
     def ensure_directory(self, remote_path: str) -> None:
@@ -246,6 +252,21 @@ class _FakeRemoteSession:
 
     def remove_directory(self, remote_path: str) -> None:
         self.directories.discard(remote_path)
+
+    def extract_archive(self, remote_archive: str, target_dir: str) -> None:
+        self.extract_calls.append((remote_archive, target_dir))
+        if self.extract_fails:
+            raise UploadError("REMOTE_EXTRACT_FAILED", "解压失败（测试注入）")
+        payload = self.files[remote_archive]
+        with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as archive:
+            for member in archive.getmembers():
+                if not member.isfile():
+                    continue
+                extracted = archive.extractfile(member)
+                assert extracted is not None
+                destination = str(PurePosixPath(target_dir) / member.name)
+                self.ensure_directory(str(PurePosixPath(destination).parent))
+                self.files[destination] = extracted.read()
 
     def close(self) -> None:
         self.closed = True
@@ -1652,6 +1673,11 @@ def test_dataset_mirror_uploads_accepted_and_preserves_directory(
     assert result.kept_trials == 0
     assert f"{remote_dir}/raw/imu.h5" in session.files
     assert f"{remote_dir}/manifest.json" in session.files
+    assert len(session.extract_calls) == 1
+    archive_remote, extract_target = session.extract_calls[0]
+    assert archive_remote.startswith("/srv/dataset/.exo/mirror-")
+    assert archive_remote.endswith(".tar.gz")
+    assert extract_target == "/srv/dataset"
     index_path = "/srv/dataset/" + REMOTE_SYNC_INDEX_RELATIVE_PATH.as_posix()
     assert index_path in session.files
     index = json.loads(session.files[index_path].decode("utf-8"))
@@ -1691,6 +1717,10 @@ def test_dataset_mirror_deletes_confirmed_remote_only_and_drops_index_entries(
     assert remote_dir not in session.directories
     rewritten = json.loads(session.files[index_path].decode("utf-8"))
     assert remote_only_key not in rewritten["trials"]
+    index_key = build_upload_plan(manifest_path).trial_directory.relative_to(
+        tmp_path
+    ).as_posix()
+    assert index_key in rewritten["trials"]
 
 
 def test_dataset_mirror_keeps_remote_only_when_confirmation_rejected(
@@ -1717,34 +1747,48 @@ def test_dataset_mirror_keeps_remote_only_when_confirmation_rejected(
     assert remote_dir in session.directories
     rewritten = json.loads(session.files[index_path].decode("utf-8"))
     assert remote_only_key in rewritten["trials"]
+    index_key = build_upload_plan(manifest_path).trial_directory.relative_to(
+        tmp_path
+    ).as_posix()
+    assert index_key in rewritten["trials"]
 
 
-def test_remove_local_sync_cache_entries_drops_only_given_keys(tmp_path: Path) -> None:
+def test_build_mirror_archive_preserves_tree_and_entries(tmp_path: Path) -> None:
+    manifest_path = _publish_trial(tmp_path)
+    plan = build_upload_plan(manifest_path)
+    index_key = plan.trial_directory.relative_to(tmp_path).as_posix()
+
+    archive_path, entries, uploaded_files, total_bytes = _build_mirror_archive(
+        (manifest_path,), tmp_path
+    )
+    try:
+        assert archive_path.name == "mirror.tar.gz"
+        assert archive_path.is_file()
+        assert set(entries) == {index_key}
+        entry = entries[index_key]
+        assert entry["trial_uuid"] == str(plan.trial_uuid)
+        assert entry["package_fingerprint"] == _package_fingerprint(plan)
+        assert entry["file_count"] == len(plan.files)
+        assert entry["total_bytes"] == plan.total_bytes
+        assert isinstance(entry["verified_at_utc_ns"], int)
+        assert uploaded_files == len(plan.files)
+        assert total_bytes == plan.total_bytes
+        with tarfile.open(archive_path, "r:gz") as archive:
+            names = archive.getnames()
+        assert f"{index_key}/manifest.json" in names
+        assert f"{index_key}/raw/imu.h5" in names
+    finally:
+        shutil.rmtree(archive_path.parent, ignore_errors=True)
+
+
+def test_dataset_mirror_extract_failure_raises(tmp_path: Path) -> None:
     manifest_path = _publish_trial(tmp_path)
     request = _mirror_request(tmp_path, manifest_path)
-    endpoint_key = _endpoint_cache_key(request)
-    cache_path = tmp_path / ".exo" / "exo_sync_cache.json"
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(
-        json.dumps(
-            {
-                "schema": LOCAL_SYNC_CACHE_SCHEMA,
-                "endpoints": {
-                    endpoint_key: {
-                        "trials": {"keep": {"x": 1}, "drop": {"y": 2}},
-                    }
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
+    session = _FakeRemoteSession(extract_fails=True)
 
-    _remove_local_sync_cache_entries(request, {"drop"})
-
-    payload = json.loads(cache_path.read_text(encoding="utf-8"))
-    trials = payload["endpoints"][endpoint_key]["trials"]
-    assert "keep" in trials
-    assert "drop" not in trials
+    with pytest.raises(UploadError, match="解压失败"):
+        DatasetMirrorUploader(lambda _request: session).mirror(request)
+    assert session.closed
 
 
 def test_dataset_upload_settings_dialog_persists_endpoint_and_saves_password(
