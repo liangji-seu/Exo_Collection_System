@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import time
 import traceback
 from collections.abc import Callable
@@ -17,6 +18,7 @@ _log = logging.getLogger(__name__)
 from PySide6.QtCore import QDate, QModelIndex, QObject, QPoint, QRect, QRunnable, QSize, QThreadPool, QTimer, Qt, Signal, Slot
 from PySide6.QtGui import QAction, QBrush, QCloseEvent, QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
+    QApplication,
     QFileDialog,
     QCheckBox,
     QComboBox,
@@ -635,6 +637,18 @@ class DataStudioWindow(QMainWindow):
         )
         self.dataset_upload_button.clicked.connect(self.upload_dataset)
         dataset_row.addWidget(self.dataset_upload_button)
+        self.pack_directory_button = QPushButton("打包目录设置")
+        self.pack_directory_button.setToolTip(
+            "选择一个本地目录，用于手动导出训练/测试集文件树。"
+        )
+        self.pack_directory_button.clicked.connect(self._choose_pack_directory)
+        dataset_row.addWidget(self.pack_directory_button)
+        self.copy_to_pack_button = QPushButton("拷贝到打包目录")
+        self.copy_to_pack_button.setToolTip(
+            "把全部「已接收」session 按文件树结构拷贝到打包目录，供手动打包上传。"
+        )
+        self.copy_to_pack_button.clicked.connect(self._copy_dataset_to_pack_directory)
+        dataset_row.addWidget(self.copy_to_pack_button)
         dataset_row.addStretch(1)
         outer.addLayout(dataset_row)
 
@@ -2212,6 +2226,104 @@ class DataStudioWindow(QMainWindow):
         dialog = DatasetUploadSettingsDialog(self._settings, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.statusBar().showMessage("数据集上传设置已保存。")
+
+    @Slot()
+    def _choose_pack_directory(self) -> None:
+        current = self._settings.dataset_pack_directory or self._data_root
+        selected = QFileDialog.getExistingDirectory(
+            self,
+            "选择训练测试集打包目录",
+            str(current),
+            QFileDialog.Option.ShowDirsOnly,
+        )
+        if not selected:
+            return
+        self._settings.set_dataset_pack_directory(selected)
+        self.statusBar().showMessage(f"已设置打包目录：{selected}", 8000)
+
+    @Slot()
+    def _copy_dataset_to_pack_directory(self) -> None:
+        pack_dir = self._settings.dataset_pack_directory
+        if pack_dir is None:
+            QMessageBox.warning(
+                self,
+                "拷贝到打包目录",
+                "尚未设置打包目录。\n请先点击「打包目录设置」选择一个本地目录。",
+            )
+            return
+        manifest_paths = self._accepted_manifest_paths()
+        if not manifest_paths:
+            QMessageBox.information(
+                self,
+                "拷贝到打包目录",
+                "尚未接收任何 session，请先右键接收要纳入训练/测试集的 session。",
+            )
+            return
+        try:
+            pack_dir.relative_to(self._data_root)
+        except ValueError:
+            pass
+        else:
+            QMessageBox.warning(
+                self,
+                "拷贝到打包目录",
+                "打包目录不能位于数据根目录内部，请选择数据根目录之外的独立目录。",
+            )
+            return
+
+        def ignore_unpublished(_src: str, names: list[str]) -> list[str]:
+            return [
+                name
+                for name in names
+                if name.endswith(".recording") or name.endswith(".partial")
+            ]
+
+        trial_dirs: list[Path] = []
+        for manifest_path in manifest_paths:
+            trial_dir = _trial_root_from_manifest_path(manifest_path)
+            if trial_dir not in trial_dirs:
+                trial_dirs.append(trial_dir)
+
+        error_message: str | None = None
+        copied_dirs = 0
+        copied_files = 0
+        copied_bytes = 0
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            for trial_dir in trial_dirs:
+                try:
+                    index_key = trial_dir.relative_to(self._data_root)
+                except ValueError:
+                    error_message = f"Trial 不在当前数据根目录内：\n{trial_dir}"
+                    break
+                dest = pack_dir / index_key
+                try:
+                    if dest.exists():
+                        shutil.rmtree(dest)
+                    shutil.copytree(trial_dir, dest, ignore=ignore_unpublished)
+                except OSError as exc:
+                    error_message = f"拷贝失败：\n{exc}"
+                    break
+                for file_path in dest.rglob("*"):
+                    if file_path.is_file():
+                        copied_files += 1
+                        copied_bytes += file_path.stat().st_size
+                copied_dirs += 1
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        if error_message is not None:
+            QMessageBox.warning(self, "拷贝到打包目录", error_message)
+            return
+        QMessageBox.information(
+            self,
+            "拷贝完成",
+            f"已拷贝 {copied_dirs} 个 session 到打包目录：\n{pack_dir}\n\n"
+            f"文件：{copied_files} 个，{copied_bytes:,} B",
+        )
+        self.statusBar().showMessage(
+            f"已拷贝 {copied_dirs} 个 session 到打包目录。", 8000
+        )
 
     def _dataset_upload_request(
         self,

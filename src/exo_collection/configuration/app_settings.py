@@ -23,6 +23,7 @@ ENCODER_FROZEN_DETECTION_KEY = "collector/encoder_frozen_detection_json"
 PREVIEW_LAYOUT_KEY = "collector/preview_workspace_state"
 UPLOAD_ENDPOINT_KEY = "data_studio/upload_endpoint_json"
 DATASET_UPLOAD_ENDPOINT_KEY = "data_studio/dataset_upload_endpoint_json"
+DATASET_PACK_DIRECTORY_KEY = "data_studio/dataset_pack_directory"
 OPENSIM_PYTHON_KEY = "calculate/opensim_python_executable"
 ELONXI_RUNTIME_RELATIVE_PATH = (
     Path("SDK_Transfer")
@@ -365,6 +366,29 @@ class SharedAppSettings:
         )
         self._sync_checked("Data Studio dataset upload endpoint")
         return payload
+
+    @property
+    def dataset_pack_directory(self) -> Path | None:
+        """Return the manual export pack directory (``None`` when unset)."""
+
+        stored = self._backend.value(DATASET_PACK_DIRECTORY_KEY)
+        if isinstance(stored, str) and stored.strip():
+            return Path(stored).expanduser().resolve()
+        return None
+
+    def set_dataset_pack_directory(
+        self, value: str | Path | None
+    ) -> Path | None:
+        """Persist (or clear) the manual dataset pack directory."""
+
+        if value is None or not str(value).strip():
+            self._backend.remove(DATASET_PACK_DIRECTORY_KEY)
+            self._sync_checked("dataset pack directory")
+            return None
+        normalized = Path(str(value)).expanduser().resolve()
+        self._backend.setValue(DATASET_PACK_DIRECTORY_KEY, str(normalized))
+        self._sync_checked("dataset pack directory")
+        return normalized
 
     @property
     def opensim_python_executable(self) -> Path | None:

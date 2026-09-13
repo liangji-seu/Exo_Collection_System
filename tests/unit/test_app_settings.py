@@ -118,6 +118,19 @@ def test_dataset_upload_endpoint_persists_only_non_secret_fields(tmp_path: Path)
     }
 
 
+def test_dataset_pack_directory_round_trips_and_clears(tmp_path: Path) -> None:
+    settings = _file_settings(tmp_path / "settings.ini")
+    assert settings.dataset_pack_directory is None
+
+    selected = tmp_path / "dataset pack"
+    normalized = settings.set_dataset_pack_directory(selected)
+    assert normalized == selected.resolve()
+    assert settings.dataset_pack_directory == selected.resolve()
+
+    assert settings.set_dataset_pack_directory(None) is None
+    assert settings.dataset_pack_directory is None
+
+
 def test_data_studio_launcher_switches_from_incomplete_python(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
