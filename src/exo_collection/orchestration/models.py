@@ -125,6 +125,7 @@ class TrialRunRequest(OrchestrationModel):
         "F_BASE",
         "F_STEADY",
         "F_TRANSIENT",
+        "F_SPECIAL",
     ] = "T"
     project_uuid: UUID = Field(default_factory=uuid4)
     subject_uuid: UUID = Field(default_factory=uuid4)

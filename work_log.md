@@ -76,7 +76,7 @@ IDLE → PREPARING → READY → WAITING_SYNC → RECORDING → STOPPING → FIN
 
 ```
 dataset_root/
-  T|F_BASE|F_STEADY|F_TRANSIENT/     ← 项目代码分区
+  T|F_BASE|F_STEADY|F_TRANSIENT|F_SPECIAL/     ← 项目代码分区
     subject_code/                      ← 三位可读编码
       session_uuid/
         session.json
@@ -129,7 +129,7 @@ Exo_Collection_System/
 │   │   ├── models.py            ← Project/Subject/Session/Trial/Artifact
 │   │   ├── states.py            ← TrialState 枚举与状态机
 │   │   ├── events.py            ← 领域事件
-│   │   ├── project_codes.py     ← T/F_BASE/F_STEADY/F_TRANSIENT 项目代码
+│   │   ├── project_codes.py     ← T/F_BASE/F_STEADY/F_TRANSIENT/F_SPECIAL 项目代码
 │   │   └── prompt_labels.py     ← [NEW] 人工 Prompt 标签模型
 │   ├── acquisition/             ← 采集管线
 │   │   ├── buffers.py           ← 共享内存预览缓冲区
@@ -231,7 +231,7 @@ Exo_Collection_System/
 - ✅ SSH/SCP 离线上传 + 包指纹同步索引 + Windows 凭据管理器
 - ✅ Data Studio 活动锁检测与轻量模式
 - ✅ 半透明 toast 通知
-- ✅ 项目代码分类筛选（T/F_BASE/F_STEADY/F_TRANSIENT）
+- ✅ 项目代码分类筛选（T/F_BASE/F_STEADY/F_TRANSIENT/F_SPECIAL）
 - ✅ 2026 实验工况协议
 - ✅ 编码器五项指标预览与五倍放大
 - ✅ 人工 Prompt 标签（受试者 `<` / 工作人员 `>`）—— **本次提交的核心内容**

@@ -159,7 +159,7 @@ flowchart TB
 
 ### 4.1 Project
 
-保存项目名称、研究协议版本、数据根目录、工况定义版本和默认设备配置。现场采集使用稳定项目代码 `T`（测试）、`F_BASE`（正式-基础）、`F_STEADY`（正式-稳态）和 `F_TRANSIENT`（正式-非稳态）；历史代码 `F` 仅用于兼容读取既有正式数据。项目 UUID 仍是真实主键，项目代码用于界面筛选和根目录分区。
+保存项目名称、研究协议版本、数据根目录、工况定义版本和默认设备配置。现场采集使用稳定项目代码 `T`（测试）、`F_BASE`（正式-基础）、`F_STEADY`（正式-稳态）、`F_SPECIAL`（正式-特殊）和 `F_TRANSIENT`（正式-非稳态）；历史代码 `F` 仅用于兼容读取既有正式数据。项目 UUID 仍是真实主键，项目代码用于界面筛选和根目录分区。
 
 ### 4.2 Subject
 
@@ -392,7 +392,7 @@ Collector 左侧表格分别显示两类标签计数。IMU 和编码器循环预
 
 ```text
 dataset_root/
-  T|F_BASE|F_STEADY|F_TRANSIENT/ # 测试/三类正式项目分区，不是关联主键
+  T|F_BASE|F_STEADY|F_TRANSIENT|F_SPECIAL/ # 测试/四类正式项目分区，不是关联主键
     subject_code/              # 三位可读编码，例如 001；UUID 仍是关联主键
       session_uuid/
         session.json
@@ -983,7 +983,7 @@ Exo_Collection_System/
 14. 新模态通过 Adapter/Writer/Visualizer/Quality 插件扩展。
 15. UI、原始采集、写盘、分析和上传彼此隔离。
 16. 现场 Trial 使用人工开始/停止，首个合格同步上升沿建立正式 t0；未收到触发的 Trial 不得最终化。
-17. 项目代码 `T`（测试）、`F_BASE`（正式-基础）、`F_STEADY`（正式-稳态）和 `F_TRANSIENT`（正式-非稳态）用于新数据根目录分区；历史 `F` 只作向后兼容，UUID + Manifest 仍是身份和文件关联的唯一依据。
+17. 项目代码 `T`（测试）、`F_BASE`（正式-基础）、`F_STEADY`（正式-稳态）、`F_SPECIAL`（正式-特殊）和 `F_TRANSIENT`（正式-非稳态）用于新数据根目录分区；历史 `F` 只作向后兼容，UUID + Manifest 仍是身份和文件关联的唯一依据。
 18. Collector 的正常采集界面不要求操作者或固定采集时长；旧字段仅作 Schema 兼容，不伪造用户输入。
 19. 新增 F/T 可读项目标签的 Manifest 发布为 `1.1.0`；四类项目代码扩展发布为 `1.2.0`。保留 `manifest-v1.0.0.json` 和 `manifest-v1.1.0.json`，新 Reader 兼容读取全部历史版本；禁止在已发布的同版本 Schema 上原地增加字段或取值。
 20. XING/Nokov 在线数据作为 Collector 原生模态接入：Marker 帧映射为 `mocap`

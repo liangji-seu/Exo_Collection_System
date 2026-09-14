@@ -1567,6 +1567,7 @@
             "enum": [
               "F",
               "F_BASE",
+              "F_SPECIAL",
               "F_STEADY",
               "F_TRANSIENT",
               "T"

@@ -183,7 +183,7 @@ def test_manifest_v1_2_requires_supported_project_code(
 
 @pytest.mark.parametrize(
     "project_code",
-    ["F", "T", "F_BASE", "F_STEADY", "F_TRANSIENT"],
+    ["F", "T", "F_BASE", "F_STEADY", "F_TRANSIENT", "F_SPECIAL"],
 )
 def test_manifest_v1_2_accepts_supported_project_codes(project_code: str) -> None:
     payload = make_manifest().model_dump()
@@ -345,7 +345,7 @@ def test_json_schema_can_be_exported(tmp_path) -> None:
         "subject_code",
     ]
     assert versioned_identity["then"]["properties"]["project_code"] == {
-        "enum": ["F", "F_BASE", "F_STEADY", "F_TRANSIENT", "T"]
+        "enum": ["F", "F_BASE", "F_SPECIAL", "F_STEADY", "F_TRANSIENT", "T"]
     }
     assert versioned_identity["then"]["properties"]["subject_code"] == {
         "pattern": r"^[0-9]{3}$",

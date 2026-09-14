@@ -52,6 +52,7 @@ def test_formal_and_test_partitions_have_distinct_stable_project_ids(tmp_path) -
         ("F_BASE", "正式-基础"),
         ("F_STEADY", "正式-稳态"),
         ("F_TRANSIENT", "正式-非稳态"),
+        ("F_SPECIAL", "正式-特殊"),
     ],
 )
 def test_explicit_formal_partitions_have_distinct_stable_ids(

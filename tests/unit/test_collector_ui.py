@@ -1521,11 +1521,12 @@ def test_collector_locks_condition_polls_events_and_finalizes(
 ) -> None:
     caplog.set_level(logging.INFO, logger="exo_collection.collector.ui")
     app, window, created = _window_with_fake(tmp_path)
-    assert [window.project_combo.itemText(index) for index in range(4)] == [
+    assert [window.project_combo.itemText(index) for index in range(5)] == [
         "测试",
         "正式-基础",
         "正式-稳态",
         "正式-非稳态",
+        "正式-特殊",
     ]
     assert window.project_combo.currentData()["project_code"] == "T"
     assert window.subject_code_edit.text() == "001"
@@ -1995,8 +1996,9 @@ def test_condition_combo_exposes_all_meeting_protocol_conditions(
         expected_by_project = {
             "T": 2,
             "F_BASE": 4,
-            "F_STEADY": 14,
+            "F_STEADY": 50,
             "F_TRANSIENT": 6,
+            "F_SPECIAL": 10,
         }
         for project_index in range(window.project_combo.count()):
             window.project_combo.setCurrentIndex(project_index)

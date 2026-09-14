@@ -131,7 +131,7 @@ def test_finalization_rejects_mixed_case_unpublished_descendant(tmp_path) -> Non
 
 @pytest.mark.parametrize(
     "partition",
-    ["F", "T", "F_BASE", "F_STEADY", "F_TRANSIENT"],
+    ["F", "T", "F_BASE", "F_STEADY", "F_TRANSIENT", "F_SPECIAL"],
 )
 def test_project_partition_is_a_readable_folder(
     tmp_path, partition: str

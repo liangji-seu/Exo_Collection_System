@@ -9,6 +9,7 @@ PROJECT_CODE_TEST: Final = "T"
 PROJECT_CODE_FORMAL_BASELINE: Final = "F_BASE"
 PROJECT_CODE_FORMAL_STEADY: Final = "F_STEADY"
 PROJECT_CODE_FORMAL_TRANSIENT: Final = "F_TRANSIENT"
+PROJECT_CODE_FORMAL_SPECIAL: Final = "F_SPECIAL"
 
 # ``F`` remains readable for existing v1.0.0 datasets, but new Collector
 # sessions use one of the three explicit formal partitions.
@@ -21,6 +22,7 @@ SUPPORTED_PROJECT_CODES: Final = frozenset(
         PROJECT_CODE_FORMAL_BASELINE,
         PROJECT_CODE_FORMAL_STEADY,
         PROJECT_CODE_FORMAL_TRANSIENT,
+        PROJECT_CODE_FORMAL_SPECIAL,
     }
 )
 
@@ -38,6 +40,10 @@ COLLECTOR_PROJECTS: Final = (
         "project_code": PROJECT_CODE_FORMAL_TRANSIENT,
         "project_name": "正式-非稳态",
     },
+    {
+        "project_code": PROJECT_CODE_FORMAL_SPECIAL,
+        "project_name": "正式-特殊",
+    },
 )
 
 PROJECT_CONDITION_LEVELS: Final = {
@@ -45,6 +51,7 @@ PROJECT_CONDITION_LEVELS: Final = {
     PROJECT_CODE_FORMAL_BASELINE: frozenset({"BASELINE"}),
     PROJECT_CODE_FORMAL_STEADY: frozenset({"STEADY_STATE"}),
     PROJECT_CODE_FORMAL_TRANSIENT: frozenset({"TRANSIENT"}),
+    PROJECT_CODE_FORMAL_SPECIAL: frozenset({"SPECIAL"}),
 }
 
 
@@ -71,6 +78,7 @@ __all__ = [
     "PROJECT_CODE_FORMAL_BASELINE",
     "PROJECT_CODE_FORMAL_STEADY",
     "PROJECT_CODE_FORMAL_TRANSIENT",
+    "PROJECT_CODE_FORMAL_SPECIAL",
     "PROJECT_CODE_TEST",
     "PROJECT_CONDITION_LEVELS",
     "SUPPORTED_PROJECT_CODES",

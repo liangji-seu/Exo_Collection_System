@@ -278,6 +278,13 @@ _CONDITION_WEAR_BACKGROUND: dict[bool, QColor] = {
     True: QColor("#ffe4c8"),
 }
 
+# 详细稳态工况组（category 以 steady_detailed_ 开头）用另一套配色：
+# 非穿戴浅绿、穿戴浅紫，与标准工况的浅蓝/浅橙区分。
+_DETAILED_WEAR_BACKGROUND: dict[bool, QColor] = {
+    False: QColor("#dcfce7"),
+    True: QColor("#ede9fe"),
+}
+
 
 class WorkerHandle(Protocol):
     @property
@@ -2254,9 +2261,17 @@ class CollectorWindow(QMainWindow):
                 )
                 exo = (condition.get("parameters") or {}).get("exo")
                 if exo is not None:
+                    category = str(
+                        (condition.get("parameters") or {}).get("category") or ""
+                    )
+                    palette = (
+                        _DETAILED_WEAR_BACKGROUND
+                        if category.startswith("steady_detailed_")
+                        else _CONDITION_WEAR_BACKGROUND
+                    )
                     self.condition_combo.setItemData(
                         self.condition_combo.count() - 1,
-                        QBrush(_CONDITION_WEAR_BACKGROUND[bool(exo)]),
+                        QBrush(palette[bool(exo)]),
                         Qt.ItemDataRole.BackgroundRole,
                     )
             selected_index = next(

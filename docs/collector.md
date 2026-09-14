@@ -189,7 +189,7 @@ IDLE → PREPARING → READY → WAITING_SYNC → RECORDING → STOPPING → FIN
 
 `manifest.json`（`storage/manifest.py`，Pydantic `extra="forbid"`，schema **1.2.0**，向后兼容 1.0.0/1.1.0）。顶层字段：`manifest_uuid / project_* / subject_* / session_uuid / trial_uuid / state / condition / timing / software / configuration / devices / modalities / artifacts / clock_and_alignment / quality / abnormal_termination / external_artifacts / upload_records`。
 
-- `subject_code` 恒 3 位数字；`project_code ∈ {T, F_BASE, F_STEADY, F_TRANSIENT}`（遗留 `F` 兼容读取）。
+- `subject_code` 恒 3 位数字；`project_code ∈ {T, F_BASE, F_STEADY, F_TRANSIENT, F_SPECIAL}`（遗留 `F` 兼容读取）。
 - 每个 Artifact 记录 `modality / kind / media_type / relative_path / size_bytes / sha256 / finalized_at_utc`。
 - 时钟域 `ClockDomainManifest`（kind: host_monotonic/device_tick/device_timestamp/external）+ 时钟映射 `ClockMapping`（`t_target_ns = scale_a × t_source + offset_b_ns`，含 anchor_count / residuals）。
 - 发布态仅 `{FINALIZED, ABORTED, RECOVERABLE}`。
