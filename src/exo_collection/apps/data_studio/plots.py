@@ -14,6 +14,9 @@ from __future__ import annotations
 
 import numpy as np
 import pyqtgraph as pg
+from PySide6.QtCore import Qt
+
+from .gait_events import GaitEvent
 
 _PLOT_COLORS = (
     "#0072B2",
@@ -25,6 +28,56 @@ _PLOT_COLORS = (
     "#000000",
     "#F0E442",
 )
+
+# 步态事件竖线：左右脚用可辨色相区分，跟触/尖离用线型区分（身份不靠颜色单通道）。
+_EVENT_PEN_BY_SIDE = {"right": "#0072B2", "left": "#D55E00"}
+_EVENT_SIDE_LABEL = {"right": "右", "left": "左"}
+_EVENT_KIND_LABEL = {"heel_strike": "足跟触地", "toe_off": "足尖离地"}
+
+
+def _event_label(event: GaitEvent) -> str:
+    side = _EVENT_SIDE_LABEL.get(event.side, event.side)
+    kind = _EVENT_KIND_LABEL.get(event.kind, event.kind)
+    return f"{side}脚{kind}"
+
+
+def update_event_marker_lines(
+    plot: "pg.PlotWidget",
+    events: tuple[GaitEvent, ...],
+    lines: list["pg.InfiniteLine"],
+    *,
+    current_s: float,
+    cycle_start_s: float,
+    window_s: float,
+) -> None:
+    """在当前循环窗内画步态事件竖线；复用已有线，多余隐藏。"""
+    visible = tuple(
+        event for event in events if current_s - window_s < event.time_s <= current_s
+    )
+    while len(lines) < len(visible):
+        line = pg.InfiniteLine(pos=0.0, angle=90, movable=False)
+        line.setZValue(96)
+        plot.addItem(line)
+        lines.append(line)
+    for index, line in enumerate(lines):
+        if index >= len(visible):
+            line.hide()
+            continue
+        event = visible[index]
+        line.setPen(
+            pg.mkPen(
+                _EVENT_PEN_BY_SIDE.get(event.side, "#6B7280"),
+                width=1.8,
+                style=(
+                    Qt.PenStyle.DashLine
+                    if event.kind == "toe_off"
+                    else Qt.PenStyle.SolidLine
+                ),
+            )
+        )
+        line.setPos((event.time_s - cycle_start_s) % window_s)
+        line.setToolTip(f"{_event_label(event)} · t={event.time_s:.3f} s")
+        line.show()
 
 
 class TimeSeriesPlot(pg.PlotWidget):
@@ -47,6 +100,8 @@ class TimeSeriesPlot(pg.PlotWidget):
         self._channels = tuple(channels)
         self._window_s = float(window_s)
         self._offset = float(offset_per_channel) if offset_per_channel else 0.0
+        self._gait_events: tuple[GaitEvent, ...] = ()
+        self._gait_lines: list[pg.InfiniteLine] = []
 
         self.setTitle(title)
         self.setBackground("#ffffff")
@@ -117,6 +172,10 @@ class TimeSeriesPlot(pg.PlotWidget):
         if 0 <= index < len(self._curves):
             self._curves[index].setPen(pen)
 
+    def set_gait_events(self, events: tuple[GaitEvent, ...]) -> None:
+        """设置（或清空）本图上的步态事件竖线；下次 :meth:`set_time` 摆位。"""
+        self._gait_events = tuple(events)
+
     def set_time(self, current_s: float, cycle_start_s: float | None = None) -> None:
         """Advance the sweep cursor.
 
@@ -136,6 +195,14 @@ class TimeSeriesPlot(pg.PlotWidget):
             phase = current - left
             self.setXRange(0.0, self._window_s, padding=0.0)
             self.cursor.setPos(phase)
+            update_event_marker_lines(
+                self,
+                self._gait_events,
+                self._gait_lines,
+                current_s=current,
+                cycle_start_s=left,
+                window_s=self._window_s,
+            )
             if not self._times.size:
                 for curve in self._curves:
                     curve.setData([], [])
@@ -166,6 +233,8 @@ class TimeSeriesPlot(pg.PlotWidget):
         left = current - self._window_s
         self.setXRange(left, current, padding=0.0)
         self.cursor.setPos(current)
+        for line in self._gait_lines:
+            line.hide()
         if not self._times.size:
             for curve in self._curves:
                 curve.setData([], [])

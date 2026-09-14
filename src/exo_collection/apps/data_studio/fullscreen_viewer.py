@@ -40,6 +40,7 @@ from .local_dialogs import (
     _imu_sensor_rows,
 )
 from .gait_baseline import build_hip_baseline
+from .gait_events import GaitEvent, detect_gait_events
 from .opensim_overlay import HipValidation, load_hip_validation
 from .local_tools import MocapPlayback, TrialPlayback
 from .plots import TimeSeriesPlot
@@ -258,9 +259,11 @@ class FullscreenViewer(PreviewWorkspace):
         total_span = max(self._time_max - self._time_min, 1e-6)
         self._window_s = min(_WINDOW_SECONDS, max(1.0, total_span))
         self._panels: list[object] = []
+        self._gait_events: tuple[GaitEvent, ...] = self._compute_gait_events()
 
         self._build_timeline()
         self._build_panels()
+        self._apply_gait_events()
         self._timer = QTimer(self)
         self._timer.setInterval(50)
         self._timer.timeout.connect(self._advance_playback)
@@ -291,6 +294,10 @@ class FullscreenViewer(PreviewWorkspace):
             self._speed_combo.addItem(f"{speed:g}×", speed)
         self._speed_combo.setCurrentIndex(2)
         toolbar.addWidget(self._speed_combo)
+        self._gait_events_check = QCheckBox("步态事件")
+        self._gait_events_check.setChecked(True)
+        self._gait_events_check.toggled.connect(self._toggle_gait_events)
+        toolbar.addWidget(self._gait_events_check)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolbar)
 
     def _build_panels(self) -> None:
@@ -548,6 +555,21 @@ class FullscreenViewer(PreviewWorkspace):
 
     def _sweep_plots_append(self, plot: object) -> None:
         self._panels.append(plot)
+
+    # -- gait events -------------------------------------------------------
+    def _compute_gait_events(self) -> tuple[GaitEvent, ...]:
+        mocap = self.playback.mocap
+        return detect_gait_events(mocap) if mocap is not None else ()
+
+    def _apply_gait_events(self, visible: bool = True) -> None:
+        events = self._gait_events if visible else ()
+        for panel in self._panels:
+            if isinstance(panel, (TimeSeriesPlot, _SweepWaterfallPlot)):
+                panel.set_gait_events(events)
+
+    def _toggle_gait_events(self, checked: bool) -> None:
+        self._apply_gait_events(checked)
+        self.set_playback_time(self._current_time)
 
     # -- playback ----------------------------------------------------------
     @staticmethod

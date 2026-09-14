@@ -40,6 +40,8 @@ from .local_tools import (
     TrialPlayback,
 )
 from exo_collection.domain.prompt_labels import PromptLabelSource
+from .gait_events import GaitEvent
+from .plots import update_event_marker_lines
 
 _log = logging.getLogger(__name__)
 
@@ -485,6 +487,8 @@ class _SweepWaterfallPlot(pg.PlotWidget):
         self._window_s = float(window_s)
         self._prompt_labels = tuple(prompt_labels)
         self._prompt_lines: list["pg.InfiniteLine"] = []
+        self._gait_events: tuple[GaitEvent, ...] = ()
+        self._gait_lines: list["pg.InfiniteLine"] = []
         self._columns = max(96, min(800, int(self._times.size or 96)))
         self.setTitle(title)
         self.setLabel("bottom", "循环时间", units="s")
@@ -525,6 +529,10 @@ class _SweepWaterfallPlot(pg.PlotWidget):
         )
         self._last_cycle_start: float | None = None
         self._last_current: float | None = None
+
+    def set_gait_events(self, events: tuple[GaitEvent, ...]) -> None:
+        """设置（或清空）本瀑布图上的步态事件竖线。"""
+        self._gait_events = tuple(events)
 
     def update_time(self, current_s: float, cycle_start_s: float) -> None:
         phase = min(max(float(current_s - cycle_start_s), 0.0), self._window_s)
@@ -593,6 +601,14 @@ class _SweepWaterfallPlot(pg.PlotWidget):
             self,
             self._prompt_labels,
             self._prompt_lines,
+            current_s=current_s,
+            cycle_start_s=cycle_start_s,
+            window_s=self._window_s,
+        )
+        update_event_marker_lines(
+            self,
+            self._gait_events,
+            self._gait_lines,
             current_s=current_s,
             cycle_start_s=cycle_start_s,
             window_s=self._window_s,
