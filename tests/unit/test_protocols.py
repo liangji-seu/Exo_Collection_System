@@ -12,7 +12,7 @@ def test_default_protocol_is_versioned_and_has_unique_conditions() -> None:
     protocol = load_default_protocol()
     assert protocol.schema_version == "1.0.0"
     assert protocol.protocol_version == "1.2.0"
-    assert len(protocol.conditions) == 72
+    assert len(protocol.conditions) == 74
     assert {condition.condition_code for condition in protocol.conditions} == {
         "FREE_TEST",
         "STATIC_CALIB",
@@ -86,6 +86,8 @@ def test_default_protocol_is_versioned_and_has_unique_conditions() -> None:
         "SLOW_SQUAT_EXO",
         "LIFT_LOAD_NOEXO",
         "LIFT_LOAD_EXO",
+        "BACKWARD_FALL_NOEXO",
+        "BACKWARD_FALL_EXO",
     }
 
     by_code = {

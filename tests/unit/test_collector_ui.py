@@ -1998,7 +1998,7 @@ def test_condition_combo_exposes_all_meeting_protocol_conditions(
             "F_BASE": 4,
             "F_STEADY": 50,
             "F_TRANSIENT": 6,
-            "F_SPECIAL": 10,
+            "F_SPECIAL": 12,
         }
         for project_index in range(window.project_combo.count()):
             window.project_combo.setCurrentIndex(project_index)

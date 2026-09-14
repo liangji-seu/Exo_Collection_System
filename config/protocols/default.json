@@ -899,6 +899,28 @@
         "exo": true,
         "description": "徒手抬起重物，保持片刻，放下，重复进行"
       }
+    },
+    {
+      "condition_code": "BACKWARD_FALL_NOEXO",
+      "condition_name": "后仰跌倒（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_backward_fall",
+        "recommended_trial_count": 5,
+        "exo": false,
+        "description": "在安全防护下身体后仰，模拟向后跌倒，随后恢复站立"
+      }
+    },
+    {
+      "condition_code": "BACKWARD_FALL_EXO",
+      "condition_name": "后仰跌倒（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_backward_fall",
+        "recommended_trial_count": 5,
+        "exo": true,
+        "description": "在安全防护下身体后仰，模拟向后跌倒，随后恢复站立"
+      }
     }
   ]
 }
