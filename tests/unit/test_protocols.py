@@ -12,7 +12,7 @@ def test_default_protocol_is_versioned_and_has_unique_conditions() -> None:
     protocol = load_default_protocol()
     assert protocol.schema_version == "1.0.0"
     assert protocol.protocol_version == "1.2.0"
-    assert len(protocol.conditions) == 74
+    assert len(protocol.conditions) == 76
     assert {condition.condition_code for condition in protocol.conditions} == {
         "FREE_TEST",
         "STATIC_CALIB",
@@ -36,6 +36,8 @@ def test_default_protocol_is_versioned_and_has_unique_conditions() -> None:
         "WALK_5D_1P0_EXO",
         "SQUAT_STD_EXO",
         "SPEED_RAMP_EXO",
+        "ACCEL_DECEL_NOEXO",
+        "ACCEL_DECEL_EXO",
         "START_LEFT_EXO",
         "START_RIGHT_EXO",
         "STOP_LEFT_EXO",
@@ -110,6 +112,12 @@ def test_default_protocol_is_versioned_and_has_unique_conditions() -> None:
         by_code["SPEED_RAMP_EXO"].parameters["description"]
         == "0.6m/s匀速 → 1.0m/s匀速 → 1.4m/s匀速 → 1.0m/s匀速 → 0.6m/s匀速，加速度1m/s²"
     )
+    assert (
+        by_code["ACCEL_DECEL_EXO"].parameters["description"]
+        == "0.6m/s均匀加速至1.4m/s，再均匀减速回0.6m/s，加速度1m/s²"
+    )
+    assert by_code["ACCEL_DECEL_NOEXO"].parameters["exo"] is False
+    assert by_code["ACCEL_DECEL_EXO"].parameters["exo"] is True
     assert by_code["START_LEFT_EXO"].parameters["lead_foot"] == "left"
     assert by_code["START_RIGHT_EXO"].parameters["lead_foot"] == "right"
     assert by_code["STOP_LEFT_EXO"].parameters["lead_foot"] == "left"

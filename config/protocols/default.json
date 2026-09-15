@@ -743,6 +743,28 @@
       }
     },
     {
+      "condition_code": "ACCEL_DECEL_NOEXO",
+      "condition_name": "匀加减速（不穿戴）",
+      "condition_level": "TRANSIENT",
+      "parameters": {
+        "category": "transient_speed_change",
+        "recommended_trial_count": 5,
+        "exo": false,
+        "description": "0.6m/s均匀加速至1.4m/s，再均匀减速回0.6m/s，加速度1m/s²"
+      }
+    },
+    {
+      "condition_code": "ACCEL_DECEL_EXO",
+      "condition_name": "匀加减速（穿戴）",
+      "condition_level": "TRANSIENT",
+      "parameters": {
+        "category": "transient_speed_change",
+        "recommended_trial_count": 5,
+        "exo": true,
+        "description": "0.6m/s均匀加速至1.4m/s，再均匀减速回0.6m/s，加速度1m/s²"
+      }
+    },
+    {
       "condition_code": "START_LEFT_EXO",
       "condition_name": "静止→行走（左脚先）",
       "condition_level": "TRANSIENT",

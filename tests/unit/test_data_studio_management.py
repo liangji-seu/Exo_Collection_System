@@ -362,7 +362,7 @@ def test_verified_sidecars_coverage_and_state_summary(
     [
         ("F_BASE", "BASELINE", 4),
         ("F_STEADY", "STEADY_STATE", 50),
-        ("F_TRANSIENT", "TRANSIENT", 6),
+        ("F_TRANSIENT", "TRANSIENT", 8),
         ("F_SPECIAL", "SPECIAL", 12),
     ],
 )
