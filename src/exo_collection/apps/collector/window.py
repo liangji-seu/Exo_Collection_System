@@ -103,6 +103,7 @@ from exo_collection.apps.collector.status_overview import ModalityStatusStrip
 from exo_collection.apps.collector.sync_filename import SyncFilenameBar
 from exo_collection.apps.collector.xingying_recording import XingYingRecordingPanel
 from exo_collection.apps.collector.theme import COLLECTOR_STYLESHEET
+from exo_collection.apps.collector.phase_dialog import PhaseConfigDialog
 from exo_collection.configuration import (
     SharedAppSettings,
     build_adapters,
@@ -117,10 +118,13 @@ from exo_collection.orchestration.models import (
     TrialExperimentMetadata,
     TrialRunRequest,
 )
+from exo_collection.domain.condition_phases import (
+    MAIN_CATEGORIES,
+    expand_category_details,
+)
 from exo_collection.domain.project_codes import (
-    COLLECTOR_PROJECTS,
     SUPPORTED_PROJECT_CODES,
-    project_accepts_condition_level,
+    project_for_condition_level,
 )
 from exo_collection.domain.prompt_labels import PromptLabelEvent, PromptLabelSource
 from exo_collection.domain.xingying_trigger import XingYingTriggerKind
@@ -262,10 +266,6 @@ STATIC_CALIB_MARKER_MISSING_AFTER_S = 3.0
 # 静态标定工况的 condition_code；该工况需动捕 19 点全程齐备。
 STATIC_CALIB_CONDITION_CODE = "STATIC_CALIB"
 
-PROJECTS: tuple[dict[str, str], ...] = tuple(
-    dict(project) for project in COLLECTOR_PROJECTS
-)
-
 _PROTOCOL = load_default_protocol()
 CONDITIONS: tuple[dict[str, Any], ...] = tuple(
     condition.model_dump(mode="json") for condition in _PROTOCOL.conditions
@@ -276,13 +276,6 @@ CONDITIONS: tuple[dict[str, Any], ...] = tuple(
 _CONDITION_WEAR_BACKGROUND: dict[bool, QColor] = {
     False: QColor("#dbeafe"),
     True: QColor("#ffe4c8"),
-}
-
-# 详细稳态工况组（category 以 steady_detailed_ 开头）用另一套配色：
-# 非穿戴浅绿、穿戴浅紫，与标准工况的浅蓝/浅橙区分。
-_DETAILED_WEAR_BACKGROUND: dict[bool, QColor] = {
-    False: QColor("#dcfce7"),
-    True: QColor("#ede9fe"),
 }
 
 
@@ -1171,6 +1164,7 @@ class CollectorWindow(QMainWindow):
         if controlled_stop_timeout_s <= 0:
             raise ValueError("controlled_stop_timeout_s must be positive")
         self._settings = settings if settings is not None else SharedAppSettings()
+        self._phase_config = self._settings.phase_config
         self._worker_factory = worker_factory
         self._preflight_worker_factory = preflight_worker_factory
         self._button_marker_factory = button_marker_factory
@@ -1282,7 +1276,8 @@ class CollectorWindow(QMainWindow):
             # (for example QLineEdit) can consume them.
             application.installEventFilter(self)
             self._prompt_event_filter_installed = True
-        self.project_combo.currentIndexChanged.connect(self._handle_project_changed)
+        self.phase_combo.currentIndexChanged.connect(self._handle_phase_changed)
+        self.main_category_combo.currentIndexChanged.connect(self._handle_main_category_changed)
         self.subject_code_edit.textChanged.connect(self._activate_selected_metadata_identity)
         self._activate_selected_metadata_identity()
         self.condition_combo.currentIndexChanged.connect(self._handle_metadata_condition_changed)
@@ -1571,20 +1566,24 @@ class CollectorWindow(QMainWindow):
         root_row.addWidget(self.browse_button)
         form.addRow("数据根目录：", root_row)
 
-        # Row 1: 项目 + 受试者编码
+        # Row 1: 期次 + 受试者编码
         row1 = QGridLayout()
         row1.setHorizontalSpacing(7)
         row1.setVerticalSpacing(0)
-        self.project_combo = QComboBox()
-        self.project_combo.setObjectName("project")
-        for project in PROJECTS:
-            self.project_combo.addItem(
-                project["project_name"],
-                dict(project),
-            )
-        self.project_combo.setCurrentIndex(0)
-        row1.addWidget(QLabel("项目："), 0, 0)
-        row1.addWidget(self.project_combo, 0, 1)
+        self.phase_combo = QComboBox()
+        self.phase_combo.setObjectName("phase")
+        for phase in self._phase_config["phases"]:
+            self.phase_combo.addItem(str(phase["name"]))
+        self.phase_combo.setCurrentIndex(0)
+        phase_row = QHBoxLayout()
+        phase_row.setSpacing(5)
+        phase_row.addWidget(self.phase_combo, 1)
+        self.phase_config_button = QPushButton("工况设置…")
+        self.phase_config_button.setObjectName("edit_condition_phases")
+        self.phase_config_button.clicked.connect(self.edit_condition_phases)
+        phase_row.addWidget(self.phase_config_button)
+        row1.addWidget(QLabel("期次："), 0, 0)
+        row1.addLayout(phase_row, 0, 1)
 
         self.subject_code_edit = QLineEdit("001")
         self.subject_code_edit.setObjectName("subject_code")
@@ -1610,10 +1609,15 @@ class CollectorWindow(QMainWindow):
         row1.setColumnStretch(5, 0)
         form.addRow(row1)
 
-        # Row 2: 工况 + 重复轮次
+        # Row 2: 主工况 + 工况 + 重复轮次
         row2 = QGridLayout()
         row2.setHorizontalSpacing(7)
         row2.setVerticalSpacing(0)
+        self.main_category_combo = QComboBox()
+        self.main_category_combo.setObjectName("main_category")
+        for category in MAIN_CATEGORIES:
+            self.main_category_combo.addItem(category["name"], category["key"])
+        self.main_category_combo.setCurrentIndex(0)
         self.condition_combo = QComboBox()
         self.condition_combo.setObjectName("condition")
         self.condition_combo.setSizeAdjustPolicy(
@@ -1626,8 +1630,10 @@ class CollectorWindow(QMainWindow):
         )
         self.condition_combo.view().setMinimumWidth(620)
         self._populate_condition_combo(preferred_code="WALK_LEVEL")
-        row2.addWidget(QLabel("工况："), 0, 0)
-        row2.addWidget(self.condition_combo, 0, 1)
+        row2.addWidget(QLabel("主工况："), 0, 0)
+        row2.addWidget(self.main_category_combo, 0, 1)
+        row2.addWidget(QLabel("工况："), 0, 2)
+        row2.addWidget(self.condition_combo, 0, 3)
 
         self.repeat_spin = QSpinBox()
         self.repeat_spin.setObjectName("repeat_index")
@@ -1635,16 +1641,18 @@ class CollectorWindow(QMainWindow):
         self.repeat_spin.setValue(1)
         self.repeat_spin.setMinimumWidth(78)
         self.repeat_spin.setMaximumWidth(105)
-        row2.addWidget(QLabel("重复轮次："), 0, 2)
-        row2.addWidget(self.repeat_spin, 0, 3)
-        row2.setColumnStretch(1, 1)
-        row2.setColumnStretch(3, 0)
+        row2.addWidget(QLabel("重复轮次："), 0, 4)
+        row2.addWidget(self.repeat_spin, 0, 5)
+        row2.setColumnStretch(3, 1)
+        row2.setColumnStretch(1, 0)
+        row2.setColumnStretch(5, 0)
         form.addRow(row2)
         self.data_root_edit.setFixedHeight(28)
         for big_control in (
-            self.project_combo,
+            self.phase_combo,
             self.subject_code_edit,
             self.day_spin,
+            self.main_category_combo,
             self.condition_combo,
             self.repeat_spin,
         ):
@@ -2134,8 +2142,10 @@ class CollectorWindow(QMainWindow):
         self._configuration_widgets = (
             self.data_root_edit,
             self.browse_button,
-            self.project_combo,
+            self.phase_combo,
+            self.phase_config_button,
             self.subject_code_edit,
+            self.main_category_combo,
             self.condition_combo,
             self.repeat_spin,
             self.experiment_metadata_button,
@@ -2222,20 +2232,30 @@ class CollectorWindow(QMainWindow):
         ]
         return "\n".join(part for part in parts if part)
 
+    def _current_phase_categories(self) -> dict[str, dict[str, Any]]:
+        index = self.phase_combo.currentIndex()
+        phases = self._phase_config["phases"]
+        if index < 0 or index >= len(phases):
+            return {}
+        categories = phases[index].get("categories")
+        return categories if isinstance(categories, dict) else {}
+
+    def _current_category_key(self) -> str:
+        key = self.main_category_combo.currentData()
+        return str(key) if key else str(MAIN_CATEGORIES[0]["key"])
+
+    def _current_category_codes(self) -> set[str]:
+        categories = self._current_phase_categories()
+        category = categories.get(self._current_category_key())
+        details = category.get("details") if isinstance(category, dict) else None
+        return set(expand_category_details(details))
+
     def _populate_condition_combo(self, *, preferred_code: str | None = None) -> None:
-        project = self.project_combo.currentData()
-        project_code = (
-            str(project.get("project_code") or "").strip().upper()
-            if isinstance(project, dict)
-            else ""
-        )
+        category_codes = self._current_category_codes()
         visible = [
             condition
             for condition in CONDITIONS
-            if project_accepts_condition_level(
-                project_code,
-                condition.get("condition_level"),
-            )
+            if condition["condition_code"] in category_codes
         ]
         # 不穿戴与穿戴分组显示（不穿戴在前、穿戴在后），避免交替；无 exo
         # 参数的工况（随意测试 / 静态标定）保持最前，组内沿用协议定义顺序。
@@ -2248,6 +2268,7 @@ class CollectorWindow(QMainWindow):
         try:
             self.condition_combo.clear()
             for condition in visible:
+                code = str(condition["condition_code"])
                 # The stable English code remains in item data and the
                 # Manifest, while operators see only the Chinese condition.
                 self.condition_combo.addItem(
@@ -2261,17 +2282,10 @@ class CollectorWindow(QMainWindow):
                 )
                 exo = (condition.get("parameters") or {}).get("exo")
                 if exo is not None:
-                    category = str(
-                        (condition.get("parameters") or {}).get("category") or ""
-                    )
-                    palette = (
-                        _DETAILED_WEAR_BACKGROUND
-                        if category.startswith("steady_detailed_")
-                        else _CONDITION_WEAR_BACKGROUND
-                    )
+                    # 仅按穿戴状态着色：不穿戴浅蓝、穿戴浅橙，与主工况/期次无关。
                     self.condition_combo.setItemData(
                         self.condition_combo.count() - 1,
-                        QBrush(palette[bool(exo)]),
+                        QBrush(_CONDITION_WEAR_BACKGROUND[bool(exo)]),
                         Qt.ItemDataRole.BackgroundRole,
                     )
             selected_index = next(
@@ -2288,16 +2302,60 @@ class CollectorWindow(QMainWindow):
             self.condition_combo.blockSignals(previous_blocked)
 
     @Slot()
-    def _handle_project_changed(self, *_args: object) -> None:
+    def _handle_phase_changed(self, *_args: object) -> None:
         current = self.condition_combo.currentData()
         preferred_code = (
             str(current.get("condition_code") or "")
             if isinstance(current, dict)
             else None
         )
+        self._repopulate_main_category_combo()
         self._populate_condition_combo(preferred_code=preferred_code)
         self._activate_selected_metadata_identity()
         self._handle_metadata_condition_changed()
+        self._update_start_button()
+
+    @Slot()
+    def _handle_main_category_changed(self, *_args: object) -> None:
+        self._populate_condition_combo()
+        self._activate_selected_metadata_identity()
+        self._handle_metadata_condition_changed()
+        self._update_start_button()
+
+    def _repopulate_phase_combo(self) -> None:
+        previous = self.phase_combo.currentText()
+        self.phase_combo.blockSignals(True)
+        try:
+            self.phase_combo.clear()
+            for phase in self._phase_config["phases"]:
+                self.phase_combo.addItem(str(phase["name"]))
+            target = self.phase_combo.findText(previous)
+            self.phase_combo.setCurrentIndex(target if target >= 0 else 0)
+        finally:
+            self.phase_combo.blockSignals(False)
+
+    def _repopulate_main_category_combo(self) -> None:
+        previous = self.main_category_combo.currentData()
+        self.main_category_combo.blockSignals(True)
+        try:
+            self.main_category_combo.clear()
+            for category in MAIN_CATEGORIES:
+                self.main_category_combo.addItem(category["name"], category["key"])
+            index = self.main_category_combo.findData(previous)
+            self.main_category_combo.setCurrentIndex(index if index >= 0 else 0)
+        finally:
+            self.main_category_combo.blockSignals(False)
+
+    @Slot()
+    def edit_condition_phases(self) -> None:
+        dialog = PhaseConfigDialog(self._phase_config, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._phase_config = self._settings.set_phase_config(dialog.validated_config)
+        self._repopulate_phase_combo()
+        self._repopulate_main_category_combo()
+        self._populate_condition_combo()
+        self._activate_selected_metadata_identity()
         self._update_start_button()
 
     def _render_device_profile(self) -> None:
@@ -2465,13 +2523,16 @@ class CollectorWindow(QMainWindow):
         self.experiment_metadata_summary.setText(text)
 
     def _selected_metadata_identity(self) -> tuple[str, str] | None:
-        project = self.project_combo.currentData()
-        subject_code = self.subject_code_edit.text().strip()
-        if not isinstance(project, dict):
+        condition = self.condition_combo.currentData()
+        if not isinstance(condition, dict):
+            return None
+        project = project_for_condition_level(condition.get("condition_level"))
+        if project is None:
             return None
         project_code = str(project.get("project_code") or "").strip().upper()
         if project_code not in SUPPORTED_PROJECT_CODES:
             return None
+        subject_code = self.subject_code_edit.text().strip()
         if not subject_code.isascii() or not subject_code.isdigit() or len(subject_code) != 3:
             return None
         return project_code, subject_code
@@ -2517,6 +2578,9 @@ class CollectorWindow(QMainWindow):
         previous = self._metadata_condition_code
         if selected is None or selected == previous:
             return
+        # 项目由工况的 condition_level 反推：切换工况可能跨项目，需同步重算
+        # 会话身份 (project_code, subject_code)，避免跨项目串写元数据。
+        self._activate_selected_metadata_identity()
         self._metadata_condition_code = selected
         had_condition_values = bool(
             self._experiment_metadata_value_count(
@@ -4009,20 +4073,20 @@ class CollectorWindow(QMainWindow):
         if not data_root_text:
             raise ValueError("数据根目录不能为空")
         data_root = self.set_data_root(data_root_text)
-        project = self.project_combo.currentData()
-        if not isinstance(project, dict):
-            raise ValueError("请选择有效项目")
+        condition = self.condition_combo.currentData()
+        if not isinstance(condition, dict):
+            raise ValueError("请选择有效工况")
+        project = project_for_condition_level(condition.get("condition_level"))
+        if project is None:
+            raise ValueError("请选择有效工况")
         project_code = str(project.get("project_code") or "").strip().upper()
         project_name = str(project.get("project_name") or "").strip()
         if project_code not in SUPPORTED_PROJECT_CODES or not project_name:
-            raise ValueError("请选择有效项目")
+            raise ValueError("请选择有效工况")
         subject_code = self._subject_code()
         self._activate_selected_metadata_identity()
         self._handle_metadata_condition_changed()
         operator = DEFAULT_OPERATOR
-        condition = self.condition_combo.currentData()
-        if not isinstance(condition, dict):
-            raise ValueError("请选择有效工况")
         self._refresh_identity_context(data_root, project_code, subject_code)
         payload: dict[str, Any] = {
             "data_root": data_root,

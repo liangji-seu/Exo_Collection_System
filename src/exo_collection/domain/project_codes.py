@@ -72,6 +72,24 @@ def project_accepts_condition_level(
     return str(condition_level).strip().upper() in expected
 
 
+def project_for_condition_level(
+    condition_level: int | str | None,
+) -> dict[str, str] | None:
+    """Return the ``{project_code, project_name}`` project owning a condition.
+
+    Each ``condition_level`` maps to exactly one project (``PROJECT_CONDITION_LEVELS``
+    is a bijection), so the project is fully determined by the selected condition.
+    Returns ``None`` for unknown levels.
+    """
+
+    level = str(condition_level).strip().upper()
+    for project in COLLECTOR_PROJECTS:
+        levels = PROJECT_CONDITION_LEVELS.get(project["project_code"], frozenset())
+        if level in levels:
+            return dict(project)
+    return None
+
+
 __all__ = [
     "COLLECTOR_PROJECTS",
     "LEGACY_PROJECT_CODE_FORMAL",
@@ -83,4 +101,5 @@ __all__ = [
     "PROJECT_CONDITION_LEVELS",
     "SUPPORTED_PROJECT_CODES",
     "project_accepts_condition_level",
+    "project_for_condition_level",
 ]

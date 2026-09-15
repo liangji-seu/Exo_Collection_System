@@ -10,6 +10,11 @@ from typing import Any, Literal, Mapping
 
 from PySide6.QtCore import QByteArray, QSettings, QStandardPaths
 
+from exo_collection.domain.condition_phases import (
+    default_phase_config,
+    normalize_phase_config,
+)
+
 
 # These names are intentionally independent of QApplication.applicationName().
 # Collector and Data Studio therefore read and write the same preferences even
@@ -25,6 +30,7 @@ UPLOAD_ENDPOINT_KEY = "data_studio/upload_endpoint_json"
 DATASET_UPLOAD_ENDPOINT_KEY = "data_studio/dataset_upload_endpoint_json"
 DATASET_PACK_DIRECTORY_KEY = "data_studio/dataset_pack_directory"
 OPENSIM_PYTHON_KEY = "calculate/opensim_python_executable"
+PHASE_CONFIG_KEY = "collector/condition_phases_json"
 ELONXI_RUNTIME_RELATIVE_PATH = (
     Path("SDK_Transfer")
     / "Exo_Hardware_Runtime_Windows_Python311_x64"
@@ -411,6 +417,25 @@ class SharedAppSettings:
         normalized = Path(str(value)).expanduser().resolve()
         self._backend.setValue(OPENSIM_PYTHON_KEY, str(normalized))
         self._sync_checked("OpenSim Python executable")
+        return normalized
+
+    @property
+    def phase_config(self) -> dict[str, Any]:
+        """Return the collector 期次/工况分组 config (seed when unset)."""
+        stored = self._backend.value(PHASE_CONFIG_KEY)
+        if isinstance(stored, str) and stored.strip():
+            try:
+                return normalize_phase_config(json.loads(stored))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+        return default_phase_config()
+
+    def set_phase_config(self, config: Any) -> dict[str, Any]:
+        """Persist the collector 期次/工况分组 config (normalized)."""
+        normalized = normalize_phase_config(config)
+        serialized = json.dumps(normalized, ensure_ascii=False, sort_keys=True)
+        self._backend.setValue(PHASE_CONFIG_KEY, serialized)
+        self._sync_checked("condition phases")
         return normalized
 
     def _sync_checked(self, subject: str) -> None:

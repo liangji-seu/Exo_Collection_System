@@ -29,6 +29,7 @@ from exo_collection.configuration.app_settings import (
     create_shared_settings_backend,
     fixed_elonxi_sdk_directory,
 )
+from exo_collection.domain.condition_phases import expand_category_details
 
 
 collector_main_module = import_module("exo_collection.apps.collector.main")
@@ -253,6 +254,48 @@ def test_single_modality_settings_merge_without_erasing_other_devices(
     assert restored["ultrasound"]["interface_name"] == "\\Device\\NPF_TEST"
     assert restored["imu"]["radio_channel"] == 20
     assert restored["encoder"]["port"] == "COM7"
+
+
+def test_phase_config_defaults_to_seed_and_round_trips(tmp_path: Path) -> None:
+    settings_path = tmp_path / "shared.ini"
+
+    # 空设置回退到默认种子：第一期 56 + 第二期 126（展开为协议完整码后）。
+    default = _file_settings(settings_path).phase_config
+    assert [phase["name"] for phase in default["phases"]] == ["第一期", "第二期"]
+    expanded_counts = [
+        sum(
+            len(expand_category_details(cat["details"]))
+            for cat in phase["categories"].values()
+        )
+        for phase in default["phases"]
+    ]
+    assert expanded_counts == [56, 126]
+
+    custom = {
+        "schema_version": 3,
+        "phases": [
+            {
+                "name": "自定义期",
+                "categories": {
+                    "BASELINE": {"name": "基础", "details": [{"code": "FREE_TEST"}]},
+                    "STEADY_STATE": {"name": "稳态", "details": []},
+                    "TRANSIENT": {"name": "非稳态", "details": []},
+                    "SPECIAL": {"name": "特殊", "details": []},
+                },
+            },
+        ],
+    }
+    persisted = _file_settings(settings_path).set_phase_config(custom)
+    assert persisted["phases"][0]["name"] == "自定义期"
+    assert persisted["phases"][0]["categories"]["BASELINE"]["details"] == [
+        {"code": "FREE_TEST"}
+    ]
+
+    restored = _file_settings(settings_path).phase_config
+    assert restored["phases"][0]["name"] == "自定义期"
+    assert restored["phases"][0]["categories"]["BASELINE"]["details"] == [
+        {"code": "FREE_TEST"}
+    ]
 
 
 @pytest.mark.parametrize(

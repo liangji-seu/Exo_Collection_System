@@ -361,9 +361,9 @@ def test_verified_sidecars_coverage_and_state_summary(
     ("project_code", "condition_level", "expected_count"),
     [
         ("F_BASE", "BASELINE", 4),
-        ("F_STEADY", "STEADY_STATE", 50),
+        ("F_STEADY", "STEADY_STATE", 110),
         ("F_TRANSIENT", "TRANSIENT", 8),
-        ("F_SPECIAL", "SPECIAL", 12),
+        ("F_SPECIAL", "SPECIAL", 16),
     ],
 )
 def test_subject_coverage_uses_the_selected_formal_project_category(

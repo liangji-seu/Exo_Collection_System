@@ -29,6 +29,7 @@ from exo_collection.acquisition.messages import WorkerEvent, WorkerEventType
 from exo_collection.acquisition.recording_stream import RecordingStreamEndpoint
 from exo_collection.apps.collector import CollectorWindow
 from exo_collection.apps.collector.button_marker import START_STOP_VK
+from exo_collection.apps.collector.phase_dialog import PhaseConfigDialog
 from exo_collection.apps.collector.device_settings import (
     DEVICE_SETTINGS_DIALOGS,
     EmgDeviceSettingsDialog,
@@ -51,6 +52,10 @@ from exo_collection.apps.collector.status_overview import ModalityStatusStrip
 from exo_collection.apps.collector.xingying_recording import XingYingRecordingPanel
 from exo_collection.configuration import (
     SharedAppSettings,
+)
+from exo_collection.domain.condition_phases import (
+    default_phase_config,
+    expand_category_details,
 )
 from exo_collection.domain.prompt_labels import PromptLabelEvent, PromptLabelSource
 from exo_collection.domain.xingying_trigger import XingYingTriggerEvent, XingYingTriggerKind
@@ -810,9 +815,16 @@ def test_1080p_layout_fits_controls_without_scrolling_or_crushing_them(
     assert controls_scroll.widgetResizable()
     assert controls_scroll.verticalScrollBar().maximum() == 0
     assert window.findChild(QWidget, "preview_workspace") is not None
-    assert abs(window.project_combo.width() - window.subject_code_edit.width()) <= 2
+    # 期次下拉现在和「工况设置…」按钮共享一格，故比较整格跨度而非下拉自身。
+    phase_span = (
+        window.phase_config_button.geometry().right()
+        - window.phase_combo.geometry().left()
+    )
+    assert abs(phase_span - window.subject_code_edit.width()) <= 2
+    assert window.phase_combo.width() >= 60
+    assert window.main_category_combo.width() >= 60
     assert window.repeat_spin.width() <= 105
-    assert window.condition_combo.width() >= window.repeat_spin.width() * 3
+    assert window.condition_combo.width() >= window.repeat_spin.width() * 2
 
     # The two toggle actions stay at their normal height and never overlap.
     action_buttons = [
@@ -1521,14 +1533,10 @@ def test_collector_locks_condition_polls_events_and_finalizes(
 ) -> None:
     caplog.set_level(logging.INFO, logger="exo_collection.collector.ui")
     app, window, created = _window_with_fake(tmp_path)
-    assert [window.project_combo.itemText(index) for index in range(5)] == [
-        "测试",
-        "正式-基础",
-        "正式-稳态",
-        "正式-非稳态",
-        "正式-特殊",
+    assert [window.phase_combo.itemText(index) for index in range(2)] == [
+        "第一期",
+        "第二期",
     ]
-    assert window.project_combo.currentData()["project_code"] == "T"
     assert window.subject_code_edit.text() == "001"
     validation, _text, _position = window.subject_code_edit.validator().validate("A01", 0)
     assert validation is QValidator.State.Invalid
@@ -1573,7 +1581,7 @@ def test_collector_locks_condition_polls_events_and_finalizes(
     assert request.repeat_index == 3
     assert request.duration_s is None
     assert window.configuration_locked
-    assert not window.project_combo.isEnabled()
+    assert not window.phase_combo.isEnabled()
     assert not window.condition_combo.isEnabled()
     assert not window.repeat_spin.isEnabled()
     assert not window.connect_all_button.isEnabled()
@@ -1904,42 +1912,73 @@ def test_start_trial_rejects_locked_or_skipped_day(
     window.close()
 
 
-def test_condition_combo_exposes_all_meeting_protocol_conditions(
+def test_condition_combo_exposes_phase_conditions(
     tmp_path: Path,
 ) -> None:
     _app, window, _created = _window_with_fake(tmp_path)
-    try:
-        # 默认主工况 T 只暴露 TEST 级工况（随意测试 / 静态标定）
-        assert window.condition_combo.count() == 2
-        codes = [
+
+    def select_category(key: str) -> None:
+        index = next(
+            i
+            for i in range(window.main_category_combo.count())
+            if window.main_category_combo.itemData(i) == key
+        )
+        window.main_category_combo.setCurrentIndex(index)
+
+    def combo_codes() -> list[str]:
+        return [
             window.condition_combo.itemData(index)["condition_code"]
             for index in range(window.condition_combo.count())
         ]
+
+    try:
+        # 期次固定两期；主工况固定 4 类。
+        assert [
+            window.phase_combo.itemText(index)
+            for index in range(window.phase_combo.count())
+        ] == ["第一期", "第二期"]
+        assert [
+            window.main_category_combo.itemText(index)
+            for index in range(window.main_category_combo.count())
+        ] == ["基础", "稳态", "非稳态", "特殊"]
+
+        # 默认「基础」主工况（第一期）：随意测试 + 静态标定。
+        assert window.main_category_combo.currentData() == "BASELINE"
+        assert window.condition_combo.count() == 2
+        codes = combo_codes()
         assert codes == ["FREE_TEST", "STATIC_CALIB"]
         assert window.condition_combo.currentData()["condition_code"] == "FREE_TEST"
         assert window.condition_combo.currentText() == "随意测试"
         assert not window.condition_combo.currentText().startswith("FREE_TEST")
 
-        # 静态标定 hover 注释说明穿戴/不穿戴共用 Helen-Hayes 模型
-        calib_index = codes.index("STATIC_CALIB")
         calib_tooltip = window.condition_combo.itemData(
-            calib_index, Qt.ItemDataRole.ToolTipRole
+            codes.index("STATIC_CALIB"), Qt.ItemDataRole.ToolTipRole
         )
         assert "Helen-Hayes 静态标定模型" in calib_tooltip
         assert "建议 Trial：1" in calib_tooltip
 
-        # F_STEADY：验证坡度工况 tooltip 含穿戴/速度/坡度
-        steady_index = next(
-            index
-            for index in range(window.project_combo.count())
-            if window.project_combo.itemData(index)["project_code"] == "F_STEADY"
+        # 随意测试 / 静态标定无穿戴参数，不着色（背景为空）。
+        assert (
+            window.condition_combo.itemData(
+                codes.index("FREE_TEST"), Qt.ItemDataRole.BackgroundRole
+            )
+            is None
         )
-        window.project_combo.setCurrentIndex(steady_index)
-        steady_codes = [
-            window.condition_combo.itemData(index)["condition_code"]
-            for index in range(window.condition_combo.count())
-        ]
-        # 不穿戴工况统一排在穿戴工况之前（分组显示，不交替）
+
+        # 稳态主工况（第一期）：平地走四档 + 爬坡矩阵，不穿戴浅蓝 / 穿戴浅橙。
+        select_category("STEADY_STATE")
+        steady_codes = combo_codes()
+        assert window.condition_combo.count() == 40
+        noexo_bg = window.condition_combo.itemData(
+            steady_codes.index("DWALK_0P8_NOEXO"), Qt.ItemDataRole.BackgroundRole
+        ).color()
+        exo_bg = window.condition_combo.itemData(
+            steady_codes.index("DWALK_0P8_EXO"), Qt.ItemDataRole.BackgroundRole
+        ).color()
+        assert noexo_bg == QColor("#dbeafe")
+        assert exo_bg == QColor("#ffe4c8")
+
+        # 不穿戴工况统一排在穿戴工况之前（分组显示，不交替）。
         noexo_positions = [
             index for index, code in enumerate(steady_codes) if code.endswith("_NOEXO")
         ]
@@ -1948,16 +1987,8 @@ def test_condition_combo_exposes_all_meeting_protocol_conditions(
         ]
         assert noexo_positions and exo_positions
         assert max(noexo_positions) < min(exo_positions)
-        # 不穿戴浅蓝、穿戴浅橙，底色区分
-        noexo_bg = window.condition_combo.itemData(
-            steady_codes.index("WALK_0P6_NOEXO"), Qt.ItemDataRole.BackgroundRole
-        ).color()
-        exo_bg = window.condition_combo.itemData(
-            steady_codes.index("WALK_0P6_EXO"), Qt.ItemDataRole.BackgroundRole
-        ).color()
-        assert noexo_bg == QColor("#dbeafe")
-        assert exo_bg == QColor("#ffe4c8")
-        slope_index = steady_codes.index("WALK_5D_1P0_EXO")
+
+        slope_index = steady_codes.index("DWALK_5D_1P0_EXO")
         slope = window.condition_combo.itemData(slope_index)
         assert slope["parameters"]["speed_mps"] == 1.0
         assert slope["parameters"]["slope_deg"] == 5
@@ -1967,54 +1998,132 @@ def test_condition_combo_exposes_all_meeting_protocol_conditions(
         )
         assert "穿戴：是" in slope_tooltip
         assert "建议 Trial：5" in slope_tooltip
-        assert "目标有效时长：30 s" in slope_tooltip
         assert "坡度：5°" in slope_tooltip
 
-        # F_TRANSIENT：验证随机变速 hover 注释与 lead_foot
-        transient_index = next(
-            index
-            for index in range(window.project_combo.count())
-            if window.project_combo.itemData(index)["project_code"] == "F_TRANSIENT"
-        )
-        window.project_combo.setCurrentIndex(transient_index)
-        transient_codes = [
-            window.condition_combo.itemData(index)["condition_code"]
-            for index in range(window.condition_combo.count())
-        ]
-        speed_index = transient_codes.index("SPEED_RAMP_EXO")
+        # 非稳态主工况（第一期）：匀加减速 2 条。
+        select_category("TRANSIENT")
+        assert window.condition_combo.count() == 2
+        assert set(combo_codes()) == {"ACCEL_DECEL_NOEXO", "ACCEL_DECEL_EXO"}
+
+        # 特殊主工况（第一期）：12 条（深蹲/坐起等成对，浅蓝/浅橙）。
+        select_category("SPECIAL")
+        special_codes = combo_codes()
+        assert window.condition_combo.count() == 12
+        assert special_codes.index("SQUAT_NOEXO") < special_codes.index("SQUAT_EXO")
+        squat_noexo_bg = window.condition_combo.itemData(
+            special_codes.index("SQUAT_NOEXO"), Qt.ItemDataRole.BackgroundRole
+        ).color()
+        squat_exo_bg = window.condition_combo.itemData(
+            special_codes.index("SQUAT_EXO"), Qt.ItemDataRole.BackgroundRole
+        ).color()
+        assert squat_noexo_bg == QColor("#dbeafe")
+        assert squat_exo_bg == QColor("#ffe4c8")
+
+        # 第二期：基础 6 条（随意测试/静态标定 + 静止站立/1.0 走 30s）。
+        window.phase_combo.setCurrentIndex(1)
+        select_category("BASELINE")
+        assert window.condition_combo.count() == 6
+
+        # 第二期稳态：标准平地/坡 + 详细地形矩阵（110 条），WALK 仍浅蓝/浅橙。
+        select_category("STEADY_STATE")
+        phase2_steady_codes = combo_codes()
+        assert window.condition_combo.count() == 110
+        shared_bg = window.condition_combo.itemData(
+            phase2_steady_codes.index("WALK_0P6_NOEXO"),
+            Qt.ItemDataRole.BackgroundRole,
+        ).color()
+        assert shared_bg == QColor("#dbeafe")
+        # 新增详细地形矩阵已纳入（平地 0.6 / 9.5° 1.2 等）。
+        assert "DWALK_0P6_NOEXO" in phase2_steady_codes
+        assert "DWALK_9P5D_1P2_EXO" in phase2_steady_codes
+
+        # 第二期非稳态：标准深蹲/随机变速/起步停止（6 条，仅穿戴）。
+        select_category("TRANSIENT")
+        phase2_transient_codes = combo_codes()
+        assert window.condition_combo.count() == 6
         speed_tooltip = window.condition_combo.itemData(
-            speed_index, Qt.ItemDataRole.ToolTipRole
+            phase2_transient_codes.index("SPEED_RAMP_EXO"),
+            Qt.ItemDataRole.ToolTipRole,
         )
         assert "0.6m/s匀速" in speed_tooltip
         assert "1.4m/s匀速" in speed_tooltip
         assert "加速度1m/s²" in speed_tooltip
+        assert (
+            window.condition_combo.itemData(
+                phase2_transient_codes.index("START_RIGHT_EXO")
+            )["parameters"]["lead_foot"]
+            == "right"
+        )
 
-        start_index = transient_codes.index("START_RIGHT_EXO")
-        start_stop = window.condition_combo.itemData(start_index)
-        assert start_stop["parameters"]["lead_foot"] == "right"
-
-        expected_by_project = {
-            "T": 2,
-            "F_BASE": 4,
-            "F_STEADY": 50,
-            "F_TRANSIENT": 8,
-            "F_SPECIAL": 12,
+        # 第二期特殊：匀变速 + 连续变坡度（4 条，成对穿戴）。
+        select_category("SPECIAL")
+        assert window.condition_combo.count() == 4
+        assert set(combo_codes()) == {
+            "CONST_ACCEL_NOEXO",
+            "CONST_ACCEL_EXO",
+            "SLOPE_RAMP_NOEXO",
+            "SLOPE_RAMP_EXO",
         }
-        for project_index in range(window.project_combo.count()):
-            window.project_combo.setCurrentIndex(project_index)
-            project_code = window.project_combo.currentData()["project_code"]
-            assert window.condition_combo.count() == expected_by_project[project_code]
-            for condition_index in range(window.condition_combo.count()):
-                condition = window.condition_combo.itemData(condition_index)
-                assert (
-                    window.condition_combo.itemText(condition_index)
-                    == condition["condition_name"]
-                )
-                assert not window.condition_combo.itemText(
-                    condition_index
-                ).startswith(condition["condition_code"])
+
+        # 每个期次 × 每个主工况里，操作者看到的都是中文工况名，而非英文 code。
+        for phase_index in range(window.phase_combo.count()):
+            window.phase_combo.setCurrentIndex(phase_index)
+            for category_index in range(window.main_category_combo.count()):
+                window.main_category_combo.setCurrentIndex(category_index)
+                for condition_index in range(window.condition_combo.count()):
+                    condition = window.condition_combo.itemData(condition_index)
+                    assert (
+                        window.condition_combo.itemText(condition_index)
+                        == condition["condition_name"]
+                    )
+                    assert not window.condition_combo.itemText(
+                        condition_index
+                    ).startswith(condition["condition_code"])
     finally:
         window.close()
+
+
+def test_phase_config_dialog_round_trips_seed() -> None:
+    app = QApplication.instance() or QApplication(["phase-dialog-test"])
+    dialog = PhaseConfigDialog(default_phase_config())
+    try:
+        result = dialog.validated_config
+        phases = result["phases"]
+        assert [phase["name"] for phase in phases] == ["第一期", "第二期"]
+        assert list(phases[0]["categories"].keys()) == [
+            "BASELINE",
+            "STEADY_STATE",
+            "TRANSIENT",
+            "SPECIAL",
+        ]
+        baseline = phases[0]["categories"]["BASELINE"]["details"]
+        assert [detail["code"] for detail in baseline] == [
+            "FREE_TEST",
+            "STATIC_CALIB",
+        ]
+        # 成对工况保留 wear 标志；无穿戴工况省略 wear。
+        steady = phases[0]["categories"]["STEADY_STATE"]["details"]
+        assert {"code": "WALK_0P6", "wear": True} in steady
+        assert {"code": "FREE_TEST"} in baseline
+    finally:
+        dialog.close()
+
+
+def test_phase_config_dialog_wear_toggle_controls_expansion() -> None:
+    app = QApplication.instance() or QApplication(["phase-dialog-test"])
+    dialog = PhaseConfigDialog(default_phase_config())
+    try:
+        dialog._phase_list.setCurrentRow(0)
+        # 取消「增加穿戴」后，该成对工况只展开不穿戴版本。
+        dialog._set_wear("STEADY_STATE", "WALK_0P6", False)
+        cfg = dialog.validated_config
+        steady = cfg["phases"][0]["categories"]["STEADY_STATE"]["details"]
+        walk = next(detail for detail in steady if detail["code"] == "WALK_0P6")
+        assert walk["wear"] is False
+        assert "WALK_0P6_NOEXO" in expand_category_details(steady)
+        assert "WALK_0P6_EXO" not in expand_category_details(steady)
+    finally:
+        dialog.close()
 
 
 def test_collector_rejects_terminal_event_from_another_trial(
@@ -2287,11 +2396,21 @@ def test_experiment_metadata_is_scoped_by_project_and_subject(tmp_path: Path) ->
     assert window.experiment_metadata.trial_notes == "T/001 only"
     assert "已恢复" in window.experiment_metadata_summary.text()
 
-    window.project_combo.setCurrentIndex(1)
-    assert window.project_combo.currentData()["project_code"] == "F_BASE"
+    # 切到不同 project 的稳态工况（STEADY_STATE ≠ TEST），验证按 project+subject 清空。
+    window.main_category_combo.setCurrentIndex(
+        window.main_category_combo.findData("STEADY_STATE")
+    )
     assert window.experiment_metadata == TrialExperimentMetadata()
     assert "已清空" in window.experiment_metadata_summary.text()
-    window.project_combo.setCurrentIndex(0)
+    window.main_category_combo.setCurrentIndex(
+        window.main_category_combo.findData("BASELINE")
+    )
+    free_test_index = next(
+        index
+        for index in range(window.condition_combo.count())
+        if window.condition_combo.itemData(index)["condition_code"] == "FREE_TEST"
+    )
+    window.condition_combo.setCurrentIndex(free_test_index)
     assert window.experiment_metadata.subject.height_cm == 171
     assert window.experiment_metadata.ultrasound_probe.muscle == "vastus lateralis"
     window.close()
