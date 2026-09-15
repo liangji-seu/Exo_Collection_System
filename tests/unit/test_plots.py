@@ -6,9 +6,12 @@ import numpy as np
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
+from exo_collection.apps.data_studio.local_tools import PromptLabelPlaybackEvent
 from exo_collection.apps.data_studio.plots import TimeSeriesPlot
+from exo_collection.domain.prompt_labels import PromptLabelSource
 
 
 def test_time_series_plot_cyclic_sweep_overwrites_in_place() -> None:
@@ -104,3 +107,36 @@ def test_time_series_plot_stacks_channels_with_fixed_range() -> None:
     view = plot.getViewBox().viewRange()
     assert view[1][0] <= -1.0 + 1e-6
     assert view[1][1] >= 4.0 - 1e-6
+
+
+def test_time_series_plot_draws_prompt_marker_lines() -> None:
+    app = QApplication.instance() or QApplication(["timeseries-prompt"])
+    time_s = np.arange(0.0, 30.0, 0.01, dtype=np.float64)
+    values = np.sin(time_s)[:, None]
+    plot = TimeSeriesPlot("信号", time_s, values, ("ch_1",), window_s=10.0)
+
+    events = (
+        PromptLabelPlaybackEvent(
+            time_s=12.0, source=PromptLabelSource.SUBJECT, label="受试者标签", key="<"
+        ),
+        PromptLabelPlaybackEvent(
+            time_s=15.0, source=PromptLabelSource.OPERATOR, label="工作人员标签", key=">"
+        ),
+        PromptLabelPlaybackEvent(
+            time_s=25.0, source=PromptLabelSource.BUTTON, label="按钮标签", key=","
+        ),
+    )
+    plot.set_prompt_events(events)
+
+    # t=15、窗口 [10,20]：可见事件为 12.0 与 15.0（25.0 在窗外，25>15）。
+    plot.set_time(15.0, cycle_start_s=10.0)
+
+    lines = plot._prompt_lines
+    assert len(lines) == 2
+    assert lines[0].toolTip() == "受试者标签（<） · t=12.000 s"
+    assert lines[1].toolTip() == "工作人员标签（>） · t=15.000 s"
+    assert abs(float(lines[0].value()) - 2.0) < 1e-6
+    assert abs(float(lines[1].value()) - 5.0) < 1e-6
+    # SUBJECT→虚线，OPERATOR/BUTTON→实线。
+    assert lines[0].pen.style() == Qt.PenStyle.DashLine
+    assert lines[1].pen.style() == Qt.PenStyle.SolidLine

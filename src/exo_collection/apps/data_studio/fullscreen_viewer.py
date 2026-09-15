@@ -21,11 +21,14 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
+    QFileDialog,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QSlider,
     QToolBar,
@@ -264,6 +267,7 @@ class FullscreenViewer(PreviewWorkspace):
         self._build_timeline()
         self._build_panels()
         self._apply_gait_events()
+        self._apply_prompt_markers()
         self._timer = QTimer(self)
         self._timer.setInterval(50)
         self._timer.timeout.connect(self._advance_playback)
@@ -298,6 +302,10 @@ class FullscreenViewer(PreviewWorkspace):
         self._gait_events_check.setChecked(True)
         self._gait_events_check.toggled.connect(self._toggle_gait_events)
         toolbar.addWidget(self._gait_events_check)
+        self._export_button = QPushButton("导出图片")
+        self._export_button.setObjectName("fullscreen_export_image")
+        self._export_button.clicked.connect(self._export_image)
+        toolbar.addWidget(self._export_button)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolbar)
 
     def _build_panels(self) -> None:
@@ -567,9 +575,25 @@ class FullscreenViewer(PreviewWorkspace):
             if isinstance(panel, (TimeSeriesPlot, _SweepWaterfallPlot)):
                 panel.set_gait_events(events)
 
+    def _apply_prompt_markers(self) -> None:
+        for panel in self._panels:
+            if isinstance(panel, (TimeSeriesPlot, _SweepWaterfallPlot)):
+                panel.set_prompt_events(self.playback.prompt_labels)
+
     def _toggle_gait_events(self, checked: bool) -> None:
         self._apply_gait_events(checked)
         self.set_playback_time(self._current_time)
+
+    def _export_image(self) -> None:
+        default = f"{self.playback.condition_code}_{self.playback.trial_uuid[:8]}.png"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出全局图片", default, "PNG 图片 (*.png)"
+        )
+        if not path:
+            return
+        QApplication.processEvents()
+        self.grab().save(path, "PNG")
+        QMessageBox.information(self, "导出成功", f"已导出：\n{path}")
 
     # -- playback ----------------------------------------------------------
     @staticmethod

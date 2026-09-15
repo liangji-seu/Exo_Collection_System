@@ -39,9 +39,8 @@ from .local_tools import (
     SignalPlayback,
     TrialPlayback,
 )
-from exo_collection.domain.prompt_labels import PromptLabelSource
 from .gait_events import GaitEvent
-from .plots import update_event_marker_lines
+from .plots import update_event_marker_lines, update_prompt_marker_lines
 
 _log = logging.getLogger(__name__)
 
@@ -70,50 +69,6 @@ def _empty_tab(message: str) -> QWidget:
     label.setAlignment(Qt.AlignmentFlag.AlignCenter)
     layout.addWidget(label)
     return widget
-
-
-def _update_prompt_marker_lines(
-    plot: "pg.PlotWidget",
-    events: tuple[PromptLabelPlaybackEvent, ...],
-    lines: list["pg.InfiniteLine"],
-    *,
-    current_s: float,
-    cycle_start_s: float,
-    window_s: float,
-) -> None:
-    """Show labels for one ring window; old lines expire when overwritten."""
-
-    visible = tuple(
-        event
-        for event in events
-        if current_s - window_s < event.time_s <= current_s
-    )
-    while len(lines) < len(visible):
-        line = pg.InfiniteLine(pos=0.0, angle=90, movable=False)
-        line.setZValue(95)
-        plot.addItem(line)
-        lines.append(line)
-    for index, line in enumerate(lines):
-        if index >= len(visible):
-            line.hide()
-            continue
-        event = visible[index]
-        line.setPen(
-            pg.mkPen(
-                "#ff0000",
-                width=1.6,
-                style=(
-                    Qt.PenStyle.DashLine
-                    if event.source is PromptLabelSource.SUBJECT
-                    else Qt.PenStyle.SolidLine
-                ),
-            )
-        )
-        line.setPos((event.time_s - cycle_start_s) % window_s)
-        line.setToolTip(
-            f"{event.label}（{event.key}） · t={event.time_s:.3f} s"
-        )
-        line.show()
 
 
 def _ultrasound_amplitude_range(values: np.ndarray) -> tuple[float, float]:
@@ -534,6 +489,10 @@ class _SweepWaterfallPlot(pg.PlotWidget):
         """设置（或清空）本瀑布图上的步态事件竖线。"""
         self._gait_events = tuple(events)
 
+    def set_prompt_events(self, events: tuple[PromptLabelPlaybackEvent, ...]) -> None:
+        """设置（或清空）本瀑布图上的按键打标竖线。"""
+        self._prompt_labels = tuple(events)
+
     def update_time(self, current_s: float, cycle_start_s: float) -> None:
         phase = min(max(float(current_s - cycle_start_s), 0.0), self._window_s)
         depth = self._data.shape[0] if self._data.ndim == 2 else 0
@@ -597,7 +556,7 @@ class _SweepWaterfallPlot(pg.PlotWidget):
         self._last_cycle_start = cycle_start_s
         self._last_current = current_s
         self.cursor.setPos(phase)
-        _update_prompt_marker_lines(
+        update_prompt_marker_lines(
             self,
             self._prompt_labels,
             self._prompt_lines,
@@ -835,7 +794,7 @@ class _SweepSignalPlot(pg.PlotWidget):
             curve.setData(self._x_grid, display, connect=connect)
         self._last_current = current_s
         self.cursor.setPos(phase)
-        _update_prompt_marker_lines(
+        update_prompt_marker_lines(
             self,
             self._prompt_labels,
             self._prompt_lines,

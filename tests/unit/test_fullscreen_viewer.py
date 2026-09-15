@@ -16,12 +16,14 @@ from exo_collection.apps.data_studio.fullscreen_viewer import (
 )
 from exo_collection.apps.data_studio.local_tools import (
     MocapPlayback,
+    PromptLabelPlaybackEvent,
     SignalPlayback,
     TrialPlayback,
     _read_hdf5_mocap,
     _read_moment_csv,
 )
 from exo_collection.apps.data_studio.plots import TimeSeriesPlot
+from exo_collection.domain.prompt_labels import PromptLabelSource
 from exo_collection.writers import Hdf5SignalWriter
 
 
@@ -483,6 +485,49 @@ def test_emg_panel_is_one_window_per_channel_with_shared_fixed_y_range() -> None
     ]
     assert all(len(plot._curves) == 1 for plot in plots)
     assert len(set(pens)) == 4
+
+    viewer.close()
+    app.processEvents()
+
+
+def test_fullscreen_viewer_applies_prompt_markers_to_signal_plots() -> None:
+    app = QApplication.instance() or QApplication(["test-prompt-markers"])
+    time_s = np.linspace(0.0, 1.0, 11, dtype=np.float64)
+    moment = SignalPlayback(
+        time_s=time_s,
+        values=np.column_stack([np.zeros(11), np.ones(11)]),
+        channels=("hip_flexion_r", "hip_flexion_l"),
+        units=("N·m", "N·m"),
+    )
+    labels = (
+        PromptLabelPlaybackEvent(
+            time_s=0.3, source=PromptLabelSource.SUBJECT, label="左", key="<"
+        ),
+        PromptLabelPlaybackEvent(
+            time_s=0.8, source=PromptLabelSource.OPERATOR, label="右", key=">"
+        ),
+    )
+    playback = TrialPlayback(
+        manifest_path=Path("manifest.json"),
+        trial_uuid="00000000-0000-0000-0000-000000000020",
+        condition_code="WALK_LEVEL",
+        formal_t0_host_monotonic_ns=0,
+        ultrasound=None,
+        imu=None,
+        encoder=None,
+        sync=None,
+        sync_trigger_times_s=np.empty(0),
+        mocap=None,
+        moment=moment,
+        prompt_labels=labels,
+    )
+
+    viewer = FullscreenViewer(playback)
+    dock = viewer.dock_for("moment")
+    assert dock is not None
+    plot = dock.widget().findChild(TimeSeriesPlot)
+    assert plot is not None
+    assert plot._prompt_events == labels
 
     viewer.close()
     app.processEvents()

@@ -16,7 +16,10 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt
 
+from exo_collection.domain.prompt_labels import PromptLabelSource
+
 from .gait_events import GaitEvent
+from .local_tools import PromptLabelPlaybackEvent
 
 _PLOT_COLORS = (
     "#0072B2",
@@ -80,6 +83,49 @@ def update_event_marker_lines(
         line.show()
 
 
+def update_prompt_marker_lines(
+    plot: "pg.PlotWidget",
+    events: tuple[PromptLabelPlaybackEvent, ...],
+    lines: list["pg.InfiniteLine"],
+    *,
+    current_s: float,
+    cycle_start_s: float,
+    window_s: float,
+) -> None:
+    """在当前循环窗内画按键打标竖线；复用已有线，多余隐藏。"""
+    visible = tuple(
+        event
+        for event in events
+        if current_s - window_s < event.time_s <= current_s
+    )
+    while len(lines) < len(visible):
+        line = pg.InfiniteLine(pos=0.0, angle=90, movable=False)
+        line.setZValue(95)
+        plot.addItem(line)
+        lines.append(line)
+    for index, line in enumerate(lines):
+        if index >= len(visible):
+            line.hide()
+            continue
+        event = visible[index]
+        line.setPen(
+            pg.mkPen(
+                "#ff0000",
+                width=1.6,
+                style=(
+                    Qt.PenStyle.DashLine
+                    if event.source is PromptLabelSource.SUBJECT
+                    else Qt.PenStyle.SolidLine
+                ),
+            )
+        )
+        line.setPos((event.time_s - cycle_start_s) % window_s)
+        line.setToolTip(
+            f"{event.label}（{event.key}） · t={event.time_s:.3f} s"
+        )
+        line.show()
+
+
 class TimeSeriesPlot(pg.PlotWidget):
     """One or more channels on a shared real-time axis with a vertical cursor."""
 
@@ -102,6 +148,8 @@ class TimeSeriesPlot(pg.PlotWidget):
         self._offset = float(offset_per_channel) if offset_per_channel else 0.0
         self._gait_events: tuple[GaitEvent, ...] = ()
         self._gait_lines: list[pg.InfiniteLine] = []
+        self._prompt_events: tuple[PromptLabelPlaybackEvent, ...] = ()
+        self._prompt_lines: list[pg.InfiniteLine] = []
 
         self.setTitle(title)
         self.setBackground("#ffffff")
@@ -176,6 +224,10 @@ class TimeSeriesPlot(pg.PlotWidget):
         """设置（或清空）本图上的步态事件竖线；下次 :meth:`set_time` 摆位。"""
         self._gait_events = tuple(events)
 
+    def set_prompt_events(self, events: tuple[PromptLabelPlaybackEvent, ...]) -> None:
+        """设置（或清空）本图上的按键打标竖线；下次 :meth:`set_time` 摆位。"""
+        self._prompt_events = tuple(events)
+
     def set_time(self, current_s: float, cycle_start_s: float | None = None) -> None:
         """Advance the sweep cursor.
 
@@ -199,6 +251,14 @@ class TimeSeriesPlot(pg.PlotWidget):
                 self,
                 self._gait_events,
                 self._gait_lines,
+                current_s=current,
+                cycle_start_s=left,
+                window_s=self._window_s,
+            )
+            update_prompt_marker_lines(
+                self,
+                self._prompt_events,
+                self._prompt_lines,
                 current_s=current,
                 cycle_start_s=left,
                 window_s=self._window_s,
@@ -235,6 +295,8 @@ class TimeSeriesPlot(pg.PlotWidget):
         self.cursor.setPos(current)
         for line in self._gait_lines:
             line.hide()
+        for line in self._prompt_lines:
+            line.hide()
         if not self._times.size:
             for curve in self._curves:
                 curve.setData([], [])
@@ -251,4 +313,4 @@ class TimeSeriesPlot(pg.PlotWidget):
             curve.setData(times, samples)
 
 
-__all__ = ["TimeSeriesPlot"]
+__all__ = ["TimeSeriesPlot", "update_prompt_marker_lines"]
