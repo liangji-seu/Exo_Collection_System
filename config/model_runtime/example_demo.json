@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0.0",
+  "model": {
+    "backend": "demo",
+    "demo": { "amplitude": 1.0, "scale": 10.0 }
+  },
+  "features": {
+    "control_rate_hz": 50.0,
+    "window_s": 0.2,
+    "inputs": [
+      { "modality": "imu", "channels": null },
+      { "modality": "encoder", "channels": null }
+    ],
+    "normalization": { "mean": [], "std": [] }
+  },
+  "output": {
+    "kind": "torque_left_right",
+    "single_output_maps_to": "right_torque",
+    "torque_limit_nm": 5.0
+  },
+  "safety": { "enable_required": true, "zero_on_error": true, "watchdog_s": 0.25 }
+}

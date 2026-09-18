@@ -1,0 +1,27 @@
+{
+  "schema_version": "1.0.0",
+  "model": {
+    "backend": "torch",
+    "module_path": "models/tcn_model.py",
+    "class_name": "HipMomentTCN",
+    "init_kwargs": { "in_channels": 18, "window_len": 128, "out_features": 1 },
+    "weights_path": "models/hip_moment_tcn.pt",
+    "device": "cpu",
+    "input_layout": "bct"
+  },
+  "features": {
+    "control_rate_hz": 100.0,
+    "window_s": 1.28,
+    "inputs": [
+      { "modality": "imu", "channels": null, "rate_hz": 120 },
+      { "modality": "ultrasound", "channels": null, "rate_hz": 20 }
+    ],
+    "normalization": { "mean": [], "std": [] }
+  },
+  "output": {
+    "kind": "torque_left_right",
+    "single_output_maps_to": "right_torque",
+    "torque_limit_nm": 5.0
+  },
+  "safety": { "enable_required": true, "zero_on_error": true, "watchdog_s": 0.25 }
+}
