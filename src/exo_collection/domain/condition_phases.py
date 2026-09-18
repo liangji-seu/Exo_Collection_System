@@ -172,8 +172,10 @@ PHASE_1_SPECIAL: tuple[str, ...] = (
 PHASE_2_BASELINE: tuple[str, ...] = (
     "FREE_TEST",
     "STATIC_CALIB",
-    "STAND_30S",
-    "WALK_1P0_30S",
+    "START_STAND_30S",
+    "START_WALK_1P0_30S",
+    "END_STAND_30S",
+    "END_WALK_1P0_30S",
 )
 PHASE_2_STEADY: tuple[str, ...] = (
     "WALK_0P6",

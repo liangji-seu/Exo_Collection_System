@@ -99,8 +99,8 @@ class SessionRecord:
 
         只有显式静态标定（``STATIC_CALIB``）或
         ``condition_parameters.category == "test_static_calibration"`` 的工况算静态。
-        基础工况「静止站立 30s」（``STAND_30S_*``）与旧协议 ``STAND`` 均属正常动态
-        工况，应进入「需要解算」分组，不再当作静态标定。
+        基础工况「静止站立 30s」（``STAND_30S_*`` / 开始·结束 ``*_STAND_30S_*``）与
+        旧协议 ``STAND`` 均属正常动态工况，应进入「需要解算」分组，不再当作静态标定。
         """
         return self.is_explicit_static_calibration
 
@@ -109,7 +109,7 @@ class SessionRecord:
         """是否为显式静态标定试次（``STATIC_CALIB``）。
 
         静态标定只由显式 ``STATIC_CALIB`` 表示；旧协议的 ``STAND``/``STAND_30S_*``
-        基线站立不再是静态标定。
+        以及开始/结束 ``*_STAND_30S_*`` 基线站立不再是静态标定。
         """
         if (self.condition_code or "").upper() == "STATIC_CALIB":
             return True
@@ -118,9 +118,17 @@ class SessionRecord:
 
     @property
     def is_quiet_standing(self) -> bool:
-        """是否为需要反解的静止双脚站立工况，而非静态标定。"""
+        """是否为需要反解的静止双脚站立工况，而非静态标定。
+
+        识别旧协议 ``STAND`` / ``STAND_30S_*`` 与新增的开始/结束站立
+        （``START_STAND_30S_*`` / ``END_STAND_30S_*``）；行走码不受影响。
+        """
         code = (self.condition_code or "").upper()
-        return code == "STAND" or code.startswith("STAND_30S")
+        for suffix in ("_NOEXO", "_EXO"):
+            if code.endswith(suffix):
+                code = code[: -len(suffix)]
+                break
+        return code == "STAND" or code.endswith("STAND_30S")
 
     @property
     def subject_and_condition(self) -> str:

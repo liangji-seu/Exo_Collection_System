@@ -1572,7 +1572,7 @@ def test_collector_locks_condition_polls_events_and_finalizes(
     assert request.subject_code == "007"
     assert request.operator == "not_recorded"
     assert request.condition_code == "FREE_TEST"
-    assert request.protocol_version == "1.2.0"
+    assert request.protocol_version == "1.3.0"
     assert request.condition_parameters == {
         "category": "test_free",
         "recommended_trial_count": 1,
@@ -2019,10 +2019,10 @@ def test_condition_combo_exposes_phase_conditions(
         assert squat_noexo_bg == QColor("#dbeafe")
         assert squat_exo_bg == QColor("#ffe4c8")
 
-        # 第二期：基础 6 条（随意测试/静态标定 + 静止站立/1.0 走 30s）。
+        # 第二期：基础 10 条（随意测试/静态标定 + 开始/结束 × 站立/行走 30s）。
         window.phase_combo.setCurrentIndex(1)
         select_category("BASELINE")
-        assert window.condition_combo.count() == 6
+        assert window.condition_combo.count() == 10
 
         # 第二期稳态：标准平地/坡 + 详细地形矩阵（110 条），WALK 仍浅蓝/浅橙。
         select_category("STEADY_STATE")

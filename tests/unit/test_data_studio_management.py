@@ -172,8 +172,8 @@ def dataset(tmp_path: Path) -> tuple[Path, dict[str, Path]]:
             subject_uuid=subject_1,
             subject_code="001",
             session_uuid=session_1,
-            condition_code="STAND_30S_NOEXO",
-            condition_name="静止站立",
+            condition_code="START_STAND_30S_NOEXO",
+            condition_name="开始-静止站立30s",
             repeat_index=1,
             quality=QualityGrade.A,
             started_at=BASE_TIME,
@@ -291,7 +291,7 @@ def test_manifest_index_and_composable_filters(
         index.records,
         TrialFilter(projects=("正式",), qualities=("A",)),
     )
-    assert [item.condition_code for item in combined] == ["STAND_30S_NOEXO"]
+    assert [item.condition_code for item in combined] == ["START_STAND_30S_NOEXO"]
     with pytest.raises(ValidationError, match="end_date"):
         TrialFilter(start_date=date(2026, 7, 2), end_date=date(2026, 7, 1))
 
@@ -326,7 +326,10 @@ def test_verified_sidecars_coverage_and_state_summary(
     formal = next(item for item in coverage if item.project_code == "F")
     assert formal.total_trial_count == 3
     assert formal.valid_trial_count == 3
-    assert formal.completed_condition_codes == ("STAND_30S_NOEXO", "WALK_1P0_NOEXO")
+    assert formal.completed_condition_codes == (
+        "START_STAND_30S_NOEXO",
+        "WALK_1P0_NOEXO",
+    )
     walk = next(
         item for item in formal.conditions if item.condition_code == "WALK_1P0_NOEXO"
     )
@@ -360,7 +363,7 @@ def test_verified_sidecars_coverage_and_state_summary(
 @pytest.mark.parametrize(
     ("project_code", "condition_level", "expected_count"),
     [
-        ("F_BASE", "BASELINE", 4),
+        ("F_BASE", "BASELINE", 8),
         ("F_STEADY", "STEADY_STATE", 110),
         ("F_TRANSIENT", "TRANSIENT", 8),
         ("F_SPECIAL", "SPECIAL", 16),

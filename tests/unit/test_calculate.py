@@ -420,6 +420,13 @@ def test_session_record_is_stand_detection() -> None:
     assert not _make_session(condition="STAND_30S_NOEXO").is_stand
     assert _make_session(condition="STAND_30S_NOEXO").is_quiet_standing
     assert _make_session(condition="STAND").is_quiet_standing
+    # 新增开始/结束站立：仍是正常动态工况，且属于静止站立。
+    for code in ("START_STAND_30S_NOEXO", "END_STAND_30S_NOEXO"):
+        assert not _make_session(condition=code).is_stand
+        assert _make_session(condition=code).is_quiet_standing
+    # 新增开始/结束行走：动态工况，但不是静止站立。
+    assert not _make_session(condition="START_WALK_1P0_30S_NOEXO").is_stand
+    assert not _make_session(condition="START_WALK_1P0_30S_NOEXO").is_quiet_standing
     assert _make_session(condition="STATIC_CALIB").is_stand
     assert not _make_session(condition="STATIC_CALIB").is_quiet_standing
     assert not _make_session(condition="WALK_STEADY_1P00").is_stand
@@ -436,6 +443,8 @@ def test_session_record_explicit_static_calibration_flag() -> None:
 
     assert not _make_session(condition="STAND").is_explicit_static_calibration
     assert not _make_session(condition="STAND_30S_NOEXO").is_explicit_static_calibration
+    assert not _make_session(condition="START_STAND_30S_NOEXO").is_explicit_static_calibration
+    assert not _make_session(condition="END_STAND_30S_NOEXO").is_explicit_static_calibration
     assert _make_session(condition="STATIC_CALIB").is_explicit_static_calibration
     assert replace(
         _make_session(condition="HELEN_HAYES"),

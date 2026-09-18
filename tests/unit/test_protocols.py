@@ -11,15 +11,19 @@ from exo_collection.protocols import load_default_protocol, load_protocol
 def test_default_protocol_is_versioned_and_has_unique_conditions() -> None:
     protocol = load_default_protocol()
     assert protocol.schema_version == "1.0.0"
-    assert protocol.protocol_version == "1.2.0"
-    assert len(protocol.conditions) == 140
+    assert protocol.protocol_version == "1.3.0"
+    assert len(protocol.conditions) == 144
     assert {condition.condition_code for condition in protocol.conditions} == {
         "FREE_TEST",
         "STATIC_CALIB",
-        "STAND_30S_NOEXO",
-        "STAND_30S_EXO",
-        "WALK_1P0_30S_NOEXO",
-        "WALK_1P0_30S_EXO",
+        "START_STAND_30S_NOEXO",
+        "START_STAND_30S_EXO",
+        "START_WALK_1P0_30S_NOEXO",
+        "START_WALK_1P0_30S_EXO",
+        "END_STAND_30S_NOEXO",
+        "END_STAND_30S_EXO",
+        "END_WALK_1P0_30S_NOEXO",
+        "END_WALK_1P0_30S_EXO",
         "WALK_0P6_NOEXO",
         "WALK_0P6_EXO",
         "WALK_1P0_NOEXO",
@@ -167,7 +171,8 @@ def test_default_protocol_is_versioned_and_has_unique_conditions() -> None:
         "slope_deg": 5,
         "exo": True,
     }
-    assert by_code["STAND_30S_NOEXO"].parameters["exo"] is False
+    assert by_code["START_STAND_30S_NOEXO"].parameters["exo"] is False
+    assert by_code["END_STAND_30S_EXO"].parameters["exo"] is True
     assert (
         by_code["SQUAT_STD_EXO"].parameters["description"]
         == "蹲下，保持3s，站起，共5s"

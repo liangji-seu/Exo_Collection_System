@@ -31,6 +31,7 @@ from exo_collection.apps.data_studio.service import load_catalog_snapshot
 from exo_collection.apps.data_studio.window import DataStudioWindow
 from exo_collection.domain.models import ArtifactKind, Condition, QualityGrade
 from exo_collection.domain.states import TrialState
+from exo_collection.protocols import load_default_protocol
 from exo_collection.storage.activity import AcquisitionLock
 from exo_collection.storage.checksum import sha256_file, write_checksum_manifest
 from exo_collection.storage.manifest import (
@@ -411,7 +412,9 @@ def test_management_summary_and_filtered_export_are_wired_to_workers(
     assert isinstance(dialog.result, ManagementSummaryResult)
     assert "FINALIZED：3" in dialog.state_summary_label.text()
     coverage = dialog.findChild(QTableWidget, "management_coverage_table")
-    assert coverage is not None and coverage.rowCount() == 26
+    assert coverage is not None
+    # 旧版正式项目（"F"）覆盖完整协议，因此覆盖表应展示全部协议工况。
+    assert coverage.rowCount() == len(load_default_protocol().conditions)
     walk_rows = [
         row
         for row in range(coverage.rowCount())
