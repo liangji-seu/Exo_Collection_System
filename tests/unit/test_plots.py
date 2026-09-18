@@ -140,3 +140,59 @@ def test_time_series_plot_draws_prompt_marker_lines() -> None:
     # SUBJECT→虚线，OPERATOR/BUTTON→实线。
     assert lines[0].pen.style() == Qt.PenStyle.DashLine
     assert lines[1].pen.style() == Qt.PenStyle.SolidLine
+
+
+def test_time_series_plot_colors_prompt_markers_by_name() -> None:
+    app = QApplication.instance() or QApplication(["timeseries-prompt-named"])
+    time_s = np.arange(0.0, 30.0, 0.01, dtype=np.float64)
+    values = np.sin(time_s)[:, None]
+    plot = TimeSeriesPlot("信号", time_s, values, ("ch_1",), window_s=10.0)
+
+    events = (
+        PromptLabelPlaybackEvent(
+            time_s=12.0, source=PromptLabelSource.SUBJECT, label="受试者标签", key="<", name="start"
+        ),
+        PromptLabelPlaybackEvent(
+            time_s=15.0, source=PromptLabelSource.OPERATOR, label="工作人员标签", key=">", name="nan"
+        ),
+    )
+    plot.set_prompt_events(events)
+    plot.set_time(15.0, cycle_start_s=10.0)
+
+    lines = plot._prompt_lines
+    assert len(lines) == 2
+    # 名称追加进 tooltip，start 绿 / nan 灰虚线。
+    assert lines[0].toolTip() == "受试者标签（<） · start · t=12.000 s"
+    assert lines[1].toolTip() == "工作人员标签（>） · nan · t=15.000 s"
+    assert lines[0].pen.color().name() == "#16a34a"
+    assert lines[1].pen.color().name() == "#9ca3af"
+    assert lines[1].pen.style() == Qt.PenStyle.DashLine
+
+
+def test_time_series_plot_emits_prompt_clicked_signal() -> None:
+    app = QApplication.instance() or QApplication(["timeseries-prompt-click"])
+    time_s = np.arange(0.0, 30.0, 0.01, dtype=np.float64)
+    values = np.sin(time_s)[:, None]
+    plot = TimeSeriesPlot("信号", time_s, values, ("ch_1",), window_s=10.0)
+
+    events = (
+        PromptLabelPlaybackEvent(
+            time_s=12.0, source=PromptLabelSource.SUBJECT, label="受试者标签", key="<", sequence=0
+        ),
+        PromptLabelPlaybackEvent(
+            time_s=15.0, source=PromptLabelSource.OPERATOR, label="工作人员标签", key=">", sequence=1
+        ),
+    )
+    plot.set_prompt_events(events)
+    plot.set_time(15.0, cycle_start_s=10.0)
+
+    clicked: list[object] = []
+    plot.prompt_clicked.connect(clicked.append)
+
+    # 模拟点中第一条竖线：InfiniteLine.sigClicked(self, ev)。
+    line = plot._prompt_lines[0]
+    line.sigClicked.emit(line, None)
+
+    assert len(clicked) == 1
+    assert clicked[0] is events[0]
+    assert clicked[0].sequence == 0

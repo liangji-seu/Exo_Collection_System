@@ -12,9 +12,11 @@ antialiased on a light background.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 
 from exo_collection.domain.prompt_labels import PromptLabelSource
 
@@ -36,6 +38,13 @@ _PLOT_COLORS = (
 _EVENT_PEN_BY_SIDE = {"right": "#0072B2", "left": "#D55E00"}
 _EVENT_SIDE_LABEL = {"right": "右", "left": "左"}
 _EVENT_KIND_LABEL = {"heel_strike": "足跟触地", "toe_off": "足尖离地"}
+
+# 按键打标的语义名配色：start 绿 / end 蓝 / nan 灰（虚线），未命名沿用红。
+_PROMPT_NAME_PEN = {
+    "start": ("#16a34a", Qt.PenStyle.SolidLine),
+    "end": ("#2563eb", Qt.PenStyle.SolidLine),
+    "nan": ("#9ca3af", Qt.PenStyle.DashLine),
+}
 
 
 def _event_label(event: GaitEvent) -> str:
@@ -91,8 +100,12 @@ def update_prompt_marker_lines(
     current_s: float,
     cycle_start_s: float,
     window_s: float,
+    on_clicked: Callable[[PromptLabelPlaybackEvent], None] | None = None,
 ) -> None:
-    """在当前循环窗内画按键打标竖线；复用已有线，多余隐藏。"""
+    """在当前循环窗内画按键打标竖线；复用已有线，多余隐藏。
+
+    ``on_clicked`` 非空时，点中某条打标竖线会回调该事件（用于直接弹出标注）。
+    """
     visible = tuple(
         event
         for event in events
@@ -101,33 +114,52 @@ def update_prompt_marker_lines(
     while len(lines) < len(visible):
         line = pg.InfiniteLine(pos=0.0, angle=90, movable=False)
         line.setZValue(95)
+        # 打标竖线本身只有 1.6px，很难点中；给 hoverPen 加宽会撑大
+        # boundingRect/shape（点击判定区域），而 movable=False 已关闭 hover 事件，
+        # 故该笔不会实际渲染，只是扩大可点范围。
+        line.setHoverPen(pg.mkPen("#ff0000", width=8))
+        line._prompt_event = None
+        if on_clicked is not None:
+            line.sigClicked.connect(
+                lambda _line, _ev, ln=line: (
+                    on_clicked(ln._prompt_event)
+                    if ln._prompt_event is not None
+                    else None
+                )
+            )
         plot.addItem(line)
         lines.append(line)
     for index, line in enumerate(lines):
         if index >= len(visible):
+            line._prompt_event = None
             line.hide()
             continue
         event = visible[index]
-        line.setPen(
-            pg.mkPen(
-                "#ff0000",
-                width=1.6,
-                style=(
-                    Qt.PenStyle.DashLine
-                    if event.source is PromptLabelSource.SUBJECT
-                    else Qt.PenStyle.SolidLine
-                ),
+        line._prompt_event = event
+        if event.name:
+            color, style = _PROMPT_NAME_PEN.get(
+                event.name, ("#ff0000", Qt.PenStyle.SolidLine)
             )
-        )
+        else:
+            color, style = "#ff0000", (
+                Qt.PenStyle.DashLine
+                if event.source is PromptLabelSource.SUBJECT
+                else Qt.PenStyle.SolidLine
+            )
+        line.setPen(pg.mkPen(color, width=1.6, style=style))
         line.setPos((event.time_s - cycle_start_s) % window_s)
+        suffix = f" · {event.name}" if event.name else ""
         line.setToolTip(
-            f"{event.label}（{event.key}） · t={event.time_s:.3f} s"
+            f"{event.label}（{event.key}）{suffix} · t={event.time_s:.3f} s"
         )
         line.show()
 
 
 class TimeSeriesPlot(pg.PlotWidget):
     """One or more channels on a shared real-time axis with a vertical cursor."""
+
+    # 点中某条按键打标竖线时发出，携带被点的 PromptLabelPlaybackEvent。
+    prompt_clicked = Signal(object)
 
     def __init__(
         self,
@@ -228,6 +260,9 @@ class TimeSeriesPlot(pg.PlotWidget):
         """设置（或清空）本图上的按键打标竖线；下次 :meth:`set_time` 摆位。"""
         self._prompt_events = tuple(events)
 
+    def _on_prompt_clicked(self, event: PromptLabelPlaybackEvent) -> None:
+        self.prompt_clicked.emit(event)
+
     def set_time(self, current_s: float, cycle_start_s: float | None = None) -> None:
         """Advance the sweep cursor.
 
@@ -262,6 +297,7 @@ class TimeSeriesPlot(pg.PlotWidget):
                 current_s=current,
                 cycle_start_s=left,
                 window_s=self._window_s,
+                on_clicked=self._on_prompt_clicked,
             )
             if not self._times.size:
                 for curve in self._curves:

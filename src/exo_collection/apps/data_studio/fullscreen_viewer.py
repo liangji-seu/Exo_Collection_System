@@ -37,6 +37,11 @@ from PySide6.QtWidgets import (
 )
 
 from exo_collection.apps.collector.preview_workspace import PreviewWorkspace
+from exo_collection.domain.prompt_annotations import (
+    AddedPromptLabelEvent,
+    PromptName,
+    write_added_prompt_labels,
+)
 from .local_dialogs import (
     _SweepWaterfallPlot,
     _encoder_side_groups,
@@ -45,8 +50,12 @@ from .local_dialogs import (
 from .gait_baseline import build_hip_baseline
 from .gait_events import GaitEvent, detect_gait_events
 from .opensim_overlay import HipValidation, load_hip_validation
-from .local_tools import MocapPlayback, TrialPlayback
+from .local_tools import MocapPlayback, PromptLabelPlaybackEvent, TrialPlayback
 from .plots import TimeSeriesPlot
+from .prompt_annotation_dialog import (
+    AddPromptLabelDialog,
+    PromptAnnotationDialog,
+)
 
 _WINDOW_SECONDS = 10.0
 
@@ -263,9 +272,11 @@ class FullscreenViewer(PreviewWorkspace):
         self._window_s = min(_WINDOW_SECONDS, max(1.0, total_span))
         self._panels: list[object] = []
         self._gait_events: tuple[GaitEvent, ...] = self._compute_gait_events()
+        self._prompt_events: tuple[PromptLabelPlaybackEvent, ...] = playback.prompt_labels
 
         self._build_timeline()
         self._build_panels()
+        self._connect_prompt_click_handlers()
         self._apply_gait_events()
         self._apply_prompt_markers()
         self._timer = QTimer(self)
@@ -302,6 +313,17 @@ class FullscreenViewer(PreviewWorkspace):
         self._gait_events_check.setChecked(True)
         self._gait_events_check.toggled.connect(self._toggle_gait_events)
         toolbar.addWidget(self._gait_events_check)
+        self._add_button = QPushButton("增加打标")
+        self._add_button.setObjectName("fullscreen_prompt_add")
+        self._add_button.clicked.connect(self._add_prompt_label)
+        toolbar.addWidget(self._add_button)
+        self._annotate_button = QPushButton("标注打标")
+        self._annotate_button.setObjectName("fullscreen_prompt_annotate")
+        self._annotate_button.clicked.connect(
+            lambda _checked=False: self._annotate_prompt_labels()
+        )
+        self._annotate_button.setEnabled(bool(self._prompt_events))
+        toolbar.addWidget(self._annotate_button)
         self._export_button = QPushButton("导出图片")
         self._export_button.setObjectName("fullscreen_export_image")
         self._export_button.clicked.connect(self._export_image)
@@ -578,7 +600,75 @@ class FullscreenViewer(PreviewWorkspace):
     def _apply_prompt_markers(self) -> None:
         for panel in self._panels:
             if isinstance(panel, (TimeSeriesPlot, _SweepWaterfallPlot)):
-                panel.set_prompt_events(self.playback.prompt_labels)
+                panel.set_prompt_events(self._prompt_events)
+
+    def _connect_prompt_click_handlers(self) -> None:
+        for panel in self._panels:
+            if isinstance(panel, (TimeSeriesPlot, _SweepWaterfallPlot)):
+                panel.prompt_clicked.connect(self._on_prompt_marker_clicked)
+
+    def _on_prompt_marker_clicked(self, event: PromptLabelPlaybackEvent) -> None:
+        self._annotate_prompt_labels(highlight=event)
+
+    def _annotate_prompt_labels(
+        self, highlight: PromptLabelPlaybackEvent | None = None
+    ) -> None:
+        dialog = PromptAnnotationDialog(
+            self._trial_root(),
+            self.playback.trial_uuid,
+            self._prompt_events,
+            self,
+            highlight_event=highlight,
+        )
+        dialog.exec()
+        updated = dialog.result_events()
+        if updated is None:
+            return
+        self._prompt_events = updated
+        self._apply_prompt_markers()
+        self.set_playback_time(self._current_time)
+
+    def _add_prompt_label(self) -> None:
+        dialog = AddPromptLabelDialog(self._current_time, self)
+        dialog.exec()
+        source = dialog.selected_source()
+        if source is None:
+            return
+        event = PromptLabelPlaybackEvent(
+            time_s=self._current_time,
+            source=source,
+            label=source.display_name,
+            key=source.key_text,
+            sequence=-1,
+            name=None,
+            added=True,
+        )
+        self._prompt_events = tuple(
+            sorted(
+                (*self._prompt_events, event),
+                key=lambda e: (e.time_s, not e.added),
+            )
+        )
+        self._write_added_prompt_labels()
+        self._annotate_button.setEnabled(True)
+        self._apply_prompt_markers()
+        self.set_playback_time(self._current_time)
+
+    def _write_added_prompt_labels(self) -> None:
+        """把当前工作集里的补录事件写回 ``prompt_added_labels.json`` 边车。"""
+        write_added_prompt_labels(
+            self._trial_root(),
+            self.playback.trial_uuid,
+            [
+                AddedPromptLabelEvent(
+                    time_s=event.time_s,
+                    source=event.source,
+                    name=PromptName(event.name) if event.name else None,
+                )
+                for event in self._prompt_events
+                if event.added
+            ],
+        )
 
     def _toggle_gait_events(self, checked: bool) -> None:
         self._apply_gait_events(checked)

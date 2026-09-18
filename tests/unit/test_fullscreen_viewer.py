@@ -23,6 +23,9 @@ from exo_collection.apps.data_studio.local_tools import (
     _read_moment_csv,
 )
 from exo_collection.apps.data_studio.plots import TimeSeriesPlot
+from exo_collection.apps.data_studio.prompt_annotation_dialog import (
+    AddPromptLabelDialog,
+)
 from exo_collection.domain.prompt_labels import PromptLabelSource
 from exo_collection.writers import Hdf5SignalWriter
 
@@ -531,3 +534,70 @@ def test_fullscreen_viewer_applies_prompt_markers_to_signal_plots() -> None:
 
     viewer.close()
     app.processEvents()
+
+
+def test_fullscreen_viewer_annotate_button_state() -> None:
+    app = QApplication.instance() or QApplication(["test-prompt-annotate"])
+    labels = (
+        PromptLabelPlaybackEvent(
+            time_s=0.3, source=PromptLabelSource.SUBJECT, label="左", key="<", sequence=0
+        ),
+    )
+    base = dict(
+        manifest_path=Path("manifest.json"),
+        trial_uuid="00000000-0000-0000-0000-000000000021",
+        condition_code="WALK_LEVEL",
+        formal_t0_host_monotonic_ns=0,
+        ultrasound=None,
+        imu=None,
+        encoder=None,
+        sync=None,
+        sync_trigger_times_s=np.empty(0),
+        mocap=None,
+        moment=None,
+    )
+    viewer = FullscreenViewer(TrialPlayback(**base, prompt_labels=labels))
+    assert viewer._annotate_button is not None
+    assert viewer._annotate_button.objectName() == "fullscreen_prompt_annotate"
+    assert viewer._annotate_button.isEnabled()
+    viewer.close()
+    app.processEvents()
+
+    empty = FullscreenViewer(TrialPlayback(**base, prompt_labels=()))
+    assert not empty._annotate_button.isEnabled()
+    empty.close()
+    app.processEvents()
+
+
+def test_fullscreen_viewer_add_button_always_enabled() -> None:
+    app = QApplication.instance() or QApplication(["test-prompt-add"])
+    base = dict(
+        manifest_path=Path("manifest.json"),
+        trial_uuid="00000000-0000-0000-0000-000000000022",
+        condition_code="WALK_LEVEL",
+        formal_t0_host_monotonic_ns=0,
+        ultrasound=None,
+        imu=None,
+        encoder=None,
+        sync=None,
+        sync_trigger_times_s=np.empty(0),
+        mocap=None,
+        moment=None,
+    )
+    # 即使本 Trial 没有原始打标，也能补录。
+    viewer = FullscreenViewer(TrialPlayback(**base, prompt_labels=()))
+    assert viewer._add_button is not None
+    assert viewer._add_button.objectName() == "fullscreen_prompt_add"
+    assert viewer._add_button.isEnabled()
+    viewer.close()
+    app.processEvents()
+
+
+def test_add_prompt_label_dialog_selects_source() -> None:
+    app = QApplication.instance() or QApplication(["test-prompt-add-dialog"])
+    dialog = AddPromptLabelDialog(1.234)
+    assert dialog._source_combo.count() == 3
+    assert dialog.selected_source() is None
+    dialog._source_combo.setCurrentIndex(1)
+    dialog._on_accept()
+    assert dialog.selected_source() is PromptLabelSource.OPERATOR

@@ -58,6 +58,12 @@ from exo_collection.apps.data_studio.quality_reviews import (
     list_quality_reviews,
 )
 from exo_collection.domain.models import ArtifactKind, Condition, QualityGrade
+from exo_collection.domain.prompt_annotations import (
+    AddedPromptLabelEvent,
+    PromptName,
+    write_added_prompt_labels,
+)
+from exo_collection.domain.prompt_labels import PromptLabelSource
 from exo_collection.domain.states import TrialState
 from exo_collection.storage.activity import AcquisitionLock
 from exo_collection.storage.checksum import sha256_file, write_checksum_manifest
@@ -342,6 +348,37 @@ def test_playback_is_bounded_and_contains_all_four_modalities(tmp_path: Path) ->
     assert playback.sync is not None and playback.sync.values.shape == (20, 1)
     assert playback.emg is not None and playback.emg.values.shape == (20, 4)
     np.testing.assert_allclose(playback.sync_trigger_times_s, [0.5])
+
+
+def test_playback_merges_added_prompt_labels(tmp_path: Path) -> None:
+    manifest_path, manifest = _build_finalized_trial(tmp_path)
+    write_added_prompt_labels(
+        manifest_path.parent,
+        manifest.trial_uuid,
+        [
+            AddedPromptLabelEvent(time_s=1.5, source=PromptLabelSource.OPERATOR),
+            AddedPromptLabelEvent(
+                time_s=0.5, source=PromptLabelSource.SUBJECT, name=PromptName.START
+            ),
+        ],
+    )
+    playback = load_trial_playback(
+        manifest_path,
+        data_root=tmp_path,
+        max_signal_points=20,
+        max_ultrasound_frames=10,
+        max_ultrasound_depth_points=16,
+    )
+
+    added = [event for event in playback.prompt_labels if event.added]
+    assert len(added) == 2
+    assert [event.time_s for event in added] == [0.5, 1.5]  # 按时间排序
+    assert added[0].source is PromptLabelSource.SUBJECT
+    assert added[0].name == "start"
+    assert added[0].key == "<"
+    assert added[0].label == "受试者标签"
+    assert added[1].source is PromptLabelSource.OPERATOR
+    assert added[1].name is None
 
 
 def test_emg_playback_keeps_more_points_than_shared_signal_budget(

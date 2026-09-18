@@ -8,7 +8,7 @@ from time import perf_counter
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QRectF, QSignalBlocker, Qt, QTimer
+from PySide6.QtCore import QRectF, QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -424,6 +424,9 @@ class QualityAuditDialog(QDialog):
 class _SweepWaterfallPlot(pg.PlotWidget):
     """One ultrasound channel rendered as a fixed cyclic time/depth image."""
 
+    # 点中某条按键打标竖线时发出，携带被点的 PromptLabelPlaybackEvent。
+    prompt_clicked = Signal(object)
+
     def __init__(
         self,
         title: str,
@@ -492,6 +495,9 @@ class _SweepWaterfallPlot(pg.PlotWidget):
     def set_prompt_events(self, events: tuple[PromptLabelPlaybackEvent, ...]) -> None:
         """设置（或清空）本瀑布图上的按键打标竖线。"""
         self._prompt_labels = tuple(events)
+
+    def _on_prompt_clicked(self, event: PromptLabelPlaybackEvent) -> None:
+        self.prompt_clicked.emit(event)
 
     def update_time(self, current_s: float, cycle_start_s: float) -> None:
         phase = min(max(float(current_s - cycle_start_s), 0.0), self._window_s)
@@ -563,6 +569,7 @@ class _SweepWaterfallPlot(pg.PlotWidget):
             current_s=current_s,
             cycle_start_s=cycle_start_s,
             window_s=self._window_s,
+            on_clicked=self._on_prompt_clicked,
         )
         update_event_marker_lines(
             self,

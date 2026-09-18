@@ -25,6 +25,10 @@ from exo_collection.adapters.ultrasound.raw_ethernet import (
     decode_raw_ethernet_flags,
 )
 from exo_collection.domain.states import TrialState
+from exo_collection.domain.prompt_annotations import (
+    load_added_prompt_labels,
+    load_prompt_annotations,
+)
 from exo_collection.domain.prompt_labels import (
     PromptLabelSource,
     load_prompt_label_events,
@@ -90,6 +94,13 @@ class PromptLabelPlaybackEvent:
     source: PromptLabelSource
     label: str
     key: str
+    # 原始 ``PromptLabelEvent.sequence``（从 0 连续），用于与命名标注边车关联；
+    # 手动补录的事件无原始 sequence，恒为 -1。
+    sequence: int = -1
+    # 语义名（start / end / nan），来自 ``prompt_annotations.json`` 边车；未标注为 None。
+    name: str | None = None
+    # True 表示手动补录的事件（存于 ``prompt_added_labels.json`` 边车）。
+    added: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -1397,7 +1408,7 @@ def load_trial_playback(
                 )
                 break
 
-    prompt_labels: tuple[PromptLabelPlaybackEvent, ...] = ()
+    prompt_labels: list[PromptLabelPlaybackEvent] = []
     prompt_relative = _artifact_for(
         manifest,
         modality="prompt_label",
@@ -1412,12 +1423,15 @@ def load_trial_playback(
                 raise DataStudioToolError(
                     "人工标签 Artifact 的 Trial UUID 与 Manifest 不一致。"
                 )
-        prompt_labels = tuple(
+        name_by_sequence = load_prompt_annotations(trial_root)
+        prompt_labels.extend(
             PromptLabelPlaybackEvent(
                 time_s=(event.host_monotonic_ns - formal_t0_ns) / 1e9,
                 source=event.source,
                 label=event.label,
                 key=event.key,
+                sequence=event.sequence,
+                name=name_by_sequence.get(event.sequence),
             )
             for event in raw_prompt_events
         )
@@ -1434,6 +1448,23 @@ def load_trial_playback(
             ),
         )
 
+    # 手动补录的打标事件与原始标签无关，即使本 Trial 没有原始标签也可能存在。
+    for added in load_added_prompt_labels(trial_root):
+        prompt_labels.append(
+            PromptLabelPlaybackEvent(
+                time_s=added.time_s,
+                source=added.source,
+                label=added.source.display_name,
+                key=added.source.key_text,
+                sequence=-1,
+                name=added.name.value if added.name is not None else None,
+                added=True,
+            )
+        )
+    if prompt_labels:
+        # 补录事件按时间插入；同刻时原始事件排前（stable sort 依赖元组顺序）。
+        prompt_labels.sort(key=lambda event: (event.time_s, not event.added))
+
     _log.info("=== load_trial_playback 完成 ===")
     return TrialPlayback(
         manifest_path=path,
@@ -1449,7 +1480,7 @@ def load_trial_playback(
         moment=moment,
         sync_trigger_times_s=sync_trigger_times,
         imu_sensors=imu_sensors,
-        prompt_labels=prompt_labels,
+        prompt_labels=tuple(prompt_labels),
     )
 
 
