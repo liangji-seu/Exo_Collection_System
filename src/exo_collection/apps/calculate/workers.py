@@ -275,6 +275,7 @@ class PrepWorker(QRunnable):
         sync_confidence: str | None = None,
         sync_quality: dict[str, Any] | None = None,
         marker_adjustment_expert_confirmed: bool = False,
+        quiet_standing: bool = False,
     ) -> None:
         super().__init__()
         self._static_c3d = Path(static_c3d)
@@ -295,6 +296,7 @@ class PrepWorker(QRunnable):
         self._sync_confidence = sync_confidence
         self._sync_quality = sync_quality
         self._marker_adjustment_expert_confirmed = marker_adjustment_expert_confirmed
+        self._quiet_standing = quiet_standing
         self.signals = _WorkerSignals()
 
     def run(self) -> None:
@@ -322,6 +324,7 @@ class PrepWorker(QRunnable):
                 sync_confidence=self._sync_confidence,
                 sync_quality=self._sync_quality,
                 marker_adjustment_expert_confirmed=self._marker_adjustment_expert_confirmed,
+                quiet_standing=self._quiet_standing,
             )
             self.signals.finished.emit(summary)
         except Exception as exc:  # noqa: BLE001 —— 线程边界，必须捕获

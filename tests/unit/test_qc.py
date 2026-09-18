@@ -163,6 +163,21 @@ def test_qc_force_coverage_low_warns() -> None:
     assert verdict["status"] == "WARN"
 
 
+def test_qc_standing_estimated_bilateral_force_is_always_warn() -> None:
+    verdict = _run(force=_force_ok(
+        decomposition_method="estimated_from_total_cop_and_foot_markers",
+        bilateral_force_measured=False,
+        right_load_share_median=0.44,
+    ))
+    assert verdict["status"] == "WARN"
+    source = next(
+        check for check in verdict["checks"]
+        if check["key"] == "force_decomposition_method"
+    )
+    assert source["status"] == "WARN"
+    assert "44.0%" in source["detail"]
+
+
 def test_qc_accepts_raw_run_auto_sync_keys() -> None:
     """直连 ``prepare_session(sync_quality=run_auto_sync(...))`` 时拿到的是
     ``run_auto_sync`` 的原始键（c3d_h5_matched_markers 列表 / c3d_h5_match_rms_mm /

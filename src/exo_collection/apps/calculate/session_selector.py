@@ -1,8 +1,8 @@
 """Session 选择页：受试者 → 动态工况 → 静态标定（自动绑定）。
 
-操作流程按「选受试者 → 自动绑定该受试者最近的 STAND 静态试次 → 选动态工况
-反解」设计：选中受试者后自动推荐静态标定 Session，动态工况下拉只列该受试者
-的非静态工况；用户仍可手动改静态标定（若有多个 STAND 试次）。
+操作流程按「选受试者 → 自动绑定该受试者最近的静态标定试次（STATIC_CALIB）→
+选动态工况反解」设计：选中受试者后自动推荐静态标定 Session，动态工况下拉只列
+该受试者的非静态工况；用户仍可手动改静态标定（若有多个静态标定试次）。
 
 只负责「展示 + 用户选择」，不读 C3D / 大文件；输入检查由 ``check_inputs``
 （只读扫描）在需要时调用。数据发现复用 ``discovery`` 模块。
@@ -294,7 +294,7 @@ class SessionSelector(QWidget):
         if self._static is not None:
             lines.append(f"静态标定：{self._static.subject_and_condition}")
         else:
-            lines.append("静态标定：该受试者未找到 STAND 试次（无法缩放模型）。")
+            lines.append("静态标定：该受试者未找到静态标定试次（无法缩放模型）。")
         self._status_label.setText("\n".join(lines))
 
     def _request_check(self) -> None:

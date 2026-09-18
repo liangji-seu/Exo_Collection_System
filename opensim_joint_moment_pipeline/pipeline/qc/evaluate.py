@@ -227,11 +227,24 @@ def _force_checks(force: dict[str, Any] | None, n_frames: int | None) -> list[di
         status, detail = "WARN", "有效覆盖偏低"
     else:
         status, detail = "PASS", f"右 {n_right} / 左 {n_left} 接触帧"
-    return [_check(
+    checks = [_check(
         "force_coverage", "左右力有效覆盖", ratio, status, "",
         f"≥{FORCE_COVERAGE_WARN_FRAC * 100:.0f}% 正常，<{FORCE_COVERAGE_FAIL_FRAC * 100:.0f}% 失败",
         detail,
     )]
+    if force.get("decomposition_method") == "estimated_from_total_cop_and_foot_markers":
+        share = force.get("right_load_share_median")
+        share_text = f"；右侧中位载荷 {float(share) * 100:.1f}%" if share is not None else ""
+        checks.append(_check(
+            "force_decomposition_method",
+            "左右载荷来源",
+            None,
+            "WARN",
+            "",
+            "站立估计：最多 WARN",
+            "Gaitway 未提供左右分力，按总 COP 与双脚 marker 估计" + share_text,
+        ))
+    return checks
 
 
 def grade_marker_adjustments(refinement: dict[str, Any] | None) -> dict[str, Any]:

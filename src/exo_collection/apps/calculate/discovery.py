@@ -161,9 +161,9 @@ def recommend_static_for_subject(
 ) -> SessionRecord | None:
     """为某受试者推荐静态标定 Session。
 
-    优先 ``STAND`` 工况、有 C3D、日期最近；宁可返回 ``None`` 也不在不同受试者间
-    误用旧静态模型。``day`` 省略时（``_ANY_DAY``）不按天过滤；传入具体 ``int`` 或
-    ``None``（未分日）时只在该采集日内推荐静态。
+    优先显式静态标定工况（``STATIC_CALIB``）、有 C3D、日期最近；宁可返回 ``None``
+    也不在不同受试者间误用旧静态模型。``day`` 省略时（``_ANY_DAY``）不按天过滤；
+    传入具体 ``int`` 或 ``None``（未分日）时只在该采集日内推荐静态。
     """
     candidates = [
         s
@@ -176,12 +176,9 @@ def recommend_static_for_subject(
         candidates = [s for s in candidates if s.day == day]
     if not candidates:
         return None
-    # 显式静态标定（STATIC_CALIB）优先于旧协议的 STAND 基线；同优先级的按日期
-    # 最近优先（started_at_utc 为 ISO 字符串，字典序即时间序）。
-    candidates.sort(
-        key=lambda s: (s.is_explicit_static_calibration, s.started_at_utc),
-        reverse=True,
-    )
+    # 仅显式静态标定是候选；按日期最近优先（started_at_utc 为 ISO 字符串，
+    # 字典序即时间序）。
+    candidates.sort(key=lambda s: s.started_at_utc, reverse=True)
     return candidates[0]
 
 
@@ -250,18 +247,45 @@ def check_inputs(
     # Gaitway TXT
     if dynamic.files.txt_path is not None:
         try:
+            import numpy as np
+
             from pipeline.gaitway import read_gaitway_ascii  # noqa: E402
 
             gaitway = read_gaitway_ascii(dynamic.files.txt_path)
             columns = set(gaitway.columns)
-            bilateral = {"FzL(N)", "FzR(N)", "FyL(N)", "FyR(N)", "FxL(N)", "FxR(N)",
-                         "CoPxL(m)", "CoPyL(m)", "CoPxR(m)", "CoPyR(m)"} <= columns
+            bilateral_columns = {
+                "FzL(N)", "FzR(N)", "FyL(N)", "FyR(N)", "FxL(N)", "FxR(N)",
+                "CoPxL(m)", "CoPyL(m)", "CoPxR(m)", "CoPyR(m)",
+            } <= columns
+            bilateral_values = bilateral_columns and all(
+                np.count_nonzero(np.isfinite(gaitway.columns[name])) >= 2
+                for name in ("FzL(N)", "FzR(N)", "CoPxL(m)", "CoPyL(m)",
+                             "CoPxR(m)", "CoPyR(m)")
+            )
             report_kwargs.update(
                 gaitway_rate_hz=gaitway.sample_rate_hz,
-                gaitway_has_bilateral_columns=bilateral,
+                gaitway_has_bilateral_columns=bilateral_values,
             )
-            if not bilateral:
+            if not bilateral_columns:
                 problems.append("Gaitway TXT 缺少左右脚分解列（FzL/FzR/CoPx/CoPy）")
+            elif not bilateral_values and dynamic.is_quiet_standing:
+                total_values = all(
+                    name in columns
+                    and np.count_nonzero(np.isfinite(gaitway.columns[name])) >= 2
+                    for name in (
+                        "GRFz vertical (N)", "GRFy fore-aft (N)",
+                        "GRFx lateral (N)", "CoPx lateral (m)", "CoPy fore-aft (m)",
+                    )
+                )
+                if total_values:
+                    warnings.append(
+                        "站立记录没有左右分力；将用总 COP 与双脚 marker 估计左右载荷，"
+                        "结果最多评为 WARN"
+                    )
+                else:
+                    problems.append("站立记录既没有有效左右分力，也缺少总合力/总 COP")
+            elif not bilateral_values:
+                problems.append("Gaitway TXT 左右分力/COP 列没有有效数值")
         except Exception as exc:
             problems.append(f"Gaitway TXT 读取失败：{exc}")
 

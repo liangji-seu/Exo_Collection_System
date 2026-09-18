@@ -129,7 +129,7 @@ def test_controller_switching_subject_clears_static() -> None:
     controller = CalculateController(Path("/tmp/data"))
     dynamic = _make_session(subject="001")
     controller.set_dynamic(dynamic)
-    controller.set_static(_make_session(subject="001", condition="STAND"))
+    controller.set_static(_make_session(subject="001", condition="STATIC_CALIB"))
     assert controller.static is not None
 
     # 切到另一个受试者，旧静态模型不能误用。
@@ -306,7 +306,7 @@ def test_operation_token_switch_invalidates_stale() -> None:
 
     controller = CalculateController(Path("/tmp/data"))
     controller.set_dynamic(_make_session(subject="003"))
-    controller.set_static(_make_session(subject="003", condition="STAND"))
+    controller.set_static(_make_session(subject="003", condition="STATIC_CALIB"))
 
     ctx = controller.begin_operation("sync")
     assert controller.is_current_operation(ctx)
@@ -415,11 +415,15 @@ def test_session_files_missing_and_has_dynamic_inputs(tmp_path: Path) -> None:
 def test_session_record_is_stand_detection() -> None:
     from dataclasses import replace
 
-    assert _make_session(condition="STAND").is_stand
-    assert _make_session(condition="STAND_30S_NOEXO").is_stand
+    # 旧协议 STAND / 基础工况 STAND_30S 是正常动态工况，不再当作静态标定。
+    assert not _make_session(condition="STAND").is_stand
+    assert not _make_session(condition="STAND_30S_NOEXO").is_stand
+    assert _make_session(condition="STAND_30S_NOEXO").is_quiet_standing
+    assert _make_session(condition="STAND").is_quiet_standing
     assert _make_session(condition="STATIC_CALIB").is_stand
+    assert not _make_session(condition="STATIC_CALIB").is_quiet_standing
     assert not _make_session(condition="WALK_STEADY_1P00").is_stand
-    # category 兜底：condition_code 不含 STAND/STATIC/CALIB，但 category 指明静态标定。
+    # category 兜底：condition_code 不含 STATIC_CALIB，但 category 指明静态标定。
     by_category = replace(
         _make_session(condition="HELEN_HAYES"),
         condition_parameters={"category": "test_static_calibration"},
@@ -523,16 +527,16 @@ def test_pipeline_root_frozen_uses_meipass(tmp_path: Path, monkeypatch) -> None:
 
 
 # --------------------------------------------------------------------------
-# 选择流程：受试者 → 自动静态绑定（STAND）→ 动态工况
+# 选择流程：受试者 → 自动静态绑定（STATIC_CALIB）→ 动态工况
 # --------------------------------------------------------------------------
-def _stand_session(subject: str = "003", date: str = "2026-09-01T00:00:00", c3d: bool = True):
+def _static_session(subject: str = "003", date: str = "2026-09-01T00:00:00", c3d: bool = True):
     from dataclasses import replace
 
     from exo_collection.apps.calculate.models import SessionFiles
 
     files = SessionFiles(c3d_path=Path("static.c3d")) if c3d else SessionFiles()
     return replace(
-        _make_session(subject=subject, condition="STAND"),
+        _make_session(subject=subject, condition="STATIC_CALIB"),
         started_at_utc=date,
         files=files,
     )
@@ -542,8 +546,8 @@ def test_recommend_static_for_subject_picks_most_recent() -> None:
     from exo_collection.apps.calculate.discovery import recommend_static_for_subject
 
     sessions = [
-        _stand_session(date="2026-08-01T00:00:00"),
-        _stand_session(date="2026-09-02T00:00:00"),
+        _static_session(date="2026-08-01T00:00:00"),
+        _static_session(date="2026-09-02T00:00:00"),
         _make_session(subject="003", condition="WALK_STEADY_1P00"),
     ]
     chosen = recommend_static_for_subject("003", sessions)
@@ -556,28 +560,35 @@ def test_recommend_static_for_subject_requires_c3d_and_same_subject() -> None:
     from exo_collection.apps.calculate.discovery import recommend_static_for_subject
 
     sessions = [
-        _stand_session(subject="003", c3d=False),   # STAND 但缺 C3D
-        _stand_session(subject="004"),              # 别的受试者
+        _static_session(subject="003", c3d=False),   # 静态标定但缺 C3D
+        _static_session(subject="004"),              # 别的受试者
     ]
     assert recommend_static_for_subject("003", sessions) is None
     assert recommend_static_for_subject("005", sessions) is None
 
 
-def test_recommend_static_prefers_explicit_calibration_over_legacy_stand() -> None:
+def test_recommend_static_ignores_legacy_stand() -> None:
     from dataclasses import replace
 
     from exo_collection.apps.calculate.discovery import recommend_static_for_subject
+    from exo_collection.apps.calculate.models import SessionFiles
 
-    # 受试者同时有旧协议 STAND（日期更新）与显式静态标定 STATIC_CALIB（日期更旧），
-    # 显式标定应胜出，避免把基线站立误当静态模型。
-    legacy_recent = _stand_session(date="2026-09-02T00:00:00")
-    explicit = replace(
-        _stand_session(date="2026-08-01T00:00:00"),
-        condition_code="STATIC_CALIB",
+    # 旧协议 STAND / 基础工况 STAND_30S 不再是静态标定候选：只有显式 STATIC_CALIB
+    # 会被推荐为静态模型。
+    legacy_stand = replace(
+        _make_session(subject="003", condition="STAND_30S_NOEXO"),
+        started_at_utc="2026-09-02T00:00:00",
+        files=SessionFiles(c3d_path=Path("stand.c3d")),
     )
-    chosen = recommend_static_for_subject("003", [legacy_recent, explicit])
+    explicit = _static_session(date="2026-08-01T00:00:00")
+
+    # 同时存在旧 STAND 与显式标定时，只有显式标定被推荐。
+    chosen = recommend_static_for_subject("003", [legacy_stand, explicit])
     assert chosen is not None
     assert chosen.condition_code == "STATIC_CALIB"
+
+    # 仅有旧 STAND 时不再返回静态标定（宁可 None 也不误用基线站立）。
+    assert recommend_static_for_subject("003", [legacy_stand]) is None
 
 
 def test_session_selector_auto_binds_static_and_dynamic(tmp_path: Path, monkeypatch) -> None:
@@ -588,15 +599,15 @@ def test_session_selector_auto_binds_static_and_dynamic(tmp_path: Path, monkeypa
     from exo_collection.apps.calculate import session_selector
 
     sessions = [
-        _stand_session(date="2026-08-01T00:00:00"),
-        _stand_session(date="2026-09-02T00:00:00"),
+        _static_session(date="2026-08-01T00:00:00"),
+        _static_session(date="2026-09-02T00:00:00"),
         _make_session(subject="003", condition="WALK_STEADY_1P00"),
     ]
     monkeypatch.setattr(session_selector, "discover_sessions", lambda root: sessions)
 
     selector = session_selector.SessionSelector(tmp_path)
 
-    # 自动绑定：动态 = 非 STAND 工况，静态 = 最近且带 C3D 的 STAND。
+    # 自动绑定：动态 = 非静态工况，静态 = 最近且带 C3D 的静态标定。
     assert selector.current_dynamic() is not None
     assert not selector.current_dynamic().is_stand
     assert selector.current_static() is not None
@@ -636,8 +647,8 @@ def test_recommend_static_for_subject_day_scoped() -> None:
 
     from exo_collection.apps.calculate.discovery import recommend_static_for_subject
 
-    static_d1 = replace(_stand_session(date="2026-08-01T00:00:00"), day=1)
-    static_d2 = replace(_stand_session(date="2026-09-02T00:00:00"), day=2)
+    static_d1 = replace(_static_session(date="2026-08-01T00:00:00"), day=1)
+    static_d2 = replace(_static_session(date="2026-09-02T00:00:00"), day=2)
     dynamic = replace(_make_session(subject="003", condition="WALK_STEADY_1P00"), day=2)
     sessions = [static_d1, static_d2, dynamic]
 
@@ -658,8 +669,8 @@ def test_session_selector_scopes_by_day(tmp_path: Path, monkeypatch) -> None:
     from exo_collection.apps.calculate import session_selector
 
     sessions = [
-        replace(_stand_session(date="2026-08-01T00:00:00"), day=1),
-        replace(_stand_session(date="2026-09-02T00:00:00"), day=2),
+        replace(_static_session(date="2026-08-01T00:00:00"), day=1),
+        replace(_static_session(date="2026-09-02T00:00:00"), day=2),
         replace(_make_session(subject="003", condition="WALK_STEADY_1P00"), day=1),
         replace(_make_session(subject="003", condition="WALK_FAST_1P50"), day=2),
     ]

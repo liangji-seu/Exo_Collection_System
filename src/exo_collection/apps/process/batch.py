@@ -280,6 +280,7 @@ def solve_one_session(
         opensim_z_sign=opensim_z_sign,
         sync_confidence=confidence,
         sync_quality={**sync, "method": "AUTO_HIGH"},
+        quiet_standing=dynamic.is_quiet_standing,
     )
     manifest_path = Path(summary["manifest_path"])
 

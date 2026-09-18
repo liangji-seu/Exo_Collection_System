@@ -78,6 +78,18 @@ def read_gaitway_ascii(path: str | Path) -> GaitwayAsciiData:
         name: pd.to_numeric(frame[name], errors="coerce").to_numpy(dtype=np.float64)
         for name in required
     }
+    # 站立工况下 Gaitway 不执行步态事件分脚，FzL/FzR 与左右 COP 会全部为 NaN，
+    # 但总合力/总 COP 仍然有效。保留这些可选列，供站立专用的可审计估计使用。
+    for name in (
+        "GRFy fore-aft (N)",
+        "GRFx lateral (N)",
+        "CoPx lateral (m)",
+        "CoPy fore-aft (m)",
+    ):
+        if name in frame.columns:
+            columns[name] = pd.to_numeric(frame[name], errors="coerce").to_numpy(
+                dtype=np.float64
+            )
     if "Grade (%)" in frame.columns:
         columns["Grade (%)"] = pd.to_numeric(frame["Grade (%)"], errors="coerce").to_numpy(dtype=np.float64)
     return GaitwayAsciiData(source, metadata, columns.pop("Time (s)"), columns)
@@ -167,6 +179,7 @@ def build_bilateral_grf(
     opensim_z_sign: float = 1.0,
     require_grade: bool = False,
     rear_axis_mocap: np.ndarray = REAR_AXIS_MOCAP,
+    standing_foot_centers_opensim_m: dict[str, np.ndarray] | None = None,
 ) -> tuple[list[dict], np.ndarray, dict]:
     """把 gaitway 原生左右力抗混叠降采样到 mocap 时间并旋转到 OpenSim。
 
@@ -205,6 +218,32 @@ def build_bilateral_grf(
         cutoff_hz is not None and float(cutoff_hz) > 0
         and float(cutoff_hz) < native_rate / 2.0
     )
+
+    bilateral_available = any(
+        np.isfinite(gaitway.columns[f"Fz{side}(N)"]).any() for side in ("R", "L")
+    )
+    if not bilateral_available:
+        if standing_foot_centers_opensim_m is None:
+            raise ValueError(
+                "Gaitway 左右分力 FzL/FzR 全部缺失；该记录若为静止站立，"
+                "必须启用总 COP + 双脚 marker 的站立载荷估计"
+            )
+        return _build_standing_grf_from_total(
+            gaitway,
+            query,
+            in_bounds,
+            R,
+            np.asarray(R_fp_to_mocap, dtype=np.float64),
+            grade,
+            grade_source,
+            standing_foot_centers_opensim_m,
+            force_time_offset_s=force_time_offset_s,
+            force_threshold_N=force_threshold_N,
+            cutoff_hz=cutoff_hz,
+            opensim_x_sign=opensim_x_sign,
+            opensim_z_sign=opensim_z_sign,
+            rear_axis_mocap=rear_axis_mocap,
+        )
 
     feet: list[dict] = []
     contacts: dict[str, np.ndarray] = {}
@@ -281,7 +320,185 @@ def build_bilateral_grf(
         "n_valid_decomposed_frames": int(decomposition_valid.sum()),
         "n_right_contact_frames": int(contacts["right"].sum()),
         "n_left_contact_frames": int(contacts["left"].sum()),
+        "decomposition_method": "native_bilateral",
+        "bilateral_force_measured": True,
         "total_fz_min_N": float(np.min(total_fz[in_bounds])),
         "total_fz_max_N": float(np.max(total_fz[in_bounds])),
     }
     return feet, decomposition_valid, qc
+
+
+def _fill_marker_gaps(values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """逐列插值短暂 marker 缺失，并返回原始帧级可用性。"""
+    data = np.asarray(values, dtype=np.float64)
+    valid_rows = np.isfinite(data).all(axis=1)
+    filled = data.copy()
+    x = np.arange(len(data), dtype=np.float64)
+    for column in range(data.shape[1]):
+        valid = np.isfinite(data[:, column])
+        if valid.sum() < 2:
+            continue
+        filled[:, column] = np.interp(x, x[valid], data[valid, column])
+    return filled, valid_rows
+
+
+def _build_standing_grf_from_total(
+    gaitway: GaitwayAsciiData,
+    query: np.ndarray,
+    in_bounds: np.ndarray,
+    R: np.ndarray,
+    R_fp_to_mocap: np.ndarray,
+    grade: np.ndarray,
+    grade_source: str,
+    foot_centers: dict[str, np.ndarray],
+    *,
+    force_time_offset_s: float,
+    force_threshold_N: float,
+    cutoff_hz: float | None,
+    opensim_x_sign: float,
+    opensim_z_sign: float,
+    rear_axis_mocap: np.ndarray,
+) -> tuple[list[dict], np.ndarray, dict]:
+    """用总 COP 在双脚中心连线上的位置估计静止站立左右载荷。
+
+    站立导出没有 Gaitway 原生左右力，因此此处是显式估计：左右竖直载荷比例由
+    总 COP 投影得到；总三维力按同一比例拆分；每脚 COP 以脚中心为基准共同平移，
+    从而严格保持 ``wR*pR + wL*pL == total_COP``。该方法保持总合力和总力矩，
+    但左右分配并非实测，QC 必须标为 WARN。
+    """
+    required = (
+        "GRFz vertical (N)",
+        "GRFy fore-aft (N)",
+        "GRFx lateral (N)",
+        "CoPx lateral (m)",
+        "CoPy fore-aft (m)",
+    )
+    missing = [name for name in required if name not in gaitway.columns]
+    if missing:
+        raise ValueError(f"站立载荷估计缺少总力/总 COP 列：{missing}")
+
+    centers: dict[str, np.ndarray] = {}
+    center_valid: dict[str, np.ndarray] = {}
+    for side in ("right", "left"):
+        raw = np.asarray(foot_centers.get(side), dtype=np.float64)
+        if raw.shape != (len(query), 3):
+            raise ValueError(
+                f"{side} 脚中心 shape {raw.shape}，应为 {(len(query), 3)}"
+            )
+        centers[side], center_valid[side] = _fill_marker_gaps(raw)
+
+    native_t = gaitway.time_s
+    fz_n = gaitway.columns["GRFz vertical (N)"]
+    fy_n = gaitway.columns["GRFy fore-aft (N)"]
+    fx_n = gaitway.columns["GRFx lateral (N)"]
+    copx_n = gaitway.columns["CoPx lateral (m)"]
+    copy_n = gaitway.columns["CoPy fore-aft (m)"]
+    finite_native = (
+        np.isfinite(fz_n) & np.isfinite(fy_n) & np.isfinite(fx_n)
+        & np.isfinite(copx_n) & np.isfinite(copy_n)
+    )
+    contact_n = finite_native & (fz_n > float(force_threshold_N))
+
+    force_n = np.column_stack([
+        float(opensim_x_sign) * fy_n,
+        float(opensim_z_sign) * fx_n,
+        fz_n,
+    ]) @ R.T
+    point_n = np.column_stack([copy_n, copx_n, np.zeros_like(copx_n)]) @ R.T
+    force_n = rotate_treadmill_grade(force_n, grade, rear_axis_mocap)
+    point_n = rotate_treadmill_grade(point_n, grade, rear_axis_mocap)
+
+    native_rate = gaitway.sample_rate_hz
+    apply_aa = (
+        cutoff_hz is not None and float(cutoff_hz) > 0
+        and float(cutoff_hz) < native_rate / 2.0
+    )
+    if apply_aa:
+        force_n = lowpass_segmented(force_n, contact_n, native_rate, float(cutoff_hz))
+        point_n = lowpass_segmented(point_n, contact_n, native_rate, float(cutoff_hz))
+    force_n = np.where(contact_n[:, None], force_n, 0.0)
+    point_n = np.where(contact_n[:, None], point_n, 0.0)
+
+    total_force = _interp_vec(native_t, force_n, query, fill=0.0)
+    total_point = _interp_vec(native_t, point_n, query, fill=0.0)
+    total_fz = _interp(native_t, fz_n, query, fill=0.0)
+    contact = in_bounds & np.isfinite(total_fz) & (total_fz > float(force_threshold_N))
+    marker_valid = center_valid["right"] & center_valid["left"]
+    line = centers["right"] - centers["left"]
+    denominator = np.sum(np.square(line), axis=1)
+    geometry_valid = marker_valid & np.isfinite(denominator) & (denominator > 1e-6)
+    valid = contact & geometry_valid & np.isfinite(total_point).all(axis=1)
+
+    right_share = np.full(len(query), 0.5, dtype=np.float64)
+    right_share[geometry_valid] = (
+        np.sum(
+            (total_point[geometry_valid] - centers["left"][geometry_valid])
+            * line[geometry_valid],
+            axis=1,
+        )
+        / denominator[geometry_valid]
+    )
+    # 极端外推一般来自短暂 COP/marker 异常；保留至少 5% 的每侧载荷，避免让
+    # 双脚站立瞬间退化成单脚且把噪声放大。
+    right_share = np.clip(right_share, 0.05, 0.95)
+    left_share = 1.0 - right_share
+
+    weighted_center = (
+        right_share[:, None] * centers["right"]
+        + left_share[:, None] * centers["left"]
+    )
+    common_shift = total_point - weighted_center
+    right_point = centers["right"] + common_shift
+    left_point = centers["left"] + common_shift
+    torque = np.zeros_like(total_force)
+
+    def foot(name: str, share: np.ndarray, point: np.ndarray) -> dict:
+        force = total_force * share[:, None]
+        force[~valid] = 0.0
+        point = point.copy()
+        point[~valid] = 0.0
+        return {"name": name, "force": force, "point": point, "torque": torque.copy()}
+
+    feet = [
+        foot("right", right_share, right_point),
+        foot("left", left_share, left_point),
+    ]
+    valid_share = right_share[valid]
+    qc = {
+        "force_transform_version": FORCE_TRANSFORM_VERSION,
+        "grade_source": grade_source,
+        "grade_percent_min": float(np.min(grade)),
+        "grade_percent_max": float(np.max(grade)),
+        "grade_percent_median": float(np.median(grade)),
+        "grade_angle_deg_median": float(np.degrees(np.arctan(np.median(grade) / 100.0))),
+        "native_force_signs_walk_left_up": [
+            float(opensim_x_sign), float(opensim_z_sign), 1.0
+        ],
+        "zero_grade_rotation_fp_to_mocap": np.asarray(R_fp_to_mocap).tolist(),
+        "fixed_rear_axis_mocap": np.asarray(rear_axis_mocap).tolist(),
+        "origin_mocap_mm": O_MOCAP_MM.tolist(),
+        "assumptions": [
+            "站立时 Gaitway 左右分力缺失，使用总 COP 与双脚 Heel/Toe marker 估计左右载荷",
+            "总三维力按估计的竖直载荷比例拆分",
+            "左右 COP 共同平移以保持总 COP 和总外力矩",
+            "该左右分配不是实测，QC 强制 WARN",
+        ],
+        "force_time_offset_s": float(force_time_offset_s),
+        "gaitway_sample_rate_hz": gaitway.sample_rate_hz,
+        "grf_cutoff_hz": float(cutoff_hz) if cutoff_hz is not None else None,
+        "opensim_x_sign": float(opensim_x_sign),
+        "opensim_z_sign": float(opensim_z_sign),
+        "n_valid_decomposed_frames": int(valid.sum()),
+        "n_right_contact_frames": int(valid.sum()),
+        "n_left_contact_frames": int(valid.sum()),
+        "decomposition_method": "estimated_from_total_cop_and_foot_markers",
+        "bilateral_force_measured": False,
+        "right_load_share_median": (
+            float(np.median(valid_share)) if valid_share.size else None
+        ),
+        "right_load_share_min": float(np.min(valid_share)) if valid_share.size else None,
+        "right_load_share_max": float(np.max(valid_share)) if valid_share.size else None,
+        "total_fz_min_N": float(np.min(total_fz[in_bounds])),
+        "total_fz_max_N": float(np.max(total_fz[in_bounds])),
+    }
+    return feet, valid, qc

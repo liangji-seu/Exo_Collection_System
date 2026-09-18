@@ -88,6 +88,7 @@ def prepare_session(
     sync_confidence: str | None = None,
     sync_quality: dict[str, Any] | None = None,
     marker_adjustment_expert_confirmed: bool = False,
+    quiet_standing: bool = False,
     force_threshold_N: float = 50.0,
     R_fp_to_mocap: np.ndarray | None = None,
 ) -> dict[str, Any]:
@@ -131,6 +132,33 @@ def prepare_session(
             "reason": "手动指定", "params": {"manual": True},
         }
         analysis_range = (a0, a1)
+    elif quiet_standing:
+        # 静止站立没有周期性脚跟着地事件。取 C3D 与测力台真正重叠的整段，并
+        # 去掉首尾各 1 秒，不能让步态检测器把它误判为“无有效力信号”。
+        overlap_start = max(
+            float(dynamic_data.time_s[0]),
+            float(gaitway.time_s[0]) - float(gaitway_offset_s),
+        )
+        overlap_end = min(
+            float(dynamic_data.time_s[-1]),
+            float(gaitway.time_s[-1]) - float(gaitway_offset_s),
+        )
+        if overlap_end <= overlap_start:
+            raise ValueError("站立工况的 C3D 与 Gaitway 时间没有重叠")
+        guard = min(1.0, max(0.0, (overlap_end - overlap_start) / 4.0))
+        a0, a1 = overlap_start + guard, overlap_end - guard
+        analysis_range = (a0, a1)
+        steady_state = {
+            "start_s": a0,
+            "end_s": a1,
+            "method": "quiet_standing",
+            "n_steps": 0,
+            "n_cycles": 0,
+            "median_step_period_s": None,
+            "step_period_cv": None,
+            "reason": "静止站立：采用 C3D/Gaitway 重叠区间并去除首尾边缘",
+            "params": {"edge_guard_s": guard},
+        }
     else:
         fz_side = gaitway.columns["FzR(N)"]
         if not np.isfinite(fz_side).any():
@@ -148,9 +176,27 @@ def prepare_session(
     static_names, _ = build_trc(
         static_data, out / "static.trc", opensim_frame=True, cutoff_hz=marker_cutoff_hz
     )
-    dyn_names, _ = build_trc(
+    dyn_names, dyn_traj_mm = build_trc(
         dynamic_data, out / "dynamic.trc", opensim_frame=True, cutoff_hz=marker_cutoff_hz
     )
+
+    standing_centers = None
+    if quiet_standing:
+        marker_index = {name: index for index, name in enumerate(dyn_names)}
+        required = ("R.Heel", "R.Toe", "L.Heel", "L.Toe")
+        missing = [name for name in required if name not in marker_index]
+        if missing:
+            raise ValueError(f"站立载荷估计缺少脚部 marker：{missing}")
+        standing_centers = {
+            "right": np.nanmean(
+                dyn_traj_mm[:, [marker_index["R.Heel"], marker_index["R.Toe"]], :],
+                axis=1,
+            ) / 1000.0,
+            "left": np.nanmean(
+                dyn_traj_mm[:, [marker_index["L.Heel"], marker_index["L.Toe"]], :],
+                axis=1,
+            ) / 1000.0,
+        }
 
     # 2. 双侧 GRF（Gaitway 原生左右分解，无需单支撑拆分）
     feet, decomposed_valid, gaitway_qc = build_bilateral_grf(
@@ -163,6 +209,7 @@ def prepare_session(
         opensim_x_sign=opensim_x_sign,
         opensim_z_sign=opensim_z_sign,
         require_grade=True,
+        standing_foot_centers_opensim_m=standing_centers,
     )
     write_grf_mot(out / "grf.mot", dynamic_data.time_s, feet)
     write_external_loads_xml(out / "external_loads.xml", "grf.mot")
@@ -210,6 +257,7 @@ def prepare_session(
             "opensim_force_x_sign": float(opensim_x_sign),
             "opensim_force_z_sign": float(opensim_z_sign),
             "marker_adjustment_expert_confirmed": bool(marker_adjustment_expert_confirmed),
+            "quiet_standing": bool(quiet_standing),
         },
         "gaitway": gaitway_qc,
         "sync": {

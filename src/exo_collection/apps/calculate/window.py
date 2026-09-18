@@ -543,6 +543,7 @@ class CalculateWindow(QMainWindow):
             sync_confidence=sync.confidence,
             sync_quality=self._sync_quality(),
             marker_adjustment_expert_confirmed=config.marker_adjustment_expert_confirmed,
+            quiet_standing=dynamic.is_quiet_standing,
         )
         self._prep_worker.signals.progress.connect(self._processing_view.append_log)
         self._prep_worker.signals.finished.connect(
@@ -564,6 +565,11 @@ class CalculateWindow(QMainWindow):
         )
         sw = summary.get("static_window") or {}
         force_info = summary.get("gaitway") or {}
+        if force_info.get("decomposition_method") == "estimated_from_total_cop_and_foot_markers":
+            self._processing_view.append_log(
+                "注意：站立记录没有 Gaitway 原生左右分力；已用总 COP + 双脚 marker "
+                "估计左右载荷，此结果最多为 QC WARN。"
+            )
         if force_info.get("force_transform_version"):
             self._processing_view.append_log(
                 f"已按后沿转轴修正坡度：记录中位数 "

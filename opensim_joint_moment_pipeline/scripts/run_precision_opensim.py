@@ -169,6 +169,14 @@ def _result_qc(id_file: Path, mask: np.ndarray, mass_kg: float) -> dict:
 
     def stats(series: np.ndarray, valid: np.ndarray) -> dict:
         selected = series[valid & np.isfinite(series)]
+        if selected.size == 0:
+            return {
+                "n_valid": 0,
+                "min_Nm": None,
+                "max_Nm": None,
+                "p95_abs_Nm": None,
+                "p95_abs_Nm_per_kg": None,
+            }
         return {
             "n_valid": int(len(selected)),
             "min_Nm": float(np.min(selected)),
@@ -178,12 +186,19 @@ def _result_qc(id_file: Path, mask: np.ndarray, mass_kg: float) -> dict:
         }
 
     any_valid = mask.any(axis=1)
+    residual_selected = residual[any_valid & np.isfinite(residual)]
     return {
         "hip_flexion_r": stats(right, mask[:, 0]),
         "hip_flexion_l": stats(left, mask[:, 1]),
         "residual_force": {
-            "rms_N": float(np.sqrt(np.mean(np.square(residual[any_valid])))),
-            "p95_N": float(np.percentile(residual[any_valid], 95)),
+            "rms_N": (
+                float(np.sqrt(np.mean(np.square(residual_selected))))
+                if residual_selected.size else None
+            ),
+            "p95_N": (
+                float(np.percentile(residual_selected, 95))
+                if residual_selected.size else None
+            ),
         },
     }
 
