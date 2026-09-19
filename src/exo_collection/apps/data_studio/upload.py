@@ -671,6 +671,42 @@ def _directory_fingerprint(directory: Path) -> str:
     return digest.hexdigest()
 
 
+def _is_download_temp_name(name: str) -> bool:
+    """Return whether a filename is the downloader's own atomic staging file.
+
+    Downloads stage each file into ``.{name}.partial-{uuid4().hex}`` before an
+    atomic ``os.replace``.  A hard interruption (process kill, power loss, app
+    shutdown) can leave such a file behind because the ``finally`` cleanup never
+    runs.  It must be recognized precisely so a later run can remove it without
+    touching real data files that merely contain ``.partial`` in their name
+    (for example ``notes.partial.backup``).
+    """
+
+    marker = ".partial-"
+    if not name.startswith(".") or marker not in name:
+        return False
+    _head, separator, suffix = name.rpartition(marker)
+    if not separator:
+        return False
+    return len(suffix) == 32 and all(
+        character in "0123456789abcdef" for character in suffix
+    )
+
+
+def _remove_stale_download_temps(local_dir: Path) -> None:
+    """Delete atomic-staging files left by an interrupted earlier download.
+
+    A leftover staging file is neither on the server nor a real data artefact,
+    so leaving it would silently change :func:`_directory_fingerprint` and make
+    the next pull fail its package-fingerprint check.
+    """
+
+    for current_root, _directories, file_names in os.walk(local_dir):
+        for name in file_names:
+            if _is_download_temp_name(name):
+                (Path(current_root) / name).unlink(missing_ok=True)
+
+
 def _remote_index_key(plan: TrialUploadPlan, dataset_root: Path) -> str:
     return plan.trial_directory.relative_to(dataset_root).as_posix()
 
@@ -2365,6 +2401,9 @@ class RemoteDatasetDownloader:
                         total,
                     )
                 )
+                # 清理上一次中断下载残留的原子暂存文件，否则它们会混入下面的
+                # 整包指纹校验，导致「下载后本地包指纹与云端不一致」。
+                _remove_stale_download_temps(local_dir)
                 file_count, byte_count = self._download_trial_tree(
                     session,
                     remote_dir,

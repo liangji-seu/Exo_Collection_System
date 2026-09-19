@@ -1540,6 +1540,30 @@ def test_download_redownloads_when_remote_content_changes(tmp_path: Path) -> Non
     assert (local_trial / "raw" / "imu.h5").read_bytes() == new_payload
 
 
+def test_download_clears_stale_partial_staging_from_interrupted_run(
+    tmp_path: Path,
+) -> None:
+    manifest_path = _publish_trial(tmp_path)
+    plan = build_upload_plan(manifest_path)
+    target = tmp_path / "pull"
+    request = _download_request(tmp_path, manifest_path, target)
+    session = _FakeRemoteSession()
+    key, _remote_dir = _publish_remote_trial(session, request, plan, tmp_path)
+    _write_remote_index(session, request, {key: _index_entry(plan)})
+
+    # 上一次下载被硬中断，残留一个原子暂存文件（finally 未运行）。
+    local_trial = target.joinpath(*PurePosixPath(key).parts)
+    local_trial.mkdir(parents=True)
+    stale = local_trial / f".manifest.json.partial-{uuid4().hex}"
+    stale.write_bytes(b"half-downloaded bytes")
+
+    result = RemoteDatasetDownloader(lambda _request: session).download(request, target)
+
+    assert result.downloaded_trials == 1
+    assert not stale.exists()
+    assert (local_trial / "manifest.json").is_file()
+
+
 def test_download_skips_stale_index_entry_with_missing_remote_dir(tmp_path: Path) -> None:
     manifest_path = _publish_trial(tmp_path)
     plan = build_upload_plan(manifest_path)
