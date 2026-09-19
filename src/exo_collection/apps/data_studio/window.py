@@ -46,7 +46,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from exo_collection.apps.calculate.manual_review import is_discarded, write_discard
+from exo_collection.apps.calculate.manual_review import (
+    clear_manual_review,
+    is_discarded,
+    write_discard,
+)
 from exo_collection.configuration import SharedAppSettings
 from exo_collection.external import ExternalImportRequest, ExternalImportResult
 from exo_collection.storage.activity import AcquisitionActivity, read_activity
@@ -3287,10 +3291,17 @@ class DataStudioWindow(QMainWindow):
             return
         _manifest_path, session_dir = context
         menu = QMenu(self)
+        if is_discarded(session_dir):
+            restore_action = QAction("恢复", self)
+            restore_action.setToolTip("撤销丢弃标记，使该 session 可被重新接收")
+            restore_action.triggered.connect(
+                lambda checked=False, sd=session_dir: self._restore_session(sd)
+            )
+            menu.addAction(restore_action)
         accept_action = QAction("接收", self)
         accept_action.setEnabled(not is_discarded(session_dir))
         if is_discarded(session_dir):
-            accept_action.setToolTip("已丢弃的 session 不可接收")
+            accept_action.setToolTip("已丢弃的 session 不可接收（可先恢复）")
         accept_action.triggered.connect(
             lambda checked=False, sd=session_dir: self._accept_session(sd)
         )
@@ -3301,6 +3312,16 @@ class DataStudioWindow(QMainWindow):
         )
         menu.addAction(discard_action)
         menu.exec(self.tree_widget.viewport().mapToGlobal(pos))
+
+    def _restore_session(self, session_dir: Path) -> None:
+        if not is_discarded(session_dir):
+            return
+        if not clear_manual_review(session_dir):
+            QMessageBox.warning(self, "恢复失败", f"撤销丢弃标记失败：\n{session_dir}")
+            return
+        self._catalog_tree = self._attach_dataset_flags(self._catalog_tree)
+        self._render_tree(self._visible_tree())
+        self.statusBar().showMessage(f"已恢复：{session_dir.name}")
 
     def _accept_session(self, session_dir: Path) -> None:
         if is_discarded(session_dir):

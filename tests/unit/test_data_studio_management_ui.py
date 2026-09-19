@@ -443,6 +443,35 @@ def test_management_summary_and_filtered_export_are_wired_to_workers(
     app.processEvents()
 
 
+def test_restore_discarded_session_clears_discard_mark(tmp_path: Path) -> None:
+    from exo_collection.apps.calculate.manual_review import is_discarded, write_discard
+    from exo_collection.apps.data_studio.dataset_selection import (
+        is_accepted,
+        write_accepted,
+    )
+
+    app = QApplication.instance() or QApplication(["restore-session-ui"])
+    paths = _dataset(tmp_path)
+    window = _window_with_management(tmp_path, paths, app)
+
+    context = window._trial_context(_trial_items(window)[0])
+    assert context is not None
+    _manifest_path, session_dir = context
+
+    write_discard(session_dir)
+    assert is_discarded(session_dir)
+
+    window._restore_session(session_dir)
+    assert not is_discarded(session_dir)
+
+    # 恢复后即可重新接收。
+    write_accepted(session_dir)
+    assert is_accepted(session_dir)
+
+    window.close()
+    app.processEvents()
+
+
 def test_management_refresh_operation_runs_through_spawn_worker(tmp_path: Path) -> None:
     _dataset(tmp_path)
     snapshot = load_catalog_snapshot(tmp_path)
