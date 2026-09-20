@@ -4,7 +4,17 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -107,6 +117,9 @@ class TrialRow(Base):
     abnormal_stop: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     manifest_path: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
     manifest_schema_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    # 廉价文件指纹（mtime_ns + size），用于增量扫描跳过未变化的 manifest。
+    manifest_mtime_ns: Mapped[int | None] = mapped_column(BigInteger)
+    manifest_size_bytes: Mapped[int | None] = mapped_column(BigInteger)
     updated_utc: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
     )

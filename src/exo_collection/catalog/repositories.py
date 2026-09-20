@@ -245,6 +245,13 @@ class CatalogRepository:
         path = Path(manifest_path).expanduser().resolve()
         if path_has_unpublished_component(path):
             raise ValueError("Catalog must not index an unpublished Trial package")
+        try:
+            file_stat = path.stat()
+            manifest_mtime_ns: int | None = file_stat.st_mtime_ns
+            manifest_size_bytes: int | None = file_stat.st_size
+        except OSError:
+            manifest_mtime_ns = None
+            manifest_size_bytes = None
         condition_id = _condition_uuid(manifest)
         quality = manifest.quality.reviewed_grade or manifest.quality.computed_grade
         quality_value = quality.value if quality is not None else "INVALID"
@@ -333,6 +340,8 @@ class CatalogRepository:
                 "abnormal_stop": manifest.abnormal_termination.occurred,
                 "manifest_path": str(path),
                 "manifest_schema_version": manifest.schema_version,
+                "manifest_mtime_ns": manifest_mtime_ns,
+                "manifest_size_bytes": manifest_size_bytes,
                 "updated_utc": now,
             }
             trial_insert = sqlite_insert(TrialRow).values(**trial_values)
@@ -350,6 +359,8 @@ class CatalogRepository:
                             "abnormal_stop",
                             "manifest_path",
                             "manifest_schema_version",
+                            "manifest_mtime_ns",
+                            "manifest_size_bytes",
                             "updated_utc",
                         )
                     },
@@ -431,8 +442,27 @@ class CatalogRepository:
 
     def scan_dataset(self, dataset_root: str | Path) -> ScanReport:
         report = ScanReport()
+        # 一次查询取出已索引 manifest 的文件指纹，避免逐条回查数据库。
+        existing_fingerprints: dict[str, tuple[int, int]] = {}
+        with self.catalog.session() as db:
+            rows = db.execute(
+                select(
+                    TrialRow.manifest_path,
+                    TrialRow.manifest_mtime_ns,
+                    TrialRow.manifest_size_bytes,
+                )
+            ).all()
+            for path_str, mtime_ns, size_bytes in rows:
+                if mtime_ns is not None and size_bytes is not None:
+                    existing_fingerprints[path_str] = (mtime_ns, size_bytes)
+
         for path in iter_finalized_manifest_paths(dataset_root):
             try:
+                file_stat = path.stat()
+                fingerprint = (file_stat.st_mtime_ns, file_stat.st_size)
+                if existing_fingerprints.get(str(path.resolve())) == fingerprint:
+                    report.unchanged_or_updated += 1
+                    continue
                 manifest = load_manifest(path)
                 _validate_scanned_manifest_location(path, manifest)
                 self.index_manifest(manifest, path)

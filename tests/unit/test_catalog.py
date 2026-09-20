@@ -227,6 +227,44 @@ def test_manifest_scan_rebuilds_tree_and_statistics(tmp_path) -> None:
     assert statistics["by_condition"]["WALK_LEVEL"]["trial_count"] == 1
 
 
+def test_manifest_scan_skips_unchanged_manifests_on_second_scan(tmp_path: Path) -> None:
+    manifest = make_manifest()
+    path = (
+        tmp_path
+        / "001"
+        / "d2"
+        / "F"
+        / "WALK_LEVEL"
+        / "session1_20260715_120000"
+        / ".exo"
+        / "manifest.json"
+    )
+    save_manifest(path, manifest)
+
+    with Catalog(tmp_path / "catalog.sqlite3") as catalog:
+        repository = CatalogRepository(catalog)
+
+        first = repository.scan_dataset(tmp_path)
+        assert first.indexed == 1
+        assert first.unchanged_or_updated == 0
+
+        # 文件未变：第二次扫描应跳过解析与写库。
+        second = repository.scan_dataset(tmp_path)
+        assert second.indexed == 0
+        assert second.unchanged_or_updated == 1
+        assert len(repository.tree()) == 1
+
+        # 改写内容（同时改变大小与 mtime）：应重新索引。
+        payload = manifest.model_dump(mode="python")
+        payload["condition"]["parameters"]["speed_mps"] = 1.25
+        modified = TrialManifest.model_validate(payload)
+        save_manifest(path, modified, overwrite=True)
+
+        third = repository.scan_dataset(tmp_path)
+        assert third.indexed == 1
+        assert third.unchanged_or_updated == 0
+
+
 def test_manifest_scan_accepts_day_level_human_readable_layout(tmp_path) -> None:
     manifest = make_manifest()  # project_code="F", subject_code="001"
     path = (
