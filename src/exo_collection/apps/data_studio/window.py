@@ -1176,9 +1176,6 @@ class DataStudioWindow(QMainWindow):
                 node["solve_solved"] = (
                     bool(status.solved) if status is not None else False
                 )
-                node["solve_discarded"] = (
-                    bool(status.discarded) if status is not None else False
-                )
             for child in node.get("children", []):
                 if isinstance(child, dict) and child.get("type") != "external_annex":
                     visit(child)
@@ -3405,7 +3402,7 @@ class DataStudioWindow(QMainWindow):
             background = "#f1f3f5"
             foreground = "#9aa3ad"
             detail = "无 cap 记录，无需校验"
-        elif bool(node.get("solve_discarded") or node.get("dataset_discarded")):
+        elif bool(node.get("dataset_discarded")):
             text = "丢弃"
             background = "#f3e8fd"
             foreground = "#7c3aed"

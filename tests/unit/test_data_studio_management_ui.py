@@ -472,6 +472,34 @@ def test_restore_discarded_session_clears_discard_mark(tmp_path: Path) -> None:
     app.processEvents()
 
 
+def test_sync_column_discard_label_follows_dataset_flag() -> None:
+    from PySide6.QtWidgets import QTreeWidgetItem
+
+    app = QApplication.instance() or QApplication(["sync-column-discard-ui"])
+
+    # 有 cap 且已丢弃 → 显示「丢弃」。
+    discarded_item = QTreeWidgetItem()
+    DataStudioWindow._apply_sync_column(
+        discarded_item,
+        {"type": "trial", "sync_cap_names": ("cap",), "dataset_discarded": True},
+    )
+    assert discarded_item.text(4) == "丢弃"
+
+    # 恢复后 dataset_discarded=False；即使残留陈旧的 solve_discarded=True，
+    # 同步数据列也不应再显示「丢弃」。
+    restored_item = QTreeWidgetItem()
+    DataStudioWindow._apply_sync_column(
+        restored_item,
+        {
+            "type": "trial",
+            "sync_cap_names": ("cap",),
+            "dataset_discarded": False,
+            "solve_discarded": True,
+        },
+    )
+    assert restored_item.text(4) != "丢弃"
+
+
 def test_management_refresh_operation_runs_through_spawn_worker(tmp_path: Path) -> None:
     _dataset(tmp_path)
     snapshot = load_catalog_snapshot(tmp_path)
