@@ -729,3 +729,40 @@ def test_session_selector_discard_button_and_label(tmp_path: Path, monkeypatch) 
     selector.refresh_labels()
     assert "丢弃" in selector._dynamic_combo.currentText()
     selector.close()
+
+
+def test_session_selector_restore_button_and_state(tmp_path: Path, monkeypatch) -> None:
+    from dataclasses import replace
+
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+
+    from exo_collection.apps.calculate import session_selector
+    from exo_collection.apps.calculate.manual_review import is_discarded, write_discard
+
+    dynamic = replace(
+        _make_session(subject="003", condition="WALK_STEADY_1P00"),
+        session_dir=tmp_path / "003" / "walk",
+    )
+    monkeypatch.setattr(session_selector, "discover_sessions", lambda root: [dynamic])
+
+    selector = session_selector.SessionSelector(tmp_path)
+
+    # 未丢弃：丢弃可用、恢复禁用。
+    assert selector._discard_button.isEnabled()
+    assert not selector._restore_button.isEnabled()
+
+    # 标记丢弃后刷新：丢弃禁用、恢复可用。
+    write_discard(dynamic.session_dir)
+    selector.refresh_labels()
+    assert is_discarded(dynamic.session_dir)
+    assert not selector._discard_button.isEnabled()
+    assert selector._restore_button.isEnabled()
+
+    # 恢复按钮发出信号，携带当前动态 session。
+    emitted: list[SessionRecord] = []
+    selector.restore_requested.connect(emitted.append)
+    selector._restore_button.click()
+    assert emitted == [dynamic]
+    selector.close()

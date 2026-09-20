@@ -99,6 +99,7 @@ class SessionSelector(QWidget):
     static_selected = Signal(object)    # SessionRecord | None
     check_requested = Signal(object, object)  # (dynamic, static)
     discard_requested = Signal(object)  # 动态 SessionRecord（请求人工丢弃）
+    restore_requested = Signal(object)  # 动态 SessionRecord（请求撤销丢弃）
 
     def __init__(self, data_root: Path, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -126,6 +127,9 @@ class SessionSelector(QWidget):
         self._discard_button = QPushButton("丢弃此 Session")
         self._discard_button.clicked.connect(self._request_discard)
 
+        self._restore_button = QPushButton("恢复此 Session")
+        self._restore_button.clicked.connect(self._request_restore)
+
         self._status_label = QLabel("")
         self._status_label.setWordWrap(True)
 
@@ -140,6 +144,7 @@ class SessionSelector(QWidget):
         buttons = QHBoxLayout()
         buttons.addWidget(self._check_button)
         buttons.addWidget(self._discard_button)
+        buttons.addWidget(self._restore_button)
         buttons.addStretch(1)
         layout.addLayout(buttons)
         layout.addWidget(self._status_label)
@@ -270,7 +275,9 @@ class SessionSelector(QWidget):
     # ------------------------------------------------------------------
     def _set_dynamic(self, record: SessionRecord | None) -> None:
         self._dynamic = record
-        self._discard_button.setEnabled(record is not None)
+        discarded = record is not None and is_discarded(record.session_dir)
+        self._discard_button.setEnabled(record is not None and not discarded)
+        self._restore_button.setEnabled(discarded)
         self.dynamic_selected.emit(record)
         self._update_status()
 
@@ -303,6 +310,10 @@ class SessionSelector(QWidget):
     def _request_discard(self) -> None:
         if self._dynamic is not None:
             self.discard_requested.emit(self._dynamic)
+
+    def _request_restore(self) -> None:
+        if self._dynamic is not None:
+            self.restore_requested.emit(self._dynamic)
 
     def refresh_labels(self) -> None:
         """丢弃/撤销后刷新下拉标签（保留当前受试者 / 天数 / 选择）。"""
