@@ -1815,6 +1815,78 @@
         "exo": true,
         "description": "行走过程中坡度连续均匀变化"
       }
+    },
+    {
+      "condition_code": "INTENT_FORWARD_NOEXO",
+      "condition_name": "意图-前（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_intent_forward",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "INTENT_FORWARD_EXO",
+      "condition_name": "意图-前（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_intent_forward",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "INTENT_BACKWARD_NOEXO",
+      "condition_name": "意图-后（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_intent_backward",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "INTENT_BACKWARD_EXO",
+      "condition_name": "意图-后（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_intent_backward",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "INTENT_LATERAL_NOEXO",
+      "condition_name": "意图-外（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_intent_lateral",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "INTENT_LATERAL_EXO",
+      "condition_name": "意图-外（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_intent_lateral",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "INTENT_TEST_NOEXO",
+      "condition_name": "意图-测试用（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_intent_test",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "INTENT_TEST_EXO",
+      "condition_name": "意图-测试用（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_intent_test",
+        "exo": true
+      }
     }
   ]
 }

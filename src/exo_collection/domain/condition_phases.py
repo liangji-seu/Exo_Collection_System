@@ -194,7 +194,14 @@ PHASE_2_TRANSIENT: tuple[str, ...] = (
     "STOP_LEFT",
     "STOP_RIGHT",
 )
-PHASE_2_SPECIAL: tuple[str, ...] = ("CONST_ACCEL", "SLOPE_RAMP")
+PHASE_2_SPECIAL: tuple[str, ...] = (
+    "CONST_ACCEL",
+    "SLOPE_RAMP",
+    "INTENT_FORWARD",
+    "INTENT_BACKWARD",
+    "INTENT_LATERAL",
+    "INTENT_TEST",
+)
 
 
 def _seed_detail(code: str, catalog: dict[str, dict[str, Any]]) -> dict[str, Any]:
