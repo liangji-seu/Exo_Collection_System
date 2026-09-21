@@ -34,11 +34,20 @@ _log = logging.getLogger(__name__)
 
 
 class PromptName(StrEnum):
-    """一个按键事件被赋予的语义名称；``nan`` 表示无效（后续训练应忽略）。"""
+    """一个按键事件被赋予的语义名称；``nan`` 表示无效（后续训练应忽略）。
+
+    意图类工况（前/后/外）各配一对 start/end 语义名，用于标记该意图动作的起止。
+    """
 
     START = "start"
     END = "end"
     NAN = "nan"
+    INTENT_FORWARD_START = "intent_forward_start"
+    INTENT_FORWARD_END = "intent_forward_end"
+    INTENT_BACKWARD_START = "intent_backward_start"
+    INTENT_BACKWARD_END = "intent_backward_end"
+    INTENT_LATERAL_START = "intent_lateral_start"
+    INTENT_LATERAL_END = "intent_lateral_end"
 
     @property
     def display_name(self) -> str:
@@ -46,6 +55,12 @@ class PromptName(StrEnum):
             PromptName.START: "开始",
             PromptName.END: "结束",
             PromptName.NAN: "无效",
+            PromptName.INTENT_FORWARD_START: "意图前-start",
+            PromptName.INTENT_FORWARD_END: "意图前-end",
+            PromptName.INTENT_BACKWARD_START: "意图后-start",
+            PromptName.INTENT_BACKWARD_END: "意图后-end",
+            PromptName.INTENT_LATERAL_START: "意图外-start",
+            PromptName.INTENT_LATERAL_END: "意图外-end",
         }[self]
 
 

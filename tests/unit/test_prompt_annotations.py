@@ -29,6 +29,19 @@ def test_prompt_name_values_and_display_names() -> None:
     assert PromptName.END.display_name == "结束"
     assert PromptName.NAN.display_name == "无效"
 
+    assert PromptName.INTENT_FORWARD_START.value == "intent_forward_start"
+    assert PromptName.INTENT_FORWARD_END.value == "intent_forward_end"
+    assert PromptName.INTENT_BACKWARD_START.value == "intent_backward_start"
+    assert PromptName.INTENT_BACKWARD_END.value == "intent_backward_end"
+    assert PromptName.INTENT_LATERAL_START.value == "intent_lateral_start"
+    assert PromptName.INTENT_LATERAL_END.value == "intent_lateral_end"
+    assert PromptName.INTENT_FORWARD_START.display_name == "意图前-start"
+    assert PromptName.INTENT_FORWARD_END.display_name == "意图前-end"
+    assert PromptName.INTENT_BACKWARD_START.display_name == "意图后-start"
+    assert PromptName.INTENT_BACKWARD_END.display_name == "意图后-end"
+    assert PromptName.INTENT_LATERAL_START.display_name == "意图外-start"
+    assert PromptName.INTENT_LATERAL_END.display_name == "意图外-end"
+
 
 def test_write_and_load_round_trip(tmp_path: Path) -> None:
     trial_uuid = uuid4()

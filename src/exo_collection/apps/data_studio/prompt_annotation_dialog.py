@@ -33,11 +33,8 @@ from exo_collection.domain.prompt_labels import PromptLabelSource
 from .local_tools import PromptLabelPlaybackEvent
 
 # (显示文案, 存值)：存值为 None 表示「未标注」，否则为 PromptName.value 字符串。
-_CHOICES: tuple[tuple[str, str | None], ...] = (
-    ("未标注", None),
-    (PromptName.START.display_name, PromptName.START.value),
-    (PromptName.END.display_name, PromptName.END.value),
-    (PromptName.NAN.display_name, PromptName.NAN.value),
+_CHOICES: tuple[tuple[str, str | None], ...] = (("未标注", None),) + tuple(
+    (name.display_name, name.value) for name in PromptName
 )
 
 
@@ -64,7 +61,7 @@ class PromptAnnotationDialog(QDialog):
 
         layout = QVBoxLayout(self)
         hint = QLabel(
-            "为每个按键事件指定语义名称：start（开始）、end（结束）、nan（无效）。\n"
+            "为每个按键事件指定语义名称：开始 / 结束 / 无效，或意图前·后·外的 start / end。\n"
             "保存后写入边车文件，不会改写原始打标数据。"
         )
         hint.setWordWrap(True)
@@ -130,14 +127,18 @@ class PromptAnnotationDialog(QDialog):
         return 0
 
     def _update_counts(self) -> None:
-        counts = {value: 0 for value in ("start", "end", "nan")}
+        counts: dict[str, int] = {}
         for combo in self._combos:
             value = combo.currentData()
             if value is not None:
-                counts[value] += 1
+                counts[value] = counts.get(value, 0) + 1
+        parts = [
+            f"{name.display_name}={counts[name.value]}"
+            for name in PromptName
+            if counts.get(name.value)
+        ]
         self._count_label.setText(
-            f"start={counts['start']} · end={counts['end']} · nan={counts['nan']} "
-            f"/ 共 {len(self._combos)} 个事件"
+            f"{' · '.join(parts) or '未标注'} / 共 {len(self._combos)} 个事件"
         )
 
     def _highlight_event(self, target: PromptLabelPlaybackEvent) -> None:

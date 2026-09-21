@@ -40,10 +40,17 @@ _EVENT_SIDE_LABEL = {"right": "右", "left": "左"}
 _EVENT_KIND_LABEL = {"heel_strike": "足跟触地", "toe_off": "足尖离地"}
 
 # 按键打标的语义名配色：start 绿 / end 蓝 / nan 灰（虚线），未命名沿用红。
+# 意图类工况按「前/后/外」分色，start 实线 / end 虚线。
 _PROMPT_NAME_PEN = {
     "start": ("#16a34a", Qt.PenStyle.SolidLine),
     "end": ("#2563eb", Qt.PenStyle.SolidLine),
     "nan": ("#9ca3af", Qt.PenStyle.DashLine),
+    "intent_forward_start": ("#d97706", Qt.PenStyle.SolidLine),
+    "intent_forward_end": ("#d97706", Qt.PenStyle.DashLine),
+    "intent_backward_start": ("#7c3aed", Qt.PenStyle.SolidLine),
+    "intent_backward_end": ("#7c3aed", Qt.PenStyle.DashLine),
+    "intent_lateral_start": ("#0ea5e9", Qt.PenStyle.SolidLine),
+    "intent_lateral_end": ("#0ea5e9", Qt.PenStyle.DashLine),
 }
 
 
