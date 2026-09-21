@@ -29,14 +29,14 @@ def test_default_phase_config_partitions_protocol() -> None:
     for phase in phases:
         assert list(phase["categories"].keys()) == list(MAIN_CATEGORY_KEYS)
 
-    # 展开为协议完整码后：第一期 56 码，第二期 138 码。
+    # 展开为协议完整码后：第一期 56 码，第二期 222 码。
     assert len(_expanded_codes(p1)) == 56
-    assert len(_expanded_codes(p2)) == 138
+    assert len(_expanded_codes(p2)) == 222
 
     protocol_codes = {c.condition_code for c in load_default_protocol().conditions}
     union = _expanded_codes(p1) | _expanded_codes(p2)
     assert union == protocol_codes
-    assert len(union) == 152
+    assert len(union) == 236
 
 
 def test_level_walking_four_speeds_shared_across_phases() -> None:
