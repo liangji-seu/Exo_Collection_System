@@ -18,7 +18,7 @@ from typing import Any
 
 from exo_collection.protocols import load_default_protocol
 
-PHASE_CONFIG_SCHEMA_VERSION = 3
+PHASE_CONFIG_SCHEMA_VERSION = 5
 
 # 主工况固定 4 类，顺序即下拉/标签页顺序。
 MAIN_CATEGORIES: tuple[dict[str, str], ...] = (
@@ -305,6 +305,45 @@ PHASE_3_SPECIAL: tuple[str, ...] = (
 )
 
 
+# 第四期 = 负重识别（负重 0/2.5/5/10kg × 平地/2.5°坡/5°坡 稳态行走 + 平地/2.5°坡 变速）。
+# 详细工况按相同负重归组（先定负重、再变地形/坡度），避免反复装卸负重片。
+PHASE_4_STEADY: tuple[str, ...] = (
+    "LWALK_0P6_0KG",
+    "LWALK_1P0_0KG",
+    "LWALK_2P5D_0P6_0KG",
+    "LWALK_2P5D_1P0_0KG",
+    "LWALK_5D_0P6_0KG",
+    "LWALK_5D_1P0_0KG",
+    "LWALK_0P6_2P5KG",
+    "LWALK_1P0_2P5KG",
+    "LWALK_2P5D_0P6_2P5KG",
+    "LWALK_2P5D_1P0_2P5KG",
+    "LWALK_5D_0P6_2P5KG",
+    "LWALK_5D_1P0_2P5KG",
+    "LWALK_0P6_5KG",
+    "LWALK_1P0_5KG",
+    "LWALK_2P5D_0P6_5KG",
+    "LWALK_2P5D_1P0_5KG",
+    "LWALK_5D_0P6_5KG",
+    "LWALK_5D_1P0_5KG",
+    "LWALK_0P6_10KG",
+    "LWALK_1P0_10KG",
+    "LWALK_2P5D_0P6_10KG",
+    "LWALK_2P5D_1P0_10KG",
+    "LWALK_5D_0P6_10KG",
+    "LWALK_5D_1P0_10KG",
+)
+PHASE_4_TRANSIENT: tuple[str, ...] = (
+    "LWALK_RAMP_0KG",
+    "LWALK_RAMP_2P5D_0KG",
+    "LWALK_RAMP_2P5KG",
+    "LWALK_RAMP_5KG",
+    "LWALK_RAMP_2P5D_5KG",
+    "LWALK_RAMP_10KG",
+    "LWALK_RAMP_2P5D_10KG",
+)
+
+
 def _seed_detail(code: str, catalog: dict[str, dict[str, Any]]) -> dict[str, Any]:
     """种子详细工况：无穿戴工况不带 wear，其余默认「增加穿戴」。"""
     info = catalog[code]
@@ -345,7 +384,7 @@ def _make_phase(
 
 
 def default_phase_config() -> dict[str, Any]:
-    """首次无配置时的默认期次：第一期=新增工况，第二期=标准工况+详细地形矩阵，第三期=站姿/坐姿关节工况。"""
+    """首次无配置时的默认期次：第一期=新增工况，第二期=标准工况+详细地形矩阵，第三期=站姿/坐姿关节工况，第四期=负重识别。"""
     return {
         "schema_version": PHASE_CONFIG_SCHEMA_VERSION,
         "phases": [
@@ -369,6 +408,13 @@ def default_phase_config() -> dict[str, Any]:
                 (),
                 (),
                 PHASE_3_SPECIAL,
+            ),
+            _make_phase(
+                "第四期",
+                (),
+                PHASE_4_STEADY,
+                PHASE_4_TRANSIENT,
+                (),
             ),
         ],
     }
@@ -494,6 +540,8 @@ __all__ = [
     "PHASE_2_BASELINE",
     "PHASE_2_SPECIAL",
     "PHASE_3_SPECIAL",
+    "PHASE_4_STEADY",
+    "PHASE_4_TRANSIENT",
     "PHASE_2_STEADY",
     "PHASE_2_TRANSIENT",
     "PHASE_CONFIG_SCHEMA_VERSION",

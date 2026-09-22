@@ -12,7 +12,7 @@ def test_default_protocol_is_versioned_and_has_unique_conditions() -> None:
     protocol = load_default_protocol()
     assert protocol.schema_version == "1.0.0"
     assert protocol.protocol_version == "1.3.0"
-    assert len(protocol.conditions) == 344
+    assert len(protocol.conditions) == 406
     assert {condition.condition_code for condition in protocol.conditions} == {
         "FREE_TEST",
         "STATIC_CALIB",
@@ -358,6 +358,68 @@ def test_default_protocol_is_versioned_and_has_unique_conditions() -> None:
         "SIT_PASSIVE_FREE_LARGE_KNEE_EXT_EXO",
         "SIT_PASSIVE_FREE_LARGE_ABDUCT_NOEXO",
         "SIT_PASSIVE_FREE_LARGE_ABDUCT_EXO",
+        "LWALK_0P6_0KG_NOEXO",
+        "LWALK_0P6_0KG_EXO",
+        "LWALK_0P6_2P5KG_NOEXO",
+        "LWALK_0P6_2P5KG_EXO",
+        "LWALK_0P6_5KG_NOEXO",
+        "LWALK_0P6_5KG_EXO",
+        "LWALK_0P6_10KG_NOEXO",
+        "LWALK_0P6_10KG_EXO",
+        "LWALK_1P0_0KG_NOEXO",
+        "LWALK_1P0_0KG_EXO",
+        "LWALK_1P0_2P5KG_NOEXO",
+        "LWALK_1P0_2P5KG_EXO",
+        "LWALK_1P0_5KG_NOEXO",
+        "LWALK_1P0_5KG_EXO",
+        "LWALK_1P0_10KG_NOEXO",
+        "LWALK_1P0_10KG_EXO",
+        "LWALK_2P5D_0P6_0KG_NOEXO",
+        "LWALK_2P5D_0P6_0KG_EXO",
+        "LWALK_2P5D_0P6_2P5KG_NOEXO",
+        "LWALK_2P5D_0P6_2P5KG_EXO",
+        "LWALK_2P5D_0P6_5KG_NOEXO",
+        "LWALK_2P5D_0P6_5KG_EXO",
+        "LWALK_2P5D_0P6_10KG_NOEXO",
+        "LWALK_2P5D_0P6_10KG_EXO",
+        "LWALK_2P5D_1P0_0KG_NOEXO",
+        "LWALK_2P5D_1P0_0KG_EXO",
+        "LWALK_2P5D_1P0_2P5KG_NOEXO",
+        "LWALK_2P5D_1P0_2P5KG_EXO",
+        "LWALK_2P5D_1P0_5KG_NOEXO",
+        "LWALK_2P5D_1P0_5KG_EXO",
+        "LWALK_2P5D_1P0_10KG_NOEXO",
+        "LWALK_2P5D_1P0_10KG_EXO",
+        "LWALK_5D_0P6_0KG_NOEXO",
+        "LWALK_5D_0P6_0KG_EXO",
+        "LWALK_5D_0P6_2P5KG_NOEXO",
+        "LWALK_5D_0P6_2P5KG_EXO",
+        "LWALK_5D_0P6_5KG_NOEXO",
+        "LWALK_5D_0P6_5KG_EXO",
+        "LWALK_5D_0P6_10KG_NOEXO",
+        "LWALK_5D_0P6_10KG_EXO",
+        "LWALK_5D_1P0_0KG_NOEXO",
+        "LWALK_5D_1P0_0KG_EXO",
+        "LWALK_5D_1P0_2P5KG_NOEXO",
+        "LWALK_5D_1P0_2P5KG_EXO",
+        "LWALK_5D_1P0_5KG_NOEXO",
+        "LWALK_5D_1P0_5KG_EXO",
+        "LWALK_5D_1P0_10KG_NOEXO",
+        "LWALK_5D_1P0_10KG_EXO",
+        "LWALK_RAMP_0KG_NOEXO",
+        "LWALK_RAMP_0KG_EXO",
+        "LWALK_RAMP_2P5KG_NOEXO",
+        "LWALK_RAMP_2P5KG_EXO",
+        "LWALK_RAMP_5KG_NOEXO",
+        "LWALK_RAMP_5KG_EXO",
+        "LWALK_RAMP_10KG_NOEXO",
+        "LWALK_RAMP_10KG_EXO",
+        "LWALK_RAMP_2P5D_0KG_NOEXO",
+        "LWALK_RAMP_2P5D_0KG_EXO",
+        "LWALK_RAMP_2P5D_5KG_NOEXO",
+        "LWALK_RAMP_2P5D_5KG_EXO",
+        "LWALK_RAMP_2P5D_10KG_NOEXO",
+        "LWALK_RAMP_2P5D_10KG_EXO",
     }
 
     by_code = {
@@ -392,6 +454,29 @@ def test_default_protocol_is_versioned_and_has_unique_conditions() -> None:
     assert by_code["STOP_LEFT_EXO"].parameters["lead_foot"] == "left"
     assert by_code["STATIC_CALIB"].parameters["description"] == (
         "穿戴与不穿戴共用同一 Helen-Hayes 静态标定模型"
+    )
+
+
+def test_phase4_protocol_grouped_by_load() -> None:
+    # 协议顺序即采集端工况下拉框顺序：第四期按相同负重归组，避免反复装卸负重片。
+    protocol = load_default_protocol()
+    steady = [
+        c
+        for c in protocol.conditions
+        if c.condition_code.startswith("LWALK") and c.condition_level == "STEADY_STATE"
+    ]
+    transient = [
+        c
+        for c in protocol.conditions
+        if c.condition_code.startswith("LWALK") and c.condition_level == "TRANSIENT"
+    ]
+    assert len(steady) == 48
+    assert len(transient) == 14
+    assert [c.parameters["load_kg"] for c in steady] == sorted(
+        c.parameters["load_kg"] for c in steady
+    )
+    assert [c.parameters["load_kg"] for c in transient] == sorted(
+        c.parameters["load_kg"] for c in transient
     )
 
 

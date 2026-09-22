@@ -1988,7 +1988,7 @@ def test_condition_combo_exposes_phase_conditions(
         assert [
             window.phase_combo.itemText(index)
             for index in range(window.phase_combo.count())
-        ] == ["第一期", "第二期", "第三期"]
+        ] == ["第一期", "第二期", "第三期", "第四期"]
         assert [
             window.main_category_combo.itemText(index)
             for index in range(window.main_category_combo.count())
@@ -2324,6 +2324,34 @@ def test_condition_combo_exposes_phase_conditions(
         }
 
 
+        # 第四期：负重识别（负重 0/2.5/5/10kg × 平地/2.5°坡/5°坡 稳态行走 + 平地/2.5°坡 变速）。
+        window.phase_combo.setCurrentIndex(3)
+        select_category("BASELINE")
+        assert window.condition_combo.count() == 0
+        select_category("STEADY_STATE")
+        assert window.condition_combo.count() == 48
+        phase4_steady_codes = combo_codes()
+        assert "LWALK_0P6_0KG_NOEXO" in phase4_steady_codes
+        assert "LWALK_5D_1P0_10KG_EXO" in phase4_steady_codes
+        load_item = window.condition_combo.itemData(
+            phase4_steady_codes.index("LWALK_2P5D_0P6_2P5KG_NOEXO")
+        )
+        assert load_item["parameters"]["load_kg"] == 2.5
+        assert load_item["parameters"]["speed_mps"] == 0.6
+        assert load_item["parameters"]["slope_deg"] == 2.5
+        select_category("TRANSIENT")
+        assert window.condition_combo.count() == 14
+        phase4_transient_codes = combo_codes()
+        assert "LWALK_RAMP_0KG_NOEXO" in phase4_transient_codes
+        assert "LWALK_RAMP_10KG_EXO" in phase4_transient_codes
+        assert "LWALK_RAMP_2P5D_5KG_NOEXO" in phase4_transient_codes
+        # 2.5°坡变速缺 2.5kg 档（设计文件只列 0/5/10kg）。
+        assert "LWALK_RAMP_2P5D_2P5KG_NOEXO" not in phase4_transient_codes
+        select_category("SPECIAL")
+        assert window.condition_combo.count() == 0
+
+
+
         # 每个期次 × 每个主工况里，操作者看到的都是中文工况名，而非英文 code。
         for phase_index in range(window.phase_combo.count()):
             window.phase_combo.setCurrentIndex(phase_index)
@@ -2348,7 +2376,7 @@ def test_phase_config_dialog_round_trips_seed() -> None:
     try:
         result = dialog.validated_config
         phases = result["phases"]
-        assert [phase["name"] for phase in phases] == ["第一期", "第二期", "第三期"]
+        assert [phase["name"] for phase in phases] == ["第一期", "第二期", "第三期", "第四期"]
         assert list(phases[0]["categories"].keys()) == [
             "BASELINE",
             "STEADY_STATE",

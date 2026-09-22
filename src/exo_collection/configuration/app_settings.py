@@ -11,6 +11,7 @@ from typing import Any, Literal, Mapping
 from PySide6.QtCore import QByteArray, QSettings, QStandardPaths
 
 from exo_collection.domain.condition_phases import (
+    PHASE_CONFIG_SCHEMA_VERSION,
     default_phase_config,
     normalize_phase_config,
 )
@@ -74,6 +75,20 @@ def create_shared_settings_backend() -> QSettings:
     """Create the fixed QSettings namespace used by both desktop apps."""
 
     return QSettings(SETTINGS_ORGANIZATION_NAME, SETTINGS_APPLICATION_NAME)
+
+
+def _phase_config_is_current(raw: Any) -> bool:
+    """True when a persisted phase config matches the current seed schema.
+
+    Configs without an explicit ``schema_version`` predate the versioned seed and
+    are still merged via the legacy path; an explicit-but-older version is stale.
+    """
+    if not isinstance(raw, dict):
+        return False
+    version = raw.get("schema_version")
+    if version is None:
+        return True
+    return version == PHASE_CONFIG_SCHEMA_VERSION
 
 
 class SharedAppSettings:
@@ -421,11 +436,20 @@ class SharedAppSettings:
 
     @property
     def phase_config(self) -> dict[str, Any]:
-        """Return the collector 期次/工况分组 config (seed when unset)."""
+        """Return the collector 期次/工况分组 config (seed when unset).
+
+        A persisted config records the schema version it was written under.  When
+        the default seed advances (新期次加入), an older persisted config is stale
+        and falls back to the fresh seed — otherwise newly added phases would be
+        shadowed by the old snapshot forever.  Legacy configs without an explicit
+        ``schema_version`` keep the historical merge path.
+        """
         stored = self._backend.value(PHASE_CONFIG_KEY)
         if isinstance(stored, str) and stored.strip():
             try:
-                return normalize_phase_config(json.loads(stored))
+                raw = json.loads(stored)
+                if _phase_config_is_current(raw):
+                    return normalize_phase_config(raw)
             except (TypeError, ValueError, json.JSONDecodeError):
                 pass
         return default_phase_config()

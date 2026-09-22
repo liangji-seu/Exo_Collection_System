@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from importlib import import_module
 from pathlib import Path
@@ -23,6 +24,7 @@ from exo_collection.apps.data_studio.main import (
     main as studio_entrypoint,
 )
 from exo_collection.configuration.app_settings import (
+    PHASE_CONFIG_KEY,
     SETTINGS_APPLICATION_NAME,
     SETTINGS_ORGANIZATION_NAME,
     SharedAppSettings,
@@ -259,9 +261,9 @@ def test_single_modality_settings_merge_without_erasing_other_devices(
 def test_phase_config_defaults_to_seed_and_round_trips(tmp_path: Path) -> None:
     settings_path = tmp_path / "shared.ini"
 
-    # 空设置回退到默认种子：第一期 56 + 第二期 222 + 第三期 108（展开为协议完整码后）。
+    # 空设置回退到默认种子：第一期 56 + 第二期 222 + 第三期 108 + 第四期 62（展开为协议完整码后）。
     default = _file_settings(settings_path).phase_config
-    assert [phase["name"] for phase in default["phases"]] == ["第一期", "第二期", "第三期"]
+    assert [phase["name"] for phase in default["phases"]] == ["第一期", "第二期", "第三期", "第四期"]
     expanded_counts = [
         sum(
             len(expand_category_details(cat["details"]))
@@ -269,7 +271,7 @@ def test_phase_config_defaults_to_seed_and_round_trips(tmp_path: Path) -> None:
         )
         for phase in default["phases"]
     ]
-    assert expanded_counts == [56, 222, 108]
+    assert expanded_counts == [56, 222, 108, 62]
 
     custom = {
         "schema_version": 3,
@@ -296,6 +298,33 @@ def test_phase_config_defaults_to_seed_and_round_trips(tmp_path: Path) -> None:
     assert restored["phases"][0]["categories"]["BASELINE"]["details"] == [
         {"code": "FREE_TEST"}
     ]
+
+
+def test_phase_config_resets_stale_schema_to_seed(tmp_path: Path) -> None:
+    backend = QSettings(str(tmp_path / "stale.ini"), QSettings.Format.IniFormat)
+    # 旧版本持久化快照（schema_version 2）不得遮蔽新版默认种子，否则新期次永远不显示。
+    backend.setValue(
+        PHASE_CONFIG_KEY,
+        json.dumps(
+            {"schema_version": 2, "phases": [{"name": "旧期次", "codes": ["FREE_TEST"]}]},
+            ensure_ascii=False,
+        ),
+    )
+
+    cfg = SharedAppSettings(backend).phase_config
+    assert [phase["name"] for phase in cfg["phases"]] == ["第一期", "第二期", "第三期", "第四期"]
+
+
+def test_phase_config_keeps_versionless_legacy_snapshot(tmp_path: Path) -> None:
+    backend = QSettings(str(tmp_path / "legacy.ini"), QSettings.Format.IniFormat)
+    # 无 schema_version 的历史快照继续走旧合并路径，不整体回退。
+    backend.setValue(
+        PHASE_CONFIG_KEY,
+        json.dumps({"phases": [{"name": "旧期次", "codes": ["FREE_TEST"]}]}, ensure_ascii=False),
+    )
+
+    cfg = SharedAppSettings(backend).phase_config
+    assert [phase["name"] for phase in cfg["phases"]] == ["旧期次"]
 
 
 @pytest.mark.parametrize(

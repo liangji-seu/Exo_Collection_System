@@ -3615,6 +3615,852 @@
         "category": "special_sit_passive_free_large_abduct",
         "exo": true
       }
+    },
+    {
+      "condition_code": "LWALK_0P6_0KG_NOEXO",
+      "condition_name": "平地-0.6m/s-0kg（不穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 0.6,
+        "slope_deg": 0,
+        "load_kg": 0,
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "LWALK_0P6_0KG_EXO",
+      "condition_name": "平地-0.6m/s-0kg（穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 0.6,
+        "slope_deg": 0,
+        "load_kg": 0,
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "LWALK_1P0_0KG_NOEXO",
+      "condition_name": "平地-1.0m/s-0kg（不穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 1.0,
+        "slope_deg": 0,
+        "load_kg": 0,
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "LWALK_1P0_0KG_EXO",
+      "condition_name": "平地-1.0m/s-0kg（穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 1.0,
+        "slope_deg": 0,
+        "load_kg": 0,
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "LWALK_2P5D_0P6_0KG_NOEXO",
+      "condition_name": "2.5°坡-0.6m/s-0kg（不穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 0.6,
+        "slope_deg": 2.5,
+        "load_kg": 0,
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "LWALK_2P5D_0P6_0KG_EXO",
+      "condition_name": "2.5°坡-0.6m/s-0kg（穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 0.6,
+        "slope_deg": 2.5,
+        "load_kg": 0,
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "LWALK_2P5D_1P0_0KG_NOEXO",
+      "condition_name": "2.5°坡-1.0m/s-0kg（不穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 1.0,
+        "slope_deg": 2.5,
+        "load_kg": 0,
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "LWALK_2P5D_1P0_0KG_EXO",
+      "condition_name": "2.5°坡-1.0m/s-0kg（穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 1.0,
+        "slope_deg": 2.5,
+        "load_kg": 0,
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "LWALK_5D_0P6_0KG_NOEXO",
+      "condition_name": "5°坡-0.6m/s-0kg（不穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 0.6,
+        "slope_deg": 5,
+        "load_kg": 0,
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "LWALK_5D_0P6_0KG_EXO",
+      "condition_name": "5°坡-0.6m/s-0kg（穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 0.6,
+        "slope_deg": 5,
+        "load_kg": 0,
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "LWALK_5D_1P0_0KG_NOEXO",
+      "condition_name": "5°坡-1.0m/s-0kg（不穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 1.0,
+        "slope_deg": 5,
+        "load_kg": 0,
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "LWALK_5D_1P0_0KG_EXO",
+      "condition_name": "5°坡-1.0m/s-0kg（穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 1.0,
+        "slope_deg": 5,
+        "load_kg": 0,
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "LWALK_0P6_2P5KG_NOEXO",
+      "condition_name": "平地-0.6m/s-2.5kg（不穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 0.6,
+        "slope_deg": 0,
+        "load_kg": 2.5,
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "LWALK_0P6_2P5KG_EXO",
+      "condition_name": "平地-0.6m/s-2.5kg（穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 0.6,
+        "slope_deg": 0,
+        "load_kg": 2.5,
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "LWALK_1P0_2P5KG_NOEXO",
+      "condition_name": "平地-1.0m/s-2.5kg（不穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 1.0,
+        "slope_deg": 0,
+        "load_kg": 2.5,
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "LWALK_1P0_2P5KG_EXO",
+      "condition_name": "平地-1.0m/s-2.5kg（穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 1.0,
+        "slope_deg": 0,
+        "load_kg": 2.5,
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "LWALK_2P5D_0P6_2P5KG_NOEXO",
+      "condition_name": "2.5°坡-0.6m/s-2.5kg（不穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 0.6,
+        "slope_deg": 2.5,
+        "load_kg": 2.5,
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "LWALK_2P5D_0P6_2P5KG_EXO",
+      "condition_name": "2.5°坡-0.6m/s-2.5kg（穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 0.6,
+        "slope_deg": 2.5,
+        "load_kg": 2.5,
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "LWALK_2P5D_1P0_2P5KG_NOEXO",
+      "condition_name": "2.5°坡-1.0m/s-2.5kg（不穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 1.0,
+        "slope_deg": 2.5,
+        "load_kg": 2.5,
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "LWALK_2P5D_1P0_2P5KG_EXO",
+      "condition_name": "2.5°坡-1.0m/s-2.5kg（穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 1.0,
+        "slope_deg": 2.5,
+        "load_kg": 2.5,
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "LWALK_5D_0P6_2P5KG_NOEXO",
+      "condition_name": "5°坡-0.6m/s-2.5kg（不穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 0.6,
+        "slope_deg": 5,
+        "load_kg": 2.5,
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "LWALK_5D_0P6_2P5KG_EXO",
+      "condition_name": "5°坡-0.6m/s-2.5kg（穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 0.6,
+        "slope_deg": 5,
+        "load_kg": 2.5,
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "LWALK_5D_1P0_2P5KG_NOEXO",
+      "condition_name": "5°坡-1.0m/s-2.5kg（不穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 1.0,
+        "slope_deg": 5,
+        "load_kg": 2.5,
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "LWALK_5D_1P0_2P5KG_EXO",
+      "condition_name": "5°坡-1.0m/s-2.5kg（穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 1.0,
+        "slope_deg": 5,
+        "load_kg": 2.5,
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "LWALK_0P6_5KG_NOEXO",
+      "condition_name": "平地-0.6m/s-5kg（不穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 0.6,
+        "slope_deg": 0,
+        "load_kg": 5,
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "LWALK_0P6_5KG_EXO",
+      "condition_name": "平地-0.6m/s-5kg（穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 0.6,
+        "slope_deg": 0,
+        "load_kg": 5,
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "LWALK_1P0_5KG_NOEXO",
+      "condition_name": "平地-1.0m/s-5kg（不穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 1.0,
+        "slope_deg": 0,
+        "load_kg": 5,
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "LWALK_1P0_5KG_EXO",
+      "condition_name": "平地-1.0m/s-5kg（穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 1.0,
+        "slope_deg": 0,
+        "load_kg": 5,
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "LWALK_2P5D_0P6_5KG_NOEXO",
+      "condition_name": "2.5°坡-0.6m/s-5kg（不穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 0.6,
+        "slope_deg": 2.5,
+        "load_kg": 5,
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "LWALK_2P5D_0P6_5KG_EXO",
+      "condition_name": "2.5°坡-0.6m/s-5kg（穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 0.6,
+        "slope_deg": 2.5,
+        "load_kg": 5,
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "LWALK_2P5D_1P0_5KG_NOEXO",
+      "condition_name": "2.5°坡-1.0m/s-5kg（不穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 1.0,
+        "slope_deg": 2.5,
+        "load_kg": 5,
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "LWALK_2P5D_1P0_5KG_EXO",
+      "condition_name": "2.5°坡-1.0m/s-5kg（穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 1.0,
+        "slope_deg": 2.5,
+        "load_kg": 5,
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "LWALK_5D_0P6_5KG_NOEXO",
+      "condition_name": "5°坡-0.6m/s-5kg（不穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 0.6,
+        "slope_deg": 5,
+        "load_kg": 5,
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "LWALK_5D_0P6_5KG_EXO",
+      "condition_name": "5°坡-0.6m/s-5kg（穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 0.6,
+        "slope_deg": 5,
+        "load_kg": 5,
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "LWALK_5D_1P0_5KG_NOEXO",
+      "condition_name": "5°坡-1.0m/s-5kg（不穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 1.0,
+        "slope_deg": 5,
+        "load_kg": 5,
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "LWALK_5D_1P0_5KG_EXO",
+      "condition_name": "5°坡-1.0m/s-5kg（穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 1.0,
+        "slope_deg": 5,
+        "load_kg": 5,
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "LWALK_0P6_10KG_NOEXO",
+      "condition_name": "平地-0.6m/s-10kg（不穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 0.6,
+        "slope_deg": 0,
+        "load_kg": 10,
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "LWALK_0P6_10KG_EXO",
+      "condition_name": "平地-0.6m/s-10kg（穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 0.6,
+        "slope_deg": 0,
+        "load_kg": 10,
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "LWALK_1P0_10KG_NOEXO",
+      "condition_name": "平地-1.0m/s-10kg（不穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 1.0,
+        "slope_deg": 0,
+        "load_kg": 10,
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "LWALK_1P0_10KG_EXO",
+      "condition_name": "平地-1.0m/s-10kg（穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 1.0,
+        "slope_deg": 0,
+        "load_kg": 10,
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "LWALK_2P5D_0P6_10KG_NOEXO",
+      "condition_name": "2.5°坡-0.6m/s-10kg（不穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 0.6,
+        "slope_deg": 2.5,
+        "load_kg": 10,
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "LWALK_2P5D_0P6_10KG_EXO",
+      "condition_name": "2.5°坡-0.6m/s-10kg（穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 0.6,
+        "slope_deg": 2.5,
+        "load_kg": 10,
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "LWALK_2P5D_1P0_10KG_NOEXO",
+      "condition_name": "2.5°坡-1.0m/s-10kg（不穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 1.0,
+        "slope_deg": 2.5,
+        "load_kg": 10,
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "LWALK_2P5D_1P0_10KG_EXO",
+      "condition_name": "2.5°坡-1.0m/s-10kg（穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 1.0,
+        "slope_deg": 2.5,
+        "load_kg": 10,
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "LWALK_5D_0P6_10KG_NOEXO",
+      "condition_name": "5°坡-0.6m/s-10kg（不穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 0.6,
+        "slope_deg": 5,
+        "load_kg": 10,
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "LWALK_5D_0P6_10KG_EXO",
+      "condition_name": "5°坡-0.6m/s-10kg（穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 0.6,
+        "slope_deg": 5,
+        "load_kg": 10,
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "LWALK_5D_1P0_10KG_NOEXO",
+      "condition_name": "5°坡-1.0m/s-10kg（不穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 1.0,
+        "slope_deg": 5,
+        "load_kg": 10,
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "LWALK_5D_1P0_10KG_EXO",
+      "condition_name": "5°坡-1.0m/s-10kg（穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_load_slope_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 1.0,
+        "slope_deg": 5,
+        "load_kg": 10,
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "LWALK_RAMP_0KG_NOEXO",
+      "condition_name": "平地-变速-0kg（不穿戴）",
+      "condition_level": "TRANSIENT",
+      "parameters": {
+        "category": "transient_load_speed_change",
+        "recommended_trial_count": 5,
+        "load_kg": 0,
+        "description": "平地行走速度连续变化",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "LWALK_RAMP_0KG_EXO",
+      "condition_name": "平地-变速-0kg（穿戴）",
+      "condition_level": "TRANSIENT",
+      "parameters": {
+        "category": "transient_load_speed_change",
+        "recommended_trial_count": 5,
+        "load_kg": 0,
+        "description": "平地行走速度连续变化",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "LWALK_RAMP_2P5D_0KG_NOEXO",
+      "condition_name": "2.5°坡-变速-0kg（不穿戴）",
+      "condition_level": "TRANSIENT",
+      "parameters": {
+        "category": "transient_load_speed_change",
+        "recommended_trial_count": 5,
+        "slope_deg": 2.5,
+        "load_kg": 0,
+        "description": "2.5°坡行走速度连续变化",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "LWALK_RAMP_2P5D_0KG_EXO",
+      "condition_name": "2.5°坡-变速-0kg（穿戴）",
+      "condition_level": "TRANSIENT",
+      "parameters": {
+        "category": "transient_load_speed_change",
+        "recommended_trial_count": 5,
+        "slope_deg": 2.5,
+        "load_kg": 0,
+        "description": "2.5°坡行走速度连续变化",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "LWALK_RAMP_2P5KG_NOEXO",
+      "condition_name": "平地-变速-2.5kg（不穿戴）",
+      "condition_level": "TRANSIENT",
+      "parameters": {
+        "category": "transient_load_speed_change",
+        "recommended_trial_count": 5,
+        "load_kg": 2.5,
+        "description": "平地行走速度连续变化",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "LWALK_RAMP_2P5KG_EXO",
+      "condition_name": "平地-变速-2.5kg（穿戴）",
+      "condition_level": "TRANSIENT",
+      "parameters": {
+        "category": "transient_load_speed_change",
+        "recommended_trial_count": 5,
+        "load_kg": 2.5,
+        "description": "平地行走速度连续变化",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "LWALK_RAMP_5KG_NOEXO",
+      "condition_name": "平地-变速-5kg（不穿戴）",
+      "condition_level": "TRANSIENT",
+      "parameters": {
+        "category": "transient_load_speed_change",
+        "recommended_trial_count": 5,
+        "load_kg": 5,
+        "description": "平地行走速度连续变化",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "LWALK_RAMP_5KG_EXO",
+      "condition_name": "平地-变速-5kg（穿戴）",
+      "condition_level": "TRANSIENT",
+      "parameters": {
+        "category": "transient_load_speed_change",
+        "recommended_trial_count": 5,
+        "load_kg": 5,
+        "description": "平地行走速度连续变化",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "LWALK_RAMP_2P5D_5KG_NOEXO",
+      "condition_name": "2.5°坡-变速-5kg（不穿戴）",
+      "condition_level": "TRANSIENT",
+      "parameters": {
+        "category": "transient_load_speed_change",
+        "recommended_trial_count": 5,
+        "slope_deg": 2.5,
+        "load_kg": 5,
+        "description": "2.5°坡行走速度连续变化",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "LWALK_RAMP_2P5D_5KG_EXO",
+      "condition_name": "2.5°坡-变速-5kg（穿戴）",
+      "condition_level": "TRANSIENT",
+      "parameters": {
+        "category": "transient_load_speed_change",
+        "recommended_trial_count": 5,
+        "slope_deg": 2.5,
+        "load_kg": 5,
+        "description": "2.5°坡行走速度连续变化",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "LWALK_RAMP_10KG_NOEXO",
+      "condition_name": "平地-变速-10kg（不穿戴）",
+      "condition_level": "TRANSIENT",
+      "parameters": {
+        "category": "transient_load_speed_change",
+        "recommended_trial_count": 5,
+        "load_kg": 10,
+        "description": "平地行走速度连续变化",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "LWALK_RAMP_10KG_EXO",
+      "condition_name": "平地-变速-10kg（穿戴）",
+      "condition_level": "TRANSIENT",
+      "parameters": {
+        "category": "transient_load_speed_change",
+        "recommended_trial_count": 5,
+        "load_kg": 10,
+        "description": "平地行走速度连续变化",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "LWALK_RAMP_2P5D_10KG_NOEXO",
+      "condition_name": "2.5°坡-变速-10kg（不穿戴）",
+      "condition_level": "TRANSIENT",
+      "parameters": {
+        "category": "transient_load_speed_change",
+        "recommended_trial_count": 5,
+        "slope_deg": 2.5,
+        "load_kg": 10,
+        "description": "2.5°坡行走速度连续变化",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "LWALK_RAMP_2P5D_10KG_EXO",
+      "condition_name": "2.5°坡-变速-10kg（穿戴）",
+      "condition_level": "TRANSIENT",
+      "parameters": {
+        "category": "transient_load_speed_change",
+        "recommended_trial_count": 5,
+        "slope_deg": 2.5,
+        "load_kg": 10,
+        "description": "2.5°坡行走速度连续变化",
+        "exo": true
+      }
     }
   ]
 }
