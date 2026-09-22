@@ -36,7 +36,8 @@ _log = logging.getLogger(__name__)
 class PromptName(StrEnum):
     """一个按键事件被赋予的语义名称；``nan`` 表示无效（后续训练应忽略）。
 
-    意图类工况（前/后/外）各配一对 start/end 语义名，用于标记该意图动作的起止。
+    意图类工况（前/后/外）各配一对 start/end 语义名，用于标记该意图动作的起止；
+    激活 / 释放各配一对 start/end 语义名，用于标记激活与释放的起止。
     """
 
     START = "start"
@@ -48,6 +49,10 @@ class PromptName(StrEnum):
     INTENT_BACKWARD_END = "intent_backward_end"
     INTENT_LATERAL_START = "intent_lateral_start"
     INTENT_LATERAL_END = "intent_lateral_end"
+    ACTIVATE_START = "activate_start"
+    ACTIVATE_END = "activate_end"
+    RELEASE_START = "release_start"
+    RELEASE_END = "release_end"
 
     @property
     def display_name(self) -> str:
@@ -61,6 +66,10 @@ class PromptName(StrEnum):
             PromptName.INTENT_BACKWARD_END: "意图后-end",
             PromptName.INTENT_LATERAL_START: "意图外-start",
             PromptName.INTENT_LATERAL_END: "意图外-end",
+            PromptName.ACTIVATE_START: "激活start",
+            PromptName.ACTIVATE_END: "激活end",
+            PromptName.RELEASE_START: "释放start",
+            PromptName.RELEASE_END: "释放end",
         }[self]
 
 

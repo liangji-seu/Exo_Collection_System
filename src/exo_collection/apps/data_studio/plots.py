@@ -51,6 +51,10 @@ _PROMPT_NAME_PEN = {
     "intent_backward_end": ("#7c3aed", Qt.PenStyle.DashLine),
     "intent_lateral_start": ("#0ea5e9", Qt.PenStyle.SolidLine),
     "intent_lateral_end": ("#0ea5e9", Qt.PenStyle.DashLine),
+    "activate_start": ("#e11d48", Qt.PenStyle.SolidLine),
+    "activate_end": ("#e11d48", Qt.PenStyle.DashLine),
+    "release_start": ("#0d9488", Qt.PenStyle.SolidLine),
+    "release_end": ("#0d9488", Qt.PenStyle.DashLine),
 }
 
 

@@ -42,6 +42,15 @@ def test_prompt_name_values_and_display_names() -> None:
     assert PromptName.INTENT_LATERAL_START.display_name == "意图外-start"
     assert PromptName.INTENT_LATERAL_END.display_name == "意图外-end"
 
+    assert PromptName.ACTIVATE_START.value == "activate_start"
+    assert PromptName.ACTIVATE_END.value == "activate_end"
+    assert PromptName.RELEASE_START.value == "release_start"
+    assert PromptName.RELEASE_END.value == "release_end"
+    assert PromptName.ACTIVATE_START.display_name == "激活start"
+    assert PromptName.ACTIVATE_END.display_name == "激活end"
+    assert PromptName.RELEASE_START.display_name == "释放start"
+    assert PromptName.RELEASE_END.display_name == "释放end"
+
 
 def test_write_and_load_round_trip(tmp_path: Path) -> None:
     trial_uuid = uuid4()

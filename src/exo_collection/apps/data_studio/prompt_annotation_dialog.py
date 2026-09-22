@@ -61,7 +61,7 @@ class PromptAnnotationDialog(QDialog):
 
         layout = QVBoxLayout(self)
         hint = QLabel(
-            "为每个按键事件指定语义名称：开始 / 结束 / 无效，或意图前·后·外的 start / end。\n"
+            "为每个按键事件指定语义名称：开始 / 结束 / 无效，或意图前·后·外、激活、释放的 start / end。\n"
             "保存后写入边车文件，不会改写原始打标数据。"
         )
         hint.setWordWrap(True)
