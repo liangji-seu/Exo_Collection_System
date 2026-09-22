@@ -38,7 +38,13 @@ _IDLE_VALUE_STYLE = (
 _RECORDING_VALUE_STYLE = (
     "QLabel#elapsed_value { color: #b02a37; font-size: 42px; font-weight: 700; }"
 )
+# 按下按钮瞬间的短暂高亮色（区别于 idle 深色与 recording 红色）。
+_FLASH_VALUE_STYLE = (
+    "QLabel#elapsed_value { color: #16a34a; font-size: 42px; font-weight: 700; }"
+)
 _STATUS_STYLE = "QLabel#elapsed_status { color: #6b7280; font-weight: 600; }"
+
+_FLASH_MS = 180
 
 
 class ElapsedTimerPanel(QWidget):
@@ -77,6 +83,10 @@ class ElapsedTimerPanel(QWidget):
         self._tick_timer.setInterval(100)
         self._tick_timer.timeout.connect(self._refresh)
 
+        self._flash_timer = QTimer(self)
+        self._flash_timer.setSingleShot(True)
+        self._flash_timer.timeout.connect(self._apply_mode)
+
         self.reset()
 
     # ── clock ────────────────────────────────────────────────────────────
@@ -106,6 +116,11 @@ class ElapsedTimerPanel(QWidget):
         if self._started_at is None:
             return 0.0
         return max(0.0, time.perf_counter() - self._started_at)
+
+    def flash(self) -> None:
+        """短暂高亮数值，作为一次按钮按下的特效反馈；到时自动恢复常态样式。"""
+        self._value_label.setStyleSheet(_FLASH_VALUE_STYLE)
+        self._flash_timer.start(_FLASH_MS)
 
     # ── rendering ────────────────────────────────────────────────────────
 

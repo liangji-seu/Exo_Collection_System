@@ -6,6 +6,9 @@ from PySide6.QtWidgets import QApplication
 
 from exo_collection.apps.collector.elapsed_timer import (
     ElapsedTimerPanel,
+    _FLASH_VALUE_STYLE,
+    _IDLE_VALUE_STYLE,
+    _RECORDING_VALUE_STYLE,
     format_elapsed,
 )
 
@@ -75,4 +78,26 @@ def test_panel_rezeros_on_first_show_only() -> None:
     panel.show()
     app.processEvents()
     assert panel._started_at == second_start
+    panel.close()
+
+
+def test_flash_highlights_then_reverts_on_timeout() -> None:
+    app = QApplication.instance() or QApplication(["test-elapsed-timer-flash"])
+    panel = ElapsedTimerPanel()
+
+    assert panel._value_label.styleSheet() == _IDLE_VALUE_STYLE
+    panel.flash()
+    assert panel._value_label.styleSheet() == _FLASH_VALUE_STYLE
+
+    # 触发 flash 计时器超时（等价于 180ms 后），应恢复 idle 常态样式。
+    panel._flash_timer.timeout.emit()
+    assert panel._value_label.styleSheet() == _IDLE_VALUE_STYLE
+
+    # 录制态下 flash 后，恢复的应是录制态红色样式，而非 idle。
+    panel.start_recording()
+    assert panel._value_label.styleSheet() == _RECORDING_VALUE_STYLE
+    panel.flash()
+    assert panel._value_label.styleSheet() == _FLASH_VALUE_STYLE
+    panel._flash_timer.timeout.emit()
+    assert panel._value_label.styleSheet() == _RECORDING_VALUE_STYLE
     panel.close()

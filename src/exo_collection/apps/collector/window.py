@@ -38,6 +38,7 @@ from PySide6.QtGui import (
     QCloseEvent,
     QColor,
     QDoubleValidator,
+    QGuiApplication,
     QIntValidator,
     QKeyEvent,
     QRegularExpressionValidator,
@@ -98,6 +99,7 @@ from exo_collection.apps.collector.preflight import (
     run_simulated_preflight,
 )
 from exo_collection.apps.collector.elapsed_timer import ElapsedTimerPanel
+from exo_collection.apps.collector.label_counter_badge import LabelCounterBadge
 from exo_collection.apps.collector.preview_workspace import PreviewWorkspace
 from exo_collection.apps.collector.status_overview import ModalityStatusStrip
 from exo_collection.apps.collector.sync_filename import SyncFilenameBar
@@ -1249,6 +1251,7 @@ class CollectorWindow(QMainWindow):
         self.preview_workspace: PreviewWorkspace | None = None
         self._status_overview: ModalityStatusStrip | None = None
         self._elapsed_timer: ElapsedTimerPanel | None = None
+        self._label_badge: LabelCounterBadge | None = None
         self._preview_focus_previous_sizes: list[int] | None = None
         self._preview_y_ranges: dict[str, tuple[float, float]] = {}
         self._timeline_started_at = time.monotonic()
@@ -2153,6 +2156,18 @@ class CollectorWindow(QMainWindow):
             *self._configure_buttons.values(),
         )
         self._render_device_profile()
+
+        # 浮空按钮标签计数窗：仅在按钮连接后显示，初始隐藏并定位到主屏右上角。
+        self._label_badge = LabelCounterBadge(self)
+        self._label_badge.adjustSize()
+        screen = QGuiApplication.primaryScreen()
+        if screen is not None:
+            geometry = screen.availableGeometry()
+            self._label_badge.move(
+                geometry.right() - self._label_badge.width() - 24,
+                geometry.top() + 24,
+            )
+        self._label_badge.hide()
 
     # ── Profile / Device Metadata ──────────────────────────────────────
 
@@ -3350,6 +3365,13 @@ class CollectorWindow(QMainWindow):
         self._update_connect_button_state()
         self._append_alert(f"正在断开 {modality} 预览…")
 
+    def _update_label_badge(self) -> None:
+        """把当前按钮标签计数同步到浮空计数窗。"""
+        if self._label_badge is not None:
+            self._label_badge.set_count(
+                self._prompt_label_counts[PromptLabelSource.BUTTON]
+            )
+
     @Slot()
     def _start_button_marker(self) -> None:
         """连接按钮标签：启用全局键盘钩子监听逗号键。"""
@@ -3358,7 +3380,8 @@ class CollectorWindow(QMainWindow):
         if self._worker is not None:
             self._append_alert("Trial 进行中，无法连接按钮标签。")
             return
-        marker = ButtonMarkerListener()
+        factory = self._button_marker_factory or ButtonMarkerListener
+        marker = factory()
         marker.start()
         self._button_marker = marker
         self._button_poll_timer.start()
@@ -3368,6 +3391,10 @@ class CollectorWindow(QMainWindow):
             status_label.setToolTip("状态：已连接，等待按钮")
         self._update_connect_button_state()
         self._append_alert("按钮标签已启用：按下 USB 按钮即记录标记。")
+        if self._label_badge is not None:
+            self._update_label_badge()
+            self._label_badge.show()
+            self._label_badge.raise_()
         LOG.info("按钮标签监听已启用")
 
     @Slot()
@@ -3387,6 +3414,8 @@ class CollectorWindow(QMainWindow):
             status_label.setToolTip("状态：未连接")
         self._update_connect_button_state()
         self._append_alert("按钮标签已停止。")
+        if self._label_badge is not None:
+            self._label_badge.hide()
         LOG.info("按钮标签监听已停止")
 
     @Slot()
@@ -3396,6 +3425,11 @@ class CollectorWindow(QMainWindow):
         if marker is None:
             return
         for host_monotonic_ns, host_utc_ns in marker.drain():
+            # 每次物理按下都闪一下，作为即时反馈（与是否在录制无关）。
+            if self._label_badge is not None:
+                self._label_badge.flash()
+            if self._elapsed_timer is not None:
+                self._elapsed_timer.flash()
             self._capture_prompt_label(
                 PromptLabelSource.BUTTON,
                 host_monotonic_ns=host_monotonic_ns,
@@ -4373,6 +4407,7 @@ class CollectorWindow(QMainWindow):
             PromptLabelSource.OPERATOR: 0,
             PromptLabelSource.BUTTON: 0,
         }
+        self._update_label_badge()
         for row in self._health_rows.values():
             self.health_table.item(row, HEALTH_COLUMN_MODALITY).setToolTip("")
             self.health_table.item(row, HEALTH_COLUMN_SAMPLE_COUNT).setText("0")
@@ -4567,6 +4602,7 @@ class CollectorWindow(QMainWindow):
             row_key = "button_prompt"
         count = max(0, int(event.payload.get(count_key) or 0))
         self._prompt_label_counts[source] = count
+        self._update_label_badge()
         row = self._health_rows[row_key]
         self.health_table.item(row, HEALTH_COLUMN_SAMPLE_COUNT).setText(str(count))
         self.health_table.item(row, HEALTH_COLUMN_SAMPLE_COUNT).setToolTip(

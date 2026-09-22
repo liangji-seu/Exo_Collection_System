@@ -1805,6 +1805,58 @@ def test_closing_window_stops_start_stop_listener(tmp_path: Path) -> None:
     assert marker.stopped
 
 
+def test_label_badge_shows_and_hides_with_button_connect(tmp_path: Path) -> None:
+    app, window, _created = _window_with_fake(
+        tmp_path,
+        button_marker_factory=FakeButtonMarker,
+    )
+    try:
+        badge = window._label_badge
+        assert badge is not None
+        assert badge.isHidden()
+
+        window._start_button_marker()
+        marker = window._button_marker
+        assert isinstance(marker, FakeButtonMarker)
+        assert marker.started
+        assert not badge.isHidden()
+
+        # 注入一次按下：即使无 Trial 进行中，也应触发特效而不抛错。
+        marker.inject_press()
+        window._poll_button_marker()
+
+        window._stop_button_marker()
+        assert marker.stopped
+        assert badge.isHidden()
+    finally:
+        window.close()
+
+
+def test_label_badge_tracks_button_count_and_resets(tmp_path: Path) -> None:
+    app, window, _created = _window_with_fake(
+        tmp_path,
+        button_marker_factory=FakeButtonMarker,
+    )
+    try:
+        badge = window._label_badge
+        assert badge is not None
+
+        window._handle_prompt_label(
+            WorkerEvent(
+                event_type=WorkerEventType.PROMPT_LABEL,
+                payload={"source": "BUTTON", "button_count": 5},
+            )
+        )
+        assert window._prompt_label_counts[PromptLabelSource.BUTTON] == 5
+        assert badge._count_label.text() == "5"
+
+        # 开始新 Trial 时归零，计数窗同步回到 0。
+        window._reset_trial_telemetry()
+        assert badge._count_label.text() == "0"
+    finally:
+        window.close()
+
+
 def test_collector_shows_failed_worker_error_without_blocking_ui(
     tmp_path: Path,
     caplog,
