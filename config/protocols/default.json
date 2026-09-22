@@ -2643,6 +2643,978 @@
         "category": "special_passive_free_large_abduct",
         "exo": true
       }
+    },
+    {
+      "condition_code": "STAND_ACTIVE_CONSTRAINED_HIP_FLEX_NOEXO",
+      "condition_name": "站姿-主动-约束-屈髋（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_active_constrained_hip_flex",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "STAND_ACTIVE_CONSTRAINED_HIP_FLEX_EXO",
+      "condition_name": "站姿-主动-约束-屈髋（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_active_constrained_hip_flex",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "STAND_ACTIVE_CONSTRAINED_HIP_EXT_NOEXO",
+      "condition_name": "站姿-主动-约束-伸髋（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_active_constrained_hip_ext",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "STAND_ACTIVE_CONSTRAINED_HIP_EXT_EXO",
+      "condition_name": "站姿-主动-约束-伸髋（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_active_constrained_hip_ext",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "STAND_ACTIVE_CONSTRAINED_KNEE_FLEX_NOEXO",
+      "condition_name": "站姿-主动-约束-屈膝（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_active_constrained_knee_flex",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "STAND_ACTIVE_CONSTRAINED_KNEE_FLEX_EXO",
+      "condition_name": "站姿-主动-约束-屈膝（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_active_constrained_knee_flex",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "STAND_ACTIVE_CONSTRAINED_KNEE_EXT_NOEXO",
+      "condition_name": "站姿-主动-约束-伸膝（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_active_constrained_knee_ext",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "STAND_ACTIVE_CONSTRAINED_KNEE_EXT_EXO",
+      "condition_name": "站姿-主动-约束-伸膝（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_active_constrained_knee_ext",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "STAND_ACTIVE_CONSTRAINED_ABDUCT_NOEXO",
+      "condition_name": "站姿-主动-约束-外扩（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_active_constrained_abduct",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "STAND_ACTIVE_CONSTRAINED_ABDUCT_EXO",
+      "condition_name": "站姿-主动-约束-外扩（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_active_constrained_abduct",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "STAND_ACTIVE_FREE_SLIGHT_HIP_FLEX_NOEXO",
+      "condition_name": "站姿-主动-无约束-轻微位移-屈髋（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_active_free_slight_hip_flex",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "STAND_ACTIVE_FREE_SLIGHT_HIP_FLEX_EXO",
+      "condition_name": "站姿-主动-无约束-轻微位移-屈髋（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_active_free_slight_hip_flex",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "STAND_ACTIVE_FREE_SLIGHT_HIP_EXT_NOEXO",
+      "condition_name": "站姿-主动-无约束-轻微位移-伸髋（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_active_free_slight_hip_ext",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "STAND_ACTIVE_FREE_SLIGHT_HIP_EXT_EXO",
+      "condition_name": "站姿-主动-无约束-轻微位移-伸髋（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_active_free_slight_hip_ext",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "STAND_ACTIVE_FREE_SLIGHT_KNEE_FLEX_NOEXO",
+      "condition_name": "站姿-主动-无约束-轻微位移-屈膝（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_active_free_slight_knee_flex",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "STAND_ACTIVE_FREE_SLIGHT_KNEE_FLEX_EXO",
+      "condition_name": "站姿-主动-无约束-轻微位移-屈膝（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_active_free_slight_knee_flex",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "STAND_ACTIVE_FREE_SLIGHT_KNEE_EXT_NOEXO",
+      "condition_name": "站姿-主动-无约束-轻微位移-伸膝（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_active_free_slight_knee_ext",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "STAND_ACTIVE_FREE_SLIGHT_KNEE_EXT_EXO",
+      "condition_name": "站姿-主动-无约束-轻微位移-伸膝（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_active_free_slight_knee_ext",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "STAND_ACTIVE_FREE_SLIGHT_ABDUCT_NOEXO",
+      "condition_name": "站姿-主动-无约束-轻微位移-外扩（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_active_free_slight_abduct",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "STAND_ACTIVE_FREE_SLIGHT_ABDUCT_EXO",
+      "condition_name": "站姿-主动-无约束-轻微位移-外扩（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_active_free_slight_abduct",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "STAND_ACTIVE_FREE_LARGE_HIP_FLEX_NOEXO",
+      "condition_name": "站姿-主动-无约束-明显位移-屈髋（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_active_free_large_hip_flex",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "STAND_ACTIVE_FREE_LARGE_HIP_FLEX_EXO",
+      "condition_name": "站姿-主动-无约束-明显位移-屈髋（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_active_free_large_hip_flex",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "STAND_ACTIVE_FREE_LARGE_HIP_EXT_NOEXO",
+      "condition_name": "站姿-主动-无约束-明显位移-伸髋（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_active_free_large_hip_ext",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "STAND_ACTIVE_FREE_LARGE_HIP_EXT_EXO",
+      "condition_name": "站姿-主动-无约束-明显位移-伸髋（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_active_free_large_hip_ext",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "STAND_ACTIVE_FREE_LARGE_KNEE_FLEX_NOEXO",
+      "condition_name": "站姿-主动-无约束-明显位移-屈膝（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_active_free_large_knee_flex",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "STAND_ACTIVE_FREE_LARGE_KNEE_FLEX_EXO",
+      "condition_name": "站姿-主动-无约束-明显位移-屈膝（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_active_free_large_knee_flex",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "STAND_ACTIVE_FREE_LARGE_KNEE_EXT_NOEXO",
+      "condition_name": "站姿-主动-无约束-明显位移-伸膝（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_active_free_large_knee_ext",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "STAND_ACTIVE_FREE_LARGE_KNEE_EXT_EXO",
+      "condition_name": "站姿-主动-无约束-明显位移-伸膝（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_active_free_large_knee_ext",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "STAND_ACTIVE_FREE_LARGE_ABDUCT_NOEXO",
+      "condition_name": "站姿-主动-无约束-明显位移-外扩（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_active_free_large_abduct",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "STAND_ACTIVE_FREE_LARGE_ABDUCT_EXO",
+      "condition_name": "站姿-主动-无约束-明显位移-外扩（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_active_free_large_abduct",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "STAND_PASSIVE_CONSTRAINED_HIP_FLEX_NOEXO",
+      "condition_name": "站姿-被动-约束-屈髋（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_passive_constrained_hip_flex",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "STAND_PASSIVE_CONSTRAINED_HIP_FLEX_EXO",
+      "condition_name": "站姿-被动-约束-屈髋（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_passive_constrained_hip_flex",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "STAND_PASSIVE_CONSTRAINED_HIP_EXT_NOEXO",
+      "condition_name": "站姿-被动-约束-伸髋（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_passive_constrained_hip_ext",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "STAND_PASSIVE_CONSTRAINED_HIP_EXT_EXO",
+      "condition_name": "站姿-被动-约束-伸髋（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_passive_constrained_hip_ext",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "STAND_PASSIVE_CONSTRAINED_KNEE_FLEX_NOEXO",
+      "condition_name": "站姿-被动-约束-屈膝（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_passive_constrained_knee_flex",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "STAND_PASSIVE_CONSTRAINED_KNEE_FLEX_EXO",
+      "condition_name": "站姿-被动-约束-屈膝（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_passive_constrained_knee_flex",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "STAND_PASSIVE_CONSTRAINED_KNEE_EXT_NOEXO",
+      "condition_name": "站姿-被动-约束-伸膝（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_passive_constrained_knee_ext",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "STAND_PASSIVE_CONSTRAINED_KNEE_EXT_EXO",
+      "condition_name": "站姿-被动-约束-伸膝（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_passive_constrained_knee_ext",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "STAND_PASSIVE_CONSTRAINED_ABDUCT_NOEXO",
+      "condition_name": "站姿-被动-约束-外扩（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_passive_constrained_abduct",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "STAND_PASSIVE_CONSTRAINED_ABDUCT_EXO",
+      "condition_name": "站姿-被动-约束-外扩（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_passive_constrained_abduct",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "STAND_PASSIVE_FREE_SLIGHT_HIP_FLEX_NOEXO",
+      "condition_name": "站姿-被动-无约束-轻微位移-屈髋（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_passive_free_slight_hip_flex",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "STAND_PASSIVE_FREE_SLIGHT_HIP_FLEX_EXO",
+      "condition_name": "站姿-被动-无约束-轻微位移-屈髋（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_passive_free_slight_hip_flex",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "STAND_PASSIVE_FREE_SLIGHT_HIP_EXT_NOEXO",
+      "condition_name": "站姿-被动-无约束-轻微位移-伸髋（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_passive_free_slight_hip_ext",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "STAND_PASSIVE_FREE_SLIGHT_HIP_EXT_EXO",
+      "condition_name": "站姿-被动-无约束-轻微位移-伸髋（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_passive_free_slight_hip_ext",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "STAND_PASSIVE_FREE_SLIGHT_KNEE_FLEX_NOEXO",
+      "condition_name": "站姿-被动-无约束-轻微位移-屈膝（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_passive_free_slight_knee_flex",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "STAND_PASSIVE_FREE_SLIGHT_KNEE_FLEX_EXO",
+      "condition_name": "站姿-被动-无约束-轻微位移-屈膝（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_passive_free_slight_knee_flex",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "STAND_PASSIVE_FREE_SLIGHT_KNEE_EXT_NOEXO",
+      "condition_name": "站姿-被动-无约束-轻微位移-伸膝（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_passive_free_slight_knee_ext",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "STAND_PASSIVE_FREE_SLIGHT_KNEE_EXT_EXO",
+      "condition_name": "站姿-被动-无约束-轻微位移-伸膝（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_passive_free_slight_knee_ext",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "STAND_PASSIVE_FREE_SLIGHT_ABDUCT_NOEXO",
+      "condition_name": "站姿-被动-无约束-轻微位移-外扩（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_passive_free_slight_abduct",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "STAND_PASSIVE_FREE_SLIGHT_ABDUCT_EXO",
+      "condition_name": "站姿-被动-无约束-轻微位移-外扩（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_passive_free_slight_abduct",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "STAND_PASSIVE_FREE_LARGE_HIP_FLEX_NOEXO",
+      "condition_name": "站姿-被动-无约束-明显位移-屈髋（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_passive_free_large_hip_flex",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "STAND_PASSIVE_FREE_LARGE_HIP_FLEX_EXO",
+      "condition_name": "站姿-被动-无约束-明显位移-屈髋（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_passive_free_large_hip_flex",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "STAND_PASSIVE_FREE_LARGE_HIP_EXT_NOEXO",
+      "condition_name": "站姿-被动-无约束-明显位移-伸髋（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_passive_free_large_hip_ext",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "STAND_PASSIVE_FREE_LARGE_HIP_EXT_EXO",
+      "condition_name": "站姿-被动-无约束-明显位移-伸髋（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_passive_free_large_hip_ext",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "STAND_PASSIVE_FREE_LARGE_KNEE_FLEX_NOEXO",
+      "condition_name": "站姿-被动-无约束-明显位移-屈膝（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_passive_free_large_knee_flex",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "STAND_PASSIVE_FREE_LARGE_KNEE_FLEX_EXO",
+      "condition_name": "站姿-被动-无约束-明显位移-屈膝（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_passive_free_large_knee_flex",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "STAND_PASSIVE_FREE_LARGE_KNEE_EXT_NOEXO",
+      "condition_name": "站姿-被动-无约束-明显位移-伸膝（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_passive_free_large_knee_ext",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "STAND_PASSIVE_FREE_LARGE_KNEE_EXT_EXO",
+      "condition_name": "站姿-被动-无约束-明显位移-伸膝（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_passive_free_large_knee_ext",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "STAND_PASSIVE_FREE_LARGE_ABDUCT_NOEXO",
+      "condition_name": "站姿-被动-无约束-明显位移-外扩（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_passive_free_large_abduct",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "STAND_PASSIVE_FREE_LARGE_ABDUCT_EXO",
+      "condition_name": "站姿-被动-无约束-明显位移-外扩（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_stand_passive_free_large_abduct",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "SIT_ACTIVE_CONSTRAINED_HIP_FLEX_NOEXO",
+      "condition_name": "坐姿-主动-约束-屈髋（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_active_constrained_hip_flex",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "SIT_ACTIVE_CONSTRAINED_HIP_FLEX_EXO",
+      "condition_name": "坐姿-主动-约束-屈髋（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_active_constrained_hip_flex",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "SIT_ACTIVE_CONSTRAINED_KNEE_FLEX_NOEXO",
+      "condition_name": "坐姿-主动-约束-屈膝（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_active_constrained_knee_flex",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "SIT_ACTIVE_CONSTRAINED_KNEE_FLEX_EXO",
+      "condition_name": "坐姿-主动-约束-屈膝（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_active_constrained_knee_flex",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "SIT_ACTIVE_CONSTRAINED_KNEE_EXT_NOEXO",
+      "condition_name": "坐姿-主动-约束-伸膝（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_active_constrained_knee_ext",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "SIT_ACTIVE_CONSTRAINED_KNEE_EXT_EXO",
+      "condition_name": "坐姿-主动-约束-伸膝（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_active_constrained_knee_ext",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "SIT_ACTIVE_CONSTRAINED_ABDUCT_NOEXO",
+      "condition_name": "坐姿-主动-约束-外扩（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_active_constrained_abduct",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "SIT_ACTIVE_CONSTRAINED_ABDUCT_EXO",
+      "condition_name": "坐姿-主动-约束-外扩（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_active_constrained_abduct",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "SIT_ACTIVE_FREE_SLIGHT_HIP_FLEX_NOEXO",
+      "condition_name": "坐姿-主动-无约束-轻微位移-屈髋（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_active_free_slight_hip_flex",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "SIT_ACTIVE_FREE_SLIGHT_HIP_FLEX_EXO",
+      "condition_name": "坐姿-主动-无约束-轻微位移-屈髋（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_active_free_slight_hip_flex",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "SIT_ACTIVE_FREE_SLIGHT_KNEE_FLEX_NOEXO",
+      "condition_name": "坐姿-主动-无约束-轻微位移-屈膝（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_active_free_slight_knee_flex",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "SIT_ACTIVE_FREE_SLIGHT_KNEE_FLEX_EXO",
+      "condition_name": "坐姿-主动-无约束-轻微位移-屈膝（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_active_free_slight_knee_flex",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "SIT_ACTIVE_FREE_SLIGHT_KNEE_EXT_NOEXO",
+      "condition_name": "坐姿-主动-无约束-轻微位移-伸膝（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_active_free_slight_knee_ext",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "SIT_ACTIVE_FREE_SLIGHT_KNEE_EXT_EXO",
+      "condition_name": "坐姿-主动-无约束-轻微位移-伸膝（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_active_free_slight_knee_ext",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "SIT_ACTIVE_FREE_SLIGHT_ABDUCT_NOEXO",
+      "condition_name": "坐姿-主动-无约束-轻微位移-外扩（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_active_free_slight_abduct",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "SIT_ACTIVE_FREE_SLIGHT_ABDUCT_EXO",
+      "condition_name": "坐姿-主动-无约束-轻微位移-外扩（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_active_free_slight_abduct",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "SIT_ACTIVE_FREE_LARGE_HIP_FLEX_NOEXO",
+      "condition_name": "坐姿-主动-无约束-明显位移-屈髋（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_active_free_large_hip_flex",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "SIT_ACTIVE_FREE_LARGE_HIP_FLEX_EXO",
+      "condition_name": "坐姿-主动-无约束-明显位移-屈髋（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_active_free_large_hip_flex",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "SIT_ACTIVE_FREE_LARGE_KNEE_FLEX_NOEXO",
+      "condition_name": "坐姿-主动-无约束-明显位移-屈膝（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_active_free_large_knee_flex",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "SIT_ACTIVE_FREE_LARGE_KNEE_FLEX_EXO",
+      "condition_name": "坐姿-主动-无约束-明显位移-屈膝（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_active_free_large_knee_flex",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "SIT_ACTIVE_FREE_LARGE_KNEE_EXT_NOEXO",
+      "condition_name": "坐姿-主动-无约束-明显位移-伸膝（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_active_free_large_knee_ext",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "SIT_ACTIVE_FREE_LARGE_KNEE_EXT_EXO",
+      "condition_name": "坐姿-主动-无约束-明显位移-伸膝（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_active_free_large_knee_ext",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "SIT_ACTIVE_FREE_LARGE_ABDUCT_NOEXO",
+      "condition_name": "坐姿-主动-无约束-明显位移-外扩（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_active_free_large_abduct",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "SIT_ACTIVE_FREE_LARGE_ABDUCT_EXO",
+      "condition_name": "坐姿-主动-无约束-明显位移-外扩（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_active_free_large_abduct",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "SIT_PASSIVE_CONSTRAINED_HIP_FLEX_NOEXO",
+      "condition_name": "坐姿-被动-约束-屈髋（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_passive_constrained_hip_flex",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "SIT_PASSIVE_CONSTRAINED_HIP_FLEX_EXO",
+      "condition_name": "坐姿-被动-约束-屈髋（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_passive_constrained_hip_flex",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "SIT_PASSIVE_CONSTRAINED_KNEE_FLEX_NOEXO",
+      "condition_name": "坐姿-被动-约束-屈膝（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_passive_constrained_knee_flex",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "SIT_PASSIVE_CONSTRAINED_KNEE_FLEX_EXO",
+      "condition_name": "坐姿-被动-约束-屈膝（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_passive_constrained_knee_flex",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "SIT_PASSIVE_CONSTRAINED_KNEE_EXT_NOEXO",
+      "condition_name": "坐姿-被动-约束-伸膝（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_passive_constrained_knee_ext",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "SIT_PASSIVE_CONSTRAINED_KNEE_EXT_EXO",
+      "condition_name": "坐姿-被动-约束-伸膝（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_passive_constrained_knee_ext",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "SIT_PASSIVE_CONSTRAINED_ABDUCT_NOEXO",
+      "condition_name": "坐姿-被动-约束-外扩（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_passive_constrained_abduct",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "SIT_PASSIVE_CONSTRAINED_ABDUCT_EXO",
+      "condition_name": "坐姿-被动-约束-外扩（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_passive_constrained_abduct",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "SIT_PASSIVE_FREE_SLIGHT_HIP_FLEX_NOEXO",
+      "condition_name": "坐姿-被动-无约束-轻微位移-屈髋（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_passive_free_slight_hip_flex",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "SIT_PASSIVE_FREE_SLIGHT_HIP_FLEX_EXO",
+      "condition_name": "坐姿-被动-无约束-轻微位移-屈髋（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_passive_free_slight_hip_flex",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "SIT_PASSIVE_FREE_SLIGHT_KNEE_FLEX_NOEXO",
+      "condition_name": "坐姿-被动-无约束-轻微位移-屈膝（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_passive_free_slight_knee_flex",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "SIT_PASSIVE_FREE_SLIGHT_KNEE_FLEX_EXO",
+      "condition_name": "坐姿-被动-无约束-轻微位移-屈膝（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_passive_free_slight_knee_flex",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "SIT_PASSIVE_FREE_SLIGHT_KNEE_EXT_NOEXO",
+      "condition_name": "坐姿-被动-无约束-轻微位移-伸膝（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_passive_free_slight_knee_ext",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "SIT_PASSIVE_FREE_SLIGHT_KNEE_EXT_EXO",
+      "condition_name": "坐姿-被动-无约束-轻微位移-伸膝（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_passive_free_slight_knee_ext",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "SIT_PASSIVE_FREE_SLIGHT_ABDUCT_NOEXO",
+      "condition_name": "坐姿-被动-无约束-轻微位移-外扩（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_passive_free_slight_abduct",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "SIT_PASSIVE_FREE_SLIGHT_ABDUCT_EXO",
+      "condition_name": "坐姿-被动-无约束-轻微位移-外扩（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_passive_free_slight_abduct",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "SIT_PASSIVE_FREE_LARGE_HIP_FLEX_NOEXO",
+      "condition_name": "坐姿-被动-无约束-明显位移-屈髋（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_passive_free_large_hip_flex",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "SIT_PASSIVE_FREE_LARGE_HIP_FLEX_EXO",
+      "condition_name": "坐姿-被动-无约束-明显位移-屈髋（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_passive_free_large_hip_flex",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "SIT_PASSIVE_FREE_LARGE_KNEE_FLEX_NOEXO",
+      "condition_name": "坐姿-被动-无约束-明显位移-屈膝（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_passive_free_large_knee_flex",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "SIT_PASSIVE_FREE_LARGE_KNEE_FLEX_EXO",
+      "condition_name": "坐姿-被动-无约束-明显位移-屈膝（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_passive_free_large_knee_flex",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "SIT_PASSIVE_FREE_LARGE_KNEE_EXT_NOEXO",
+      "condition_name": "坐姿-被动-无约束-明显位移-伸膝（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_passive_free_large_knee_ext",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "SIT_PASSIVE_FREE_LARGE_KNEE_EXT_EXO",
+      "condition_name": "坐姿-被动-无约束-明显位移-伸膝（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_passive_free_large_knee_ext",
+        "exo": true
+      }
+    },
+    {
+      "condition_code": "SIT_PASSIVE_FREE_LARGE_ABDUCT_NOEXO",
+      "condition_name": "坐姿-被动-无约束-明显位移-外扩（不穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_passive_free_large_abduct",
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "SIT_PASSIVE_FREE_LARGE_ABDUCT_EXO",
+      "condition_name": "坐姿-被动-无约束-明显位移-外扩（穿戴）",
+      "condition_level": "SPECIAL",
+      "parameters": {
+        "category": "special_sit_passive_free_large_abduct",
+        "exo": true
+      }
     }
   ]
 }

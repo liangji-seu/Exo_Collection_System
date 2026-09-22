@@ -1932,11 +1932,11 @@ def test_condition_combo_exposes_phase_conditions(
         ]
 
     try:
-        # 期次固定两期；主工况固定 4 类。
+        # 期次固定三期；主工况固定 4 类。
         assert [
             window.phase_combo.itemText(index)
             for index in range(window.phase_combo.count())
-        ] == ["第一期", "第二期"]
+        ] == ["第一期", "第二期", "第三期"]
         assert [
             window.main_category_combo.itemText(index)
             for index in range(window.main_category_combo.count())
@@ -2156,6 +2156,121 @@ def test_condition_combo_exposes_phase_conditions(
             "PASSIVE_FREE_LARGE_ABDUCT_NOEXO",
             "PASSIVE_FREE_LARGE_ABDUCT_EXO",
         }
+        # 第三期特殊：站姿(30) + 坐姿(24) 关节工况（108 条，成对穿戴）。
+        window.phase_combo.setCurrentIndex(2)
+        select_category("SPECIAL")
+        assert window.condition_combo.count() == 108
+        assert set(combo_codes()) == {
+            "STAND_ACTIVE_CONSTRAINED_HIP_FLEX_NOEXO",
+            "STAND_ACTIVE_CONSTRAINED_HIP_FLEX_EXO",
+            "STAND_ACTIVE_CONSTRAINED_HIP_EXT_NOEXO",
+            "STAND_ACTIVE_CONSTRAINED_HIP_EXT_EXO",
+            "STAND_ACTIVE_CONSTRAINED_KNEE_FLEX_NOEXO",
+            "STAND_ACTIVE_CONSTRAINED_KNEE_FLEX_EXO",
+            "STAND_ACTIVE_CONSTRAINED_KNEE_EXT_NOEXO",
+            "STAND_ACTIVE_CONSTRAINED_KNEE_EXT_EXO",
+            "STAND_ACTIVE_CONSTRAINED_ABDUCT_NOEXO",
+            "STAND_ACTIVE_CONSTRAINED_ABDUCT_EXO",
+            "STAND_ACTIVE_FREE_SLIGHT_HIP_FLEX_NOEXO",
+            "STAND_ACTIVE_FREE_SLIGHT_HIP_FLEX_EXO",
+            "STAND_ACTIVE_FREE_SLIGHT_HIP_EXT_NOEXO",
+            "STAND_ACTIVE_FREE_SLIGHT_HIP_EXT_EXO",
+            "STAND_ACTIVE_FREE_SLIGHT_KNEE_FLEX_NOEXO",
+            "STAND_ACTIVE_FREE_SLIGHT_KNEE_FLEX_EXO",
+            "STAND_ACTIVE_FREE_SLIGHT_KNEE_EXT_NOEXO",
+            "STAND_ACTIVE_FREE_SLIGHT_KNEE_EXT_EXO",
+            "STAND_ACTIVE_FREE_SLIGHT_ABDUCT_NOEXO",
+            "STAND_ACTIVE_FREE_SLIGHT_ABDUCT_EXO",
+            "STAND_ACTIVE_FREE_LARGE_HIP_FLEX_NOEXO",
+            "STAND_ACTIVE_FREE_LARGE_HIP_FLEX_EXO",
+            "STAND_ACTIVE_FREE_LARGE_HIP_EXT_NOEXO",
+            "STAND_ACTIVE_FREE_LARGE_HIP_EXT_EXO",
+            "STAND_ACTIVE_FREE_LARGE_KNEE_FLEX_NOEXO",
+            "STAND_ACTIVE_FREE_LARGE_KNEE_FLEX_EXO",
+            "STAND_ACTIVE_FREE_LARGE_KNEE_EXT_NOEXO",
+            "STAND_ACTIVE_FREE_LARGE_KNEE_EXT_EXO",
+            "STAND_ACTIVE_FREE_LARGE_ABDUCT_NOEXO",
+            "STAND_ACTIVE_FREE_LARGE_ABDUCT_EXO",
+            "STAND_PASSIVE_CONSTRAINED_HIP_FLEX_NOEXO",
+            "STAND_PASSIVE_CONSTRAINED_HIP_FLEX_EXO",
+            "STAND_PASSIVE_CONSTRAINED_HIP_EXT_NOEXO",
+            "STAND_PASSIVE_CONSTRAINED_HIP_EXT_EXO",
+            "STAND_PASSIVE_CONSTRAINED_KNEE_FLEX_NOEXO",
+            "STAND_PASSIVE_CONSTRAINED_KNEE_FLEX_EXO",
+            "STAND_PASSIVE_CONSTRAINED_KNEE_EXT_NOEXO",
+            "STAND_PASSIVE_CONSTRAINED_KNEE_EXT_EXO",
+            "STAND_PASSIVE_CONSTRAINED_ABDUCT_NOEXO",
+            "STAND_PASSIVE_CONSTRAINED_ABDUCT_EXO",
+            "STAND_PASSIVE_FREE_SLIGHT_HIP_FLEX_NOEXO",
+            "STAND_PASSIVE_FREE_SLIGHT_HIP_FLEX_EXO",
+            "STAND_PASSIVE_FREE_SLIGHT_HIP_EXT_NOEXO",
+            "STAND_PASSIVE_FREE_SLIGHT_HIP_EXT_EXO",
+            "STAND_PASSIVE_FREE_SLIGHT_KNEE_FLEX_NOEXO",
+            "STAND_PASSIVE_FREE_SLIGHT_KNEE_FLEX_EXO",
+            "STAND_PASSIVE_FREE_SLIGHT_KNEE_EXT_NOEXO",
+            "STAND_PASSIVE_FREE_SLIGHT_KNEE_EXT_EXO",
+            "STAND_PASSIVE_FREE_SLIGHT_ABDUCT_NOEXO",
+            "STAND_PASSIVE_FREE_SLIGHT_ABDUCT_EXO",
+            "STAND_PASSIVE_FREE_LARGE_HIP_FLEX_NOEXO",
+            "STAND_PASSIVE_FREE_LARGE_HIP_FLEX_EXO",
+            "STAND_PASSIVE_FREE_LARGE_HIP_EXT_NOEXO",
+            "STAND_PASSIVE_FREE_LARGE_HIP_EXT_EXO",
+            "STAND_PASSIVE_FREE_LARGE_KNEE_FLEX_NOEXO",
+            "STAND_PASSIVE_FREE_LARGE_KNEE_FLEX_EXO",
+            "STAND_PASSIVE_FREE_LARGE_KNEE_EXT_NOEXO",
+            "STAND_PASSIVE_FREE_LARGE_KNEE_EXT_EXO",
+            "STAND_PASSIVE_FREE_LARGE_ABDUCT_NOEXO",
+            "STAND_PASSIVE_FREE_LARGE_ABDUCT_EXO",
+            "SIT_ACTIVE_CONSTRAINED_HIP_FLEX_NOEXO",
+            "SIT_ACTIVE_CONSTRAINED_HIP_FLEX_EXO",
+            "SIT_ACTIVE_CONSTRAINED_KNEE_FLEX_NOEXO",
+            "SIT_ACTIVE_CONSTRAINED_KNEE_FLEX_EXO",
+            "SIT_ACTIVE_CONSTRAINED_KNEE_EXT_NOEXO",
+            "SIT_ACTIVE_CONSTRAINED_KNEE_EXT_EXO",
+            "SIT_ACTIVE_CONSTRAINED_ABDUCT_NOEXO",
+            "SIT_ACTIVE_CONSTRAINED_ABDUCT_EXO",
+            "SIT_ACTIVE_FREE_SLIGHT_HIP_FLEX_NOEXO",
+            "SIT_ACTIVE_FREE_SLIGHT_HIP_FLEX_EXO",
+            "SIT_ACTIVE_FREE_SLIGHT_KNEE_FLEX_NOEXO",
+            "SIT_ACTIVE_FREE_SLIGHT_KNEE_FLEX_EXO",
+            "SIT_ACTIVE_FREE_SLIGHT_KNEE_EXT_NOEXO",
+            "SIT_ACTIVE_FREE_SLIGHT_KNEE_EXT_EXO",
+            "SIT_ACTIVE_FREE_SLIGHT_ABDUCT_NOEXO",
+            "SIT_ACTIVE_FREE_SLIGHT_ABDUCT_EXO",
+            "SIT_ACTIVE_FREE_LARGE_HIP_FLEX_NOEXO",
+            "SIT_ACTIVE_FREE_LARGE_HIP_FLEX_EXO",
+            "SIT_ACTIVE_FREE_LARGE_KNEE_FLEX_NOEXO",
+            "SIT_ACTIVE_FREE_LARGE_KNEE_FLEX_EXO",
+            "SIT_ACTIVE_FREE_LARGE_KNEE_EXT_NOEXO",
+            "SIT_ACTIVE_FREE_LARGE_KNEE_EXT_EXO",
+            "SIT_ACTIVE_FREE_LARGE_ABDUCT_NOEXO",
+            "SIT_ACTIVE_FREE_LARGE_ABDUCT_EXO",
+            "SIT_PASSIVE_CONSTRAINED_HIP_FLEX_NOEXO",
+            "SIT_PASSIVE_CONSTRAINED_HIP_FLEX_EXO",
+            "SIT_PASSIVE_CONSTRAINED_KNEE_FLEX_NOEXO",
+            "SIT_PASSIVE_CONSTRAINED_KNEE_FLEX_EXO",
+            "SIT_PASSIVE_CONSTRAINED_KNEE_EXT_NOEXO",
+            "SIT_PASSIVE_CONSTRAINED_KNEE_EXT_EXO",
+            "SIT_PASSIVE_CONSTRAINED_ABDUCT_NOEXO",
+            "SIT_PASSIVE_CONSTRAINED_ABDUCT_EXO",
+            "SIT_PASSIVE_FREE_SLIGHT_HIP_FLEX_NOEXO",
+            "SIT_PASSIVE_FREE_SLIGHT_HIP_FLEX_EXO",
+            "SIT_PASSIVE_FREE_SLIGHT_KNEE_FLEX_NOEXO",
+            "SIT_PASSIVE_FREE_SLIGHT_KNEE_FLEX_EXO",
+            "SIT_PASSIVE_FREE_SLIGHT_KNEE_EXT_NOEXO",
+            "SIT_PASSIVE_FREE_SLIGHT_KNEE_EXT_EXO",
+            "SIT_PASSIVE_FREE_SLIGHT_ABDUCT_NOEXO",
+            "SIT_PASSIVE_FREE_SLIGHT_ABDUCT_EXO",
+            "SIT_PASSIVE_FREE_LARGE_HIP_FLEX_NOEXO",
+            "SIT_PASSIVE_FREE_LARGE_HIP_FLEX_EXO",
+            "SIT_PASSIVE_FREE_LARGE_KNEE_FLEX_NOEXO",
+            "SIT_PASSIVE_FREE_LARGE_KNEE_FLEX_EXO",
+            "SIT_PASSIVE_FREE_LARGE_KNEE_EXT_NOEXO",
+            "SIT_PASSIVE_FREE_LARGE_KNEE_EXT_EXO",
+            "SIT_PASSIVE_FREE_LARGE_ABDUCT_NOEXO",
+            "SIT_PASSIVE_FREE_LARGE_ABDUCT_EXO",
+        }
+
 
         # 每个期次 × 每个主工况里，操作者看到的都是中文工况名，而非英文 code。
         for phase_index in range(window.phase_combo.count()):
@@ -2181,7 +2296,7 @@ def test_phase_config_dialog_round_trips_seed() -> None:
     try:
         result = dialog.validated_config
         phases = result["phases"]
-        assert [phase["name"] for phase in phases] == ["第一期", "第二期"]
+        assert [phase["name"] for phase in phases] == ["第一期", "第二期", "第三期"]
         assert list(phases[0]["categories"].keys()) == [
             "BASELINE",
             "STEADY_STATE",

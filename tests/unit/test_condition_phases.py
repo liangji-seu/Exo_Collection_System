@@ -20,28 +20,30 @@ def _expanded_codes(phase: dict) -> set[str]:
 def test_default_phase_config_partitions_protocol() -> None:
     cfg = default_phase_config()
     phases = cfg["phases"]
-    assert len(phases) == 2
-    p1, p2 = phases
+    assert len(phases) == 3
+    p1, p2, p3 = phases
     assert p1["name"] == "第一期"
     assert p2["name"] == "第二期"
+    assert p3["name"] == "第三期"
 
     # 每期都固定 4 类主工况。
     for phase in phases:
         assert list(phase["categories"].keys()) == list(MAIN_CATEGORY_KEYS)
 
-    # 展开为协议完整码后：第一期 56 码，第二期 222 码。
+    # 展开为协议完整码后：第一期 56 码，第二期 222 码，第三期 108 码。
     assert len(_expanded_codes(p1)) == 56
     assert len(_expanded_codes(p2)) == 222
+    assert len(_expanded_codes(p3)) == 108
 
     protocol_codes = {c.condition_code for c in load_default_protocol().conditions}
-    union = _expanded_codes(p1) | _expanded_codes(p2)
+    union = _expanded_codes(p1) | _expanded_codes(p2) | _expanded_codes(p3)
     assert union == protocol_codes
-    assert len(union) == 236
+    assert len(union) == 344
 
 
 def test_level_walking_four_speeds_shared_across_phases() -> None:
     cfg = default_phase_config()
-    p1, p2 = cfg["phases"]
+    p1, p2, _ = cfg["phases"]
 
     # 平地走四档：0.6/1.0 用 WALK，0.8/1.2 用 DWALK，均归入第一期稳态。
     steady = p1["categories"]["STEADY_STATE"]
