@@ -20,6 +20,7 @@ import numpy as np
 from PySide6.QtCore import QObject, QRunnable, Signal
 
 from exo_collection.apps.calculate._pipeline import ensure_pipeline_on_path
+from exo_collection.apps.calculate.backpack_load import resolve_backpack_load
 
 _log = logging.getLogger(__name__)
 
@@ -51,6 +52,54 @@ class SyncDataBundle:
     marker_time_s: np.ndarray | None = None
     marker_acc_norm: np.ndarray | None = None
     marker_name: str | None = None
+    # Raw marker validity is retained so the view can report dropped frames
+    # without treating the derivative boundary NaNs as additional gaps.
+    marker_valid: np.ndarray | None = None
+    marker_invalid_count: int = 0
+
+
+def _marker_acceleration(
+    pos_mm: np.ndarray,
+    residuals: np.ndarray,
+    point_rate_hz: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return a gap-safe marker acceleration and its raw validity mask.
+
+    C3D encodes an absent point as either a negative residual, non-finite
+    coordinates, or an all-zero coordinate triplet.  Derivatives are taken
+    independently inside each valid run; the first and last two samples of
+    every run are kept as NaN so a missing-point boundary cannot become a
+    synthetic acceleration peak.
+    """
+    pos = np.asarray(pos_mm, dtype=np.float64)
+    residual = np.asarray(residuals, dtype=np.float64).reshape(-1)
+    if pos.ndim != 2 or pos.shape[1] != 3:
+        raise ValueError(f"marker position array must have shape (n, 3), got {pos.shape}")
+    if residual.shape[0] != pos.shape[0]:
+        raise ValueError("marker residual length does not match position samples")
+    valid = (
+        np.isfinite(pos).all(axis=1)
+        & np.isfinite(residual)
+        & (residual >= 0.0)
+        & ~np.all(pos == 0.0, axis=1)
+    )
+    accel = np.full_like(pos, np.nan, dtype=np.float64)
+    if point_rate_hz <= 0:
+        return accel, valid
+    valid_indices = np.flatnonzero(valid)
+    if not valid_indices.size:
+        return accel, valid
+    split = np.flatnonzero(np.diff(valid_indices) > 1) + 1
+    for run in np.split(valid_indices, split):
+        if run.size < 5:
+            continue
+        segment = pos[run]
+        velocity = np.gradient(segment, axis=0) * point_rate_hz
+        segment_accel = np.gradient(velocity, axis=0) * point_rate_hz
+        # Leave two samples at each edge undefined: gradient's finite
+        # difference stencil there would otherwise reach toward a gap.
+        accel[run[2:-2]] = segment_accel[2:-2]
+    return accel, valid
 
 
 def _load_sync_data(
@@ -72,7 +121,10 @@ def _load_sync_data(
     ensure_pipeline_on_path()
     from pipeline.c3d.reader import read_c3d
     from pipeline.gaitway import read_gaitway_ascii
-    from pipeline.synchronization.c3d_h5 import match_c3d_to_h5
+    from pipeline.synchronization.c3d_h5 import (
+        match_c3d_to_h5,
+        validate_match_for_time_mapping,
+    )
     from pipeline.synchronization.clock import (
         find_imu_sensor,
         imu_sample_rate_hz,
@@ -96,6 +148,7 @@ def _load_sync_data(
             h5_names,
             preferred_markers=preferred_markers,
         )
+        validate_match_for_time_mapping(match)
         mocap_host_ns = read_host_monotonic_ns(mocap_h5)
         c3d_t0_host_ns = int(mocap_host_ns[match.start_frame])
 
@@ -128,6 +181,8 @@ def _load_sync_data(
     marker_time_s = None
     marker_acc_norm = None
     marker_name = None
+    marker_valid = None
+    marker_invalid_count = 0
     from pipeline.synchronization.marker_names import normalize_marker_name
 
     label_to_index = {
@@ -137,8 +192,10 @@ def _load_sync_data(
         if candidate in label_to_index:
             idx = label_to_index[candidate]
             pos = c3d.points_mm[:, idx, :]
-            vel = np.gradient(pos, axis=0) * c3d.point_rate_hz
-            accel = np.gradient(vel, axis=0) * c3d.point_rate_hz
+            accel, marker_valid = _marker_acceleration(
+                pos, c3d.residuals[:, idx], c3d.point_rate_hz
+            )
+            marker_invalid_count = int((~marker_valid).sum())
             # ``points_mm`` 是毫米，二阶差分得到的 marker 加速度单位是 mm/s²，
             # 而 IMU 加速度是 m/s²。若不换算，marker 曲线数值（~10³）会把同轴
             # 显示的 IMU 曲线（~10）压成一条贴在底部的直线，人工标定看不到跺脚峰。
@@ -163,6 +220,8 @@ def _load_sync_data(
         marker_time_s=marker_time_s,
         marker_acc_norm=marker_acc_norm,
         marker_name=marker_name,
+        marker_valid=marker_valid,
+        marker_invalid_count=marker_invalid_count,
     )
 
 
@@ -276,6 +335,9 @@ class PrepWorker(QRunnable):
         sync_quality: dict[str, Any] | None = None,
         marker_adjustment_expert_confirmed: bool = False,
         quiet_standing: bool = False,
+        condition_code: str = "",
+        condition_parameters: dict[str, Any] | None = None,
+        session_dir: Path | None = None,
     ) -> None:
         super().__init__()
         self._static_c3d = Path(static_c3d)
@@ -297,6 +359,9 @@ class PrepWorker(QRunnable):
         self._sync_quality = sync_quality
         self._marker_adjustment_expert_confirmed = marker_adjustment_expert_confirmed
         self._quiet_standing = quiet_standing
+        self._condition_code = condition_code
+        self._condition_parameters = condition_parameters or {}
+        self._session_dir = None if session_dir is None else Path(session_dir)
         self.signals = _WorkerSignals()
 
     def run(self) -> None:
@@ -305,6 +370,11 @@ class PrepWorker(QRunnable):
             from pipeline.opensim_io.prep_session import prepare_session
 
             self.signals.progress.emit("预处理：读取实际坡度，修正力与 COP 的方向和位置，生成解算数据…")
+            backpack = resolve_backpack_load(
+                self._condition_code,
+                self._condition_parameters,
+                self._session_dir,
+            )
             summary = prepare_session(
                 static_c3d_path=self._static_c3d,
                 dynamic_c3d_path=self._dynamic_c3d,
@@ -325,6 +395,7 @@ class PrepWorker(QRunnable):
                 sync_quality=self._sync_quality,
                 marker_adjustment_expert_confirmed=self._marker_adjustment_expert_confirmed,
                 quiet_standing=self._quiet_standing,
+                backpack=backpack,
             )
             self.signals.finished.emit(summary)
         except Exception as exc:  # noqa: BLE001 —— 线程边界，必须捕获

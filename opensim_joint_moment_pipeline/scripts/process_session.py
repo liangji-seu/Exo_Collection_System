@@ -42,6 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import opensim as osim  # noqa: E402
 
 from pipeline.opensim_io.export_viewer import export_viewer_data  # noqa: E402
+from pipeline.opensim_io.backpack_runtime import prepare_id_model  # noqa: E402
 from pipeline.opensim_io.run_opensim import (  # noqa: E402
     _id_setup_xml,
     _ik_setup_xml,
@@ -135,6 +136,50 @@ def _map_mask_to_id_time(full_mask: np.ndarray, id_time: np.ndarray, point_rate:
     return full_mask[indices]
 
 
+def _add_backpack_qc_audit(qc_report: dict, backpack: dict) -> None:
+    """Attach the model receipt and flag assumed load geometry without hiding FAIL."""
+    qc_report["backpack"] = backpack
+    assumed = (
+        backpack.get("enabled") is True
+        and float(backpack.get("mass_kg") or 0.0) > 0.0
+        and str(backpack.get("geometry_status") or "").strip().lower().startswith("assumed")
+    )
+    if not assumed:
+        return
+
+    source = str(backpack.get("source") or "nominal")
+    detail = (
+        "背包几何位置和尺寸为假定值；"
+        f"实际载荷质量采用 {source} 来源（{float(backpack['mass_kg']):g} kg）"
+    )
+    qc_report.setdefault("checks", []).append({
+        "key": "backpack_geometry_assumed",
+        "label": "背包载荷几何",
+        "status": "WARN",
+        "value": float(backpack["mass_kg"]),
+        "unit": "kg",
+        "threshold": "优先使用实测几何",
+        "detail": detail,
+    })
+    # Keep any existing FAIL.  Otherwise an assumed geometry makes the overall
+    # report at least WARN and remains visible in the human-readable summary.
+    if qc_report.get("status") == "PASS":
+        qc_report["status"] = "WARN"
+        qc_report["summary"] = detail
+    elif qc_report.get("status") == "WARN":
+        summary = str(qc_report.get("summary") or "").strip()
+        qc_report["summary"] = f"{summary}；{detail}" if summary else detail
+
+
+def _add_backpack_viewer_audit(viewer_summary: dict, viewer_dir: Path, backpack: dict) -> None:
+    """Record which model produced the viewer arrays in both viewer receipts."""
+    viewer_summary["backpack"] = backpack
+    meta_path = Path(viewer_dir) / "viewer_meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["backpack"] = backpack
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def _run(manifest: dict, cancel_file: str | None) -> dict:
     out = Path(manifest["out_dir"])
     mass_kg = float(manifest["subject"]["mass_kg"])
@@ -221,12 +266,19 @@ def _run(manifest: dict, cancel_file: str | None) -> dict:
         _run_ik(out, "ik_static_calibrated_setup.xml", final_model, dynamic_trc,
                 final_ik, dynamic_window, check_cancel)
 
+        # The calibrated human model remains the source for IK and marker QC.
+        # Only ID (and its matching viewer export) sees the optional load body.
+        check_cancel()
+        id_model, backpack_receipt = prepare_id_model(
+            (Path.cwd() / final_model).resolve(), manifest.get("backpack")
+        )
+
         # 4. 双侧 GRF ID
         _emit({"event": "stage", "stage": "id", "message": "双侧 GRF ID"})
         final_id = Path("hh19_static_calibrated_id.mot")
         Path("id_static_calibrated_setup.xml").write_text(
             _id_setup_xml(
-                final_model.name, final_ik.name, external_loads.name, final_id.name,
+                id_model.name, final_ik.name, external_loads.name, final_id.name,
                 dynamic_window[0], dynamic_window[1],
             ),
             encoding="utf-8",
@@ -264,6 +316,7 @@ def _run(manifest: dict, cancel_file: str | None) -> dict:
                 (manifest.get("processing") or {}).get("marker_adjustment_expert_confirmed", False)
             ),
         )
+        _add_backpack_qc_audit(qc_report, backpack_receipt)
         Path("qc_report.json").write_text(
             json.dumps(qc_report, ensure_ascii=False, indent=2), encoding="utf-8"
         )
@@ -271,7 +324,7 @@ def _run(manifest: dict, cancel_file: str | None) -> dict:
         # 6. 导出离线 viewer 数据（EXO 环境回放页只读这些 npy/json，不 import opensim）
         _emit({"event": "stage", "stage": "export", "message": "导出 viewer 数据"})
         viewer_summary = export_viewer_data(
-            model_path=final_model,
+            model_path=Path(id_model.name),
             ik_path=final_ik,
             id_path=final_id,
             trc_path=dynamic_trc,
@@ -279,6 +332,7 @@ def _run(manifest: dict, cancel_file: str | None) -> dict:
             out_dir=out,
             mass_kg=mass_kg,
         )
+        _add_backpack_viewer_audit(viewer_summary, Path(viewer_summary["viewer_dir"]), backpack_receipt)
     finally:
         os.chdir(original_cwd)
 
@@ -301,9 +355,11 @@ def _run(manifest: dict, cancel_file: str | None) -> dict:
         "id_qc": id_qc,
         "moments": moments,
         "qc": qc_report,
+        "backpack": backpack_receipt,
         "viewer": viewer_summary,
         "files": {
-            "model": str(out / final_model.name),
+            "model": str(id_model),
+            "human_model": str(out / final_model.name),
             "ik": str(out / final_ik.name),
             "id": str(out / final_id.name),
             "support_mask": str(out / "support_mask_static_calibrated.npy"),

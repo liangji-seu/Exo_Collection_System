@@ -18,7 +18,7 @@ import numpy as np
 
 from ..c3d.reader import read_c3d
 from ..gaitway import read_gaitway_ascii
-from .c3d_h5 import match_c3d_to_h5
+from .c3d_h5 import match_c3d_to_h5, validate_match_for_time_mapping
 from .clock import (
     clock_health,
     imu_sample_rate_hz,
@@ -125,6 +125,7 @@ def run_auto_sync(
             h5_names,
             preferred_markers=preferred_markers,
         )
+        validate_match_for_time_mapping(match)
         mocap_host_ns = read_host_monotonic_ns(mocap_h5)
         c3d_t0_host_ns = int(mocap_host_ns[match.start_frame])
         mocap_health = clock_health(mocap_host_ns)

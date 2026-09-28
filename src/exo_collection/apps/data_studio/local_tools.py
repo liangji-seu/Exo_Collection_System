@@ -136,6 +136,27 @@ class TrialPlayback:
 
 
 @dataclass(frozen=True, slots=True)
+class UsDiffWaterfallPlayback:
+    """Four-channel static-reference differential US waterfall for one Trial."""
+
+    target_manifest_path: Path
+    reference_manifest_path: Path
+    target_condition_code: str
+    reference_condition_code: str
+    # 20 Hz grid in seconds relative to the target Trial's formal_t0.
+    time_s: NDArray[np.float64]
+    # (frame, channel, depth) signed log-envelope difference: target − reference.
+    diff: NDArray[np.float32]
+    # Frame valid only when every channel aligned causally and finite.
+    valid: NDArray[np.bool_]
+    color_limit: float
+    reference_duration_s: float
+    reference_interval_valid_frames: int
+    target_valid_frames: int
+    labels: tuple[PromptLabelPlaybackEvent, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class FullStatistics:
     projects: int
     subjects: int
@@ -371,6 +392,52 @@ def _even_indices(count: int, limit: int) -> NDArray[np.int64] | slice:
     if count <= limit:
         return slice(None)
     return np.unique(np.linspace(0, count - 1, limit, dtype=np.int64))
+
+
+def _uniform_filter1d_nearest(
+    x: NDArray[np.generic], size: int
+) -> NDArray[np.float64]:
+    """Pure-numpy ``scipy.ndimage.uniform_filter1d(x, size, mode="nearest")``.
+
+    ``mode="nearest"`` clamps out-of-range window positions to the edge value,
+    which is exactly ``np.pad(..., mode="edge")``; a running sum then yields the
+    same length-``len(x)`` moving average without a scipy dependency.
+    """
+
+    values = np.asarray(x, dtype=np.float64)
+    if size <= 1 or values.size == 0:
+        return values.copy()
+    padded = np.pad(values, size // 2, mode="edge")
+    cumulative = np.concatenate(([0.0], np.cumsum(padded, dtype=np.float64)))
+    return (cumulative[size:] - cumulative[:-size])[: values.size] / float(size)
+
+
+def _previous_alignment(
+    q: NDArray[np.float64],
+    t: NDArray[np.float64],
+    x: NDArray[np.generic],
+    max_age: float,
+) -> tuple[NDArray[np.float32], NDArray[np.float64], NDArray[np.bool_]]:
+    """Causally align irregular ``x`` samples onto grid ``q`` (previous sample).
+
+    Mirrors ``prepare_reference.py::_previous``: each grid point takes the last
+    sample at or before it, provided its age is within ``max_age`` and finite.
+    """
+
+    index = np.searchsorted(t, q, side="right") - 1
+    good = index >= 0
+    jj = np.maximum(index, 0)
+    age = np.full(len(q), np.inf, dtype=np.float64)
+    age[good] = q[good] - t[jj[good]]
+    if np.any(age[good] < -1e-9):
+        raise DataStudioToolError("超声对齐混入了未来样本")
+    good &= age <= max_age
+    finite = np.zeros(len(q), dtype=bool)
+    finite[good] = np.isfinite(x[jj[good]]).all(axis=1)
+    good &= finite
+    out = np.full((len(q), x.shape[1]), np.nan, np.float32)
+    out[good] = x[jj[good]].astype(np.float32)
+    return out, age, good
 
 
 def _decode_strings(values: Any) -> tuple[str, ...]:
@@ -1229,6 +1296,65 @@ def _resolve_limit(value: int | None) -> int:
     return _UNBOUNDED if value is None else value
 
 
+def _load_prompt_label_events(
+    trial_root: Path,
+    manifest: TrialManifest,
+    formal_t0_ns: int,
+) -> tuple[PromptLabelPlaybackEvent, ...]:
+    """Assemble the Trial's prompt-label playback events (raw + 补录).
+
+    ``formal_t0_ns`` converts each raw event's host-monotonic timestamp into a
+    Trial-relative ``time_s``.  Shared by ``load_trial_playback`` and the
+    differential waterfall so the two views show identical label times.
+    """
+
+    prompt_labels: list[PromptLabelPlaybackEvent] = []
+    prompt_relative = _artifact_for(
+        manifest,
+        modality="prompt_label",
+        suffix=".jsonl",
+    )
+    if prompt_relative is not None:
+        raw_prompt_events = load_prompt_label_events(
+            _artifact_path(trial_root, prompt_relative)
+        )
+        for event in raw_prompt_events:
+            if str(event.trial_uuid) != str(manifest.trial_uuid):
+                raise DataStudioToolError(
+                    "人工标签 Artifact 的 Trial UUID 与 Manifest 不一致。"
+                )
+        name_by_sequence = load_prompt_annotations(trial_root)
+        prompt_labels.extend(
+            PromptLabelPlaybackEvent(
+                time_s=(event.host_monotonic_ns - formal_t0_ns) / 1e9,
+                source=event.source,
+                label=event.label,
+                key=event.key,
+                sequence=event.sequence,
+                name=name_by_sequence.get(event.sequence),
+            )
+            for event in raw_prompt_events
+        )
+
+    # 手动补录的打标事件与原始标签无关，即使本 Trial 没有原始标签也可能存在。
+    for added in load_added_prompt_labels(trial_root):
+        prompt_labels.append(
+            PromptLabelPlaybackEvent(
+                time_s=added.time_s,
+                source=added.source,
+                label=added.source.display_name,
+                key=added.source.key_text,
+                sequence=-1,
+                name=added.name.value if added.name is not None else None,
+                added=True,
+            )
+        )
+    if prompt_labels:
+        # 补录事件按时间插入；同刻时原始事件排前（stable sort 依赖元组顺序）。
+        prompt_labels.sort(key=lambda event: (event.time_s, not event.added))
+    return tuple(prompt_labels)
+
+
 def load_trial_playback(
     manifest_path: str | Path,
     *,
@@ -1408,62 +1534,7 @@ def load_trial_playback(
                 )
                 break
 
-    prompt_labels: list[PromptLabelPlaybackEvent] = []
-    prompt_relative = _artifact_for(
-        manifest,
-        modality="prompt_label",
-        suffix=".jsonl",
-    )
-    if prompt_relative is not None:
-        raw_prompt_events = load_prompt_label_events(
-            _artifact_path(trial_root, prompt_relative)
-        )
-        for event in raw_prompt_events:
-            if str(event.trial_uuid) != str(manifest.trial_uuid):
-                raise DataStudioToolError(
-                    "人工标签 Artifact 的 Trial UUID 与 Manifest 不一致。"
-                )
-        name_by_sequence = load_prompt_annotations(trial_root)
-        prompt_labels.extend(
-            PromptLabelPlaybackEvent(
-                time_s=(event.host_monotonic_ns - formal_t0_ns) / 1e9,
-                source=event.source,
-                label=event.label,
-                key=event.key,
-                sequence=event.sequence,
-                name=name_by_sequence.get(event.sequence),
-            )
-            for event in raw_prompt_events
-        )
-        _log.info(
-            "人工标签加载完成: total=%d subject=%d operator=%d",
-            len(prompt_labels),
-            sum(
-                event.source is PromptLabelSource.SUBJECT
-                for event in prompt_labels
-            ),
-            sum(
-                event.source is PromptLabelSource.OPERATOR
-                for event in prompt_labels
-            ),
-        )
-
-    # 手动补录的打标事件与原始标签无关，即使本 Trial 没有原始标签也可能存在。
-    for added in load_added_prompt_labels(trial_root):
-        prompt_labels.append(
-            PromptLabelPlaybackEvent(
-                time_s=added.time_s,
-                source=added.source,
-                label=added.source.display_name,
-                key=added.source.key_text,
-                sequence=-1,
-                name=added.name.value if added.name is not None else None,
-                added=True,
-            )
-        )
-    if prompt_labels:
-        # 补录事件按时间插入；同刻时原始事件排前（stable sort 依赖元组顺序）。
-        prompt_labels.sort(key=lambda event: (event.time_s, not event.added))
+    prompt_labels = list(_load_prompt_label_events(trial_root, manifest, formal_t0_ns))
 
     _log.info("=== load_trial_playback 完成 ===")
     return TrialPlayback(
@@ -1481,6 +1552,209 @@ def load_trial_playback(
         sync_trigger_times_s=sync_trigger_times,
         imu_sensors=imu_sensors,
         prompt_labels=tuple(prompt_labels),
+    )
+
+
+_US_DIFF_LABEL_NAMES = frozenset(
+    {"activate_start", "activate_end", "release_start", "release_end"}
+)
+
+
+def _decode_us_log_envelope(
+    reader: BlockBinaryReader,
+    *,
+    formal_t0_ns: int,
+    q: NDArray[np.float64],
+    idle_check: Callable[[], None],
+) -> tuple[NDArray[np.float32], NDArray[np.float64], NDArray[np.bool_]]:
+    """Decode four 957-point log envelopes and causally align them to ``q``.
+
+    Reproduces ``prepare_reference.py::_decode_profiles`` using the project's own
+    ``BlockBinaryReader`` / ``decode_raw_ethernet_flags`` / ``_raw_ultrasound_adc_view``:
+    each raw-Ethernet packet keeps only its 997 valid ADC bytes, which are turned
+    into ``log1p(uniform_filter1d(abs(rf − median(rf)), 20, nearest))[20:977]``.
+    Returns ``(profiles (frame,4,957), ages (frame,4), valid (frame,))``.
+    """
+
+    if not _is_raw_ethernet_ultrasound(reader.metadata):
+        raise DataStudioToolError("超声差分瀑布图仅支持 raw_ethernet 超声数据")
+    rows: dict[int, list[NDArray[np.float32]]] = {c: [] for c in range(4)}
+    times: dict[int, list[float]] = {c: [] for c in range(4)}
+    for ordinal in range(reader.block_count):
+        idle_check()
+        record = reader.read_block(ordinal=ordinal)
+        if record.header.sample_count != 1 or len(record.data) != 1:
+            raise DataStudioToolError(
+                "Raw Ethernet ultrasound blocks must contain exactly one packet"
+            )
+        decoded = decode_raw_ethernet_flags(record.header.flags)
+        packet = _raw_ultrasound_adc_view(
+            np.asarray(record.data[0]),
+            channel=decoded.channel,
+            metadata=reader.metadata,
+        )
+        rf = packet.astype(np.float32)
+        env = _uniform_filter1d_nearest(np.abs(rf - np.median(rf)), 20)
+        prof = np.log1p(np.maximum(env, 0.0))[20:977].astype(np.float32, copy=False)
+        rows[decoded.channel].append(prof)
+        times[decoded.channel].append(
+            (int(record.header.host_monotonic_ns) - formal_t0_ns) / 1e9
+        )
+
+    aligned: list[NDArray[np.float32]] = []
+    ages: list[NDArray[np.float64]] = []
+    valid = np.ones(len(q), dtype=bool)
+    for channel in range(4):
+        if not rows[channel]:
+            aligned.append(np.full((len(q), 957), np.nan, np.float32))
+            ages.append(np.full(len(q), np.inf, dtype=np.float64))
+            valid &= False
+            continue
+        a, age, good = _previous_alignment(
+            q,
+            np.asarray(times[channel], dtype=np.float64),
+            np.asarray(rows[channel], dtype=np.float32),
+            0.075,
+        )
+        aligned.append(a)
+        ages.append(age)
+        valid &= good
+    profiles = np.stack(aligned, axis=1).astype(np.float32)
+    age_stack = np.stack(ages, axis=1)
+    return profiles, age_stack, valid
+
+
+def _decode_trial_log_envelope(
+    trial_root: Path,
+    manifest: TrialManifest,
+    q: NDArray[np.float64],
+    idle_check: Callable[[], None],
+) -> tuple[NDArray[np.float32], NDArray[np.float64], NDArray[np.bool_]]:
+    """Locate and decode one Trial's ultrasound artifact into aligned envelopes."""
+
+    ultrasound_relative = _artifact_for(manifest, modality="ultrasound", suffix=".bin")
+    if ultrasound_relative is None:
+        raise DataStudioToolError("该 Trial 没有超声 .bin Artifact，无法绘制差分瀑布图")
+    relative_meta, relative_index = companion_paths(ultrasound_relative)
+    published_paths = {artifact.relative_path for artifact in manifest.artifacts}
+    companion_relatives = (relative_meta.as_posix(), relative_index.as_posix())
+    missing_companions = set(companion_relatives) - published_paths
+    if missing_companions:
+        raise DataStudioToolError(
+            "超声差分图缺少 Manifest 所列 companion Artifact："
+            + ", ".join(sorted(missing_companions))
+        )
+    with BlockBinaryReader(
+        _artifact_path(trial_root, ultrasound_relative),
+        meta_path=_artifact_path(trial_root, companion_relatives[0]),
+        index_path=_artifact_path(trial_root, companion_relatives[1]),
+        validate_crc=True,
+        auto_rebuild_index=False,
+    ) as reader:
+        return _decode_us_log_envelope(
+            reader,
+            formal_t0_ns=manifest.timing.start_host_monotonic_ns,
+            q=q,
+            idle_check=idle_check,
+        )
+
+
+def _trial_grid(manifest: TrialManifest) -> NDArray[np.float64]:
+    timing = manifest.timing
+    duration = (
+        int(timing.stop_host_monotonic_ns) - int(timing.start_host_monotonic_ns)
+    ) / 1e9
+    return np.arange(0.0, duration + 1e-9, 0.05, dtype=np.float64)
+
+
+def load_us_diff_waterfall(
+    target_manifest_path: str | Path,
+    reference_manifest_path: str | Path,
+    *,
+    data_root: str | Path | None = None,
+) -> UsDiffWaterfallPlayback:
+    """Compute a static-reference differential US waterfall for one Trial.
+
+    The target and reference are decoded with the same log-envelope pipeline; the
+    reference contributes the mean of its steady 5–25 s frames, which is
+    subtracted from every target frame (signed).  Only the four activate/release
+    start/end labels are returned for overlay.
+    """
+
+    _log.info(
+        "=== load_us_diff_waterfall 开始 === target=%s reference=%s",
+        target_manifest_path,
+        reference_manifest_path,
+    )
+    target_path, target_root, target_manifest = _load_finalized_trial(
+        target_manifest_path
+    )
+    ref_path, ref_root, ref_manifest = _load_finalized_trial(reference_manifest_path)
+    dataset_root = (
+        Path(data_root).expanduser().resolve()
+        if data_root is not None
+        else target_root
+    )
+    _require_trial_under_data_root(target_path, dataset_root)
+    _require_trial_under_data_root(ref_path, dataset_root)
+
+    def idle_check() -> None:
+        _require_idle(dataset_root)
+
+    idle_check()
+
+    q_target = _trial_grid(target_manifest)
+    q_ref = _trial_grid(ref_manifest)
+    target_profiles, _, target_valid = _decode_trial_log_envelope(
+        target_root, target_manifest, q_target, idle_check
+    )
+    ref_profiles, _, ref_valid = _decode_trial_log_envelope(
+        ref_root, ref_manifest, q_ref, idle_check
+    )
+
+    keep = (
+        (q_ref >= 5.0)
+        & (q_ref <= 25.0)
+        & ref_valid
+        & np.isfinite(ref_profiles).all(axis=(1, 2))
+    )
+    if int(keep.sum()) < 20:
+        raise DataStudioToolError(
+            f"静止参考 5–25 s 内有效帧不足（{int(keep.sum())} 帧，需 ≥20）"
+        )
+    ref_mean = np.nanmean(ref_profiles[keep], axis=0).astype(np.float32)
+
+    diff = (target_profiles - ref_mean[None, :, :]).astype(np.float32)
+    finite = np.isfinite(diff)
+    color_limit = max(float(np.nanpercentile(np.abs(diff[finite]), 99)), 1e-6)
+
+    labels = tuple(
+        event
+        for event in _load_prompt_label_events(
+            target_root, target_manifest, target_manifest.timing.start_host_monotonic_ns
+        )
+        if event.name in _US_DIFF_LABEL_NAMES
+    )
+
+    _log.info(
+        "=== load_us_diff_waterfall 完成 === frames=%d limit=%.4g labels=%d",
+        diff.shape[0],
+        color_limit,
+        len(labels),
+    )
+    return UsDiffWaterfallPlayback(
+        target_manifest_path=target_path,
+        reference_manifest_path=ref_path,
+        target_condition_code=target_manifest.condition.condition_code,
+        reference_condition_code=ref_manifest.condition.condition_code,
+        time_s=q_target,
+        diff=diff,
+        valid=target_valid,
+        color_limit=color_limit,
+        reference_duration_s=float(q_ref[-1]),
+        reference_interval_valid_frames=int(keep.sum()),
+        target_valid_frames=int(target_valid.sum()),
+        labels=labels,
     )
 
 
@@ -2208,9 +2482,11 @@ __all__ = [
     "TrialPlayback",
     "UltrasoundInspection",
     "UltrasoundPlayback",
+    "UsDiffWaterfallPlayback",
     "compute_full_statistics",
     "inspect_trial_artifacts",
     "load_trial_playback",
+    "load_us_diff_waterfall",
     "load_quality_audit",
     "verify_trial_checksums",
 ]

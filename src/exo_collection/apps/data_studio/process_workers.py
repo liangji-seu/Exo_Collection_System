@@ -23,6 +23,7 @@ ProcessOperation = Literal[
     "catalog_refresh",
     "playback",
     "checksum",
+    "us_diff",
     "management_refresh",
     "management_summary",
     "management_export",
@@ -32,6 +33,7 @@ _OPERATIONS = {
     "catalog_refresh",
     "playback",
     "checksum",
+    "us_diff",
     "management_refresh",
     "management_summary",
     "management_export",
@@ -69,6 +71,10 @@ def _local_process_entry(
             from .local_tools import verify_trial_checksums
 
             result = verify_trial_checksums(**keyword_arguments)
+        elif operation == "us_diff":
+            from .local_tools import load_us_diff_waterfall
+
+            result = load_us_diff_waterfall(**keyword_arguments)
         elif operation == "management_refresh":
             from .management import load_management_refresh
 

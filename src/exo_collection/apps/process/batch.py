@@ -20,6 +20,7 @@ from typing import Any, Callable
 from PySide6.QtCore import QObject, QRunnable, Signal
 
 from exo_collection.apps.calculate._pipeline import ensure_pipeline_on_path, pipeline_root
+from exo_collection.apps.calculate.backpack_load import resolve_backpack_load
 from exo_collection.apps.calculate.manual_review import clear_manual_review
 from exo_collection.apps.calculate.models import SessionRecord
 
@@ -264,6 +265,11 @@ def solve_one_session(
     from pipeline.opensim_io.prep_session import prepare_session
 
     run_dir = _new_run_directory(dynamic.session_dir / "derived" / "opensim")
+    backpack = resolve_backpack_load(
+        dynamic.condition_code,
+        dynamic.condition_parameters,
+        dynamic.session_dir,
+    )
     summary = prepare_session(
         static_c3d_path=static_c3d,
         dynamic_c3d_path=files.c3d_path,  # type: ignore[arg-type]
@@ -281,6 +287,7 @@ def solve_one_session(
         sync_confidence=confidence,
         sync_quality={**sync, "method": "AUTO_HIGH"},
         quiet_standing=dynamic.is_quiet_standing,
+        backpack=backpack,
     )
     manifest_path = Path(summary["manifest_path"])
 

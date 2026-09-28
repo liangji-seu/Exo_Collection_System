@@ -19,6 +19,7 @@ import pyqtgraph as pg
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
+    QCheckBox,
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
@@ -137,10 +138,19 @@ class SyncView(QWidget):
         self._axis_combo.currentIndexChanged.connect(self._replot)
         layout.addWidget(self._axis_combo)
 
+        self._marker_aux_checkbox = QCheckBox("显示动捕右踝辅助（仅参考）")
+        self._marker_aux_checkbox.setChecked(False)
+        self._marker_aux_checkbox.stateChanged.connect(self._replot)
+        layout.addWidget(self._marker_aux_checkbox)
+        self._marker_status = QLabel("动捕辅助曲线：未加载")
+        self._marker_status.setWordWrap(True)
+        layout.addWidget(self._marker_status)
+
         self._imu_plot = pg.PlotWidget()
         self._imu_plot.setLabel("left", "IMU 加速度 (m/s²)")
         self._imu_plot.setLabel("bottom", "时间 (s)")
         self._imu_plot.showGrid(x=True, y=True, alpha=0.3)
+        self._imu_plot.addLegend()
         self._imu_plot.scene().sigMouseClicked.connect(self._on_imu_click)
         layout.addWidget(self._imu_plot, 2)
 
@@ -148,6 +158,7 @@ class SyncView(QWidget):
         self._gaitway_plot.setLabel("left", "Gaitway Fz (N)")
         self._gaitway_plot.setLabel("bottom", "时间 (s)")
         self._gaitway_plot.showGrid(x=True, y=True, alpha=0.3)
+        self._gaitway_plot.addLegend()
         self._gaitway_plot.scene().sigMouseClicked.connect(self._on_gaitway_click)
         layout.addWidget(self._gaitway_plot, 2)
 
@@ -245,6 +256,17 @@ class SyncView(QWidget):
     def set_manual_data(self, bundle: SyncDataBundle) -> None:
         """加载人工标定原始信号并绘图。"""
         self._bundle = bundle
+        self._marker_aux_checkbox.setChecked(False)
+        self._marker_aux_checkbox.setEnabled(
+            bundle.marker_acc_norm is not None and bundle.marker_time_s is not None
+        )
+        if bundle.marker_acc_norm is None or bundle.marker_time_s is None:
+            self._marker_status.setText("动捕辅助曲线：不可用")
+        else:
+            self._marker_status.setText(
+                f"动捕辅助曲线：{bundle.marker_name or 'marker'}；"
+                f"C3D 无效帧 {bundle.marker_invalid_count}（已断开）"
+            )
         # 初始 offset：优先用自动结果，否则 0。
         if self._auto_raw is not None:
             self._current_offset_s = float(self._auto_raw.get("median_offset_s", 0.0))
@@ -265,15 +287,23 @@ class SyncView(QWidget):
         bundle = self._bundle
         self._imu_plot.clear()
         self._gaitway_plot.clear()
+        # In mapped C3D time both plots represent one shared time axis.  Device
+        # mode deliberately keeps the original independent axes.
+        self._gaitway_plot.setXLink(self._imu_plot if axis_mode == "c3d" else None)
 
         # IMU 时间轴：device 模式直接用原始 c3d 时间（imu_time_s 已映射到 c3d 时间）。
         imu_t = bundle.imu_time_s
         tx, env = _downsample(imu_t, bundle.imu_envelope)
-        self._imu_plot.plot(tx, env, pen=pg.mkPen("#0f766e", width=2), name="冲击包络")
+        self._imu_plot.plot(
+            tx, env, pen=pg.mkPen("#0f766e", width=2),
+            name="IMU 冲击包络", connect="finite",
+        )
         for axis_index, color in ((0, "#c0603a"), (1, "#4a6fa5"), (2, "#7a7a4a")):
             _, raw_axis = _downsample(imu_t, bundle.imu_acc[:, axis_index])
-            self._imu_plot.plot(tx, raw_axis, pen=pg.mkPen(color, width=1),
-                                name=f"acc[{axis_index}]")
+            self._imu_plot.plot(
+                tx, raw_axis, pen=pg.mkPen(color, width=1),
+                name=f"IMU {('XYZ'[axis_index])}", connect="finite",
+            )
 
         # Gaitway 时间轴：c3d 模式下平移 -offset，device 模式用自身时间。
         if axis_mode == "c3d":
@@ -281,18 +311,32 @@ class SyncView(QWidget):
         else:
             gait_t = bundle.gaitway_time_s
         gt, total = _downsample(gait_t, bundle.gaitway_total_fz)
-        self._gaitway_plot.plot(gt, total, pen=pg.mkPen("#0f766e", width=2), name="total Fz")
+        self._gaitway_plot.plot(
+            gt, total, pen=pg.mkPen("#0f766e", width=2),
+            name="total Fz", connect="finite",
+        )
         _, fl = _downsample(gait_t, bundle.gaitway_fz_left)
         _, fr = _downsample(gait_t, bundle.gaitway_fz_right)
-        self._gaitway_plot.plot(gt, fl, pen=pg.mkPen("#c0603a", width=1), name="FzL")
-        self._gaitway_plot.plot(gt, fr, pen=pg.mkPen("#4a6fa5", width=1), name="FzR")
+        self._gaitway_plot.plot(
+            gt, fl, pen=pg.mkPen("#c0603a", width=1), name="FzL", connect="finite"
+        )
+        self._gaitway_plot.plot(
+            gt, fr, pen=pg.mkPen("#4a6fa5", width=1), name="FzR", connect="finite"
+        )
 
         # marker 第三证据（若可用）
-        if bundle.marker_acc_norm is not None and bundle.marker_time_s is not None:
+        if (
+            self._marker_aux_checkbox.isChecked()
+            and bundle.marker_acc_norm is not None
+            and bundle.marker_time_s is not None
+        ):
             mt, marker_env = _downsample(bundle.marker_time_s, bundle.marker_acc_norm)
-            self._imu_plot.plot(mt, marker_env,
-                                pen=pg.mkPen("#9a5b13", width=1, style=Qt.PenStyle.DashLine),
-                                name=f"marker {bundle.marker_name}")
+            self._imu_plot.plot(
+                mt, marker_env,
+                pen=pg.mkPen("#9a5b13", width=1, style=Qt.PenStyle.DashLine),
+                name=f"动捕 {bundle.marker_name or 'marker'} 辅助",
+                connect="finite",
+            )
 
         self._draw_pairs()
 
@@ -441,6 +485,9 @@ class SyncView(QWidget):
         self._auto_detail.setText("")
         self._confirm_button.setEnabled(False)
         self._pairs_label.setText("已配对峰：0 对")
+        self._marker_aux_checkbox.setChecked(False)
+        self._marker_aux_checkbox.setEnabled(False)
+        self._marker_status.setText("动捕辅助曲线：未加载")
         self._stack.setCurrentIndex(0)
 
 

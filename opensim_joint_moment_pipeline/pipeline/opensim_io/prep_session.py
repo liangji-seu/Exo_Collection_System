@@ -91,6 +91,7 @@ def prepare_session(
     quiet_standing: bool = False,
     force_threshold_N: float = 50.0,
     R_fp_to_mocap: np.ndarray | None = None,
+    backpack: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """预处理并写 manifest，返回摘要 dict（含 ``manifest_path``）。"""
     out = Path(out_dir)
@@ -273,6 +274,8 @@ def prepare_session(
         "dynamic_n_frames": dynamic_data.n_frames,
         "dynamic_point_rate_hz": float(dynamic_data.point_rate_hz),
     }
+    if backpack is not None:
+        manifest["backpack"] = backpack
     manifest_path = out / "manifest.json"
     manifest_path.write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"

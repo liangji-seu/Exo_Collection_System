@@ -374,6 +374,62 @@ def test_window_task_guard_and_input_lock(tmp_path: Path) -> None:
     assert window._choose_root_button.isEnabled()
 
 
+def test_imu_start_frame_rejects_bad_saved_match_without_fallback(tmp_path: Path) -> None:
+    import json
+    from dataclasses import replace
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    settings = _file_settings(tmp_path / "shared.ini")
+    window = CalculateWindow(tmp_path, settings)
+    session_dir = tmp_path / "session"
+    dynamic = replace(_make_session(), session_dir=session_dir)
+    window._controller.set_dynamic(dynamic)
+    calibration = session_dir / "derived" / "opensim" / "sync_calibration.json"
+    calibration.parent.mkdir(parents=True)
+
+    # An explicitly bad result must stop lookup; a good auto_candidate cannot
+    # hide it by serving as a silent fallback.
+    calibration.write_text(
+        json.dumps({
+            "result": {"c3d_start_in_mocap_h5_frame": 11, "c3d_h5_match_rms_mm": 6.0},
+            "auto_candidate": {"c3d_start_in_mocap_h5_frame": 12, "c3d_h5_match_rms_mm": 0.0},
+        }),
+        encoding="utf-8",
+    )
+    assert window._imu_start_frame() is None
+
+    # A reliable saved result remains reusable.
+    calibration.write_text(
+        json.dumps({
+            "result": {"c3d_start_in_mocap_h5_frame": 11, "c3d_h5_match_rms_mm": 0.0},
+            "auto_candidate": {"c3d_start_in_mocap_h5_frame": 12, "c3d_h5_match_rms_mm": 6.0},
+        }),
+        encoding="utf-8",
+    )
+    assert window._imu_start_frame() == 11
+
+    # Legacy blocks without an RMS field keep the historical behavior.
+    calibration.write_text(
+        json.dumps({"result": {"c3d_start_in_mocap_h5_frame": 13}}),
+        encoding="utf-8",
+    )
+    assert window._imu_start_frame() == 13
+
+    # The current in-memory sync path is guarded too.
+    window._controller.set_sync(
+        SyncResult(
+            c3d_start_in_mocap_h5_frame=14,
+            c3d_h5_match_rms_mm=6.0,
+            c3d_h5_overlap_frames=100,
+            gaitway_offset_s=0.0,
+            confidence="LOW",
+        )
+    )
+    assert window._imu_start_frame() is None
+    window.close()
+
+
 # --------------------------------------------------------------------------
 # 设置持久化：OpenSim 子环境
 # --------------------------------------------------------------------------

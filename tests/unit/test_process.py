@@ -40,6 +40,8 @@ def _make_session(
     *,
     files: SessionFiles | None = None,
     name: str = "session",
+    condition_code: str = "WALK_STEADY_1P00",
+    condition_parameters: dict | None = None,
 ) -> SessionRecord:
     session_dir = tmp_path / name
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -51,8 +53,8 @@ def _make_session(
         subject_uuid="subj-uuid",
         project_code="P",
         project_name="P",
-        condition_code="WALK_STEADY_1P00",
-        condition_name="WALK_STEADY_1P00",
+        condition_code=condition_code,
+        condition_name=condition_code,
         condition_level=None,
         repeat_index=1,
         trial_uuid="trial-uuid",
@@ -60,6 +62,7 @@ def _make_session(
         state="FINALIZED",
         started_at_utc="2026-01-01T00:00:00",
         files=files if files is not None else SessionFiles(),
+        condition_parameters=condition_parameters or {},
     )
 
 
@@ -235,6 +238,9 @@ def test_solve_one_session_happy_path_returns_out_path(
         checks = _sync_checks(kwargs["sync_quality"])
         assert not any(c["status"] == "FAIL" for c in checks)
         assert kwargs["sync_quality"]["n_pairs"] == 3
+        assert kwargs["mass_kg"] == 75.0
+        assert kwargs["backpack"]["mass_kg"] == 5.0
+        assert kwargs["backpack"]["source"] == "NOMINAL"
         out_dir = Path(kwargs["out_dir"])
         prep_out_dirs.append(out_dir)
         return {"manifest_path": str(out_dir / "manifest.json")}
@@ -257,7 +263,12 @@ def test_solve_one_session_happy_path_returns_out_path(
     monkeypatch.setattr(batch_module, "_export_ground_truth", fake_export)
 
     result = solve_one_session(
-        _make_session(tmp_path, files=_complete_files()),
+        _make_session(
+            tmp_path,
+            files=_complete_files(),
+            condition_code="LWALK_RAMP_2P5D_5KG_NOEXO",
+            condition_parameters={"load_kg": 5},
+        ),
         _static_session(tmp_path / "st"),
         Path("python"),
         Path("model.osim"),

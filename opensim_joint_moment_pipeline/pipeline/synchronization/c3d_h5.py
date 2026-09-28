@@ -25,11 +25,21 @@ _MIN_QUERY_COORDS = 3     # 首帧至少 3 个有效坐标（=1 个 marker 的 X
 _REFINE_CANDIDATES = 30
 _REFINE_CAP_FRAMES = 4000
 _SENTINEL_MM = 1e6        # 缺失 marker 的哨兵值（|x| ≥ 1e6 视为缺失）
+_MAX_TIME_MAPPING_RMS_MM = 5.0  # 防止明显错误匹配进入主机时间映射
 
 
 def _valid_mask(x: np.ndarray) -> np.ndarray:
-    """数值有效（有限且非哨兵）的掩码。"""
-    return np.isfinite(x) & (np.abs(x) < _SENTINEL_MM)
+    """数值有效（有限、非哨兵、非完整零点）的掩码。
+
+    坐标轴上的合法 0 保留有效；只有同一 marker 的 XYZ 全为 0 时，
+    才把该 marker 样本整体视为缺失。
+    """
+    values = np.asarray(x)
+    valid = np.isfinite(values) & (np.abs(values) < _SENTINEL_MM)
+    if values.ndim >= 1 and values.shape[-1] == 3:
+        all_zero = np.all(values == 0.0, axis=-1, keepdims=True)
+        valid &= ~all_zero
+    return valid
 
 
 def _marker_has_data(points: np.ndarray, cols: list[int]) -> list[bool]:
@@ -38,8 +48,7 @@ def _marker_has_data(points: np.ndarray, cols: list[int]) -> list[bool]:
     for col in cols:
         sub = points[:, int(col), :]
         valid = _valid_mask(sub)
-        nonzero = np.abs(sub) > 1e-6
-        result.append(bool(np.any(valid & nonzero)))
+        result.append(bool(np.any(valid)))
     return result
 
 
@@ -97,39 +106,52 @@ def match_c3d_to_h5(
     c3d_cols = [index[name][0] for name in short_names]
     h5_cols = [index[name][1] for name in short_names]
 
-    c3d = np.asarray(c3d_points_mm, dtype=np.float64)[:, c3d_cols, :]
-    h5 = np.asarray(h5_points_mm, dtype=np.float64)[:, h5_cols, :]
+    c3d_common = np.asarray(c3d_points_mm, dtype=np.float64)[:, c3d_cols, :]
+    h5_common = np.asarray(h5_points_mm, dtype=np.float64)[:, h5_cols, :]
 
     # 只保留「两边都有真实数据」的 marker：动态导出内嵌的静态 marker（如
     # R/L Knee.Medial、R/L Ankle.Medial）在 C3D 里是全零、在 H5 里是哨兵
     # 9999999，二者并不一致，不能参与精确匹配（见 reader 的 static 副本说明）。
     usable = [
         c and h
-        for c, h in zip(_marker_has_data(c3d, range(len(short_names))),
-                        _marker_has_data(h5, range(len(short_names))))
+        for c, h in zip(
+            _marker_has_data(c3d_common, range(len(short_names))),
+            _marker_has_data(h5_common, range(len(short_names))),
+        )
     ]
     if not any(usable):
         raise ValueError("C3D 与 mocap.h5 的公共 marker 均无有效数据")
 
     short_names = [name for name, keep in zip(short_names, usable) if keep]
-    c3d_cols = [col for col, keep in zip(c3d_cols, usable) if keep]
-    h5_cols = [col for col, keep in zip(h5_cols, usable) if keep]
-    c3d = c3d[:, c3d_cols, :]
-    h5 = h5[:, h5_cols, :]
+    usable_mask = np.asarray(usable, dtype=bool)
+    c3d = c3d_common[:, usable_mask, :]
+    h5 = h5_common[:, usable_mask, :]
 
     # 首帧定位：只用 C3D 首帧的**有效坐标**做查询，避免首帧某个 marker 缺失时
     # 距离全为 NaN、argsort 退化成任意取候选（prompt6 §3.7 第 2 条）。
     first = c3d[0]                       # (n_common, 3)
-    first_valid = _valid_mask(first).ravel()
+    first_valid = _valid_mask(first)
     n_first_valid = int(first_valid.sum())
     if n_first_valid < _MIN_QUERY_COORDS:
         raise ValueError(
             f"C3D 第 0 帧有效坐标不足（仅 {n_first_valid} 个），无法用首帧定位起点"
         )
-    query = first.ravel()[first_valid]   # (k,)
-    h5_flat = h5.reshape(h5.shape[0], -1)[:, first_valid]
-    distances = np.linalg.norm(h5_flat - query, axis=1)
-    candidates = np.argsort(distances)[:_REFINE_CANDIDATES]
+    distances = np.full(h5.shape[0], np.inf, dtype=np.float64)
+    for frame_index, h5_frame in enumerate(h5):
+        h5_valid = _valid_mask(h5_frame) & first_valid
+        if int(h5_valid.sum()) < _MIN_QUERY_COORDS:
+            continue
+        difference = h5_frame[h5_valid] - first[h5_valid]
+        # Compare candidates by RMS coordinate distance so a frame with fewer
+        # valid coordinates is not preferred merely because its norm sums fewer
+        # terms.
+        distances[frame_index] = np.sqrt(np.mean(np.square(difference)))
+    finite_candidates = np.flatnonzero(np.isfinite(distances))
+    candidates = finite_candidates[np.argsort(distances[finite_candidates])][:_REFINE_CANDIDATES]
+    if not candidates.size:
+        raise RuntimeError(
+            "C3D 与 mocap.h5 无法匹配（首帧没有至少 3 个同时有效的坐标）"
+        )
 
     # 收集全体候选的 (RMS, 起点帧)。RMS 只在两边均有效的坐标上计算，分母是
     # 有效坐标数，绝不把无效值当 0 计入平均（prompt6 §3.7 第 1 条）。
@@ -207,4 +229,41 @@ def match_c3d_to_h5(
     )
 
 
-__all__ = ["C3dH5Match", "match_c3d_to_h5"]
+def validate_match_for_time_mapping(
+    match: C3dH5Match,
+    *,
+    max_rms_mm: float = _MAX_TIME_MAPPING_RMS_MM,
+) -> None:
+    """Reject an obviously bad C3D↔H5 match before using its start frame.
+
+    The matcher intentionally returns all quality levels for audit.  Consumers
+    that convert H5 host timestamps to C3D time must apply this separate guard;
+    a large RMS means the selected start frame cannot define a trustworthy time
+    origin, even when the candidate was unique.  The 5 mm default is a broad
+    coarse-error safety limit, not a synchronization-accuracy acceptance rule.
+    """
+    if not is_reliable_match_rms(match.rms_mm, max_rms_mm=max_rms_mm):
+        raise ValueError(
+            "C3D与mocap.h5无法可靠对应，请检查文件，不能通过IMU/Gaitway手动offset补偿"
+        )
+
+
+def is_reliable_match_rms(
+    rms_mm: object,
+    *,
+    max_rms_mm: float = _MAX_TIME_MAPPING_RMS_MM,
+) -> bool:
+    """Return whether an RMS value passes the coarse time-mapping guard."""
+    try:
+        value = float(rms_mm)
+    except (TypeError, ValueError):
+        return False
+    return bool(np.isfinite(value) and value <= max_rms_mm)
+
+
+__all__ = [
+    "C3dH5Match",
+    "match_c3d_to_h5",
+    "is_reliable_match_rms",
+    "validate_match_for_time_mapping",
+]

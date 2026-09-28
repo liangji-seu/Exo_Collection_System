@@ -569,6 +569,9 @@ class CalculateWindow(QMainWindow):
             sync_quality=self._sync_quality(),
             marker_adjustment_expert_confirmed=config.marker_adjustment_expert_confirmed,
             quiet_standing=dynamic.is_quiet_standing,
+            condition_code=dynamic.condition_code,
+            condition_parameters=dynamic.condition_parameters,
+            session_dir=dynamic.session_dir,
         )
         self._prep_worker.signals.progress.connect(self._processing_view.append_log)
         self._prep_worker.signals.finished.connect(
@@ -802,8 +805,17 @@ class CalculateWindow(QMainWindow):
 
     def _imu_start_frame(self) -> int | None:
         """C3D→mocap.h5 起始帧：当前同步优先，否则读会话级 sync_calibration。"""
+        from exo_collection.apps.calculate._pipeline import ensure_pipeline_on_path
+
+        ensure_pipeline_on_path()
+        from pipeline.synchronization.c3d_h5 import is_reliable_match_rms
+
         sync = self._controller.sync
         if sync is not None:
+            rms_mm = getattr(sync, "c3d_h5_match_rms_mm", None)
+            if rms_mm is not None and not is_reliable_match_rms(rms_mm):
+                _log.warning("旧C3D-H5匹配不可靠，请重新同步")
+                return None
             return int(sync.c3d_start_in_mocap_h5_frame)
         dynamic = self._controller.dynamic
         if dynamic is None:
@@ -818,8 +830,16 @@ class CalculateWindow(QMainWindow):
         except (OSError, ValueError):
             return None
         for block in ("result", "auto_candidate"):
-            frame = (document.get(block) or {}).get("c3d_start_in_mocap_h5_frame")
+            payload = document.get(block) or {}
+            frame = payload.get("c3d_start_in_mocap_h5_frame")
             if isinstance(frame, (int, float)):
+                rms_mm = payload.get("c3d_h5_match_rms_mm")
+                # Missing RMS is retained for legacy calibration files.  Once
+                # an RMS is present, a coarse-bad match must stop lookup here;
+                # do not hide it by falling through to another block.
+                if rms_mm is not None and not is_reliable_match_rms(rms_mm):
+                    _log.warning("旧C3D-H5匹配不可靠，请重新同步")
+                    return None
                 return int(frame)
         return None
 

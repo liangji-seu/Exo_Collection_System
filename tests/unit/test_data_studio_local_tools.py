@@ -6,7 +6,7 @@ import time
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import numpy as np
 import pytest
@@ -39,16 +39,22 @@ from exo_collection.apps.data_studio.local_tools import (
     DataStudioToolError,
     TrialInspection,
     TrialPlayback,
+    UsDiffWaterfallPlayback,
+    _decode_trial_log_envelope,
+    _decode_us_log_envelope,
     _inspect_hdf5,
     _is_decoupled_imu,
     _read_hdf5_imu_sensors,
     _read_hdf5_signal,
     _read_ultrasound,
+    _trial_grid,
+    _uniform_filter1d_nearest,
     _unwrap_device_clock,
     compute_full_statistics,
     inspect_trial_artifacts,
     load_quality_audit,
     load_trial_playback,
+    load_us_diff_waterfall,
     verify_trial_checksums,
 )
 from exo_collection.apps.data_studio.process_workers import DataStudioProcessWorker
@@ -79,6 +85,7 @@ from exo_collection.storage.manifest import (
     load_manifest,
     save_manifest,
 )
+from exo_collection.readers.binary_block import BlockBinaryReader
 from exo_collection.writers import BlockBinaryWriter, Hdf5SignalWriter
 
 
@@ -886,7 +893,7 @@ def test_window_polls_spawned_checksum_worker_without_blocking_gui(
         time.sleep(0.01)
     assert refreshes == [True]
     trial_item = (
-        window.tree_widget.topLevelItem(0).child(0).child(0).child(0)
+        window.tree_widget.topLevelItem(0).child(0).child(0).child(0).child(0)
     )
     window.tree_widget.setCurrentItem(trial_item)
 
@@ -1219,3 +1226,385 @@ def test_read_hdf5_imu_sensors_keeps_coupled_recording_on_one_axis(
 
     assert len(series_list) == 1
     assert series_list[0].values.shape == (count, n_devices * columns)
+
+
+# ──────────────────────────────────────────────────────────────
+#  超声静止参考差分瀑布图（us_diff）
+# ──────────────────────────────────────────────────────────────
+
+_RAW_US_METADATA = {
+    "clock_domain": "raw_ultrasound_clock",
+    "channels": [1, 2, 3, 4],
+    "protocol": "raw_ethernet_uint8",
+    "transport": "raw_ethernet_scapy_npcap",
+    "raw_preservation": "complete captured frame",
+    "nominal_frame_rate_hz": 20.0,
+}
+
+
+def _raw_us_frame(channel: int, adc: np.ndarray) -> np.ndarray:
+    """Assemble a 1000-byte complete-wire frame: [0x00, ch+1, 997 ADC, 0xFF]."""
+    frame = np.zeros(1000, dtype=np.uint8)
+    frame[1] = channel + 1
+    frame[2:-1] = adc
+    frame[-1] = 0xFF
+    return frame
+
+
+def _build_raw_ethernet_diff_trial(
+    data_root: Path,
+    *,
+    subject_uuid: UUID,
+    condition_code: str,
+    duration_s: float,
+    packets: list[tuple[int, int, np.ndarray]],
+) -> tuple[Path, TrialManifest]:
+    """Build a FINALIZED Trial whose only artifact is a raw-Ethernet US .bin."""
+    now = datetime(2026, 7, 15, tzinfo=timezone.utc)
+    project_uuid = uuid4()
+    session_uuid = uuid4()
+    trial_uuid = uuid4()
+    trial_root = (
+        data_root
+        / str(project_uuid)
+        / str(subject_uuid)
+        / str(session_uuid)
+        / "trials"
+        / str(trial_uuid)
+    )
+    raw = trial_root / "raw"
+    raw.mkdir(parents=True)
+
+    ultrasound_path = raw / "ultrasound.bin"
+    with BlockBinaryWriter(
+        ultrasound_path,
+        dtype=np.uint8,
+        sample_shape=(1000,),
+        metadata=dict(_RAW_US_METADATA),
+    ) as writer:
+        for channel, host_ns, adc in packets:
+            writer.append(
+                _raw_us_frame(channel, adc)[None, :],
+                host_monotonic_ns=host_ns,
+                host_utc_ns=host_ns + 10_000_000_000,
+                flags=encode_raw_ethernet_flags(channel, 1),
+            )
+
+    relative_paths = (
+        "raw/ultrasound.bin",
+        "raw/ultrasound.meta.json",
+        "raw/ultrasound.idx",
+    )
+    artifacts = [
+        ManifestArtifact(
+            artifact_uuid=uuid4(),
+            trial_uuid=trial_uuid,
+            modality="ultrasound",
+            kind=ArtifactKind.RAW,
+            media_type="application/octet-stream",
+            relative_path=relative,
+            size_bytes=(trial_root / relative).stat().st_size,
+            sha256=sha256_file(trial_root / relative),
+            created_at_utc=now,
+            finalized_at_utc=now + timedelta(seconds=3),
+        )
+        for relative in relative_paths
+    ]
+    start_ns = 1_000_000_000
+    stop_ns = start_ns + int(round(duration_s * 1e9))
+    manifest = TrialManifest(
+        project_uuid=project_uuid,
+        project_code="T",
+        project_name="测试",
+        subject_uuid=subject_uuid,
+        subject_code="001",
+        session_uuid=session_uuid,
+        trial_uuid=trial_uuid,
+        state=TrialState.FINALIZED,
+        condition=Condition(
+            condition_code=condition_code,
+            condition_name=condition_code,
+            repeat_index=1,
+            protocol_version="1.0.0",
+            selected_at_utc=now,
+        ),
+        timing=TrialTiming(
+            started_at_utc=now,
+            stopped_at_utc=now + timedelta(seconds=duration_s),
+            finalized_at_utc=now + timedelta(seconds=duration_s + 1),
+            start_host_monotonic_ns=start_ns,
+            stop_host_monotonic_ns=stop_ns,
+            finalize_host_monotonic_ns=stop_ns + 1_000_000_000,
+        ),
+        software=SoftwareProvenance(
+            application="test",
+            application_version="0.1.0",
+            core_version="0.1.0",
+            git_commit="test-commit",
+        ),
+        configuration=ConfigurationSnapshot(
+            config_version="1.0.0",
+            protocol_version="1.0.0",
+            condition_definition_version="1.0.0",
+            content_sha256="a" * 64,
+        ),
+        artifacts=artifacts,
+        quality=QualitySummary(
+            computed_grade=QualityGrade.B,
+            required_artifacts_complete=True,
+            integrity_checks_passed=True,
+            algorithm_version="quality-test",
+            assessed_at_utc=now + timedelta(seconds=3),
+            issues=[],
+        ),
+    )
+    manifest_path = save_manifest(trial_root / "manifest.json", manifest)
+    return manifest_path, manifest
+
+
+def _four_channel_packets(
+    adc: np.ndarray,
+    *,
+    start_ns: int,
+    frame_count: int,
+) -> list[tuple[int, int, np.ndarray]]:
+    """Emit frame_count complete 20 Hz four-channel frames at ``start_ns``."""
+    return [
+        (channel, start_ns + frame * 50_000_000, adc)
+        for frame in range(frame_count)
+        for channel in range(4)
+    ]
+
+
+@pytest.mark.parametrize("size", [1, 2, 3, 20, 21])
+def test_uniform_filter1d_nearest_matches_scipy(size: int) -> None:
+    from scipy.ndimage import uniform_filter1d
+
+    rng = np.random.default_rng(0)
+    for _ in range(4):
+        x = rng.normal(size=int(rng.integers(1, 200)))
+        got = _uniform_filter1d_nearest(x, size)
+        want = uniform_filter1d(x, size, mode="nearest")
+        assert got.shape == x.shape
+        np.testing.assert_allclose(got, want, rtol=0, atol=1e-12)
+    # Degenerate inputs: empty and single-element arrays are returned untouched.
+    assert _uniform_filter1d_nearest(np.empty((0,), dtype=np.float64), 20).size == 0
+    assert _uniform_filter1d_nearest(np.array([3.0]), 20)[0] == 3.0
+
+
+def test_decode_us_log_envelope_shape_and_valid_semantics(tmp_path: Path) -> None:
+    start_ns = 1_000_000_000
+    adc = (np.arange(997, dtype=np.uint16) % 256).astype(np.uint8)
+    path = tmp_path / "us.bin"
+    with BlockBinaryWriter(
+        path,
+        dtype=np.uint8,
+        sample_shape=(1000,),
+        metadata=dict(_RAW_US_METADATA),
+    ) as writer:
+        for frame in range(41):
+            host_ns = start_ns + frame * 50_000_000
+            for channel in range(4):
+                writer.append(
+                    _raw_us_frame(channel, adc)[None, :],
+                    host_monotonic_ns=host_ns,
+                    host_utc_ns=host_ns + 10_000_000_000,
+                    flags=encode_raw_ethernet_flags(channel, 1),
+                )
+        meta_path = writer.meta_path
+        index_path = writer.index_path
+
+    q = np.arange(0.0, 2.0 + 1e-9, 0.05, dtype=np.float64)
+    with BlockBinaryReader(
+        path,
+        meta_path=meta_path,
+        index_path=index_path,
+        validate_crc=True,
+        auto_rebuild_index=False,
+    ) as reader:
+        profiles, _ages, valid = _decode_us_log_envelope(
+            reader,
+            formal_t0_ns=start_ns,
+            q=q,
+            idle_check=lambda: None,
+        )
+
+    assert profiles.shape == (len(q), 4, 957)
+    assert profiles.dtype == np.float32
+    assert valid.shape == (len(q),)
+    assert valid.all()
+    assert np.isfinite(profiles).all()
+    # 包络为 log1p 非负值，恒 ≥ 0。
+    assert float(np.nanmin(profiles)) >= 0.0
+
+
+def test_decode_us_log_envelope_marks_missing_channel_invalid(tmp_path: Path) -> None:
+    start_ns = 1_000_000_000
+    adc = np.full(997, 100, dtype=np.uint8)
+    path = tmp_path / "us.bin"
+    with BlockBinaryWriter(
+        path,
+        dtype=np.uint8,
+        sample_shape=(1000,),
+        metadata=dict(_RAW_US_METADATA),
+    ) as writer:
+        # 只写 0/1/2 三个通道，缺失通道 3。
+        for frame in range(41):
+            host_ns = start_ns + frame * 50_000_000
+            for channel in range(3):
+                writer.append(
+                    _raw_us_frame(channel, adc)[None, :],
+                    host_monotonic_ns=host_ns,
+                    host_utc_ns=host_ns + 10_000_000_000,
+                    flags=encode_raw_ethernet_flags(channel, 1),
+                )
+        meta_path = writer.meta_path
+        index_path = writer.index_path
+
+    q = np.arange(0.0, 2.0 + 1e-9, 0.05, dtype=np.float64)
+    with BlockBinaryReader(
+        path,
+        meta_path=meta_path,
+        index_path=index_path,
+        validate_crc=True,
+        auto_rebuild_index=False,
+    ) as reader:
+        profiles, _ages, valid = _decode_us_log_envelope(
+            reader,
+            formal_t0_ns=start_ns,
+            q=q,
+            idle_check=lambda: None,
+        )
+
+    assert profiles.shape == (len(q), 4, 957)
+    assert not valid.any()
+    assert np.isnan(profiles[:, 3, :]).all()
+
+
+def test_load_us_diff_waterfall_end_to_end(tmp_path: Path) -> None:
+    subject_uuid = uuid4()
+    start_ns = 1_000_000_000
+
+    # 参考：30 s 恒定 ADC → log 包络恒 0 → ref_mean = 0。
+    ref_adc = np.full(997, 100, dtype=np.uint8)
+    ref_path, ref_manifest = _build_raw_ethernet_diff_trial(
+        tmp_path,
+        subject_uuid=subject_uuid,
+        condition_code="START_STAND_30S_NOEXO",
+        duration_s=30.0,
+        packets=_four_channel_packets(ref_adc, start_ns=start_ns, frame_count=600),
+    )
+
+    # 目标：2 s 斜坡 ADC → 非零包络。
+    target_adc = (np.arange(997, dtype=np.uint16) % 256).astype(np.uint8)
+    target_path, target_manifest = _build_raw_ethernet_diff_trial(
+        tmp_path,
+        subject_uuid=subject_uuid,
+        condition_code="START_RIGHT_EXO",
+        duration_s=2.0,
+        packets=_four_channel_packets(target_adc, start_ns=start_ns, frame_count=41),
+    )
+
+    write_added_prompt_labels(
+        target_path.parent,
+        target_manifest.trial_uuid,
+        [
+            AddedPromptLabelEvent(
+                time_s=0.2, source=PromptLabelSource.OPERATOR, name=PromptName.ACTIVATE_START
+            ),
+            AddedPromptLabelEvent(
+                time_s=0.8, source=PromptLabelSource.OPERATOR, name=PromptName.ACTIVATE_END
+            ),
+            AddedPromptLabelEvent(
+                time_s=1.2, source=PromptLabelSource.OPERATOR, name=PromptName.RELEASE_START
+            ),
+            AddedPromptLabelEvent(
+                time_s=1.8, source=PromptLabelSource.OPERATOR, name=PromptName.RELEASE_END
+            ),
+            # 非激活/释放事件应被过滤掉。
+            AddedPromptLabelEvent(
+                time_s=0.5, source=PromptLabelSource.SUBJECT, name=PromptName.START
+            ),
+        ],
+    )
+
+    result = load_us_diff_waterfall(target_path, ref_path, data_root=tmp_path)
+
+    assert isinstance(result, UsDiffWaterfallPlayback)
+    q_target = _trial_grid(target_manifest)
+    assert result.time_s.shape == (len(q_target),)
+    assert result.diff.shape == (len(q_target), 4, 957)
+    assert result.diff.dtype == np.float32
+    assert result.valid.shape == (len(q_target),)
+    assert result.target_condition_code == "START_RIGHT_EXO"
+    assert result.reference_condition_code == "START_STAND_30S_NOEXO"
+
+    # 恒定参考 → ref_mean = 0 → diff 等于目标包络本身。
+    target_profiles, _, _ = _decode_trial_log_envelope(
+        target_path.parent, target_manifest, q_target, lambda: None
+    )
+    np.testing.assert_allclose(result.diff, target_profiles, rtol=0, atol=1e-6)
+
+    # 参考窗口 5–25 s 内有效帧数与参考时长。
+    q_ref = _trial_grid(ref_manifest)
+    expected_keep = int(((q_ref >= 5.0) & (q_ref <= 25.0)).sum())
+    assert result.reference_interval_valid_frames == expected_keep
+    assert result.reference_duration_s == pytest.approx(float(q_ref[-1]))
+
+    # 色轴 = 全图 |diff| 的 99 百分位（对称，下限 1e-6）。
+    finite = np.isfinite(result.diff)
+    expected_limit = max(float(np.nanpercentile(np.abs(result.diff[finite]), 99)), 1e-6)
+    assert result.color_limit == pytest.approx(expected_limit)
+    assert result.color_limit > 0.0
+
+    # 只保留 4 个 activate/release 起止事件，按时间排序。
+    assert [event.name for event in result.labels] == [
+        "activate_start",
+        "activate_end",
+        "release_start",
+        "release_end",
+    ]
+    assert [event.time_s for event in result.labels] == [0.2, 0.8, 1.2, 1.8]
+
+
+def test_us_diff_process_worker_returns_bounded_numpy_payload(tmp_path: Path) -> None:
+    subject_uuid = uuid4()
+    start_ns = 1_000_000_000
+    adc = (np.arange(997, dtype=np.uint16) % 256).astype(np.uint8)
+    ref_path, _ = _build_raw_ethernet_diff_trial(
+        tmp_path,
+        subject_uuid=subject_uuid,
+        condition_code="START_STAND_30S_NOEXO",
+        duration_s=30.0,
+        packets=_four_channel_packets(adc, start_ns=start_ns, frame_count=600),
+    )
+    target_path, target_manifest = _build_raw_ethernet_diff_trial(
+        tmp_path,
+        subject_uuid=subject_uuid,
+        condition_code="START_RIGHT_EXO",
+        duration_s=2.0,
+        packets=_four_channel_packets(adc, start_ns=start_ns, frame_count=41),
+    )
+
+    worker = DataStudioProcessWorker(
+        "us_diff",
+        target_manifest_path=str(target_path),
+        reference_manifest_path=str(ref_path),
+        data_root=str(tmp_path),
+    )
+    worker.start()
+    result: tuple[str, object] | None = None
+    deadline = time.monotonic() + 30.0
+    while result is None and time.monotonic() < deadline:
+        result = worker.poll_result()
+        time.sleep(0.02)
+    assert result is not None
+    status, payload = result
+    assert status == "completed"
+    assert isinstance(payload, UsDiffWaterfallPlayback)
+    assert payload.diff.ndim == 3
+    assert payload.diff.shape[1:] == (4, 957)
+    assert payload.diff.shape[0] == len(_trial_grid(target_manifest))
+    worker.join(5.0)
+    assert worker.exitcode == 0
+    worker.close()

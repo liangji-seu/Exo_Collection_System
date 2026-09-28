@@ -14,6 +14,11 @@ from pipeline.synchronization import (
     pair_stomps,
     read_host_monotonic_ns,
 )
+from pipeline.synchronization.c3d_h5 import (  # noqa: E402
+    C3dH5Match,
+    _valid_mask,
+    validate_match_for_time_mapping,
+)
 
 
 # --------------------------------------------------------------------------
@@ -71,6 +76,41 @@ def test_match_c3d_to_h5_excludes_sentinel_medial_markers():
     assert "R.ASIS" in result.matched_markers
 
 
+def test_match_reorders_noncontiguous_public_markers_and_drops_zero_sentinel_pair():
+    # Public markers are deliberately in different orders and surrounded by
+    # modality-specific markers.  BAD is common but C3D-zero/H5-sentinel and
+    # must be removed before applying the usable mask to the reordered subset.
+    c3d_names = ["C3D_ONLY", "R.Knee", "R.ASIS", "L.ASIS", "BAD"]
+    h5_names = ["H5_ONLY", "L.ASIS", "BAD", "R.ASIS", "R.Knee"]
+    n_frames = 80
+    offset = 23
+    rng = np.random.default_rng(123)
+    c3d = rng.normal(size=(n_frames, len(c3d_names), 3)) * 500.0
+    c3d[:, c3d_names.index("BAD"), :] = 0.0
+
+    h5 = np.zeros((offset + n_frames, len(h5_names), 3), dtype=np.float64)
+    for h5_index, name in enumerate(h5_names):
+        if name == "H5_ONLY":
+            h5[offset:, h5_index, :] = 17.0
+        elif name == "BAD":
+            h5[offset:, h5_index, :] = 9999999.0
+        else:
+            c3d_index = c3d_names.index(name)
+            h5[offset:, h5_index, :] = c3d[:, c3d_index, :]
+
+    result = match_c3d_to_h5(
+        c3d,
+        [f"c3d_subject:{name}" for name in c3d_names],
+        h5,
+        [f"h5_subject/{name}" for name in h5_names],
+    )
+    assert result.start_frame == offset
+    assert result.overlap_frames == n_frames
+    assert result.rms_mm < 1e-3
+    assert result.matched_markers == ("L.ASIS", "R.ASIS", "R.Knee")
+    assert "BAD" not in result.matched_markers
+
+
 def test_match_rms_uses_valid_coord_denominator():
     # RMS 分母必须是「有效坐标数」：有效坐标整体带 3mm 偏移，一半帧的 R.Knee
     # 被遮挡（哨兵）。正确 RMS 应≈3mm，而不是被哨兵帧稀释成更小值（§3.7 第 1 条）。
@@ -112,6 +152,67 @@ def test_match_first_frame_fully_nan_raises():
     h5_names = [f"s/{n}" for n in names]
     with pytest.raises(ValueError):
         match_c3d_to_h5(c3d, labels, c3d.copy(), h5_names)
+
+
+def test_match_ignores_full_zero_marker_but_keeps_single_zero_coordinate():
+    names = ["R.ASIS", "L.ASIS", "R.Knee", "L.Knee"]
+    c3d = _make_points(80, names)
+    # A complete zero marker at the first frame is invalid, while an individual
+    # zero coordinate on a real marker remains a usable query coordinate.
+    c3d[0, 0, :] = 0.0
+    c3d[0, 1, 0] = 0.0
+    c3d[30, 2, :] = 0.0
+    h5 = np.concatenate([np.zeros((17, len(names), 3)), c3d])
+    h5[17, 0, :] = 9999999.0
+    h5[17 + 30, 2, :] = 9999999.0
+    labels = [f"s:{n}" for n in names]
+    h5_names = [f"s/{n}" for n in names]
+
+    result = match_c3d_to_h5(c3d, labels, h5, h5_names)
+    assert result.start_frame == 17
+    assert result.overlap_frames == 80
+    assert result.rms_mm < 1e-3
+    assert _valid_mask(np.array([[0.0, 0.0, 0.0], [0.0, 2.0, 3.0]]))[0].tolist() == [False] * 3
+    assert _valid_mask(np.array([[0.0, 2.0, 3.0]]))[0].tolist() == [True] * 3
+
+
+def test_match_h5_query_skips_nan_and_sentinel_frames():
+    names = ["R.ASIS", "L.ASIS", "R.Knee"]
+    c3d = _make_points(60, names)
+    invalid = np.full((12, len(names), 3), np.nan)
+    invalid[3, :, :] = 9999999.0
+    h5 = np.concatenate([invalid, c3d])
+    labels = [f"s:{n}" for n in names]
+    h5_names = [f"s/{n}" for n in names]
+
+    result = match_c3d_to_h5(c3d, labels, h5, h5_names)
+    assert result.start_frame == 12
+    assert result.rms_mm < 1e-3
+
+
+def test_match_all_invalid_h5_query_fails_explicitly():
+    names = ["R.ASIS", "L.ASIS", "R.Knee"]
+    c3d = _make_points(20, names)
+    h5 = np.zeros_like(c3d)
+    labels = [f"s:{n}" for n in names]
+    h5_names = [f"s/{n}" for n in names]
+    with pytest.raises(ValueError, match="公共 marker"):
+        match_c3d_to_h5(c3d, labels, h5, h5_names)
+
+
+def test_time_mapping_guard_rejects_nonfinite_and_large_rms():
+    common = dict(
+        start_frame=0,
+        overlap_frames=100,
+        max_error_mm=0.0,
+        matched_markers=("R.ASIS", "L.ASIS", "R.Knee"),
+        unique=True,
+    )
+    with pytest.raises(ValueError, match="不能通过IMU/Gaitway手动offset补偿"):
+        validate_match_for_time_mapping(C3dH5Match(rms_mm=6.0, **common))
+    with pytest.raises(ValueError, match="不能通过IMU/Gaitway手动offset补偿"):
+        validate_match_for_time_mapping(C3dH5Match(rms_mm=float("nan"), **common))
+    validate_match_for_time_mapping(C3dH5Match(rms_mm=4.9, **common))
 
 
 def test_match_periodic_motion_not_unique():

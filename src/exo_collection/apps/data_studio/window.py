@@ -54,6 +54,7 @@ from exo_collection.apps.calculate.manual_review import (
 from exo_collection.configuration import SharedAppSettings
 from exo_collection.external import ExternalImportRequest, ExternalImportResult
 from exo_collection.storage.activity import AcquisitionActivity, read_activity
+from exo_collection.storage.manifest import load_manifest
 from exo_collection.storage.subject_lock import (
     is_day_locked,
     is_subject_locked,
@@ -74,6 +75,7 @@ from .external_import_worker import ExternalImportWorker
 from .fullscreen_viewer import FullscreenViewer
 from .global_preview import GlobalPreviewWindow, read_gaitway_speed, read_truth_preview
 from .qc_report import GaitQCReportWindow, load_gait_qc
+from .us_diff_preview import UsDiffPreviewWindow
 from .local_dialogs import (
     ChecksumDialog,
     FullStatisticsDialog,
@@ -86,6 +88,7 @@ from .local_tools import (
     QualityAudit,
     TrialInspection,
     TrialPlayback,
+    UsDiffWaterfallPlayback,
     compute_full_statistics,
     inspect_trial_artifacts,
     load_quality_audit,
@@ -290,6 +293,7 @@ class DataStudioWindow(QMainWindow):
         self._result_dialogs: list[QDialog] = []
         self._fullscreen_viewers: list[FullscreenViewer] = []
         self._global_preview_windows: list[QMainWindow] = []
+        self._us_diff_viewers: list[UsDiffPreviewWindow] = []
         self._closing = False
         self._shutdown_retry_pending = False
         self._close_started_at: float | None = None
@@ -436,6 +440,14 @@ class DataStudioWindow(QMainWindow):
         )
         self.global_preview_button.clicked.connect(self.global_preview_selected_trial)
         root_row.addWidget(self.global_preview_button)
+        self.us_diff_button = QPushButton("超声差分图")
+        self.us_diff_button.setObjectName("us_diff_preview")
+        self.us_diff_button.setToolTip(
+            "选中 Trial 后，对同一受试者的静止参考（站姿 START_STAND_30S_NOEXO / "
+            "坐姿 START_SIT_30S_NOEXO）做四通道回波包络差分瀑布图，并叠加激活/释放标签。"
+        )
+        self.us_diff_button.clicked.connect(self.us_diff_preview_selected_trial)
+        root_row.addWidget(self.us_diff_button)
         self.lock_subject_button = QPushButton("锁定受试者")
         self.lock_subject_button.setObjectName("lock_subject")
         self.lock_subject_button.setEnabled(False)
@@ -1654,6 +1666,107 @@ class DataStudioWindow(QMainWindow):
     def _forget_global_preview(self, window: QMainWindow) -> None:
         if window in self._global_preview_windows:
             self._global_preview_windows.remove(window)
+
+    @staticmethod
+    def _day_from_manifest_path(manifest_path: Path) -> str:
+        """从 Manifest 路径提取采集日目录名（``d{day}``），无则返回空串。"""
+        path = Path(manifest_path)
+        if path.parent.name != ".exo":
+            return ""
+        session_dir = path.parent.parent  # session{repeat}_{timestamp}
+        day_dir = session_dir.parent.parent.parent  # d{day}（或受试者目录本身）
+        name = day_dir.name
+        if name.casefold().startswith("d") and name[1:].isdigit():
+            return name
+        return ""
+
+    def _resolve_us_diff_reference(self, target_manifest_path: Path) -> Path | None:
+        """为超声差分瀑布图选择同受试者、同姿态的静止参考 Trial。
+
+        姿态由目标工况码前缀判定：``SIT_*`` → 坐姿参考 ``START_SIT_30S_NOEXO``，
+        其余 → 站姿参考 ``START_STAND_30S_NOEXO``。优先取与目标同一天、否则最早的
+        FINALIZED 参考；找不到返回 ``None``。
+        """
+        try:
+            manifest = load_manifest(target_manifest_path)
+        except Exception:
+            _log.exception("读取目标 Trial Manifest 失败：%s", target_manifest_path)
+            return None
+        condition_code = str(manifest.condition.condition_code or "")
+        sit = condition_code.upper().startswith("SIT_")
+        reference_code = "START_SIT_30S_NOEXO" if sit else "START_STAND_30S_NOEXO"
+        subject_identity = manifest.subject_code or str(manifest.subject_uuid)[:8]
+        target_day = self._day_from_manifest_path(target_manifest_path)
+
+        same_day: list[Path] = []
+        other_day: list[Path] = []
+        for subject_node in self._catalog_tree:
+            node_code = str(subject_node.get("label") or subject_node.get("uuid") or "")
+            if node_code != subject_identity:
+                continue
+            for day_node in subject_node.get("children", []):
+                day_label = str(day_node.get("label") or "")
+                for project_node in day_node.get("children", []):
+                    for session_node in project_node.get("children", []):
+                        if str(session_node.get("label") or "") != reference_code:
+                            continue
+                        for trial_node in session_node.get("children", []):
+                            if str(trial_node.get("type")) != "trial":
+                                continue
+                            if str(trial_node.get("state") or "") != "FINALIZED":
+                                continue
+                            raw_path = trial_node.get("manifest_path")
+                            if not raw_path:
+                                continue
+                            candidate = Path(str(raw_path))
+                            if day_label == target_day:
+                                same_day.append(candidate)
+                            else:
+                                other_day.append(candidate)
+            break
+        chosen = same_day or other_day
+        return chosen[0] if chosen else None
+
+    def us_diff_preview_selected_trial(self) -> None:
+        """对选中 Trial 打开「超声差分图」（在独立进程中计算，界面保持响应）。"""
+        target = self._selected_finalized_manifest_path()
+        if target is None:
+            return
+        reference = self._resolve_us_diff_reference(target)
+        if reference is None:
+            QMessageBox.warning(
+                self,
+                "缺少静止参考",
+                "未找到同一受试者的静止参考 Trial（站姿 START_STAND_30S_NOEXO / "
+                "坐姿 START_SIT_30S_NOEXO，且需 FINALIZED）。\n请先采集并最终化该受试者的"
+                "起始静止基线，再重试。",
+            )
+            return
+        self._start_process_tool(
+            "超声差分瀑布图",
+            "us_diff",
+            self._show_us_diff_preview,
+            target_manifest_path=target,
+            reference_manifest_path=reference,
+            data_root=self._data_root,
+        )
+
+    def _show_us_diff_preview(self, result: object) -> None:
+        if not isinstance(result, UsDiffWaterfallPlayback):
+            _log.error("超声差分 worker 返回了无效结果：%s", type(result))
+            raise TypeError("us_diff worker returned an invalid result")
+        window = UsDiffPreviewWindow(result, self)
+        self._us_diff_viewers.append(window)
+        window.destroyed.connect(
+            lambda _obj=None, w=window: self._forget_us_diff_viewer(w)
+        )
+        window.show()
+        window.raise_()
+        window.activateWindow()
+
+    def _forget_us_diff_viewer(self, window: UsDiffPreviewWindow) -> None:
+        if window in self._us_diff_viewers:
+            self._us_diff_viewers.remove(window)
 
     @Slot()
     def run_full_statistics(self) -> None:
