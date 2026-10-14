@@ -2360,22 +2360,27 @@ def test_condition_combo_exposes_phase_conditions(
         assert "WALK_0P6_NOEXO" in phase5_steady_codes
         assert "WALK_0P8_NOEXO" in phase5_steady_codes
         assert "WALK_1P0_EXO" in phase5_steady_codes
-        assert "BWALK_0P3_NOEXO" in phase5_steady_codes
-        assert "BWALK_0P45_EXO" in phase5_steady_codes
-        assert "BWALK_0P6_EXO" in phase5_steady_codes
+        assert "BWALK_0P2_NOEXO" in phase5_steady_codes
+        assert "BWALK_0P3_EXO" in phase5_steady_codes
+        assert "BWALK_0P4_EXO" in phase5_steady_codes
         bwalk_item = window.condition_combo.itemData(
-            phase5_steady_codes.index("BWALK_0P45_NOEXO")
+            phase5_steady_codes.index("BWALK_0P2_NOEXO")
         )
-        assert bwalk_item["parameters"]["speed_mps"] == 0.45
+        assert bwalk_item["parameters"]["speed_mps"] == 0.2
         assert bwalk_item["parameters"]["slope_deg"] == 0
         select_category("TRANSIENT")
         assert window.condition_combo.count() == 4
-        assert set(combo_codes()) == {
+        phase5_transient_codes = combo_codes()
+        assert set(phase5_transient_codes) == {
             "STAND_WALK_STAND_NOEXO",
             "STAND_WALK_STAND_EXO",
             "STAND_BWALK_STAND_NOEXO",
             "STAND_BWALK_STAND_EXO",
         }
+        bwalk_stand_item = window.condition_combo.itemData(
+            phase5_transient_codes.index("STAND_BWALK_STAND_NOEXO")
+        )
+        assert bwalk_stand_item["parameters"]["speed_mps"] == 0.3
         select_category("SPECIAL")
         assert window.condition_combo.count() == 0
 

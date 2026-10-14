@@ -4489,6 +4489,32 @@
       }
     },
     {
+      "condition_code": "BWALK_0P2_NOEXO",
+      "condition_name": "倒走 0.2m/s（不穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_backward_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 0.2,
+        "slope_deg": 0,
+        "exo": false
+      }
+    },
+    {
+      "condition_code": "BWALK_0P2_EXO",
+      "condition_name": "倒走 0.2m/s（穿戴）",
+      "condition_level": "STEADY_STATE",
+      "parameters": {
+        "category": "steady_backward_walking",
+        "recommended_trial_count": 5,
+        "target_effective_duration_s": 30,
+        "speed_mps": 0.2,
+        "slope_deg": 0,
+        "exo": true
+      }
+    },
+    {
       "condition_code": "BWALK_0P3_NOEXO",
       "condition_name": "倒走 0.3m/s（不穿戴）",
       "condition_level": "STEADY_STATE",
@@ -4515,53 +4541,27 @@
       }
     },
     {
-      "condition_code": "BWALK_0P45_NOEXO",
-      "condition_name": "倒走 0.45m/s（不穿戴）",
+      "condition_code": "BWALK_0P4_NOEXO",
+      "condition_name": "倒走 0.4m/s（不穿戴）",
       "condition_level": "STEADY_STATE",
       "parameters": {
         "category": "steady_backward_walking",
         "recommended_trial_count": 5,
         "target_effective_duration_s": 30,
-        "speed_mps": 0.45,
+        "speed_mps": 0.4,
         "slope_deg": 0,
         "exo": false
       }
     },
     {
-      "condition_code": "BWALK_0P45_EXO",
-      "condition_name": "倒走 0.45m/s（穿戴）",
+      "condition_code": "BWALK_0P4_EXO",
+      "condition_name": "倒走 0.4m/s（穿戴）",
       "condition_level": "STEADY_STATE",
       "parameters": {
         "category": "steady_backward_walking",
         "recommended_trial_count": 5,
         "target_effective_duration_s": 30,
-        "speed_mps": 0.45,
-        "slope_deg": 0,
-        "exo": true
-      }
-    },
-    {
-      "condition_code": "BWALK_0P6_NOEXO",
-      "condition_name": "倒走 0.6m/s（不穿戴）",
-      "condition_level": "STEADY_STATE",
-      "parameters": {
-        "category": "steady_backward_walking",
-        "recommended_trial_count": 5,
-        "target_effective_duration_s": 30,
-        "speed_mps": 0.6,
-        "slope_deg": 0,
-        "exo": false
-      }
-    },
-    {
-      "condition_code": "BWALK_0P6_EXO",
-      "condition_name": "倒走 0.6m/s（穿戴）",
-      "condition_level": "STEADY_STATE",
-      "parameters": {
-        "category": "steady_backward_walking",
-        "recommended_trial_count": 5,
-        "target_effective_duration_s": 30,
-        "speed_mps": 0.6,
+        "speed_mps": 0.4,
         "slope_deg": 0,
         "exo": true
       }
@@ -4595,7 +4595,8 @@
       "parameters": {
         "category": "transient_stand_bwalk_stand",
         "recommended_trial_count": 5,
-        "description": "静止起立后倒走，再停止回到静止",
+        "speed_mps": 0.3,
+        "description": "静止起立后以 0.3m/s 倒走，再停止回到静止",
         "exo": false
       }
     },
@@ -4606,7 +4607,8 @@
       "parameters": {
         "category": "transient_stand_bwalk_stand",
         "recommended_trial_count": 5,
-        "description": "静止起立后倒走，再停止回到静止",
+        "speed_mps": 0.3,
+        "description": "静止起立后以 0.3m/s 倒走，再停止回到静止",
         "exo": true
       }
     }

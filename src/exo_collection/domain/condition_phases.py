@@ -349,9 +349,9 @@ PHASE_5_STEADY: tuple[str, ...] = (
     "WALK_0P6",
     "WALK_0P8",
     "WALK_1P0",
+    "BWALK_0P2",
     "BWALK_0P3",
-    "BWALK_0P45",
-    "BWALK_0P6",
+    "BWALK_0P4",
 )
 PHASE_5_TRANSIENT: tuple[str, ...] = (
     "STAND_WALK_STAND",
