@@ -12,7 +12,7 @@ def test_default_protocol_is_versioned_and_has_unique_conditions() -> None:
     protocol = load_default_protocol()
     assert protocol.schema_version == "1.0.0"
     assert protocol.protocol_version == "1.3.0"
-    assert len(protocol.conditions) == 406
+    assert len(protocol.conditions) == 418
     assert {condition.condition_code for condition in protocol.conditions} == {
         "FREE_TEST",
         "STATIC_CALIB",
@@ -420,6 +420,18 @@ def test_default_protocol_is_versioned_and_has_unique_conditions() -> None:
         "LWALK_RAMP_2P5D_5KG_EXO",
         "LWALK_RAMP_2P5D_10KG_NOEXO",
         "LWALK_RAMP_2P5D_10KG_EXO",
+        "WALK_0P8_NOEXO",
+        "WALK_0P8_EXO",
+        "BWALK_0P3_NOEXO",
+        "BWALK_0P3_EXO",
+        "BWALK_0P45_NOEXO",
+        "BWALK_0P45_EXO",
+        "BWALK_0P6_NOEXO",
+        "BWALK_0P6_EXO",
+        "STAND_WALK_STAND_NOEXO",
+        "STAND_WALK_STAND_EXO",
+        "STAND_BWALK_STAND_NOEXO",
+        "STAND_BWALK_STAND_EXO",
     }
 
     by_code = {

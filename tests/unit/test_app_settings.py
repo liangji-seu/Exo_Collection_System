@@ -261,9 +261,9 @@ def test_single_modality_settings_merge_without_erasing_other_devices(
 def test_phase_config_defaults_to_seed_and_round_trips(tmp_path: Path) -> None:
     settings_path = tmp_path / "shared.ini"
 
-    # 空设置回退到默认种子：第一期 56 + 第二期 222 + 第三期 108 + 第四期 62（展开为协议完整码后）。
+    # 空设置回退到默认种子：第一期 56 + 第二期 222 + 第三期 108 + 第四期 62 + 第五期 16（展开为协议完整码后）。
     default = _file_settings(settings_path).phase_config
-    assert [phase["name"] for phase in default["phases"]] == ["第一期", "第二期", "第三期", "第四期"]
+    assert [phase["name"] for phase in default["phases"]] == ["第一期", "第二期", "第三期", "第四期", "第五期"]
     expanded_counts = [
         sum(
             len(expand_category_details(cat["details"]))
@@ -271,7 +271,7 @@ def test_phase_config_defaults_to_seed_and_round_trips(tmp_path: Path) -> None:
         )
         for phase in default["phases"]
     ]
-    assert expanded_counts == [56, 222, 108, 62]
+    assert expanded_counts == [56, 222, 108, 62, 16]
 
     custom = {
         "schema_version": 3,
@@ -312,7 +312,7 @@ def test_phase_config_resets_stale_schema_to_seed(tmp_path: Path) -> None:
     )
 
     cfg = SharedAppSettings(backend).phase_config
-    assert [phase["name"] for phase in cfg["phases"]] == ["第一期", "第二期", "第三期", "第四期"]
+    assert [phase["name"] for phase in cfg["phases"]] == ["第一期", "第二期", "第三期", "第四期", "第五期"]
 
 
 def test_phase_config_keeps_versionless_legacy_snapshot(tmp_path: Path) -> None:

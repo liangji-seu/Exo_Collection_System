@@ -20,27 +20,29 @@ def _expanded_codes(phase: dict) -> set[str]:
 def test_default_phase_config_partitions_protocol() -> None:
     cfg = default_phase_config()
     phases = cfg["phases"]
-    assert len(phases) == 4
-    p1, p2, p3, p4 = phases
+    assert len(phases) == 5
+    p1, p2, p3, p4, p5 = phases
     assert p1["name"] == "第一期"
     assert p2["name"] == "第二期"
     assert p3["name"] == "第三期"
     assert p4["name"] == "第四期"
+    assert p5["name"] == "第五期"
 
     # 每期都固定 4 类主工况。
     for phase in phases:
         assert list(phase["categories"].keys()) == list(MAIN_CATEGORY_KEYS)
 
-    # 展开为协议完整码后：第一期 56 码，第二期 222 码，第三期 108 码，第四期 62 码。
+    # 展开为协议完整码后：第一期 56 码，第二期 222 码，第三期 108 码，第四期 62 码，第五期 16 码。
     assert len(_expanded_codes(p1)) == 56
     assert len(_expanded_codes(p2)) == 222
     assert len(_expanded_codes(p3)) == 108
     assert len(_expanded_codes(p4)) == 62
+    assert len(_expanded_codes(p5)) == 16
 
     protocol_codes = {c.condition_code for c in load_default_protocol().conditions}
-    union = _expanded_codes(p1) | _expanded_codes(p2) | _expanded_codes(p3) | _expanded_codes(p4)
+    union = _expanded_codes(p1) | _expanded_codes(p2) | _expanded_codes(p3) | _expanded_codes(p4) | _expanded_codes(p5)
     assert union == protocol_codes
-    assert len(union) == 406
+    assert len(union) == 418
 
 
 def test_phase4_details_grouped_by_load() -> None:

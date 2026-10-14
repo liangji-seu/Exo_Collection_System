@@ -1984,11 +1984,11 @@ def test_condition_combo_exposes_phase_conditions(
         ]
 
     try:
-        # 期次固定三期；主工况固定 4 类。
+        # 期次固定五期；主工况固定 4 类。
         assert [
             window.phase_combo.itemText(index)
             for index in range(window.phase_combo.count())
-        ] == ["第一期", "第二期", "第三期", "第四期"]
+        ] == ["第一期", "第二期", "第三期", "第四期", "第五期"]
         assert [
             window.main_category_combo.itemText(index)
             for index in range(window.main_category_combo.count())
@@ -2350,6 +2350,35 @@ def test_condition_combo_exposes_phase_conditions(
         select_category("SPECIAL")
         assert window.condition_combo.count() == 0
 
+        # 第五期：稳态（正走 0.6/0.8/1.0 + 倒走 0.3/0.45/0.6 m/s，12 条）+ 非稳态（静止-正走/倒走-静止，4 条）。
+        window.phase_combo.setCurrentIndex(4)
+        select_category("BASELINE")
+        assert window.condition_combo.count() == 0
+        select_category("STEADY_STATE")
+        assert window.condition_combo.count() == 12
+        phase5_steady_codes = combo_codes()
+        assert "WALK_0P6_NOEXO" in phase5_steady_codes
+        assert "WALK_0P8_NOEXO" in phase5_steady_codes
+        assert "WALK_1P0_EXO" in phase5_steady_codes
+        assert "BWALK_0P3_NOEXO" in phase5_steady_codes
+        assert "BWALK_0P45_EXO" in phase5_steady_codes
+        assert "BWALK_0P6_EXO" in phase5_steady_codes
+        bwalk_item = window.condition_combo.itemData(
+            phase5_steady_codes.index("BWALK_0P45_NOEXO")
+        )
+        assert bwalk_item["parameters"]["speed_mps"] == 0.45
+        assert bwalk_item["parameters"]["slope_deg"] == 0
+        select_category("TRANSIENT")
+        assert window.condition_combo.count() == 4
+        assert set(combo_codes()) == {
+            "STAND_WALK_STAND_NOEXO",
+            "STAND_WALK_STAND_EXO",
+            "STAND_BWALK_STAND_NOEXO",
+            "STAND_BWALK_STAND_EXO",
+        }
+        select_category("SPECIAL")
+        assert window.condition_combo.count() == 0
+
 
 
         # 每个期次 × 每个主工况里，操作者看到的都是中文工况名，而非英文 code。
@@ -2376,7 +2405,7 @@ def test_phase_config_dialog_round_trips_seed() -> None:
     try:
         result = dialog.validated_config
         phases = result["phases"]
-        assert [phase["name"] for phase in phases] == ["第一期", "第二期", "第三期", "第四期"]
+        assert [phase["name"] for phase in phases] == ["第一期", "第二期", "第三期", "第四期", "第五期"]
         assert list(phases[0]["categories"].keys()) == [
             "BASELINE",
             "STEADY_STATE",

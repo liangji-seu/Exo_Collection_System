@@ -344,6 +344,21 @@ PHASE_4_TRANSIENT: tuple[str, ...] = (
 )
 
 
+# 第五期 = 稳态（正走 0.6/0.8/1.0 m/s + 倒走 0.3/0.45/0.6 m/s）+ 非稳态（静止-正走/倒走-静止）。
+PHASE_5_STEADY: tuple[str, ...] = (
+    "WALK_0P6",
+    "WALK_0P8",
+    "WALK_1P0",
+    "BWALK_0P3",
+    "BWALK_0P45",
+    "BWALK_0P6",
+)
+PHASE_5_TRANSIENT: tuple[str, ...] = (
+    "STAND_WALK_STAND",
+    "STAND_BWALK_STAND",
+)
+
+
 def _seed_detail(code: str, catalog: dict[str, dict[str, Any]]) -> dict[str, Any]:
     """种子详细工况：无穿戴工况不带 wear，其余默认「增加穿戴」。"""
     info = catalog[code]
@@ -384,7 +399,7 @@ def _make_phase(
 
 
 def default_phase_config() -> dict[str, Any]:
-    """首次无配置时的默认期次：第一期=新增工况，第二期=标准工况+详细地形矩阵，第三期=站姿/坐姿关节工况，第四期=负重识别。"""
+    """首次无配置时的默认期次：第一期=新增工况，第二期=标准工况+详细地形矩阵，第三期=站姿/坐姿关节工况，第四期=负重识别，第五期=稳态/非稳态（含倒走）。"""
     return {
         "schema_version": PHASE_CONFIG_SCHEMA_VERSION,
         "phases": [
@@ -414,6 +429,13 @@ def default_phase_config() -> dict[str, Any]:
                 (),
                 PHASE_4_STEADY,
                 PHASE_4_TRANSIENT,
+                (),
+            ),
+            _make_phase(
+                "第五期",
+                (),
+                PHASE_5_STEADY,
+                PHASE_5_TRANSIENT,
                 (),
             ),
         ],
@@ -542,6 +564,8 @@ __all__ = [
     "PHASE_3_SPECIAL",
     "PHASE_4_STEADY",
     "PHASE_4_TRANSIENT",
+    "PHASE_5_STEADY",
+    "PHASE_5_TRANSIENT",
     "PHASE_2_STEADY",
     "PHASE_2_TRANSIENT",
     "PHASE_CONFIG_SCHEMA_VERSION",
