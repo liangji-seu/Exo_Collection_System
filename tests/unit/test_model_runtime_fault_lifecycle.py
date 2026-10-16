@@ -146,3 +146,45 @@ def test_popup_does_not_call_unknown_worker_state_alive(window):
         "imu": {"is_alive": {"inspection_error": "closed handle"}}}}})
     assert "状态未能读取" in text
     assert "输入进程仍在运行" not in text
+
+
+class RetryCloseMotor:
+    fault = "test fault"
+    port = "FAKE_ONLY"
+    def __init__(self, failures):
+        self.failures, self.close_attempts = failures, 0
+    def set_enabled(self, value):
+        assert value is False
+    def zero(self):
+        pass
+    def close(self):
+        self.close_attempts += 1
+        if self.failures:
+            self.failures -= 1
+            raise OSError("fake close failed")
+
+
+def test_fatal_retains_failed_serial_cleanup_until_explicit_retry(window):
+    motor = RetryCloseMotor(failures=1)
+    window._run.motor = motor
+    window._run.output = motor
+    window._fatal_incident("电机故障", "test fault", source="motor_fault")
+    assert window._motor is None and window._pending_motor_cleanup is motor
+    assert "清理异常" in window._controls.motor_status.text()
+    assert window._retry_pending_motor_cleanup()
+    assert window._pending_motor_cleanup is None and motor.close_attempts == 2
+    assert window._fatal_latched  # Releasing a handle never grants an arm intent.
+
+
+def test_permanent_serial_close_failure_blocks_new_motor_connection(window, monkeypatch):
+    motor, constructed = RetryCloseMotor(failures=10), []
+    window._pending_motor_cleanup = motor
+    window._fatal_latched = True
+    monkeypatch.setattr("exo_collection.apps.model_runtime.motor_service.SerialTorqueOutput",
+                        lambda *a, **kw: constructed.append(True))
+    window._toggle_motor()
+    assert constructed == [] and window._pending_motor_cleanup is motor
+    assert window._fatal_latched and "禁止建立新连接" in window._controls.motor_status.text()
+    motor.failures = 0
+    window.disconnect_all()
+    assert window._pending_motor_cleanup is None

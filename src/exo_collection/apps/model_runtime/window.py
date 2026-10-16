@@ -161,6 +161,7 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
         self._recovery_pending = None
         self._recovery_generation = 0
         self._fault_dialog = None
+        self._pending_motor_cleanup = None
         self._model_sha256 = None
         self._preview_counts = {}
         self._preview_latest_ns = {}
@@ -532,6 +533,7 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
 
     def disconnect_all(self) -> None:
         self.emergency_stop()
+        self._retry_pending_motor_cleanup()
         self._encoder_input_requested = False
         for modality in list(self._handles):
             self._disconnect_modality(modality)
@@ -827,7 +829,7 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
             safe("close_worker",
                                  lambda h=handle: h.close(), modality=modality)
         if motor is not None:
-            safe("close_motor", motor.close, modality="motor")
+            safe("close_motor", lambda: self._close_motor_with_evidence(motor, "fatal"), modality="motor")
             self._run.motor = None
             self._run.output = None
             self._run.output_state = OutputState.DETACHED
@@ -857,6 +859,8 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
         self._model_output_panel.set_feedback(None)
         self._update_torque_label()
         self._model_output_panel.set_output_status(message)
+        if self._pending_motor_cleanup is not None and not cleanup_failures:
+            cleanup_failures.append("motor serial release remains unconfirmed")
         if cleanup_failures:
             self._diagnostics.record("fatal_cleanup_incomplete", failures=cleanup_failures)
             popup_message += "\n\n部分连接清理失败，请检查日志并人工确认设备已停止。"
@@ -1490,8 +1494,44 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
         if handle is None or not handle.is_alive:
             raise ValueError("IMU 采集进程已停止。")
 
+    def _record_motor_close_result(self, motor, stage: str, error=None) -> bool:
+        result = getattr(motor, "close_snapshot", None)
+        success = error is None or isinstance(result, dict) and result.get("serial_close_succeeded") is True
+        self._diagnostics.record("motor_close_result", port=getattr(motor, "port", None),
+            stage=stage, succeeded=success, snapshot=result, exception=error)
+        if success:
+            if self._pending_motor_cleanup is motor:
+                self._pending_motor_cleanup = None
+        else:
+            self._pending_motor_cleanup = motor
+        return success
+
+    def _close_motor_with_evidence(self, motor, stage: str) -> None:
+        try:
+            motor.close()
+        except Exception as exc:
+            self._record_motor_close_result(motor, stage, exc)
+            raise
+        self._record_motor_close_result(motor, stage)
+
+    def _retry_pending_motor_cleanup(self) -> bool:
+        motor = self._pending_motor_cleanup
+        if motor is None:
+            return True
+        try:
+            self._close_motor_with_evidence(motor, "explicit_retry")
+            return True
+        except Exception:
+            message = "电机串口尚未确认释放，禁止建立新连接；请检查USB连接后重试全部断开。"
+            self._fault_label.setText(message)
+            self._controls.motor_status.setText(message)
+            self.statusBar().showMessage(message)
+            return False
+
     def _toggle_motor(self) -> None:
         if self._motor is None:
+            if not self._retry_pending_motor_cleanup():
+                return
             self._reset_fault_lifecycle("explicit_motor_connect")
         self._diagnostics.record("motor_connection_requested",
             action="disconnect" if self._motor is not None else "connect",
@@ -1516,9 +1556,13 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
             try:
                 motor.connect()
             except Exception:
-                motor.close()
+                self._close_motor_with_evidence(motor, "connect_failed")
                 raise
-            self._run.attach_motor(motor)
+            try:
+                self._run.attach_motor(motor)
+            except Exception as exc:
+                self._record_motor_close_result(motor, "attach_failed", exc)
+                raise
             if self._encoder_input_requested:
                 self._register_motor_encoder()
             self._last_motor_fault = None
@@ -1552,11 +1596,15 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
             self._spec.output.torque_limit_nm if self._spec is not None else 0.0,
             enable_required=True, zero_on_error=True,
         )
+        motor = self._motor
         try:
             self._run.detach_motor(mock)
         except RuntimeError as exc:
+            self._record_motor_close_result(motor, "disconnect", exc)
             self._fault_label.setText(str(exc))
             self.statusBar().showMessage(str(exc))
+        else:
+            self._record_motor_close_result(motor, "disconnect")
         self._motor_encoder_queue = None
         if "encoder" not in self._handles:
             self._hub.unregister("encoder")
@@ -1569,7 +1617,10 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
         self._update_torque_label()
         self._workspace.set_stream_state("encoder", "disconnected")
         self._status_strip.set_state("encoder", "off", "未连接")
-        if restore_encoder and self._encoder_input_requested:
+        if self._pending_motor_cleanup is not None:
+            self._controls.motor_status.setText("已归零失能；串口释放失败，请点击全部断开重试。")
+            self._status_strip.set_state("encoder", "bad", "串口未释放")
+        elif restore_encoder and self._encoder_input_requested:
             self._connect_modality("encoder")
 
     def _register_motor_encoder(self):
@@ -2141,6 +2192,10 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
             event.ignore()
             return
         self.disconnect_all()
+        if self._pending_motor_cleanup is not None:
+            self._show_error("无法关闭", "电机串口释放失败，窗口保留清理对象；请检查USB后重试关闭。")
+            event.ignore()
+            return
         self._closing = True
         self._online_recording.close()
         self._loader.close()

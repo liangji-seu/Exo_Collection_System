@@ -460,3 +460,75 @@ def test_fault_captures_thread_liveness_and_last_heartbeat():
     assert threads["sender"]["alive"] is False
     assert threads["reader"]["last_heartbeat_ns"] == clock.ns
     assert threads["sender"]["last_heartbeat_ns"] == clock.ns
+
+
+class CloseFailureSerial(FakeSerial):
+    def __init__(self, failures=1):
+        super().__init__()
+        self.failures = failures
+        self.close_attempts = 0
+        self.is_open = True
+    def close(self):
+        self.close_attempts += 1
+        if self.failures:
+            self.failures -= 1
+            error = OSError(5, "serial close failed")
+            error.winerror = 1167
+            raise error
+        self.is_open = False
+        super().close()
+
+
+def test_serial_close_failure_disarms_retains_handle_and_explicit_retry_releases():
+    clock, serial = Clock(), CloseFailureSerial()
+    service = make_service(clock, serial)
+    before = len(serial.writes)
+    with pytest.raises(OSError, match="serial close failed"):
+        service.close()
+    assert not service.connected and not service.enabled
+    assert len(serial.writes) == before + 2  # zero and disable before close
+    assert service._serial is serial and serial.is_open
+    evidence = service.close_snapshot
+    assert evidence["serial_close_succeeded"] is False
+    assert evidence["serial_is_open_after"] is True
+    assert evidence["error"]["errno"] == 5 and evidence["error"]["winerror"] == 1167
+    service.send(5, 5)
+    service.zero()
+    with pytest.raises(RuntimeError, match="closed"):
+        service.connect()
+    assert len(serial.writes) == before + 2
+    service.close()
+    assert service._serial is None and serial.closed and not serial.is_open
+    assert service.close_snapshot["attempt"] == 2
+    assert service.close_snapshot["serial_close_succeeded"] is True
+    service.close()
+    assert serial.close_attempts == 2 and len(serial.writes) == before + 2
+
+
+def test_thread_join_exception_does_not_skip_serial_close():
+    from types import SimpleNamespace
+    clock, serial = Clock(), CloseFailureSerial(failures=0)
+    service = make_service(clock, serial)
+    def join(**kwargs):
+        raise RuntimeError("join failed")
+    service._reader_thread = SimpleNamespace(join=join, is_alive=lambda: True)
+    service.close()
+    assert serial.closed and service._serial is None
+    evidence = service.close_snapshot
+    assert evidence["serial_close_succeeded"] is True
+    assert evidence["join_errors"][0]["thread"] == "reader"
+    assert "join failed" in evidence["join_errors"][0]["repr"]
+    assert evidence["threads"]["reader"]["alive_after_serial_close"] is True
+
+
+def test_normal_serial_close_is_idempotent_and_diagnostic_copy_is_detached():
+    clock, serial = Clock(), CloseFailureSerial(failures=0)
+    service = make_service(clock, serial)
+    service.close()
+    before = len(serial.writes)
+    evidence = service.close_snapshot
+    evidence["threads"]["reader"]["alive"] = "mutated"
+    service.close()
+    assert serial.close_attempts == 1 and len(serial.writes) == before
+    assert service.close_snapshot["threads"]["reader"]["alive"] is False
+    assert service.diagnostics["transport"]["close"]["serial_close_succeeded"] is True

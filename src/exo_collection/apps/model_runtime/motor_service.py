@@ -167,6 +167,8 @@ class SerialTorqueOutput(TorqueOutput):
         self._history: deque[TorqueCommand] = deque(maxlen=int(history_capacity))
         self._lock = threading.RLock()
         self._write_lock = threading.Lock()
+        self._close_lock = threading.Lock()
+        self._close_snapshot = None
         self._stop = threading.Event()
         self._reader_thread: threading.Thread | None = None
         self._sender_thread: threading.Thread | None = None
@@ -236,6 +238,7 @@ class SerialTorqueOutput(TorqueOutput):
                              "heartbeat_age_ns": None if last is None else max(0, now - last)}
         result = {"port": self.port, "background": self._background,
                   "connected": self._connected, "stop_requested": self._stop.is_set(),
+                  "close": deepcopy(self._close_snapshot),
                   "counts": dict(self._io_counts), "last_ns": dict(self._io_last_ns),
                   "max_gap_ns": dict(self._io_max_gap_ns), "threads": threads,
                   "last_io_error": deepcopy(self._last_io_error),
@@ -387,34 +390,83 @@ class SerialTorqueOutput(TorqueOutput):
                 self._reader_thread.start()
                 self._sender_thread.start()
 
-    def close(self) -> None:
-        """Zero, disable, stop I/O, and close the exclusively-owned port."""
+    @property
+    def close_snapshot(self) -> dict[str, Any] | None:
         with self._lock:
-            if self._closed:
-                return
-            self._closed = True
-            self._stop.set()
-            self._enable_requested = False
-            self._enable_request_generation = None
-            self._enable_deadline_ns = None
-            self._enabled = False
-            self._desired_left = self._desired_right = 0.0
-            self._last_command_ns = None
-            if self._connected:
-                self._write_control_locked(0.0, 0.0, record=True)
-                self._write_frame_locked(build_enable_frame(DISABLE_CMD))
-            self._record_stop_locked("disconnected")
-            ser = self._serial
-            self._connected = False
-            self._serial = None
-        for thread in (self._reader_thread, self._sender_thread):
-            if thread is not None and thread is not threading.current_thread():
-                thread.join(timeout=0.5)
-        if ser is not None:
+            return deepcopy(self._close_snapshot)
+
+    def close(self) -> None:
+        """Disarm once; retain a failed serial handle for explicit close retry."""
+        with self._close_lock:
+            with self._lock:
+                if self._closed and self._serial is None:
+                    return
+                first_close = not self._closed
+                self._closed = True
+                self._stop.set()
+                self._enable_requested = False
+                self._enable_request_generation = None
+                self._enable_deadline_ns = None
+                self._enabled = False
+                self._desired_left = self._desired_right = 0.0
+                self._last_command_ns = None
+                if first_close and self._connected:
+                    self._write_control_locked(0.0, 0.0, record=True)
+                    self._write_frame_locked(build_enable_frame(DISABLE_CMD))
+                self._record_stop_locked("disconnected")
+                ser = self._serial
+                # A failed close keeps ownership but must never keep control.
+                self._connected = False
+                attempt = 1 if self._close_snapshot is None else self._close_snapshot["attempt"] + 1
+            def error_fields(exc):
+                return {"type": f"{type(exc).__module__}.{type(exc).__qualname__}",
+                        "repr": repr(exc), "errno": getattr(exc, "errno", None),
+                        "winerror": getattr(exc, "winerror", None)}
+            def serial_open():
+                try:
+                    value = getattr(ser, "is_open", None)
+                    return value if isinstance(value, bool) else None
+                except Exception:
+                    return None
+            result = {"attempt": attempt, "started_monotonic_ns": self._now_ns(),
+                      "serial_is_open_before": serial_open(), "serial_close_succeeded": False,
+                      "error": None, "join_errors": [], "threads": {}}
+            # Join failures cannot skip the underlying OS handle release.
+            for name, thread in (("reader", self._reader_thread), ("sender", self._sender_thread)):
+                if thread is not None and thread is not threading.current_thread():
+                    try:
+                        thread.join(timeout=0.5)
+                    except Exception as exc:
+                        result["join_errors"].append({"thread": name, **error_fields(exc)})
+                try:
+                    alive = thread is not None and thread.is_alive()
+                except Exception:
+                    alive = None
+                result["threads"][name] = {"alive": alive}
+            failure = None
             try:
-                ser.close()
-            except Exception:
-                pass
+                if ser is not None:
+                    ser.close()
+                    if serial_open() is True:
+                        raise OSError("serial close returned with port still open")
+                result["serial_close_succeeded"] = True
+            except Exception as exc:
+                failure = exc
+                result["error"] = error_fields(exc)
+            for name, thread in (("reader", self._reader_thread), ("sender", self._sender_thread)):
+                try:
+                    result["threads"][name]["alive_after_serial_close"] = thread is not None and thread.is_alive()
+                except Exception:
+                    result["threads"][name]["alive_after_serial_close"] = None
+            result["serial_is_open_after"] = serial_open()
+            result["completed_monotonic_ns"] = self._now_ns()
+            with self._lock:
+                self._close_snapshot = result
+                if failure is None:
+                    self._serial = None
+                self._io_trace.append({"kind": "close", **deepcopy(result)})
+            if failure is not None:
+                raise failure
 
     disconnect = close
 
