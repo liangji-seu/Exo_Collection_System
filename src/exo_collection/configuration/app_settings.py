@@ -15,6 +15,7 @@ from exo_collection.domain.condition_phases import (
     default_phase_config,
     normalize_phase_config,
 )
+from exo_collection.domain.motor_protocol import TORQUE_MAX_NM
 
 
 # These names are intentionally independent of QApplication.applicationName().
@@ -32,6 +33,15 @@ DATASET_UPLOAD_ENDPOINT_KEY = "data_studio/dataset_upload_endpoint_json"
 DATASET_PACK_DIRECTORY_KEY = "data_studio/dataset_pack_directory"
 OPENSIM_PYTHON_KEY = "calculate/opensim_python_executable"
 PHASE_CONFIG_KEY = "collector/condition_phases_json"
+MODEL_RUNTIME_PARAMETERS_KEY = "model_runtime/parameters_json"
+# UI units and precision: saved values are operator inputs, never run intents.
+MODEL_RUNTIME_PARAMETER_RULES = {
+    "mass_kg": (0.0, 300.0, 2),
+    "torque_limit_nm": (0.0, TORQUE_MAX_NM, 2),
+    "gain": (0.0, 1.0, 3),
+    "delay_ms": (0.0, 2000.0, 0),
+    "lowpass_hz": (0.0, 9.0, 2),
+}
 ELONXI_RUNTIME_RELATIVE_PATH = (
     Path("SDK_Transfer")
     / "Exo_Hardware_Runtime_Windows_Python311_x64"
@@ -98,6 +108,52 @@ class SharedAppSettings:
         self._backend = (
             backend if backend is not None else create_shared_settings_backend()
         )
+
+    @staticmethod
+    def _validate_runtime_parameter(name: str, value: Any) -> float:
+        low, high, decimals = MODEL_RUNTIME_PARAMETER_RULES[name]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{name}: 缓存必须是数值")
+        try:
+            number = float(value)
+        except (OverflowError, ValueError) as exc:
+            raise ValueError(f"{name}: 数值必须有限") from exc
+        if not isfinite(number) or not low <= number <= high:
+            raise ValueError(f"{name}: 数值必须有限且在 {low:g}–{high:g} 范围内")
+        if round(number, decimals) != number:
+            raise ValueError(f"{name}: 最多允许 {decimals} 位小数")
+        return number
+
+    def read_model_runtime_parameters(self) -> tuple[dict[str, float], tuple[str, ...]]:
+        stored = self._backend.value(MODEL_RUNTIME_PARAMETERS_KEY, "{}")
+        try:
+            payload = json.loads(str(stored))
+        except (TypeError, ValueError):
+            return {}, ("在线参数缓存格式无效，已使用默认值",)
+        if not isinstance(payload, dict):
+            return {}, ("在线参数缓存必须是 JSON 对象，已使用默认值",)
+        values, errors = {}, []
+        for name in MODEL_RUNTIME_PARAMETER_RULES:
+            if name not in payload:
+                continue
+            try:
+                values[name] = self._validate_runtime_parameter(name, payload[name])
+            except ValueError as exc:
+                errors.append(str(exc))
+        return values, tuple(errors)
+
+    def set_model_runtime_parameters(self, values: Mapping[str, Any]) -> dict[str, float]:
+        unknown = set(values) - set(MODEL_RUNTIME_PARAMETER_RULES)
+        if unknown:
+            raise ValueError("未知在线参数：" + ", ".join(sorted(unknown)))
+        normalized = {name: self._validate_runtime_parameter(name, value)
+                      for name, value in values.items()}
+        current, _errors = self.read_model_runtime_parameters()
+        current.update(normalized)
+        self._backend.setValue(MODEL_RUNTIME_PARAMETERS_KEY,
+            json.dumps(current, ensure_ascii=False, sort_keys=True, allow_nan=False))
+        self._sync_checked("online model parameters")
+        return current
 
     @property
     def data_root(self) -> Path:

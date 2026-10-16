@@ -15,11 +15,13 @@ pure, dependency-light protocol layer.
 from __future__ import annotations
 
 import struct
+import threading
 from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass
 from time import perf_counter_ns
 from typing import Iterator
+from exo_collection.domain.motor_protocol import TORQUE_MAX_NM
 
 # Frame constants (old_system/motor_controller.py + teensy_serial.py).
 HEAD_CONTROL = 0xAA
@@ -31,10 +33,19 @@ ENABLE_CMD = 0xFC
 DISABLE_CMD = 0xFD
 
 CRC8_POLY = 0x07
-TORQUE_MAX_NM = 9.0
 SEND_HZ = 200
 
 _CONTROL_PAYLOAD = struct.Struct("<H3f")
+
+
+def _finite_torque_limit(value: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("torque limit must be a finite non-negative number") from exc
+    if not 0 <= number <= TORQUE_MAX_NM:
+        raise ValueError(f"torque limit must be finite and within 0..{TORQUE_MAX_NM:g} Nm")
+    return number
 
 
 def calc_crc8(data: bytes) -> int:
@@ -57,7 +68,27 @@ def build_control_frame(seq: int, l_tq: float, r_tq: float, limit: float) -> byt
     ``seq`` is a uint16 command counter; ``limit`` is the torque ceiling echoed
     to the firmware (NaN-safe clamp helper is separate).
     """
-    payload = _CONTROL_PAYLOAD.pack(int(seq) & 0xFFFF, l_tq, r_tq, limit)
+    # Keep the protocol builder itself as a safety boundary.  Callers may
+    # bypass a backend and build a frame directly, so both the echoed limit
+    # and the two command fields are bounded here as well.
+    frame_limit = _finite_torque_limit(limit)
+    # A decimal such as 0.1 rounds upward when encoded as float32.  Keep the
+    # wire limit conservative so the value decoded by firmware never exceeds
+    # the operator's requested ceiling.
+    wire_limit = struct.unpack("<f", struct.pack("<f", frame_limit))[0]
+    if wire_limit > frame_limit:
+        # Step one representable float32 downward by manipulating its bits;
+        # repeatedly stepping a Python float64 would require millions of
+        # iterations for ordinary decimals such as 0.1.
+        wire_bits = struct.unpack("<I", struct.pack("<f", wire_limit))[0]
+        wire_limit = struct.unpack("<f", struct.pack("<I", wire_bits - 1))[0]
+    frame_limit = wire_limit
+    payload = _CONTROL_PAYLOAD.pack(
+        int(seq) & 0xFFFF,
+        clamp_torque(l_tq, frame_limit),
+        clamp_torque(r_tq, frame_limit),
+        frame_limit,
+    )
     crc = calc_crc8(payload)
     return struct.pack("B", HEAD_CONTROL) + payload + struct.pack("BB", crc, FRAME_TAIL)
 
@@ -116,6 +147,10 @@ class TorqueOutput(ABC):
         """Command one control cycle of bilateral torque."""
 
     @abstractmethod
+    def set_limit(self, value: float) -> None:
+        """Change the hard torque limit; implementations apply it immediately."""
+
+    @abstractmethod
     def zero(self) -> None:
         """Immediate zero-torque command (used on fault / emergency stop)."""
 
@@ -148,45 +183,58 @@ class MockTorqueOutput(TorqueOutput):
         history_capacity: int = 4096,
         record_frames: bool = True,
     ) -> None:
-        self._limit = max(0.0, float(torque_limit_nm))
+        self._limit = _finite_torque_limit(torque_limit_nm)
         self._enable_required = bool(enable_required)
         self._zero_on_error = bool(zero_on_error)
         self._record_frames = bool(record_frames)
         self._enabled = not self._enable_required
         self._seq = 0
         self._history: deque[TorqueCommand] = deque(maxlen=history_capacity)
+        self._lock = threading.RLock()
 
     # -- protocol ----------------------------------------------------------
 
     @property
     def enabled(self) -> bool:
-        return self._enabled
+        with self._lock:
+            return self._enabled
 
     @property
     def torque_limit_nm(self) -> float:
-        return self._limit
+        with self._lock:
+            return self._limit
+
+    def set_limit(self, value: float) -> None:
+        """Set the limit, rejecting invalid values and applying it immediately."""
+        value = _finite_torque_limit(value)
+        with self._lock:
+            self._limit = value
 
     def set_enabled(self, enabled: bool) -> None:
-        was_enabled = self._enabled
-        self._enabled = bool(enabled)
-        if was_enabled and not self._enabled:
-            # Disarming immediately commands zero torque.
-            self._record(0.0, 0.0)
+        with self._lock:
+            was_enabled = self._enabled
+            self._enabled = bool(enabled)
+            if was_enabled and not self._enabled:
+                # Disarming immediately commands zero torque.
+                self._record(0.0, 0.0)
 
     def send(self, left_nm: float, right_nm: float) -> None:
-        if not self._enabled:
-            left_nm = right_nm = 0.0
-        left_nm = clamp_torque(left_nm, self._limit)
-        right_nm = clamp_torque(right_nm, self._limit)
-        self._record(left_nm, right_nm)
+        with self._lock:
+            if not self._enabled:
+                left_nm = right_nm = 0.0
+            left_nm = clamp_torque(left_nm, self._limit)
+            right_nm = clamp_torque(right_nm, self._limit)
+            self._record(left_nm, right_nm)
 
     def zero(self) -> None:
-        self._record(0.0, 0.0)
+        with self._lock:
+            self._record(0.0, 0.0)
 
     def close(self) -> None:
-        if self._enabled:
-            self._record(0.0, 0.0)
-        self._enabled = False
+        with self._lock:
+            if self._enabled:
+                self._record(0.0, 0.0)
+            self._enabled = False
 
     # -- history -----------------------------------------------------------
 
@@ -212,14 +260,16 @@ class MockTorqueOutput(TorqueOutput):
 
     @property
     def history(self) -> tuple[TorqueCommand, ...]:
-        return tuple(self._history)
+        with self._lock:
+            return tuple(self._history)
 
     @property
     def last(self) -> TorqueCommand | None:
-        return self._history[-1] if self._history else None
+        with self._lock:
+            return self._history[-1] if self._history else None
 
     def __iter__(self) -> Iterator[TorqueCommand]:
-        return iter(self._history)
+        return iter(self.history)
 
 
 __all__ = [

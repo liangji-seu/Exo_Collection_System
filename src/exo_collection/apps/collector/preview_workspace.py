@@ -35,6 +35,7 @@ class PreviewWorkspace(QMainWindow):
         self._docks: dict[str, QDockWidget] = {}
         self._titles: dict[str, str] = {}
         self._stream_states: dict[str, str] = {}
+        self._preferred_heights: dict[str, int] = {}
         self._default_visible: tuple[str, ...] = ()
         self._restoring = False
         self._focus_mode = False
@@ -92,6 +93,7 @@ class PreviewWorkspace(QMainWindow):
         widget: QWidget,
         *,
         visible_by_default: bool = True,
+        preferred_height: int | None = None,
     ) -> QDockWidget:
         if modality in self._docks:
             raise ValueError(f"preview modality already registered: {modality}")
@@ -109,6 +111,8 @@ class PreviewWorkspace(QMainWindow):
         self._docks[modality] = dock
         self._titles[modality] = title
         self._stream_states[modality] = "waiting"
+        if preferred_height is not None:
+            self._preferred_heights[modality] = max(100, int(preferred_height))
         if visible_by_default:
             self._default_visible = (*self._default_visible, modality)
 
@@ -225,6 +229,11 @@ class PreviewWorkspace(QMainWindow):
             visible = set(self._default_visible)
             for modality, dock in self._docks.items():
                 dock.setVisible(modality in visible)
+            if self._preferred_heights:
+                self.resizeDocks(
+                    [self._docks[key] for key in self._preferred_heights],
+                    list(self._preferred_heights.values()), Qt.Orientation.Vertical,
+                )
         finally:
             self._restoring = False
         self._queue_layout_changed()

@@ -148,3 +148,48 @@ def test_torch_runtime(tmp_path) -> None:
     out = runtime.predict(features)
     assert out.shape == (1,)
     assert np.isfinite(out).all()
+
+
+@pytest.mark.parametrize(
+    ("rate_hz", "window_s", "expected_frames"),
+    [(100.0, 0.94, 94), (20.0, 2.0, 40)],
+)
+def test_torchscript_warmup_uses_model_feature_window(monkeypatch, tmp_path, rate_hz, window_s, expected_frames):
+    torch = pytest.importorskip("torch")
+    weights = tmp_path / "model.ts"
+    weights.write_bytes(b"placeholder")
+    calls = []
+
+    class FakeScriptModule:
+        def eval(self):
+            return self
+
+        def to(self, device):
+            return self
+
+        def __call__(self, tensor):
+            calls.append(tuple(tensor.shape))
+            return torch.zeros((1, 1), dtype=torch.float32)
+
+    fake = FakeScriptModule()
+    monkeypatch.setattr(torch.jit, "load", lambda handle, map_location: fake)
+    spec = ModelSpec.model_validate(
+        {
+            "schema_version": "1.0.0",
+            "model": {
+                "backend": "torchscript", "weights_path": str(weights),
+                "input_layout": "btc", "device": "cpu",
+            },
+            "features": {
+                "control_rate_hz": rate_hz, "window_s": window_s,
+                "inputs": [{"modality": "imu"}],
+            },
+            "output": {
+                "kind": "torque_left_right", "unit": "Nm/kg",
+                "single_output_maps_to": "right_torque",
+            },
+            "imu_tcn": {"enabled": True},
+        }
+    )
+    build_model_runtime(spec)
+    assert calls == [(1, expected_frames, 12)]

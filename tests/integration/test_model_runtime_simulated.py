@@ -91,6 +91,13 @@ def test_simulated_online_inference_end_to_end() -> None:
         spec = _spec()
         output = MockTorqueOutput(5.0, enable_required=True)
         controller = InferenceController(hub, spec, build_model_runtime(spec), output)
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            hub.drain()
+            if controller.preflight()["ready"]:
+                break
+            time.sleep(0.01)
+        assert controller.preflight()["ready"], controller.preflight()
         controller.set_enabled(True)
         controller.start()
 

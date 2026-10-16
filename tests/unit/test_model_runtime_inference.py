@@ -93,7 +93,7 @@ def test_controller_tick_predicts_and_sends() -> None:
 
     spec = _spec()
     output = MockTorqueOutput(5.0, enable_required=False)
-    controller = InferenceController(hub, spec, build_model_runtime(spec), output)
+    controller = InferenceController(hub, spec, build_model_runtime(spec), output, clock_ns=lambda: 20_000_000)
     controller.set_enabled(True)
     controller._tick()
 
@@ -111,7 +111,7 @@ def test_controller_loop_starts_and_stops() -> None:
 
     spec = _spec()
     output = MockTorqueOutput(5.0, enable_required=False)
-    controller = InferenceController(hub, spec, build_model_runtime(spec), output)
+    controller = InferenceController(hub, spec, build_model_runtime(spec), output, clock_ns=lambda: 20_000_000)
     controller.set_enabled(True)
     controller.start()
     deadline = time.monotonic() + 2.0
@@ -135,7 +135,7 @@ def test_controller_fault_zeroes_torque() -> None:
 
     output = MockTorqueOutput(5.0, enable_required=False)
     output.send(1.0, 1.0)
-    controller = InferenceController(hub, spec, ExplodingRuntime(), output)
+    controller = InferenceController(hub, spec, ExplodingRuntime(), output, clock_ns=lambda: 20_000_000)
     controller.set_enabled(True)
     controller.start()
     controller.wait(2000)
@@ -143,3 +143,27 @@ def test_controller_fault_zeroes_torque() -> None:
     assert output.last.left_nm == 0.0
     assert output.last.right_nm == 0.0
     assert controller.last_error == "boom"
+
+
+def test_fault_latches_first_reason_and_disarms_before_any_diagnostic_io():
+    hub = SubscriptionHub()
+    spec = _spec()
+    output = MockTorqueOutput(5, enable_required=False)
+    output.set_enabled(True)
+    output.send(1, 1)
+    events = []
+    def record(kind, fields):
+        assert not output.enabled
+        assert output.last.left_nm == output.last.right_nm == 0
+        events.append((kind, fields))
+    controller = InferenceController(hub, spec, build_model_runtime(spec), output,
+                                     diagnostic_callback=record)
+    controller._fault_stop("first source fault")
+    controller._fault_stop("later cleanup fault")
+    controller._fault_stop(None)
+    assert controller._stop_event.is_set()
+    assert controller.last_error == "first source fault"
+    assert controller.last_fault_details["reason"] == "first source fault"
+    assert len(events) == 1
+    with pytest.raises(ValueError, match="stopped"):
+        controller.set_enabled(True)

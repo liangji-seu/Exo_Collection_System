@@ -16,6 +16,7 @@ preview, hdf5 writer and opensim pipeline are untouched.
 
 from __future__ import annotations
 
+import logging
 import traceback
 from dataclasses import asdict, dataclass
 from queue import Empty, Full, Queue
@@ -36,6 +37,9 @@ from exo_collection.adapters.imu.xsens_awinda import (
     parse_xsens_packet,
 )
 from exo_collection.domain.events import SampleBatch
+
+
+LOG = logging.getLogger(__name__)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -157,6 +161,49 @@ class XdaMtwUsbBackend:
         self._callback: Any = None
         self._measurement_started = False
 
+    @staticmethod
+    def _format_scan_inventory(inventory: list[dict[str, Any]]) -> str:
+        """Render the SDK port scan in an actionable, hardware-neutral form."""
+
+        if not inventory:
+            return "（空）"
+        return "; ".join(
+            f"port={item.get('port', '')}, id={item.get('id', '')}, "
+            f"type={item.get('type', '')}"
+            for item in inventory
+        )
+
+    def _discovery_error(
+        self,
+        *,
+        inventory: list[dict[str, Any]],
+        target_ids: tuple[str, ...],
+        missing_ids: tuple[str, ...] = (),
+    ) -> AdapterError:
+        """Build a diagnostic without guessing why the SDK scan failed."""
+
+        inventory_text = self._format_scan_inventory(inventory)
+        mtw_ids = tuple(
+            str(item.get("id", ""))
+            for item in inventory
+            if item.get("is_mtw")
+        )
+        if not inventory:
+            reason = "未找到任何配置的 USB MTw（SDK 未枚举到任何端口）"
+        elif not mtw_ids:
+            reason = "未找到任何配置的 USB MTw（SDK 枚举到端口，但没有 MTw 类型设备）"
+        elif missing_ids:
+            reason = f"未发现目标 MTw 设备（SDK 枚举到 MTw，但缺少配置目标 ID：{', '.join(missing_ids)}）"
+        else:
+            reason = "SDK 枚举结果与配置目标不一致"
+        configured = ", ".join(target_ids) if target_ids else "（未配置 ID，使用自动发现）"
+        return AdapterError(
+            f"{reason}；当前传输模式为 directUSB（仅接受有线 Xsens MTw，"
+            "不会连接非 MTw 或未匹配的端口）。"
+            f"配置目标：{configured}；SDK 枚举 inventory：{inventory_text}。"
+            "请核对 USB 连接、SDK 驱动、端口占用和传感器 ID；此诊断不判断具体硬件根因。"
+        )
+
     def connect(self, on_packet: Callable[[str, Any, int, int], None]) -> None:
         if self._api is not None:
             xda = self._api
@@ -182,12 +229,14 @@ class XdaMtwUsbBackend:
             p = ports[index]
             did = str(p.deviceId().toXsString()).upper()
             mtw = bool(p.deviceId().isMtw())
+            device_type = "MTw" if mtw else "non-MTw"
             inventory.append(
                 {
                     "id": did,
                     "port": str(p.portName()),
                     "baudrate": int(p.baudrate()),
                     "is_mtw": mtw,
+                    "type": device_type,
                 }
             )
             if mtw:
@@ -195,24 +244,44 @@ class XdaMtwUsbBackend:
                     raise AdapterError(f"扫描出现重复 ID {did}，请检查连接。")
                 mtw_ports[did] = p
         self.metadata["scan_inventory"] = inventory
+        LOG.info(
+            "Xsens SDK directUSB 扫描 inventory: %s",
+            self._format_scan_inventory(inventory),
+        )
 
         target_ids = self.config.active_sensor_ids
-        if target_ids:
-            ordered_ids = tuple(
-                _match_device_id(target, mtw_ports) for target in target_ids
+        if not mtw_ports:
+            raise self._discovery_error(
+                inventory=inventory,
+                target_ids=target_ids,
             )
+
+        if target_ids:
+            # Keep the established exact-first/unique-substring matching
+            # semantics.  Resolve every target before opening any port, and
+            # augment only the no-match error with the complete SDK inventory.
+            ordered_ids_list: list[str] = []
+            for target in target_ids:
+                try:
+                    ordered_ids_list.append(_match_device_id(target, mtw_ports))
+                except AdapterError as exc:
+                    if "未发现目标 MTw 设备" not in str(exc):
+                        raise
+                    raise self._discovery_error(
+                        inventory=inventory,
+                        target_ids=target_ids,
+                        missing_ids=(target,),
+                    ) from exc
+            ordered_ids = tuple(ordered_ids_list)
         else:
             ordered_ids = tuple(sorted(mtw_ports))
             if len(ordered_ids) > self.config.expected_device_count:
                 ordered_ids = ordered_ids[: self.config.expected_device_count]
 
         if not ordered_ids:
-            found = ", ".join(sorted(mtw_ports)) if mtw_ports else "（无 MTw）"
-            configured = ", ".join(target_ids) if target_ids else "（未配置 ID）"
-            raise AdapterError(
-                "未找到任何配置的 USB MTw。"
-                f"已发现 MTw：{found}；配置：{configured}。"
-                "请拔掉 Dongle，用数据线直连；关闭 Collector/MT Manager，检查驱动和 ID。"
+            raise self._discovery_error(
+                inventory=inventory,
+                target_ids=target_ids,
             )
 
         # 2. open + configure each device independently

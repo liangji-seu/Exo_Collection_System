@@ -332,10 +332,24 @@ class ImuDeviceSettingsDialog(ModalityDeviceSettingsDialog):
         self.setWindowTitle("IMU 设备设置")
         self.setMinimumWidth(560)
         outer = QVBoxLayout(self)
-        intro = QLabel(
-            "真实设备：Xsens Awinda。填写哪个 IMU 槽位的 ID 就启用哪个；"
-            "留空的槽位不会参与连接、对齐或丢包统计。"
+        adapter_name = str(current.get("adapter", "")).lower()
+        transport_name = str(current.get("transport", "")).lower()
+        legacy_wireless = (
+            "xsensawinda" in adapter_name
+            or transport_name in {"awinda", "wireless", "wireless_awinda"}
         )
+        if legacy_wireless:
+            intro_text = (
+                "兼容设备：Xsens Awinda 无线。填写哪个 IMU 槽位的 ID 就启用哪个；"
+                "留空的槽位不会参与连接、对齐或丢包统计。"
+            )
+        else:
+            intro_text = (
+                "真实设备：Xsens MTw · USB有线直连。每个 MTw 使用独立 USB "
+                "数据线直连；填写哪个 IMU 槽位的 ID 就启用哪个，留空的槽位不会"
+                "参与连接或丢包统计。"
+            )
+        intro = QLabel(intro_text)
         intro.setWordWrap(True)
         outer.addWidget(intro)
         form = QFormLayout()
@@ -344,7 +358,18 @@ class ImuDeviceSettingsDialog(ModalityDeviceSettingsDialog):
         self.channel_spin.setObjectName("imu_radio_channel")
         self.channel_spin.setRange(11, 25)
         self.channel_spin.setValue(int(current.get("radio_channel", 25)))
-        form.addRow("Awinda 无线信道：", self.channel_spin)
+        if legacy_wireless:
+            form.addRow("Awinda 无线信道：", self.channel_spin)
+        else:
+            # Keep the value and serialized field for old Awinda settings, but
+            # make the active wiredUSB profile unambiguous in the UI.
+            self.channel_spin.setVisible(False)
+            channel_hint = QLabel(
+                "不适用（USB有线连接；该兼容字段不会参与连接）"
+            )
+            channel_hint.setObjectName("imu_radio_channel_hint")
+            channel_hint.setWordWrap(True)
+            form.addRow("无线信道：", channel_hint)
 
         self.rate_spin = QDoubleSpinBox()
         self.rate_spin.setObjectName("imu_sample_rate_hz")

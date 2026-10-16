@@ -1,4 +1,4 @@
-"""一键启动在线测试模块（本地模型实时推理 + Mock 扭矩输出）。"""
+"""启动在线测试：IMU TCN 估计、辅助控制和受限幅保护的电机服务。"""
 
 from pathlib import Path
 import sys

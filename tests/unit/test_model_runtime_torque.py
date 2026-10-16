@@ -43,6 +43,16 @@ def test_control_frame_layout() -> None:
     assert calc_crc8(frame[1:15]) == frame[-2]
 
 
+@pytest.mark.parametrize("requested", [0.1, 9, 12.5, 12.6, 17.99, 18])
+def test_control_frame_float32_limit_is_conservative(requested) -> None:
+    frame = build_control_frame(1, 100, -100, requested)
+    _seq, left, right, limit = struct.unpack("<H3f", frame[1:15])
+    assert 0 < left <= requested
+    assert -requested <= right < 0
+    assert 0 < limit <= requested
+    assert left == limit and right == -limit
+
+
 def test_enable_and_disable_frames() -> None:
     enable = enable_frame()
     assert enable == build_enable_frame(ENABLE_CMD)
@@ -114,7 +124,7 @@ def test_mock_zero_records_zero() -> None:
 
 
 def test_mock_history_is_bounded_and_ordered() -> None:
-    output = MockTorqueOutput(20.0, enable_required=False, history_capacity=4)
+    output = MockTorqueOutput(18.0, enable_required=False, history_capacity=4)
     for i in range(10):
         output.send(float(i), 0.0)
     history = output.history
@@ -135,3 +145,25 @@ def test_mock_no_frames_when_disabled() -> None:
     output = MockTorqueOutput(5.0, enable_required=False, record_frames=False)
     output.send(1.0, 1.0)
     assert output.last.frame == b""
+
+
+@pytest.mark.parametrize("limit", [12.5, 18])
+def test_mock_accepts_protocol_range_and_clips_both_signs(limit):
+    output = MockTorqueOutput(limit, enable_required=False)
+    output.send(100, -100)
+    assert (output.last.left_nm, output.last.right_nm) == (limit, -limit)
+    output.set_limit(9)
+    output.send(-100, 100)
+    assert (output.last.left_nm, output.last.right_nm) == (-9, 9)
+
+
+@pytest.mark.parametrize("invalid", [-1, 18.01, float("nan"), float("inf"), float("-inf"), None])
+def test_illegal_limit_is_rejected_at_all_protocol_and_mock_entries(invalid):
+    with pytest.raises(ValueError):
+        build_control_frame(1, 1, -1, invalid)
+    with pytest.raises(ValueError):
+        MockTorqueOutput(invalid)
+    output = MockTorqueOutput(9)
+    with pytest.raises(ValueError):
+        output.set_limit(invalid)
+    assert output.torque_limit_nm == 9

@@ -36,6 +36,7 @@ hardware = [
   "scapy>=2.5",
   "zeroconf>=0.132,<1",
 ]
+model-runtime = ["torch>=2.5,<3", "pyserial>=3.5,<4"]
 
 [project.scripts]
 exo-collector = "exo_collection.apps.collector.main:main"

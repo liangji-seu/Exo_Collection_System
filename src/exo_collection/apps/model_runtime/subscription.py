@@ -89,9 +89,12 @@ class _Stream:
         "configuration_snapshot",
         "samples",
         "times",
+        "sample_device_ids",
         "callbacks",
         "boundary",
         "received_items",
+        "device_series",
+        "slot_ids",
     )
 
     def __init__(
@@ -114,15 +117,21 @@ class _Stream:
         self.configuration_snapshot = configuration_snapshot or {}
         self.samples: deque[np.ndarray] = deque()
         self.times: deque[int] = deque()
+        self.sample_device_ids: deque[str] = deque()
         self.callbacks: list[RawCallback] = []
         self.boundary: str | None = None
         self.received_items = 0
+        self.device_series: dict[str, deque] = defaultdict(deque)
+        metadata = self.descriptor.get("metadata", {}) or {}
+        self.slot_ids = tuple(str(value) for value in (
+            self.descriptor.get("device_ids", ()) or metadata.get("device_ids", ())))
 
 
 class SubscriptionHub:
     """Drains recording-stream endpoints into aligned per-modality ring buffers."""
 
-    def __init__(self, *, buffer_capacity: int = 262_144) -> None:
+    def __init__(self, *, buffer_capacity: int = 262_144, raw_tap=None) -> None:
+        self.raw_tap = raw_tap
         self._streams: dict[str, _Stream] = {}
         self._lock = threading.RLock()
         self._buffer_capacity = max(1, int(buffer_capacity))
@@ -222,7 +231,9 @@ class SubscriptionHub:
 
     # -- draining ----------------------------------------------------------
 
-    def drain(self, max_per_stream: int | None = None) -> int:
+    def drain(self, max_per_stream: int | None = None, *, max_duration_per_stream_s: float | None = None,
+              priority_modalities: tuple[str, ...] = (),
+              only_modalities: tuple[str, ...] | None = None) -> int:
         """Non-blockingly pull every pending item from every registered queue.
 
         Returns the total number of raw data items appended (boundary markers are
@@ -231,10 +242,16 @@ class SubscriptionHub:
         """
         consumed = 0
         with self._lock:
-            streams = list(self._streams.values())
+            ordered = dict.fromkeys((*priority_modalities, *self._streams))
+            streams = [self._streams[key] for key in ordered if key in self._streams
+                       and (only_modalities is None or key in only_modalities)]
         for stream in streams:
+            deadline = (None if max_duration_per_stream_s is None else
+                        perf_counter_ns() + int(max_duration_per_stream_s * _NS_PER_S))
             budget = max_per_stream
             while budget is None or budget > 0:
+                if deadline is not None and perf_counter_ns() >= deadline:
+                    break
                 try:
                     item = stream.queue.get_nowait()
                 except Empty:
@@ -247,8 +264,24 @@ class SubscriptionHub:
                     consumed += 1
         return consumed
 
+    def stream_diagnostics(self) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            result = {}
+            for key, stream in self._streams.items():
+                try:
+                    depth = stream.queue.qsize()
+                except (AttributeError, OSError, ValueError, NotImplementedError):
+                    depth = None
+                result[key] = {"buffer_samples": len(stream.samples), "queue_depth": depth,
+                               "latest_ns": stream.times[-1] if stream.times else None}
+            return result
+
     def _ingest(self, stream: _Stream, item: Any) -> bool:
         """Route one queue item; return True if it added data samples."""
+        if self.raw_tap is not None:
+            modality = getattr(item, "modality", None)
+            if modality is not None:
+                self.raw_tap(modality, item, stream.descriptor)
         if isinstance(item, RecordingBoundary):
             stream.boundary = str(item.kind)
             return False
@@ -278,7 +311,12 @@ class SubscriptionHub:
         for index in range(data.shape[0]):
             row = np.ascontiguousarray(data[index].reshape(-1).astype(np.float32))
             t_ns = base_ns + int(round(index * dt_ns))
-            self._push(stream, t_ns, row)
+            self._push(
+                stream,
+                t_ns,
+                row,
+                str(getattr(event, "device_id", "") or stream.device_id),
+            )
         for callback in list(stream.callbacks):
             _safe_callback(callback, event)
         return True
@@ -293,18 +331,48 @@ class SubscriptionHub:
         for index in range(data.shape[0]):
             frame = np.ascontiguousarray(data[index].reshape(-1).astype(np.float32))
             t_ns = base_ns + int(round(index * dt_ns))
-            self._push(stream, t_ns, frame)
+            self._push(
+                stream,
+                t_ns,
+                frame,
+                str(getattr(event, "device_id", "") or stream.device_id),
+            )
         for callback in list(stream.callbacks):
             _safe_callback(callback, event)
         return True
 
-    def _push(self, stream: _Stream, t_ns: int, row: np.ndarray) -> None:
-        stream.samples.append(row)
-        stream.times.append(t_ns)
-        stream.received_items += 1
-        while len(stream.samples) > self._buffer_capacity:
-            stream.samples.popleft()
-            stream.times.popleft()
+    def _push(
+        self, stream: _Stream, t_ns: int, row: np.ndarray, device_id: str = ""
+    ) -> None:
+        # Readers snapshot all three deques under the same lock. Appending
+        # them separately without this lock can pair a value with the wrong
+        # timestamp during concurrent GUI preflight and worker draining.
+        with self._lock:
+            stream.samples.append(row)
+            stream.times.append(t_ns)
+            stream.sample_device_ids.append(device_id)
+            stream.received_items += 1
+            # Index finite physical slots once at ingestion. Wired USB packets
+            # contain NaN in every slot except the arriving device. Retain that
+            # device's original arrival timestamp; never align/forward-fill.
+            if len(stream.sample_shape) == 2:
+                width = int(stream.sample_shape[1])
+                for slot, physical_id in enumerate(stream.slot_ids):
+                    values = row[slot * width:(slot + 1) * width]
+                    if values.size == width and np.isfinite(values).any():
+                        stream.device_series[physical_id].append((stream.received_items, t_ns, values))
+            indexed_slots = set(stream.slot_ids) if len(stream.sample_shape) == 2 else set()
+            for raw_id in {device_id, stream.device_id} - indexed_slots:
+                if raw_id:
+                    stream.device_series[raw_id].append((stream.received_items, t_ns, row))
+            while len(stream.samples) > self._buffer_capacity:
+                stream.samples.popleft()
+                stream.times.popleft()
+                stream.sample_device_ids.popleft()
+            evicted_through = stream.received_items - len(stream.samples)
+            for series in stream.device_series.values():
+                while series and series[0][0] <= evicted_through:
+                    series.popleft()
 
     # -- windowed access ---------------------------------------------------
 
@@ -340,12 +408,68 @@ class SubscriptionHub:
                 return None
             return stream.times[-1], stream.samples[-1]
 
+    def window_ending(self, modality: str, start_ns: int, end_ns: int) -> tuple[np.ndarray, np.ndarray]:
+        """Snapshot a target grid interval plus its real causal predecessor.
+
+        Unlike ``window(seconds)``, this is independent of a fast stream's
+        latest timestamp, so asynchronous modalities retain cached history at
+        the slowest stream's watermark.
+        """
+        with self._lock:
+            stream = self._require(modality)
+            pairs = list(zip(stream.times, stream.samples))
+        preceding = None
+        selected = []
+        for t_ns, value in pairs:
+            if t_ns <= start_ns:
+                preceding = (t_ns, value)
+            elif t_ns <= end_ns:
+                selected.append((t_ns, value))
+        if preceding is not None:
+            selected.insert(0, preceding)
+        if not selected:
+            return np.empty((0,), dtype=np.int64), np.empty((0, 0), dtype=np.float32)
+        return (np.asarray([t for t, _ in selected], dtype=np.int64),
+                np.asarray([v for _, v in selected], dtype=np.float32))
+
+    def window_for_device(
+        self, modality: str, device_id: str, seconds: float
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Return one physical device's series from a shared IMU stream.
+
+        Wired MTw events carry an umbrella stream ID and a ``(N, 12)`` row in
+        which only the arriving device slot is finite.  We preserve that
+        device's host-arrival timestamp and do not align or merge clocks.
+        """
+        with self._lock:
+            stream = self._require(modality)
+            series = list(stream.device_series.get(str(device_id), ()))
+        if not series:
+            return np.empty((0,), dtype=np.int64), np.empty((0, 0), dtype=np.float32)
+        cutoff = series[-1][1] - int(float(seconds) * _NS_PER_S)
+        kept = [(t, row) for _, t, row in series if t >= cutoff]
+        return (np.asarray([t for t, _ in kept], dtype=np.int64),
+                np.asarray([row for _, row in kept], dtype=np.float32))
+
+    def latest_for_device(
+        self, modality: str, device_id: str
+    ) -> tuple[int, np.ndarray] | None:
+        with self._lock:
+            stream = self._streams.get(modality)
+            series = stream.device_series.get(str(device_id)) if stream is not None else None
+            if not series:
+                return None
+            _, t_ns, row = series[-1]
+            return int(t_ns), row
+
     def clear(self, modality: str) -> None:
         with self._lock:
             stream = self._streams.get(modality)
             if stream is not None:
                 stream.samples.clear()
                 stream.times.clear()
+                stream.sample_device_ids.clear()
+                stream.device_series.clear()
 
     # -- helpers -----------------------------------------------------------
 

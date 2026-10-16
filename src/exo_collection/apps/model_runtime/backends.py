@@ -36,7 +36,13 @@ class ModelRuntime(ABC):
     """A loaded model plus its feature/output contract."""
 
     @abstractmethod
-    def load(self, model_spec: ModelBackendSpec, *, base_dir: Path | None = None) -> None:
+    def load(
+        self,
+        model_spec: ModelBackendSpec,
+        *,
+        base_dir: Path | None = None,
+        feature_window_samples: int | None = None,
+    ) -> None:
         """Instantiate the model object and restore any weights."""
 
     @abstractmethod
@@ -116,7 +122,13 @@ class TorchModelRuntime(ModelRuntime):
     def output_size(self) -> int:
         return 1  # unknown until a forward pass; callers infer from prediction
 
-    def load(self, model_spec: ModelBackendSpec, *, base_dir: Path | None = None) -> None:
+    def load(
+        self,
+        model_spec: ModelBackendSpec,
+        *,
+        base_dir: Path | None = None,
+        feature_window_samples: int | None = None,
+    ) -> None:
         try:
             import torch  # noqa: F401
         except ImportError as exc:
@@ -183,6 +195,102 @@ class TorchModelRuntime(ModelRuntime):
         self._model = None
 
 
+class TorchScriptModelRuntime(ModelRuntime):
+    """Load an exported ``torch.jit`` module without importing model code.
+
+    The production IMU model is a self-contained TorchScript artifact.  Keeping
+    this loader separate from :class:`TorchModelRuntime` prevents a deployment
+    spec from accidentally requiring a training-only Python module or applying
+    a second scaler.
+    """
+
+    def __init__(self) -> None:
+        self._model: Any = None
+        self._device: str = "cpu"
+        self._layout: str = "btc"
+
+    @property
+    def backend(self) -> str:
+        return "torchscript"
+
+    @property
+    def output_size(self) -> int:
+        return 1
+
+    def load(
+        self,
+        model_spec: ModelBackendSpec,
+        *,
+        base_dir: Path | None = None,
+        feature_window_samples: int | None = None,
+    ) -> None:
+        try:
+            import torch
+        except ImportError as exc:
+            raise ModelRuntimeError("PyTorch is not installed; cannot load TorchScript") from exc
+        weights_path = _resolve_path(model_spec.weights_path, base_dir)
+        if weights_path is None or not weights_path.is_file():
+            raise ModelRuntimeError(f"TorchScript weights file not found: {weights_path}")
+        try:
+            # Passing an open handle avoids a Windows native path conversion
+            # issue for workspaces whose parent directories contain CJK text.
+            with weights_path.open("rb") as handle:
+                model = torch.jit.load(handle, map_location=model_spec.device)
+            model.eval()
+            model.to(model_spec.device)
+            if str(model_spec.device).startswith("cpu"):
+                # The exported production model is small and the control loop
+                # benefits from avoiding thread-pool oversubscription.  A
+                # best-effort fixed-shape warmup moves one-time JIT setup out
+                # of the first live grid; unusual custom artifacts may simply
+                # reject this probe and remain loadable.
+                torch.set_num_threads(1)
+                if feature_window_samples is not None:
+                    count = int(feature_window_samples)
+                    if count < 1:
+                        raise ModelRuntimeError(
+                            "feature_window_samples must be positive"
+                        )
+                    shape = (
+                        (1, count, 12)
+                        if model_spec.input_layout == "btc"
+                        else (1, 12, count)
+                    )
+                    try:
+                        with torch.no_grad():
+                            model(torch.zeros(shape, dtype=torch.float32, device=model_spec.device))
+                    except Exception:
+                        pass
+        except Exception as exc:
+            raise ModelRuntimeError(f"failed to load TorchScript {weights_path}: {exc}") from exc
+        self._model = model
+        self._device = model_spec.device
+        self._layout = model_spec.input_layout
+
+    def predict(self, features: np.ndarray) -> np.ndarray:
+        if self._model is None:
+            raise ModelRuntimeError("model not loaded")
+        import torch
+
+        arr = np.asarray(features, dtype=np.float32)
+        if arr.ndim != 2:
+            raise ModelRuntimeError(f"expected [C, T] features, got shape {arr.shape}")
+        tensor = torch.from_numpy(arr).to(self._device)
+        if self._layout == "bct":
+            tensor = tensor.unsqueeze(0)
+        else:
+            tensor = tensor.T.unsqueeze(0)
+        try:
+            with torch.no_grad():
+                output = self._model(tensor)
+        except Exception as exc:
+            raise ModelRuntimeError(f"TorchScript predict failed: {exc}") from exc
+        return _flatten_output(output.detach().cpu().numpy())
+
+    def unload(self) -> None:
+        self._model = None
+
+
 class CallableModelRuntime(ModelRuntime):
     """Load any Python class exposing ``predict(ndarray) -> ndarray``."""
 
@@ -197,7 +305,13 @@ class CallableModelRuntime(ModelRuntime):
     def output_size(self) -> int:
         return 1
 
-    def load(self, model_spec: ModelBackendSpec, *, base_dir: Path | None = None) -> None:
+    def load(
+        self,
+        model_spec: ModelBackendSpec,
+        *,
+        base_dir: Path | None = None,
+        feature_window_samples: int | None = None,
+    ) -> None:
         module_path = _resolve_path(model_spec.module_path, base_dir)
         if module_path is None:
             raise ModelRuntimeError("callable backend requires module_path")
@@ -243,7 +357,13 @@ class DemoModelRuntime(ModelRuntime):
     def output_size(self) -> int:
         return 1
 
-    def load(self, model_spec: ModelBackendSpec, *, base_dir: Path | None = None) -> None:
+    def load(
+        self,
+        model_spec: ModelBackendSpec,
+        *,
+        base_dir: Path | None = None,
+        feature_window_samples: int | None = None,
+    ) -> None:
         demo = dict(model_spec.demo or {})
         self._amplitude = float(demo.get("amplitude", 1.0))
         self._scale = float(demo.get("scale", 1.0)) or 1.0
@@ -264,8 +384,8 @@ def _flatten_output(output: np.ndarray) -> np.ndarray:
     flat = out.reshape(-1)
     if flat.size == 0:
         raise ModelRuntimeError("model returned an empty output")
-    # Normalize NaN / inf to zero so the safety layer never forwards garbage.
-    flat = np.where(np.isfinite(flat), flat, 0.0)
+    if not np.isfinite(flat).all():
+        raise ModelRuntimeError("model returned a non-finite output")
     return flat
 
 
@@ -274,13 +394,19 @@ def build_model_runtime(spec: ModelSpec, *, base_dir: Path | None = None) -> Mod
     backend = spec.model.backend
     if backend == "torch":
         runtime: ModelRuntime = TorchModelRuntime()
+    elif backend == "torchscript":
+        runtime = TorchScriptModelRuntime()
     elif backend == "callable":
         runtime = CallableModelRuntime()
     elif backend == "demo":
         runtime = DemoModelRuntime()
     else:
         raise ModelRuntimeError(f"unknown backend: {backend!r}")
-    runtime.load(spec.model, base_dir=base_dir)
+    runtime.load(
+        spec.model,
+        base_dir=base_dir,
+        feature_window_samples=spec.feature_window_samples,
+    )
     return runtime
 
 
@@ -290,5 +416,6 @@ __all__ = [
     "ModelRuntime",
     "ModelRuntimeError",
     "TorchModelRuntime",
+    "TorchScriptModelRuntime",
     "build_model_runtime",
 ]

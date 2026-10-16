@@ -174,3 +174,57 @@ def test_subscribe_receives_events() -> None:
     queue.put(_batch("encoder", "enc", np.array([[1.0]], dtype=np.float32), 0, 100.0))
     hub.drain()
     assert seen == ["encoder"]
+
+
+def test_device_index_preserves_sparse_arrival_times_eviction_clear_and_unregister(monkeypatch):
+    queue = Queue()
+    hub = SubscriptionHub(buffer_capacity=5)
+    hub.register_stream("imu", queue, sample_shape=(2, 2), rate_hz=100,
+        descriptor={"metadata": {"device_ids": ["R", "P"]}})
+    for index in range(8):
+        row = np.full((1, 2, 2), np.nan, dtype=np.float32)
+        row[0, index % 2] = [index, index + .5]
+        queue.put(_batch("imu", "usb", row, index * 10_000_000, 100))
+    hub.drain()
+    assert hub.count("imu") == 5
+    assert hub.window_for_device("imu", "R", 3)[0].tolist() == [40_000_000, 60_000_000]
+    assert hub.window_for_device("imu", "P", 3)[0].tolist() == [30_000_000, 50_000_000, 70_000_000]
+    monkeypatch.setattr(hub, "window_for_device", lambda *args: (_ for _ in ()).throw(AssertionError("latest must not scan")))
+    assert hub.latest_for_device("imu", "R")[0] == 60_000_000
+    assert hub.latest_for_device("imu", "P")[1].tolist() == [7, 7.5]
+    hub.clear("imu")
+    assert hub.latest_for_device("imu", "R") is None
+    hub.unregister("imu")
+    assert hub.latest_for_device("imu", "P") is None
+
+
+def test_bounded_busy_first_stream_does_not_starve_later_required_stream():
+    import time
+    batch = _batch("busy", "busy", np.array([[1]], dtype=np.float32), 0, 100)
+    class BusyQueue:
+        def get_nowait(self):
+            time.sleep(.0005)
+            return batch
+    imu_queue = Queue()
+    imu_queue.put(_batch("imu", "R", np.array([[2]], dtype=np.float32), 1, 100))
+    hub = SubscriptionHub()
+    hub.register_stream("busy", BusyQueue(), sample_shape=(1,))
+    hub.register_stream("imu", imu_queue, sample_shape=(1,))
+    started = time.perf_counter()
+    hub.drain(max_per_stream=64, max_duration_per_stream_s=.002,
+              priority_modalities=("busy", "imu"))
+    assert hub.count("imu") == 1
+    assert hub.count("busy") < 64
+    assert time.perf_counter() - started < .2
+
+
+def test_one_dimensional_physical_event_ids_are_indexed_even_when_in_descriptor():
+    queue = Queue()
+    hub = SubscriptionHub()
+    hub.register_stream("imu", queue, sample_shape=(6,),
+        descriptor={"metadata": {"device_ids": ["right", "pelvis"]}})
+    queue.put(_batch("imu", "right", np.full((1, 6), 2, dtype=np.float32), 123, 100))
+    hub.drain()
+    assert hub.latest_for_device("imu", "right")[0] == 123
+    assert hub.window_for_device("imu", "right", 3)[1].tolist() == [[2] * 6]
+    assert hub.latest_for_device("imu", "pelvis") is None

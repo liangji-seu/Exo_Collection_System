@@ -840,6 +840,8 @@ class ModalityPreviewProcessHandle(ModalityPreviewHandle):
         self._closed = False
         self._process_closed = False
         self._final_exitcode: int | None = None
+        self.last_poll_error: Exception | None = None
+        self._last_poll_error_log_s = float("-inf")
 
         # Recording state tracking
         self._recording_active = False
@@ -1010,8 +1012,14 @@ class ModalityPreviewProcessHandle(ModalityPreviewHandle):
                 event = self._event_queue.get_nowait()
             except Empty:
                 break
-            except Exception:
+            except Exception as exc:
+                self.last_poll_error = exc
+                now = perf_counter()
+                if now - self._last_poll_error_log_s >= 5:
+                    self._last_poll_error_log_s = now
+                    _log.exception("preview event queue read failed for %s", self._modality)
                 break
+            self.last_poll_error = None
             events.append(event)
             if event.event_type is WorkerEventType.STATE:
                 state = str(event.payload.get("state") or "")

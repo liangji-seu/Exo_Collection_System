@@ -80,7 +80,11 @@ def _run_ui(settings: SharedAppSettings, *, smoke_test: bool) -> int:
                 started["value"] = True
                 window.connect_all()
                 window.install_demo_spec()
-            if window.torque_history:
+                window._apply_controls()
+            if not window.controller_running and window._preflight(quiet=True):
+                window._run_prediction()
+            if (window._controller is not None
+                    and window._controller.last_predict_ns is not None):
                 app.exit(0)
                 return
             if time.monotonic() >= smoke_deadline:

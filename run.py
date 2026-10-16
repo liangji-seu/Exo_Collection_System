@@ -36,7 +36,7 @@ _MODULES: dict[str, tuple[str, str, str]] = {
     "process": ("批量解算", "按受试者批量解算", "run_process.py"),
     "us_feature": ("超声特征对照", "US 原始波形 / 48 段特征瀑布图", "run_us_feature_viewer.py"),
     "us_moment": ("力矩演示", "超声 US-only 右髋屈曲力矩实时推理", "../paper_experiments/exp010_realtime_gui.py"),
-    "model_runtime": ("在线测试", "本地模型实时推理 · 扭矩输出", "run_model.py"),
+    "model_runtime": ("在线测试", "IMU 力矩估计 · 辅助控制 · 电机反馈", "run_model.py"),
 }
 
 _LAUNCHER_STYLESHEET = """
