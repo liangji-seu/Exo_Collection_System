@@ -29,3 +29,14 @@ $RECYCLE.BIN/
 *.wal
 
 demos/mtw_usb/output/
+
+# 测试/调试临时产物（本地生成，勿提交）
+.t[0-9a-f]*/
+.t_*/
+.pytest*/
+.motion*/
+.us_region_qa/
+.direction_501_preprocess/
+tmp_pytest_ui*/
+tmp_unique*/
+tmp-u*.ini
