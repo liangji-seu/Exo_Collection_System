@@ -1,0 +1,160 @@
+{
+  "schema": "static_model_adaptation_offline_acceptance_v1",
+  "status": "PASS",
+  "generated_at_local": "2026-10-17T12:15:53+0800",
+  "hardware_accessed": false,
+  "root": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_System",
+  "source_deployment": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\paper_experiments\\imu_torque_static_20261017\\deployment\\imu_only_100hz_rf94_static",
+  "installed_model": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_System\\runtime_data\\models\\imu_right_pelvis_torque_100hz_rf94_static_20261017",
+  "recording": {
+    "path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_System\\runtime_data\\online_recordings\\20261016_210359_806362",
+    "sha256": "f08506d0a80b6edead0df7c680989d4c7cd3b109a41f98b61ab72e85c7573192",
+    "session_sha256": "0dc68bf618523e5c9330d9f40bffb965d0f58fe1778ab53e3ead989cb6d4e6b5",
+    "session_complete": true,
+    "session_errors": [],
+    "labels": [
+      "imu_left_leg",
+      "imu_right_leg",
+      "imu_pelvis"
+    ],
+    "right_slot": 1,
+    "pelvis_slot": 2,
+    "raw_shape": [
+      18108,
+      3,
+      12
+    ],
+    "interval_rows": 18108,
+    "right_rows": 6036,
+    "pelvis_rows": 6036,
+    "start_host_monotonic_ns": 1562598643483400,
+    "stop_host_monotonic_ns": 1562659011074900,
+    "hardware_accessed": false
+  },
+  "input": {
+    "source": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_System\\runtime_data\\online_recordings\\20261016_210359_806362/raw/imu.h5",
+    "sha256": "f08506d0a80b6edead0df7c680989d4c7cd3b109a41f98b61ab72e85c7573192",
+    "shape": [
+      128,
+      94,
+      12
+    ],
+    "channels": [
+      "right_leg_acc_xyz_gyr_xyz",
+      "pelvis_acc_xyz_gyr_xyz"
+    ]
+  },
+  "files": {
+    "source_predict": {
+      "path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\paper_experiments\\imu_torque_static_20261017\\deployment\\imu_only_100hz_rf94_static\\predict.py",
+      "sha256": "ab4cd0c0e80a017b157fb42a654036f039cf641507ef6862b445947af9c87c39",
+      "size_bytes": 2480
+    },
+    "source_model": {
+      "path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\paper_experiments\\imu_torque_static_20261017\\deployment\\imu_only_100hz_rf94_static\\final_model.ts",
+      "sha256": "e1382dd307b765d6154a028e7d94e55569d5863f7ef9bc738186b8a9c258a512",
+      "size_bytes": 289307
+    },
+    "deployment_predict": {
+      "path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_System\\runtime_data\\models\\imu_right_pelvis_torque_100hz_rf94_static_20261017\\predict.py",
+      "sha256": "ab4cd0c0e80a017b157fb42a654036f039cf641507ef6862b445947af9c87c39",
+      "size_bytes": 2480
+    },
+    "deployment_model": {
+      "path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_System\\runtime_data\\models\\imu_right_pelvis_torque_100hz_rf94_static_20261017\\final_model.ts",
+      "sha256": "e1382dd307b765d6154a028e7d94e55569d5863f7ef9bc738186b8a9c258a512",
+      "size_bytes": 289307
+    },
+    "deployment_spec": {
+      "path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_System\\runtime_data\\models\\imu_right_pelvis_torque_100hz_rf94_static_20261017\\model_spec.json",
+      "sha256": "73cd73dbec5b7775ddcdaa03170d63a70836b042efd1e45e59c006c6875169be",
+      "size_bytes": 990
+    }
+  },
+  "regression": {
+    "status": "PASS",
+    "junit_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_System\\runtime_data\\online_qa\\static_model_adaptation_20261017\\unit_results.xml",
+    "junit_sha256": "dda0a7c8b616cec2a09ed2cd6854c79bf23d2f10b5b335cd64a54aa9bbfb5cf3",
+    "tests": [
+      "tests/unit/test_model_runtime_catalog.py",
+      "tests/unit/test_model_runtime_spec.py",
+      "tests/unit/test_model_runtime_imu_tcn.py",
+      "tests/unit/test_model_runtime_backends.py"
+    ],
+    "command": "PYTHONPATH=src QT_QPA_PLATFORM=offscreen python -m pytest ... --basetemp=.pytest_tmp_static_model_adaptation_20261017 --junitxml=runtime_data/online_qa/static_model_adaptation_20261017/unit_results.xml"
+  },
+  "spec_checks": {
+    "torchscript_btc": true,
+    "control_rate_100_hz": true,
+    "window_94_frames": true,
+    "imu_rate_100_hz": true,
+    "normalization_empty": true,
+    "output_18_nm_limit": true,
+    "output_nm_per_kg": true,
+    "imu_tcn_enabled": true,
+    "auto_device_binding": true,
+    "bilateral_same_sign": true
+  },
+  "catalog_check": {
+    "new_model_discovered": true,
+    "old_models_present": true,
+    "entry_count": 4,
+    "issue_count": 0,
+    "issues": [],
+    "entries": [
+      "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_System\\runtime_data\\models\\imu_right_pelvis_torque_100hz_rf94_20261016\\model_spec.json",
+      "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_System\\runtime_data\\models\\imu_right_pelvis_torque_100hz_rf94_static_20261017\\model_spec.json",
+      "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_System\\runtime_data\\models\\imu_right_pelvis_torque_v1_20261010\\model_spec.json",
+      "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_System\\runtime_data\\models\\imu_right_pelvis_torque_v2_20261016\\model_spec.json"
+    ]
+  },
+  "window_replay": {
+    "segment_seconds": 60.0,
+    "candidate_endpoints": 5908,
+    "accepted_complete_windows": 5908,
+    "selected_windows": 128,
+    "grid_start_s": 0.02,
+    "grid_step_s": 0.01,
+    "window_frames": 94,
+    "window_span_s": 0.93,
+    "endpoint_first_s": 0.9500000000000001,
+    "endpoint_last_s": 60.02000000000005,
+    "max_age_s": 0.016516900000020485,
+    "median_age_s": 0.007606500000011174,
+    "finite_windows": true,
+    "endpoint_selection": "uniform over accepted endpoints in first 60 s"
+  },
+  "comparison": {
+    "input_shape": [
+      128,
+      94,
+      12
+    ],
+    "source_predict_shape": [
+      128,
+      1
+    ],
+    "deployment_shape": [
+      128,
+      1
+    ],
+    "runtime_shape": [
+      128,
+      1
+    ],
+    "source_vs_deployment_max_abs_nm_per_kg": 0.0,
+    "source_vs_runtime_max_abs_nm_per_kg": 1.1920928955078125e-07,
+    "all_finite": true,
+    "max_abs_prediction_nm_per_kg": 0.43418920040130615,
+    "runtime_backend": "torchscript",
+    "tolerance_nm_per_kg": 1e-06
+  },
+  "claims": {
+    "offline_only": true,
+    "hardware_accessed": false,
+    "source_deployment_parity": true,
+    "runtime_backend_parity": true,
+    "external_normalization": "empty; scaler remains embedded in TorchScript",
+    "causal_windowing": "nearest-past independently per right-leg and pelvis stream, max age 0.05 s"
+  }
+}

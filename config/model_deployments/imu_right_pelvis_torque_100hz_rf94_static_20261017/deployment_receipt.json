@@ -1,0 +1,35 @@
+{
+  "schema": "imu_tcn_static_model_deployment_receipt_v1",
+  "deployed_at_utc": "2026-10-17T04:14:00.3293077Z",
+  "source_directory": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\paper_experiments\\imu_torque_static_20261017\\deployment\\imu_only_100hz_rf94_static",
+  "target_directory": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_System\\runtime_data\\models\\imu_right_pelvis_torque_100hz_rf94_static_20261017",
+  "source_manifest": {
+    "name": "SHA256.json",
+    "verified": true,
+    "verified_entries": 12
+  },
+  "copied_source_files": [
+    {"name": "训练结果报告.md", "bytes": 4715, "sha256": "d34e0be1a6a826729472c97d11af8dec80c0c09c37636a0f5816cf3fad32fdc7"},
+    {"name": "complete.json", "bytes": 1565, "sha256": "b00a3e53a790fcd57383606bd00eecdc009875bb1b39026c81ddceacd210c87e"},
+    {"name": "final_model.ts", "bytes": 289307, "sha256": "e1382dd307b765d6154a028e7d94e55569d5863f7ef9bc738186b8a9c258a512"},
+    {"name": "model_replay_audit.json", "bytes": 7911, "sha256": "a9a7c3fe4c03914e2d05c7c6669dfb12d6c9128b815df1990ca9927e77685bc8"},
+    {"name": "model.pt", "bytes": 255460, "sha256": "115d43c8afca5bb82299864ec29cac1c9dc985a66e2bc9dc8ceb93f0a5808e87"},
+    {"name": "model.py", "bytes": 9603, "sha256": "435464ed18bd757666067bcd9739977b3a6d6175848cd6f00fb6e69d5c6e8ee2"},
+    {"name": "overall_metrics.csv", "bytes": 2384, "sha256": "9a2725317ea62dc9f428c7bbf9e1cd237386b140f189193c9a94811f17100542"},
+    {"name": "predict.py", "bytes": 2480, "sha256": "ab4cd0c0e80a017b157fb42a654036f039cf641507ef6862b445947af9c87c39"},
+    {"name": "protocol.json", "bytes": 9738, "sha256": "2bc025cdb9babcd19d453d8e6545f1c6d108a990f58f794219ef5bcb9c2e42e2"},
+    {"name": "README.md", "bytes": 1997, "sha256": "c1ae8c3a6ac6a10733a557510a8b96a9dee8b922751d96557865e857da579281"},
+    {"name": "SHA256.json", "bytes": 1089, "sha256": "f1d1cec73c27ab4f1fc158f4a0003eefb4f6b74fb1ae5cc8e7e51dba70cc4df8"},
+    {"name": "static_walking_comparison.png", "bytes": 1256112, "sha256": "5db75ef64a41457eb5c18e399122f99a614d43f3d789b74db2b50aab7a8019c1"},
+    {"name": "subject_metrics.csv", "bytes": 4375, "sha256": "61fceacbd1b136c73be7bd1b699e54fa6d1481aaf2135c2fab47c237abb1ef8d"}
+  ],
+  "generated_contract_files": {
+    "model_spec.json": {"bytes": 990, "sha256": "73cd73dbec5b7775ddcdaa03170d63a70836b042efd1e45e59c006c6875169be"},
+    "model_display.json": {"bytes": 568, "sha256": "83c2cfd3d6ab41d28fcb5543a03e9eb29a687b3d032efa3e904294907323400b"}
+  },
+  "scope_notes": [
+    "完整复制源部署包；源清单逐项SHA256匹配。",
+    "新模型独立目录接入，旧模型目录保留，未改默认模型、缓存参数或核心控制逻辑。",
+    "仅完成离线部署与契约追溯；未进行真实硬件/COM、在线运行或实机验收。"
+  ]
+}

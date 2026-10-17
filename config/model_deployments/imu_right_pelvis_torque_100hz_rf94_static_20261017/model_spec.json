@@ -1,0 +1,50 @@
+{
+  "schema_version": "1.0.0",
+  "model": {
+    "backend": "torchscript",
+    "weights_path": "final_model.ts",
+    "device": "cpu",
+    "input_layout": "btc"
+  },
+  "features": {
+    "control_rate_hz": 100.0,
+    "window_s": 0.94,
+    "inputs": [
+      {
+        "modality": "imu",
+        "channels": null,
+        "rate_hz": 100.0
+      }
+    ],
+    "normalization": {
+      "mean": [],
+      "std": []
+    }
+  },
+  "output": {
+    "kind": "torque_left_right",
+    "single_output_maps_to": "right_torque",
+    "torque_limit_nm": 18.0,
+    "unit": "Nm/kg"
+  },
+  "safety": {
+    "enable_required": true,
+    "zero_on_error": true,
+    "watchdog_s": 0.25
+  },
+  "imu_tcn": {
+    "enabled": true,
+    "modality": "imu",
+    "right_device_id": null,
+    "pelvis_device_id": null,
+    "max_sample_age_s": 0.05
+  },
+  "assistance": {
+    "mass_kg": 0.0,
+    "gain": 1.0,
+    "lowpass_hz": 3.0,
+    "delay_s": 0.0,
+    "right_sign": 1,
+    "motor_distribution": "right_to_both_same_sign"
+  }
+}

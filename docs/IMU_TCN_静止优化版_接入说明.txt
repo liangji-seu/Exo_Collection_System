@@ -1,0 +1,47 @@
+IMU-TCN 静止优化版接入说明（2026-10-17）
+
+部署目录
+runtime_data/models/imu_right_pelvis_torque_100hz_rf94_static_20261017/
+
+模型下拉名称
+右髋估计·双侧同号助力 · IMU-TCN 静止优化版（100 Hz / 94帧）
+重新打开“在线测试”后选择该模型，点击“运行预测”；沿用自动连接模型所需输入和等待完整窗口的流程。
+
+输入与输出合同
+- CPU TorchScript，输入布局 BTC，形状 [B,94,12]。
+- 100 Hz、0.94 s 窗口；右腿 IMU + 骨盆 IMU，共 12 通道，仅 acc_xyz/gyr_xyz。
+- 设备角色由运行时绑定，model_spec.json 中 right_device_id/pelvis_device_id 保持 null。
+- 源年龄上限 0.05 s；模型内置通道 mean/std，运行时 mean/std 为空，禁止重复归一化。
+- 输出为右髋 Nm/kg，界面乘体重后显示 Nm；中层沿用缓存的比例、滤波和延时，双侧同号助力。
+- 新部署的底层绝对值限幅默认为 ±18 Nm，实际运行沿用界面中的用户限幅设置。
+
+来源与追溯
+- 源包：../paper_experiments/imu_torque_static_20261017/deployment/imu_only_100hz_rf94_static
+- 源包 SHA256.json 的 12 项均已校验；源权重 final_model.ts SHA256：
+  e1382dd307b765d6154a028e7d94e55569d5863f7ef9bc738186b8a9c258a512。
+- deployment_receipt.json 记录源目录、复制文件逐项 SHA256、spec/display 哈希和部署时间。
+- 源实验为 imu_torque_static_20261017 静止工况增强训练；具体训练范围、标签限制和指标见源包 README.md、训练结果报告.md。
+
+重建部署
+Git 中保留 config/model_deployments/imu_right_pelvis_torque_100hz_rf94_static_20261017/ 的接口和显示配置、部署收据。
+重建时先按源包 SHA256.json 校验并复制完整源包到上述 runtime_data/models 独立目录，
+再复制该配置快照中的 model_spec.json 和 model_display.json 到同一目录。
+框架会扫描该目录并加入下拉列表；权重和真实录制数据不存入 Git。
+
+边界与验收状态
+- 新模型以独立目录接入，旧目录 imu_right_pelvis_torque_100hz_rf94_20261016 保留，未修改默认模型、缓存参数或核心控制逻辑。
+- 源包 12 项哈希全部通过，完整复制 13 个文件（含 SHA256.json）。
+- 从完整录制 20261016_210359_806362 的前 60 秒按角色选出右腿和骨盆，
+  因果最近过去采样构造 100 Hz / 94 点窗口；从 5908 个有效窗口均匀取 128 个比较。
+- 源 predict.py 与部署 TorchScript 的最大绝对差为 0 Nm/kg；
+  源预测与框架 backend 的最大绝对差为 1.1920928955078125e-07 Nm/kg（通过 1e-6 阈值）。
+- 新旧 4 个模型均被 catalog 识别，无异常；接口、目录、缓冲窗口和后端相关回归共 47 项通过。
+- 验收均为离线，未访问真实 COM、未连接电机或实机运行；不能据此声称实际助力效果已经验证。
+- 静止优化结果不应表述为“静止问题已解决”；须结合独立离线窗口对比和后续实机条件再评估。
+
+验收证据
+runtime_data/online_qa/static_model_adaptation_20261017/
+  verify_static_model_adaptation.py：可复跑验收脚本
+  acceptance.json：输入来源、哈希、选窗、模型对比与目录识别结果
+  unit_results.xml：47 项回归结果（有 1 条既有 PyTorch 警告）
+acceptance.json 同时存入 config/model_deployments 下的新模型配置目录供 Git 追溯。
