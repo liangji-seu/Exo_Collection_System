@@ -9,6 +9,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import math
 import logging
 import subprocess
 from threading import Event, Thread
@@ -46,6 +48,13 @@ class SessionSolveState(str, Enum):
 
 class SolveCancelled(RuntimeError):
     """用户请求取消批量解算。"""
+
+
+class QCFailed(RuntimeError):
+    """A completed run failed QC and must not replace the session training CSV."""
+    def __init__(self, run_dir: Path, reasons: str = "") -> None:
+        self.run_dir = run_dir
+        super().__init__(f"QC FAIL：保留诊断 run {run_dir}，未覆盖 ground_truth.csv。{reasons}")
 
 
 class SyncFailed(RuntimeError):
@@ -172,6 +181,7 @@ def _export_ground_truth(
     from exo_collection.apps.calculate.ground_truth import (
         align_ground_truth,
         write_ground_truth_csv,
+        export_validity_audit,
     )
     from exo_collection.apps.calculate.viewer import load_viewer_data
     from pipeline.synchronization.clock import (
@@ -182,7 +192,12 @@ def _export_ground_truth(
 
     viewer_dir = payload.get("viewer_dir")
     viewer_path = Path(viewer_dir) if viewer_dir else run_dir / "viewer"
+    from exo_collection.apps.calculate.direction_policy import current_run_policy, load_run_manifest
+    if not current_run_policy(load_run_manifest(run_dir)):
+        raise ValueError("旧算法结果缺少当前外力/有效性策略，须重算后导出")
     data = load_viewer_data(viewer_path)
+    if data.export_mask is None:
+        raise ValueError("缺少逐帧审核/外力有效性依据")
 
     files = dynamic.files
     with h5py.File(files.mocap_h5_path, "r") as mocap_h5, h5py.File(
@@ -198,13 +213,75 @@ def _export_ground_truth(
         )
 
     time_s, imu_aligned, moments = align_ground_truth(
-        data.time_s, data.moments, imu_time_s, imu_signal
+        data.time_s, data.moments, imu_time_s, imu_signal, validity_mask=data.export_mask
     )
     out_path = dynamic.session_dir / "ground_truth.csv"
     write_ground_truth_csv(
         out_path, time_s, imu_aligned, moments, moment_names=data.moment_names
     )
+    # Propagate export coverage into the final QC sidecar without changing CSV columns.
+    payload["export_validity"] = export_validity_audit(data, time_s)
     return out_path
+
+
+def load_confirmed_sync(dynamic: SessionRecord) -> dict[str, Any] | None:
+    """Reuse only an applied/confirmed calibration whose four source hashes match.
+
+    MANUAL_PAIRED historically enters SYNC_CONFIRMED immediately on Apply, so its
+    persisted manual+n_pairs evidence is accepted even without confirmed_at_utc.
+    Draft automatic MEDIUM/LOW candidates cannot pass this check.
+    """
+    ensure_pipeline_on_path()
+    path = dynamic.session_dir / "derived" / "opensim" / "sync_calibration.json"
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        if doc.get("dynamic_session_uuid") != dynamic.session_uuid or doc.get("trial_uuid") != dynamic.trial_uuid:
+            return None
+        files = dynamic.files
+        inputs = {"c3d": files.c3d_path, "mocap_h5": files.mocap_h5_path,
+                  "imu_h5": files.imu_h5_path, "gaitway_txt": files.txt_path}
+        for key, filename in inputs.items():
+            source = Path(filename)
+            receipt = doc["inputs"][key]
+            if Path(receipt["path"]).resolve() != source.resolve() or receipt.get("size_bytes") != source.stat().st_size:
+                return None
+            digest = hashlib.sha256()
+            with source.open("rb") as fh:
+                for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            if receipt.get("sha256") != digest.hexdigest():
+                return None
+        result = doc["result"]
+        method = str(doc.get("method", ""))
+        manual_applied = (method == "MANUAL_PAIRED" and result.get("manual") is True
+                          and int(result.get("n_pairs", 0)) >= 3)
+        if not manual_applied and not doc.get("confirmed_at_utc"):
+            return None
+        if method not in {"MANUAL_PAIRED", "AUTO_HIGH", "EXPERT_FORCED"}:
+            return None
+        offset = float(result["gaitway_offset_s"])
+        mad = result.get("mad_s")
+        if manual_applied and mad is None:
+            return None
+        if not math.isfinite(offset) or (mad is not None and (not math.isfinite(float(mad)) or float(mad) < 0)):
+            return None
+        frame = result["c3d_start_in_mocap_h5_frame"]
+        if isinstance(frame, bool) or not math.isfinite(float(frame)) or int(frame) != frame or int(frame) < 0:
+            return None
+        from pipeline.synchronization.c3d_h5 import is_reliable_match_rms
+        if not is_reliable_match_rms(result.get("c3d_h5_match_rms_mm")):
+            return None
+        import h5py
+        from pipeline.synchronization.clock import read_host_monotonic_ns
+        with h5py.File(files.mocap_h5_path, "r") as mocap:
+            if int(frame) >= len(read_host_monotonic_ns(mocap)):
+                return None
+        return {**result, "method": method, "calibration_reused": True,
+                "calibration_source": str(path.resolve()), "confirmation_basis":
+                "manual_applied" if manual_applied else "confirmed_at_utc",
+                "confirmed_at_utc": doc.get("confirmed_at_utc"), "source_sha256_verified": True}
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
 
 
 def solve_one_session(
@@ -218,9 +295,10 @@ def solve_one_session(
     cancel_check: Callable[[], bool],
     progress: Callable[[str], None],
     marker_cutoff_hz: float = 6.0,
-    grf_cutoff_hz: float = 20.0,
+    grf_cutoff_hz: float = 6.0,
     opensim_x_sign: float = -1.0,
     opensim_z_sign: float = -1.0,
+    analysis_time_range_s: tuple[float, float] | None = None,
 ) -> dict[str, Any]:
     """解算单个 session（同步 → 预处理 → OpenSim → 导出真值），返回结果字典。
 
@@ -243,19 +321,22 @@ def solve_one_session(
     from pipeline.synchronization.sync import StompSyncError, run_auto_sync
 
     try:
-        sync = run_auto_sync(
-            files.c3d_path,  # type: ignore[arg-type]
-            files.mocap_h5_path,  # type: ignore[arg-type]
-            files.imu_h5_path,  # type: ignore[arg-type]
-            files.txt_path,  # type: ignore[arg-type]
-        )
+        sync = load_confirmed_sync(dynamic)
+        if sync is None:
+            sync = run_auto_sync(
+                files.c3d_path,  # type: ignore[arg-type]
+                files.mocap_h5_path,  # type: ignore[arg-type]
+                files.imu_h5_path,  # type: ignore[arg-type]
+                files.txt_path,  # type: ignore[arg-type]
+            )
     except StompSyncError as exc:
         raise SyncFailed(str(exc)) from exc
     confidence = str(sync.get("confidence", "LOW")).upper()
-    if confidence != "HIGH":
+    if confidence != "HIGH" and not sync.get("calibration_reused"):
         raise SyncFailed(f"同步置信度 {confidence}，需在 Calculate 中人工复核，本轮跳过")
     gaitway_offset_s = float(sync["gaitway_offset_s"])
     start_frame = int(sync["c3d_start_in_mocap_h5_frame"])
+    progress("同步来源：" + ("复用已确认且来源匹配的标定" if sync.get("calibration_reused") else "自动 HIGH"))
     progress(f"同步完成：offset {gaitway_offset_s:.6f} s（{confidence}）")
 
     # 2) 预处理（EXO 环境）
@@ -285,9 +366,11 @@ def solve_one_session(
         opensim_x_sign=opensim_x_sign,
         opensim_z_sign=opensim_z_sign,
         sync_confidence=confidence,
-        sync_quality={**sync, "method": "AUTO_HIGH"},
+        sync_quality={**sync, "method": sync.get("method", "AUTO_HIGH")},
+        analysis_time_range_s=analysis_time_range_s,
         quiet_standing=dynamic.is_quiet_standing,
         backpack=backpack,
+        condition_code=dynamic.condition_code,
     )
     manifest_path = Path(summary["manifest_path"])
 
@@ -301,6 +384,11 @@ def solve_one_session(
         opensim_python, script, manifest_path, cancel_file, cancel_check, progress
     )
 
+    qc = payload.get("qc") if isinstance(payload, dict) else None
+    qc_status = qc.get("status") if isinstance(qc, dict) else None
+    if qc_status == "FAIL":
+        raise QCFailed(run_dir, str(qc.get("summary") or ""))
+
     # 4) 导出真值 CSV 到 session 目录
     if cancel_check():
         raise SolveCancelled()
@@ -312,7 +400,7 @@ def solve_one_session(
     qc_status = qc.get("status") if isinstance(qc, dict) else None
     from exo_collection.apps.calculate.ground_truth_status import write_ground_truth_qc
 
-    write_ground_truth_qc(out_path, qc_status, run_dir)
+    write_ground_truth_qc(out_path, qc_status, run_dir, validity=payload.get("export_validity"))
     # 成功解算覆盖人工复核结论：清除「丢弃」标记（run_process 覆盖结果）。
     clear_manual_review(dynamic.session_dir)
     progress(f"计算完成，QC：{qc_status or '未评估'}")
@@ -340,9 +428,15 @@ def session_solve_status(record: SessionRecord) -> SessionSolveState:
     if not complete:
         return SessionSolveState.INCOMPLETE
     if (record.session_dir / "ground_truth.csv").is_file():
+        from exo_collection.apps.calculate.direction_policy import is_backward_code, export_is_current
+        if not export_is_current(record.session_dir):
+            return SessionSolveState.UNSOLVED
         from exo_collection.apps.calculate.ground_truth_status import read_ground_truth_qc
 
-        return _qc_state(read_ground_truth_qc(record.session_dir))
+        status = read_ground_truth_qc(record.session_dir)
+        if is_backward_code(record.condition_code) and status == "PASS":
+            status = "WARN"
+        return _qc_state(status)
     if files.mocap_h5_path is None or files.imu_h5_path is None:
         return SessionSolveState.MISSING_MODALITY
     return SessionSolveState.UNSOLVED
@@ -485,6 +579,8 @@ __all__ = [
     "SolveCancelled",
     "SyncFailed",
     "erase_ground_truth",
+    "load_confirmed_sync",
+    "QCFailed",
     "session_solve_status",
     "solve_one_session",
 ]

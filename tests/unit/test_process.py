@@ -110,7 +110,7 @@ def test_status_incomplete_without_c3d_or_txt(tmp_path: Path) -> None:
 def test_status_solved_when_ground_truth_exists(tmp_path: Path) -> None:
     record = _make_session(tmp_path, files=_complete_files())
     (record.session_dir / "ground_truth.csv").write_text("time_s\n", encoding="utf-8")
-    assert session_solve_status(record) is SessionSolveState.SOLVED
+    assert session_solve_status(record) is SessionSolveState.UNSOLVED
 
 
 def test_status_missing_modality_without_mocap_or_imu(tmp_path: Path) -> None:
@@ -130,7 +130,7 @@ def test_erase_ground_truth_deletes_csv_and_qc(tmp_path: Path) -> None:
     record = _make_session(tmp_path, files=_complete_files())
     (record.session_dir / "ground_truth.csv").write_text("time_s\n", encoding="utf-8")
     (record.session_dir / "ground_truth.qc.json").write_text("{}", encoding="utf-8")
-    assert session_solve_status(record) is SessionSolveState.SOLVED
+    assert session_solve_status(record) is SessionSolveState.UNSOLVED
 
     removed = erase_ground_truth([record])
 
@@ -226,8 +226,9 @@ def test_solve_one_session_stomp_error_raises_sync_failed(
 # ── solve_one_session 编排（happy path） ─────────────────────────
 
 
+@pytest.mark.parametrize("grf_override", [None, 18.0])
 def test_solve_one_session_happy_path_returns_out_path(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, grf_override
 ) -> None:
     monkeypatch.setattr(sync_module, "run_auto_sync", lambda *a, **k: _high_sync())
 
@@ -239,6 +240,7 @@ def test_solve_one_session_happy_path_returns_out_path(
         assert not any(c["status"] == "FAIL" for c in checks)
         assert kwargs["sync_quality"]["n_pairs"] == 3
         assert kwargs["mass_kg"] == 75.0
+        assert kwargs["grf_cutoff_hz"] == (6.0 if grf_override is None else grf_override)
         assert kwargs["backpack"]["mass_kg"] == 5.0
         assert kwargs["backpack"]["source"] == "NOMINAL"
         out_dir = Path(kwargs["out_dir"])
@@ -276,6 +278,7 @@ def test_solve_one_session_happy_path_returns_out_path(
         1.75,
         cancel_check=lambda: False,
         progress=lambda _: None,
+        **({} if grf_override is None else {"grf_cutoff_hz": grf_override}),
     )
 
     assert result["out_path"] == out_path
@@ -295,7 +298,9 @@ def test_qc_survives_reload_and_worker_signal(tmp_path, monkeypatch, qc):
     record = _make_session(tmp_path, files=_complete_files())
     csv = record.session_dir / "ground_truth.csv"
     csv.write_text("time_s\n0\n", encoding="utf-8")
-    write_ground_truth_qc(csv, qc, tmp_path)
+    import json
+    (tmp_path / "manifest.json").write_text(json.dumps({"processing": {"grf_input_policy_version": "continuous_native_wrench_v2"}}))
+    write_ground_truth_qc(csv, qc, tmp_path, validity={"export_validity_version": "bilateral_analysis_v1"})
     expected = {"PASS": SessionSolveState.QC_PASS, "WARN": SessionSolveState.QC_WARN,
                 "FAIL": SessionSolveState.QC_FAIL}.get(qc, SessionSolveState.SOLVED)
     assert session_solve_status(record) == expected
@@ -309,7 +314,7 @@ def test_qc_survives_reload_and_worker_signal(tmp_path, monkeypatch, qc):
     assert results == [(record.session_name, expected.value, str(csv))]
     # A later CSV export must not inherit an old quality label.
     csv.write_text("replacement CSV", encoding="utf-8")
-    assert session_solve_status(record) == SessionSolveState.SOLVED
+    assert session_solve_status(record) == SessionSolveState.UNSOLVED
 
 
 def test_cancel_reaches_silent_subprocess(tmp_path):
@@ -344,7 +349,9 @@ def test_data_studio_displays_persisted_qc(tmp_path, qc):
     app = QApplication.instance() or QApplication([])
     csv = tmp_path / "ground_truth.csv"
     csv.write_text("time_s\n0\n", encoding="utf-8")
-    write_ground_truth_qc(csv, qc, tmp_path)
+    import json
+    (tmp_path / "manifest.json").write_text(json.dumps({"processing": {"grf_input_policy_version": "continuous_native_wrench_v2"}}))
+    write_ground_truth_qc(csv, qc, tmp_path, validity={"export_validity_version": "bilateral_analysis_v1"})
     manifest = tmp_path / ".exo" / "manifest.json"
     status = check_trial_solved(manifest)
     assert status.qc_status == qc
