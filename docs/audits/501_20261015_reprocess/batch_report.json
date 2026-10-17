@@ -1,0 +1,2197 @@
+{
+  "subject_root": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501",
+  "policy_version": "continuous_native_wrench_v2",
+  "started_at": "2026-10-15T20:14:52.596011+08:00",
+  "static_session": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\T\\STATIC_CALIB\\session1_20261014_084014",
+  "rows": [
+    {
+      "session": "d1\\F_BASE\\START_STAND_30S_NOEXO\\session1_20261014_084130",
+      "condition": "START_STAND_30S_NOEXO",
+      "session_uuid": "751c31e1-e8a4-4d20-80f3-ae759c279914",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_BASE\\START_STAND_30S_NOEXO\\session1_20261014_084130\\imu.h5": {
+          "size": 1987012,
+          "mtime_ns": 1791983938399424400
+        }
+      },
+      "status": "MISSING_INPUT",
+      "reason": "C3D, Gaitway TXT, mocap.h5"
+    },
+    {
+      "session": "d1\\F_BASE\\START_WALK_1P0_30S_NOEXO\\session1_20261014_084216",
+      "condition": "START_WALK_1P0_30S_NOEXO",
+      "session_uuid": "751c31e1-e8a4-4d20-80f3-ae759c279914",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_BASE\\START_WALK_1P0_30S_NOEXO\\session1_20261014_084216\\imu.h5": {
+          "size": 3095108,
+          "mtime_ns": 1791983940348812100
+        }
+      },
+      "status": "MISSING_INPUT",
+      "reason": "C3D, Gaitway TXT, mocap.h5"
+    },
+    {
+      "session": "d1\\F_STEADY\\BWALK_0P2_NOEXO\\session1_20261014_090306",
+      "condition": "BWALK_0P2_NOEXO",
+      "session_uuid": "50351ecb-b466-48d2-8033-183df4ed1c47",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session1_20261014_090306\\501_BWALK_0P2_NOEXO_r1_5783f3161.c3d": {
+          "size": 3940608,
+          "mtime_ns": 1791983945385024100
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session1_20261014_090306\\501_BWALK_0P2_NOEXO_r1_5783f3161.txt": {
+          "size": 21065643,
+          "mtime_ns": 1791983943450261300
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session1_20261014_090306\\mocap.h5": {
+          "size": 2064212,
+          "mtime_ns": 1791983945664067900
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session1_20261014_090306\\imu.h5": {
+          "size": 5127300,
+          "mtime_ns": 1791983944283058200
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": null,
+      "analysis_source": null,
+      "partial_transient": false,
+      "started_at": "2026-10-15T20:24:33.601187+08:00",
+      "csv_rows": 5400,
+      "viewer_frames": 8788,
+      "valid_moment_frames": 5400,
+      "csv_time_s": [
+        25.74,
+        79.73
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        4.794201850891113,
+        4.322019577026367
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session1_20261014_090306\\derived\\opensim\\run_20261015_202434_8630",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session1_20261014_090306\\ground_truth.csv",
+      "elapsed_s": 27.33,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_STEADY\\BWALK_0P2_NOEXO\\session2_20261014_090455",
+      "condition": "BWALK_0P2_NOEXO",
+      "session_uuid": "50351ecb-b466-48d2-8033-183df4ed1c47",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session2_20261014_090455\\501_BWALK_0P2_NOEXO_r2_d58239fa1.c3d": {
+          "size": 4567360,
+          "mtime_ns": 1791983950792167200
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session2_20261014_090455\\501_BWALK_0P2_NOEXO_r2_d58239fa1.txt": {
+          "size": 24782610,
+          "mtime_ns": 1791983948627636400
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session2_20261014_090455\\mocap.h5": {
+          "size": 2372212,
+          "mtime_ns": 1791983950352832700
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session2_20261014_090455\\imu.h5": {
+          "size": 5904196,
+          "mtime_ns": 1791983949131701600
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": null,
+      "analysis_source": null,
+      "partial_transient": false,
+      "started_at": "2026-10-15T20:25:00.949424+08:00",
+      "csv_rows": 6419,
+      "viewer_frames": 10187,
+      "valid_moment_frames": 6419,
+      "csv_time_s": [
+        12.36,
+        76.54
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        4.6761698722839355,
+        5.248487949371338
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session2_20261014_090455\\derived\\opensim\\run_20261015_202501_9499",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session2_20261014_090455\\ground_truth.csv",
+      "elapsed_s": 29.56,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_STEADY\\BWALK_0P2_NOEXO\\session3_20261014_090711",
+      "condition": "BWALK_0P2_NOEXO",
+      "session_uuid": "50351ecb-b466-48d2-8033-183df4ed1c47",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session3_20261014_090711\\501_BWALK_0P2_NOEXO_r3_06347ec81.c3d": {
+          "size": 5152896,
+          "mtime_ns": 1791983951415598400
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session3_20261014_090711\\501_BWALK_0P2_NOEXO_r3_06347ec81.txt": {
+          "size": 28316559,
+          "mtime_ns": 1791983954117729700
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session3_20261014_090711\\mocap.h5": {
+          "size": 2662308,
+          "mtime_ns": 1791983956176237400
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session3_20261014_090711\\imu.h5": {
+          "size": 6621796,
+          "mtime_ns": 1791983954678983800
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": null,
+      "analysis_source": null,
+      "partial_transient": false,
+      "started_at": "2026-10-15T20:25:30.538404+08:00",
+      "csv_rows": 8684,
+      "viewer_frames": 11494,
+      "valid_moment_frames": 8684,
+      "csv_time_s": [
+        20.5,
+        107.33
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        4.019955635070801,
+        3.7944726943969727
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session3_20261014_090711\\derived\\opensim\\run_20261015_202531_6531",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session3_20261014_090711\\ground_truth.csv",
+      "elapsed_s": 32.47,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_STEADY\\BWALK_0P2_NOEXO\\session3_20261014_091934",
+      "condition": "BWALK_0P2_NOEXO",
+      "session_uuid": "50351ecb-b466-48d2-8033-183df4ed1c47",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session3_20261014_091934\\501_BWALK_0P2_NOEXO_r3_68c3ec6a1.c3d": {
+          "size": 3775296,
+          "mtime_ns": 1791983960643647700
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session3_20261014_091934\\501_BWALK_0P2_NOEXO_r3_68c3ec6a1.txt": {
+          "size": 19782453,
+          "mtime_ns": 1791983960269302000
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session3_20261014_091934\\mocap.h5": {
+          "size": 1976212,
+          "mtime_ns": 1791983960950773700
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session3_20261014_091934\\imu.h5": {
+          "size": 4924900,
+          "mtime_ns": 1791983957263362200
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": null,
+      "analysis_source": null,
+      "partial_transient": false,
+      "started_at": "2026-10-15T20:26:03.038846+08:00",
+      "csv_rows": 3149,
+      "viewer_frames": 8419,
+      "valid_moment_frames": 3149,
+      "csv_time_s": [
+        44.42,
+        75.9
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        4.7593092918396,
+        4.985465049743652
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session3_20261014_091934\\derived\\opensim\\run_20261015_202603_8291",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session3_20261014_091934\\ground_truth.csv",
+      "elapsed_s": 24.16,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_STEADY\\BWALK_0P2_NOEXO\\session4_20261014_092119",
+      "condition": "BWALK_0P2_NOEXO",
+      "session_uuid": "50351ecb-b466-48d2-8033-183df4ed1c47",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session4_20261014_092119\\501_BWALK_0P2_NOEXO_r4_dd6d976d1.c3d": {
+          "size": 2627072,
+          "mtime_ns": 1791983964388244100
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session4_20261014_092119\\501_BWALK_0P2_NOEXO_r4_dd6d976d1.txt": {
+          "size": 16044077,
+          "mtime_ns": 1791983964089244600
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session4_20261014_092119\\mocap.h5": {
+          "size": 1402238,
+          "mtime_ns": 1791983962589838900
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session4_20261014_092119\\imu.h5": {
+          "size": 3504004,
+          "mtime_ns": 1791983962012164400
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": null,
+      "analysis_source": null,
+      "partial_transient": false,
+      "started_at": "2026-10-15T20:26:27.227416+08:00",
+      "csv_rows": 4375,
+      "viewer_frames": 5856,
+      "valid_moment_frames": 4375,
+      "csv_time_s": [
+        11.71,
+        55.45
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        2.9754886627197266,
+        4.349360942840576
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session4_20261014_092119\\derived\\opensim\\run_20261015_202627_8176",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session4_20261014_092119\\ground_truth.csv",
+      "elapsed_s": 17.69,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_STEADY\\BWALK_0P2_NOEXO\\session5_20261014_092237",
+      "condition": "BWALK_0P2_NOEXO",
+      "session_uuid": "50351ecb-b466-48d2-8033-183df4ed1c47",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session5_20261014_092237\\501_BWALK_0P2_NOEXO_r5_251fd47f1.c3d": {
+          "size": 6117888,
+          "mtime_ns": 1791983965824716100
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session5_20261014_092237\\501_BWALK_0P2_NOEXO_r5_251fd47f1.txt": {
+          "size": 33761524,
+          "mtime_ns": 1791983972619612600
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session5_20261014_092237\\mocap.h5": {
+          "size": 3124308,
+          "mtime_ns": 1791983968687895900
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session5_20261014_092237\\imu.h5": {
+          "size": 7821892,
+          "mtime_ns": 1791983966778747000
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": null,
+      "analysis_source": null,
+      "partial_transient": false,
+      "started_at": "2026-10-15T20:26:44.945307+08:00",
+      "csv_rows": 11480,
+      "viewer_frames": 13648,
+      "valid_moment_frames": 11480,
+      "csv_time_s": [
+        18.48,
+        133.27
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        7.806571960449219,
+        8.085643768310547
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session5_20261014_092237\\derived\\opensim\\run_20261015_202646_2846",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session5_20261014_092237\\ground_truth.csv",
+      "elapsed_s": 40.45,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_STEADY\\BWALK_0P2_NOEXO\\session6_20261014_092512",
+      "condition": "BWALK_0P2_NOEXO",
+      "session_uuid": "50351ecb-b466-48d2-8033-183df4ed1c47",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session6_20261014_092512\\501_BWALK_0P2_NOEXO_r6_cd90f16b1.c3d": {
+          "size": 4370688,
+          "mtime_ns": 1791983977710314500
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session6_20261014_092512\\501_BWALK_0P2_NOEXO_r6_cd90f16b1.txt": {
+          "size": 23968042,
+          "mtime_ns": 1791983977062921400
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session6_20261014_092512\\mocap.h5": {
+          "size": 2262212,
+          "mtime_ns": 1791983975203042300
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session6_20261014_092512\\imu.h5": {
+          "size": 5660900,
+          "mtime_ns": 1791983973941325400
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": null,
+      "analysis_source": null,
+      "partial_transient": false,
+      "started_at": "2026-10-15T20:27:25.426394+08:00",
+      "csv_rows": 7508,
+      "viewer_frames": 9748,
+      "valid_moment_frames": 7508,
+      "csv_time_s": [
+        12.14,
+        87.21
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        3.9458580017089844,
+        4.281411170959473
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session6_20261014_092512\\derived\\opensim\\run_20261015_202726_3661",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P2_NOEXO\\session6_20261014_092512\\ground_truth.csv",
+      "elapsed_s": 28.78,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_STEADY\\BWALK_0P3_NOEXO\\session1_20261014_092713",
+      "condition": "BWALK_0P3_NOEXO",
+      "session_uuid": "50351ecb-b466-48d2-8033-183df4ed1c47",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session1_20261014_092713\\501_BWALK_0P3_NOEXO_r1_52233ccc1.c3d": {
+          "size": 4997440,
+          "mtime_ns": 1791983978679612100
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session1_20261014_092713\\mocap.h5": {
+          "size": 2570212,
+          "mtime_ns": 1791983980851889100
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session1_20261014_092713\\imu.h5": {
+          "size": 6437796,
+          "mtime_ns": 1791983979716011900
+        }
+      },
+      "status": "MISSING_INPUT",
+      "reason": "Gaitway TXT"
+    },
+    {
+      "session": "d1\\F_STEADY\\BWALK_0P3_NOEXO\\session1_20261014_093056",
+      "condition": "BWALK_0P3_NOEXO",
+      "session_uuid": "50351ecb-b466-48d2-8033-183df4ed1c47",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session1_20261014_093056\\501_BWALK_0P3_NOEXO_r1_721a00221.c3d": {
+          "size": 4801664,
+          "mtime_ns": 1791983983271000400
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session1_20261014_093056\\501_BWALK_0P3_NOEXO_r1_721a00221.txt": {
+          "size": 11002,
+          "mtime_ns": 1791983981568631100
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session1_20261014_093056\\mocap.h5": {
+          "size": 2482212,
+          "mtime_ns": 1791983983567107500
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session1_20261014_093056\\imu.h5": {
+          "size": 6180196,
+          "mtime_ns": 1791983982115731800
+        }
+      },
+      "status": "INVALID_FORCE_FILE",
+      "reason": "Truncated force TXT: 58 samples, 0.057 s"
+    },
+    {
+      "session": "d1\\F_STEADY\\BWALK_0P3_NOEXO\\session2_20261014_092916",
+      "condition": "BWALK_0P3_NOEXO",
+      "session_uuid": "50351ecb-b466-48d2-8033-183df4ed1c47",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session2_20261014_092916\\501_BWALK_0P3_NOEXO_r2_e141b55d1.c3d": {
+          "size": 85568,
+          "mtime_ns": 1791983984343428800
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session2_20261014_092916\\mocap.h5": {
+          "size": 167838,
+          "mtime_ns": 1791983984658973700
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session2_20261014_092916\\imu.h5": {
+          "size": 363438,
+          "mtime_ns": 1791983984452525300
+        }
+      },
+      "status": "MISSING_INPUT",
+      "reason": "Gaitway TXT"
+    },
+    {
+      "session": "d1\\F_STEADY\\BWALK_0P3_NOEXO\\session2_20261014_093433",
+      "condition": "BWALK_0P3_NOEXO",
+      "session_uuid": "50351ecb-b466-48d2-8033-183df4ed1c47",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session2_20261014_093433\\501_BWALK_0P3_NOEXO_r2_e84b85561.c3d": {
+          "size": 4104576,
+          "mtime_ns": 1791983986478082100
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session2_20261014_093433\\501_BWALK_0P3_NOEXO_r2_e84b85561.txt": {
+          "size": 21930869,
+          "mtime_ns": 1791983989335372200
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session2_20261014_093433\\mocap.h5": {
+          "size": 2130212,
+          "mtime_ns": 1791983987378915000
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session2_20261014_093433\\imu.h5": {
+          "size": 5329700,
+          "mtime_ns": 1791983986026189300
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": null,
+      "analysis_source": null,
+      "partial_transient": false,
+      "started_at": "2026-10-15T20:27:54.242890+08:00",
+      "csv_rows": 7127,
+      "viewer_frames": 9154,
+      "valid_moment_frames": 7127,
+      "csv_time_s": [
+        13.39,
+        84.65
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        6.105650424957275,
+        5.1565093994140625
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session2_20261014_093433\\derived\\opensim\\run_20261015_202755_0840",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session2_20261014_093433\\ground_truth.csv",
+      "elapsed_s": 28.94,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_STEADY\\BWALK_0P3_NOEXO\\session3_20261014_093628",
+      "condition": "BWALK_0P3_NOEXO",
+      "session_uuid": "50351ecb-b466-48d2-8033-183df4ed1c47",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session3_20261014_093628\\501_BWALK_0P3_NOEXO_r3_d77710621.c3d": {
+          "size": 4696832,
+          "mtime_ns": 1791983989967734000
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session3_20261014_093628\\501_BWALK_0P3_NOEXO_r3_d77710621.txt": {
+          "size": 27546354,
+          "mtime_ns": 1791983993490681900
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session3_20261014_093628\\mocap.h5": {
+          "size": 2416212,
+          "mtime_ns": 1791983994653950600
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session3_20261014_093628\\imu.h5": {
+          "size": 6051396,
+          "mtime_ns": 1791983991328535300
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": null,
+      "analysis_source": null,
+      "partial_transient": false,
+      "started_at": "2026-10-15T20:28:23.208833+08:00",
+      "csv_rows": 8803,
+      "viewer_frames": 10476,
+      "valid_moment_frames": 8803,
+      "csv_time_s": [
+        11.07,
+        99.09
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        5.042245864868164,
+        4.4368438720703125
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session3_20261014_093628\\derived\\opensim\\run_20261015_202824_2377",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session3_20261014_093628\\ground_truth.csv",
+      "elapsed_s": 35.31,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_STEADY\\BWALK_0P3_NOEXO\\session4_20261014_093833",
+      "condition": "BWALK_0P3_NOEXO",
+      "session_uuid": "50351ecb-b466-48d2-8033-183df4ed1c47",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session4_20261014_093833\\501_BWALK_0P3_NOEXO_r4_6df46b5d1.c3d": {
+          "size": 2401728,
+          "mtime_ns": 1791983997096975100
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session4_20261014_093833\\501_BWALK_0P3_NOEXO_r4_6df46b5d1.txt": {
+          "size": 15252595,
+          "mtime_ns": 1791983996181004600
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session4_20261014_093833\\mocap.h5": {
+          "size": 1292238,
+          "mtime_ns": 1791983997950499500
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session4_20261014_093833\\imu.h5": {
+          "size": 3223908,
+          "mtime_ns": 1791983997383106700
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": null,
+      "analysis_source": null,
+      "partial_transient": false,
+      "started_at": "2026-10-15T20:28:58.544935+08:00",
+      "csv_rows": 2576,
+      "viewer_frames": 5353,
+      "valid_moment_frames": 2576,
+      "csv_time_s": [
+        7.22,
+        32.97
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        4.693029403686523,
+        4.578102111816406
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session4_20261014_093833\\derived\\opensim\\run_20261015_202859_0921",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session4_20261014_093833\\ground_truth.csv",
+      "elapsed_s": 18.61,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_STEADY\\BWALK_0P3_NOEXO\\session5_20261014_093948",
+      "condition": "BWALK_0P3_NOEXO",
+      "session_uuid": "50351ecb-b466-48d2-8033-183df4ed1c47",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session5_20261014_093948\\501_BWALK_0P3_NOEXO_r5_a4edf7eb1.c3d": {
+          "size": 3266816,
+          "mtime_ns": 1791983998967911500
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session5_20261014_093948\\501_BWALK_0P3_NOEXO_r5_a4edf7eb1.txt": {
+          "size": 17132940,
+          "mtime_ns": 1791984000426845500
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session5_20261014_093948\\mocap.h5": {
+          "size": 1732238,
+          "mtime_ns": 1791984001709365200
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session5_20261014_093948\\imu.h5": {
+          "size": 4295204,
+          "mtime_ns": 1791984000900277800
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": null,
+      "analysis_source": null,
+      "partial_transient": false,
+      "pilot_20hz": {
+        "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session5_20261014_093948\\derived\\opensim\\run_20261015_201930_6943",
+        "csv_rows": 2977,
+        "max_adjacent_hip_jump_Nm": [
+          14.653159141540527,
+          14.364033699035645
+        ],
+        "qc_status": "WARN"
+      },
+      "started_at": "2026-10-15T20:29:17.154859+08:00",
+      "csv_rows": 2977,
+      "viewer_frames": 7284,
+      "valid_moment_frames": 2977,
+      "csv_time_s": [
+        13.3,
+        43.06
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        5.361097812652588,
+        5.48337459564209
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session5_20261014_093948\\derived\\opensim\\run_20261015_202917_1886",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session5_20261014_093948\\ground_truth.csv",
+      "elapsed_s": 23.16,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_STEADY\\BWALK_0P4_NOEXO\\session1_20261014_094119",
+      "condition": "BWALK_0P4_NOEXO",
+      "session_uuid": "50351ecb-b466-48d2-8033-183df4ed1c47",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P4_NOEXO\\session1_20261014_094119\\501_BWALK_0P4_NOEXO_r1_b6e685911.c3d": {
+          "size": 3381056,
+          "mtime_ns": 1791984002619691400
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P4_NOEXO\\session1_20261014_094119\\501_BWALK_0P4_NOEXO_r1_b6e685911.txt": {
+          "size": 17864484,
+          "mtime_ns": 1791984005310725200
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P4_NOEXO\\session1_20261014_094119\\mocap.h5": {
+          "size": 1776238,
+          "mtime_ns": 1791984005505426000
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P4_NOEXO\\session1_20261014_094119\\imu.h5": {
+          "size": 4424004,
+          "mtime_ns": 1791984003328224100
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": null,
+      "analysis_source": null,
+      "partial_transient": false,
+      "started_at": "2026-10-15T20:29:40.331758+08:00",
+      "csv_rows": 5372,
+      "viewer_frames": 7539,
+      "valid_moment_frames": 5372,
+      "csv_time_s": [
+        13.9,
+        67.61
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        4.496852874755859,
+        4.925362586975098
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P4_NOEXO\\session1_20261014_094119\\derived\\opensim\\run_20261015_202941_0597",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P4_NOEXO\\session1_20261014_094119\\ground_truth.csv",
+      "elapsed_s": 26.09,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_STEADY\\BWALK_0P4_NOEXO\\session2_20261014_094302",
+      "condition": "BWALK_0P4_NOEXO",
+      "session_uuid": "50351ecb-b466-48d2-8033-183df4ed1c47",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P4_NOEXO\\session2_20261014_094302\\501_BWALK_0P4_NOEXO_r2_82e232101.c3d": {
+          "size": 2159808,
+          "mtime_ns": 1791984006115518800
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P4_NOEXO\\session2_20261014_094302\\501_BWALK_0P4_NOEXO_r2_82e232101.txt": {
+          "size": 13348803,
+          "mtime_ns": 1791984008413913400
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P4_NOEXO\\session2_20261014_094302\\mocap.h5": {
+          "size": 1182238,
+          "mtime_ns": 1791984008635536900
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P4_NOEXO\\session2_20261014_094302\\imu.h5": {
+          "size": 2929508,
+          "mtime_ns": 1791984006835756700
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": null,
+      "analysis_source": null,
+      "partial_transient": false,
+      "started_at": "2026-10-15T20:30:06.448881+08:00",
+      "csv_rows": 3469,
+      "viewer_frames": 4813,
+      "valid_moment_frames": 3469,
+      "csv_time_s": [
+        9.62,
+        44.3
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        5.241865158081055,
+        5.550378799438477
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P4_NOEXO\\session2_20261014_094302\\derived\\opensim\\run_20261015_203006_9504",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P4_NOEXO\\session2_20261014_094302\\ground_truth.csv",
+      "elapsed_s": 16.72,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_STEADY\\BWALK_0P4_NOEXO\\session3_20261014_094410",
+      "condition": "BWALK_0P4_NOEXO",
+      "session_uuid": "50351ecb-b466-48d2-8033-183df4ed1c47",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P4_NOEXO\\session3_20261014_094410\\501_BWALK_0P4_NOEXO_r3_71bfefd31.c3d": {
+          "size": 4495232,
+          "mtime_ns": 1791984012557793400
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P4_NOEXO\\session3_20261014_094410\\501_BWALK_0P4_NOEXO_r3_71bfefd31.txt": {
+          "size": 26753374,
+          "mtime_ns": 1791984011879929400
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P4_NOEXO\\session3_20261014_094410\\mocap.h5": {
+          "size": 2328212,
+          "mtime_ns": 1791984014082291100
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P4_NOEXO\\session3_20261014_094410\\imu.h5": {
+          "size": 5812196,
+          "mtime_ns": 1791984013137089900
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": null,
+      "analysis_source": null,
+      "partial_transient": false,
+      "started_at": "2026-10-15T20:30:23.202191+08:00",
+      "csv_rows": 8356,
+      "viewer_frames": 10026,
+      "valid_moment_frames": 8358,
+      "csv_time_s": [
+        16.68,
+        100.23
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        11.7015380859375,
+        13.709541320800781
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P4_NOEXO\\session3_20261014_094410\\derived\\opensim\\run_20261015_203024_1870",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P4_NOEXO\\session3_20261014_094410\\ground_truth.csv",
+      "elapsed_s": 34.44,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_STEADY\\BWALK_0P4_NOEXO\\session4_20261014_094609",
+      "condition": "BWALK_0P4_NOEXO",
+      "session_uuid": "50351ecb-b466-48d2-8033-183df4ed1c47",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P4_NOEXO\\session4_20261014_094609\\501_BWALK_0P4_NOEXO_r4_4f857a0a1.c3d": {
+          "size": 4832576,
+          "mtime_ns": 1791984019511129000
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P4_NOEXO\\session4_20261014_094609\\501_BWALK_0P4_NOEXO_r4_4f857a0a1.txt": {
+          "size": 26217421,
+          "mtime_ns": 1791984017332633100
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P4_NOEXO\\session4_20261014_094609\\mocap.h5": {
+          "size": 2482212,
+          "mtime_ns": 1791984019784631700
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P4_NOEXO\\session4_20261014_094609\\imu.h5": {
+          "size": 6235396,
+          "mtime_ns": 1791984018362003700
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": null,
+      "analysis_source": null,
+      "partial_transient": false,
+      "started_at": "2026-10-15T20:30:57.664211+08:00",
+      "csv_rows": 8759,
+      "viewer_frames": 10779,
+      "valid_moment_frames": 8759,
+      "csv_time_s": [
+        12.4,
+        99.98
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        4.447394371032715,
+        5.361587047576904
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P4_NOEXO\\session4_20261014_094609\\derived\\opensim\\run_20261015_203058_7251",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P4_NOEXO\\session4_20261014_094609\\ground_truth.csv",
+      "elapsed_s": 35.49,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_STEADY\\BWALK_0P4_NOEXO\\session5_20261014_094814",
+      "condition": "BWALK_0P4_NOEXO",
+      "session_uuid": "50351ecb-b466-48d2-8033-183df4ed1c47",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P4_NOEXO\\session5_20261014_094814\\501_BWALK_0P4_NOEXO_r5_8a41a97c1.c3d": {
+          "size": 3784256,
+          "mtime_ns": 1791984024081512600
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P4_NOEXO\\session5_20261014_094814\\501_BWALK_0P4_NOEXO_r5_8a41a97c1.txt": {
+          "size": 22378658,
+          "mtime_ns": 1791984022085800500
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P4_NOEXO\\session5_20261014_094814\\mocap.h5": {
+          "size": 1976212,
+          "mtime_ns": 1791984023692926900
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P4_NOEXO\\session5_20261014_094814\\imu.h5": {
+          "size": 4924900,
+          "mtime_ns": 1791984022824806300
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": null,
+      "analysis_source": null,
+      "partial_transient": false,
+      "started_at": "2026-10-15T20:31:33.170454+08:00",
+      "csv_rows": 6575,
+      "viewer_frames": 8439,
+      "valid_moment_frames": 6575,
+      "csv_time_s": [
+        12.4,
+        78.14
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        5.621997833251953,
+        5.4363908767700195
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P4_NOEXO\\session5_20261014_094814\\derived\\opensim\\run_20261015_203133_9808",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P4_NOEXO\\session5_20261014_094814\\ground_truth.csv",
+      "elapsed_s": 28.5,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_STEADY\\DWALK_0P6_NOEXO\\session1_20261014_084332",
+      "condition": "DWALK_0P6_NOEXO",
+      "session_uuid": "aa057e83-0eb1-4087-a70f-34b0f001d646",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P6_NOEXO\\session1_20261014_084332\\imu.h5": {
+          "size": 1009838,
+          "mtime_ns": 1791984024807006100
+        }
+      },
+      "status": "MISSING_INPUT",
+      "reason": "C3D, Gaitway TXT, mocap.h5"
+    },
+    {
+      "session": "d1\\F_STEADY\\DWALK_0P6_NOEXO\\session1_20261014_084452",
+      "condition": "DWALK_0P6_NOEXO",
+      "session_uuid": "aa057e83-0eb1-4087-a70f-34b0f001d646",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P6_NOEXO\\session1_20261014_084452\\imu.h5": {
+          "size": 2175108,
+          "mtime_ns": 1791984026337798600
+        }
+      },
+      "status": "MISSING_INPUT",
+      "reason": "C3D, Gaitway TXT, mocap.h5"
+    },
+    {
+      "session": "d1\\F_STEADY\\DWALK_0P6_NOEXO\\session1_20261014_084539",
+      "condition": "DWALK_0P6_NOEXO",
+      "session_uuid": "aa057e83-0eb1-4087-a70f-34b0f001d646",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P6_NOEXO\\session1_20261014_084539\\501_DWALK_0P6_NOEXO_r1_1afb1a871.c3d": {
+          "size": 2187584,
+          "mtime_ns": 1791984028752557300
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P6_NOEXO\\session1_20261014_084539\\501_DWALK_0P6_NOEXO_r1_1afb1a871.txt": {
+          "size": 12210837,
+          "mtime_ns": 1791984031037949100
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P6_NOEXO\\session1_20261014_084539\\mocap.h5": {
+          "size": 1226238,
+          "mtime_ns": 1791984028914761700
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P6_NOEXO\\session1_20261014_084539\\imu.h5": {
+          "size": 3021508,
+          "mtime_ns": 1791984028010222300
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": null,
+      "analysis_source": null,
+      "partial_transient": false,
+      "started_at": "2026-10-15T20:32:01.688296+08:00",
+      "csv_rows": 3247,
+      "viewer_frames": 4875,
+      "valid_moment_frames": 3247,
+      "csv_time_s": [
+        11.48,
+        43.94
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        6.751237869262695,
+        7.254936218261719
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P6_NOEXO\\session1_20261014_084539\\derived\\opensim\\run_20261015_203202_1729",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P6_NOEXO\\session1_20261014_084539\\ground_truth.csv",
+      "elapsed_s": 17.58,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_STEADY\\DWALK_0P6_NOEXO\\session2_20261014_084655",
+      "condition": "DWALK_0P6_NOEXO",
+      "session_uuid": "aa057e83-0eb1-4087-a70f-34b0f001d646",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P6_NOEXO\\session2_20261014_084655\\501_DWALK_0P6_NOEXO_r2_d7a721db1.c3d": {
+          "size": 2458176,
+          "mtime_ns": 1791984033071405200
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P6_NOEXO\\session2_20261014_084655\\501_DWALK_0P6_NOEXO_r2_d7a721db1.txt": {
+          "size": 13370713,
+          "mtime_ns": 1791984032417621200
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P6_NOEXO\\session2_20261014_084655\\mocap.h5": {
+          "size": 1358238,
+          "mtime_ns": 1791984034005525500
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P6_NOEXO\\session2_20261014_084655\\imu.h5": {
+          "size": 3356804,
+          "mtime_ns": 1791984033343007700
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": null,
+      "analysis_source": null,
+      "partial_transient": false,
+      "started_at": "2026-10-15T20:32:19.295737+08:00",
+      "csv_rows": 3567,
+      "viewer_frames": 5479,
+      "valid_moment_frames": 3567,
+      "csv_time_s": [
+        11.74,
+        47.4
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        7.468812942504883,
+        5.182743072509766
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P6_NOEXO\\session2_20261014_084655\\derived\\opensim\\run_20261015_203219_8612",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P6_NOEXO\\session2_20261014_084655\\ground_truth.csv",
+      "elapsed_s": 19.55,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_STEADY\\DWALK_0P6_NOEXO\\session3_20261014_084803",
+      "condition": "DWALK_0P6_NOEXO",
+      "session_uuid": "aa057e83-0eb1-4087-a70f-34b0f001d646",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P6_NOEXO\\session3_20261014_084803\\501_DWALK_0P6_NOEXO_r3_c3658f431.c3d": {
+          "size": 2422336,
+          "mtime_ns": 1791984037567313200
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P6_NOEXO\\session3_20261014_084803\\501_DWALK_0P6_NOEXO_r3_c3658f431.txt": {
+          "size": 14109746,
+          "mtime_ns": 1791984038734826600
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P6_NOEXO\\session3_20261014_084803\\mocap.h5": {
+          "size": 1336238,
+          "mtime_ns": 1791984036399586000
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P6_NOEXO\\session3_20261014_084803\\imu.h5": {
+          "size": 3315908,
+          "mtime_ns": 1791984035556759400
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": null,
+      "analysis_source": null,
+      "partial_transient": false,
+      "started_at": "2026-10-15T20:32:38.856640+08:00",
+      "csv_rows": 3751,
+      "viewer_frames": 5399,
+      "valid_moment_frames": 3751,
+      "csv_time_s": [
+        11.33,
+        48.83
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        6.744600296020508,
+        3.7514102458953857
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P6_NOEXO\\session3_20261014_084803\\derived\\opensim\\run_20261015_203239_4422",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P6_NOEXO\\session3_20261014_084803\\ground_truth.csv",
+      "elapsed_s": 19.09,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_STEADY\\DWALK_0P6_NOEXO\\session4_20261014_090932",
+      "condition": "DWALK_0P6_NOEXO",
+      "session_uuid": "50351ecb-b466-48d2-8033-183df4ed1c47",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P6_NOEXO\\session4_20261014_090932\\501_DWALK_0P6_NOEXO_r4_45e11a111.c3d": {
+          "size": 3321472,
+          "mtime_ns": 1791984041224230900
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P6_NOEXO\\session4_20261014_090932\\501_DWALK_0P6_NOEXO_r4_45e11a111.txt": {
+          "size": 17952786,
+          "mtime_ns": 1791984040380630000
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P6_NOEXO\\session4_20261014_090932\\mocap.h5": {
+          "size": 1754238,
+          "mtime_ns": 1791984042496480000
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P6_NOEXO\\session4_20261014_090932\\imu.h5": {
+          "size": 4350404,
+          "mtime_ns": 1791984041702306200
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": null,
+      "analysis_source": null,
+      "partial_transient": false,
+      "started_at": "2026-10-15T20:32:57.978480+08:00",
+      "csv_rows": 5563,
+      "viewer_frames": 7406,
+      "valid_moment_frames": 5563,
+      "csv_time_s": [
+        14.75,
+        70.37
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        4.696035385131836,
+        4.755180835723877
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P6_NOEXO\\session4_20261014_090932\\derived\\opensim\\run_20261015_203258_6295",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P6_NOEXO\\session4_20261014_090932\\ground_truth.csv",
+      "elapsed_s": 25.67,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_STEADY\\DWALK_0P6_NOEXO\\session5_20261014_091058",
+      "condition": "DWALK_0P6_NOEXO",
+      "session_uuid": "50351ecb-b466-48d2-8033-183df4ed1c47",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P6_NOEXO\\session5_20261014_091058\\501_DWALK_0P6_NOEXO_r5_c0edfe051.c3d": {
+          "size": 3239040,
+          "mtime_ns": 1791984043517054600
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P6_NOEXO\\session5_20261014_091058\\501_DWALK_0P6_NOEXO_r5_c0edfe051.txt": {
+          "size": 17723155,
+          "mtime_ns": 1791984045844514000
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P6_NOEXO\\session5_20261014_091058\\mocap.h5": {
+          "size": 1710238,
+          "mtime_ns": 1791984046072030100
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P6_NOEXO\\session5_20261014_091058\\imu.h5": {
+          "size": 4258404,
+          "mtime_ns": 1791984043904555600
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": null,
+      "analysis_source": null,
+      "partial_transient": false,
+      "started_at": "2026-10-15T20:33:23.692860+08:00",
+      "csv_rows": 5553,
+      "viewer_frames": 7222,
+      "valid_moment_frames": 5553,
+      "csv_time_s": [
+        11.05,
+        66.57
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        4.593229293823242,
+        20.158382415771484
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P6_NOEXO\\session5_20261014_091058\\derived\\opensim\\run_20261015_203324_3953",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P6_NOEXO\\session5_20261014_091058\\ground_truth.csv",
+      "elapsed_s": 25.78,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_STEADY\\DWALK_0P8_NOEXO\\session1_20261014_084923",
+      "condition": "DWALK_0P8_NOEXO",
+      "session_uuid": "aa057e83-0eb1-4087-a70f-34b0f001d646",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P8_NOEXO\\session1_20261014_084923\\501_DWALK_0P8_NOEXO_r1_9ce4c9e41.c3d": {
+          "size": 2415616,
+          "mtime_ns": 1791984049201290200
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P8_NOEXO\\session1_20261014_084923\\501_DWALK_0P8_NOEXO_r1_9ce4c9e41.txt": {
+          "size": 13230868,
+          "mtime_ns": 1791984047441195000
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P8_NOEXO\\session1_20261014_084923\\mocap.h5": {
+          "size": 1336238,
+          "mtime_ns": 1791984048930121600
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P8_NOEXO\\session1_20261014_084923\\imu.h5": {
+          "size": 3297508,
+          "mtime_ns": 1791984048258643600
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": null,
+      "analysis_source": null,
+      "partial_transient": false,
+      "started_at": "2026-10-15T20:33:49.506613+08:00",
+      "csv_rows": 3460,
+      "viewer_frames": 5384,
+      "valid_moment_frames": 3460,
+      "csv_time_s": [
+        13.17,
+        47.76
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        6.352148056030273,
+        6.740474700927734
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P8_NOEXO\\session1_20261014_084923\\derived\\opensim\\run_20261015_203350_0537",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P8_NOEXO\\session1_20261014_084923\\ground_truth.csv",
+      "elapsed_s": 19.91,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_STEADY\\DWALK_0P8_NOEXO\\session2_20261014_085030",
+      "condition": "DWALK_0P8_NOEXO",
+      "session_uuid": "aa057e83-0eb1-4087-a70f-34b0f001d646",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P8_NOEXO\\session2_20261014_085030\\501_DWALK_0P8_NOEXO_r2_b4c4b5101.c3d": {
+          "size": 2388288,
+          "mtime_ns": 1791984050321971500
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P8_NOEXO\\session2_20261014_085030\\501_DWALK_0P8_NOEXO_r2_b4c4b5101.txt": {
+          "size": 13155913,
+          "mtime_ns": 1791984051956913700
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P8_NOEXO\\session2_20261014_085030\\mocap.h5": {
+          "size": 1314238,
+          "mtime_ns": 1791984052948871100
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P8_NOEXO\\session2_20261014_085030\\imu.h5": {
+          "size": 3260708,
+          "mtime_ns": 1791984052287714200
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": null,
+      "analysis_source": null,
+      "partial_transient": false,
+      "started_at": "2026-10-15T20:34:09.437965+08:00",
+      "csv_rows": 3683,
+      "viewer_frames": 5323,
+      "valid_moment_frames": 3683,
+      "csv_time_s": [
+        11.67,
+        48.49
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        5.564908027648926,
+        6.18927526473999
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P8_NOEXO\\session2_20261014_085030\\derived\\opensim\\run_20261015_203409_9800",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P8_NOEXO\\session2_20261014_085030\\ground_truth.csv",
+      "elapsed_s": 19.28,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_STEADY\\DWALK_0P8_NOEXO\\session3_20261014_085139",
+      "condition": "DWALK_0P8_NOEXO",
+      "session_uuid": "aa057e83-0eb1-4087-a70f-34b0f001d646",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P8_NOEXO\\session3_20261014_085139\\501_DWALK_0P8_NOEXO_r3_fe0657011.c3d": {
+          "size": 2219392,
+          "mtime_ns": 1791984054482090700
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P8_NOEXO\\session3_20261014_085139\\501_DWALK_0P8_NOEXO_r3_fe0657011.txt": {
+          "size": 13646466,
+          "mtime_ns": 1791984056258314400
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P8_NOEXO\\session3_20261014_085139\\mocap.h5": {
+          "size": 1226238,
+          "mtime_ns": 1791984056465638700
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P8_NOEXO\\session3_20261014_085139\\imu.h5": {
+          "size": 3058308,
+          "mtime_ns": 1791984054749459600
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": null,
+      "analysis_source": null,
+      "partial_transient": false,
+      "started_at": "2026-10-15T20:34:28.747284+08:00",
+      "csv_rows": 3413,
+      "viewer_frames": 4946,
+      "valid_moment_frames": 3413,
+      "csv_time_s": [
+        11.14,
+        45.26
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        13.373333930969238,
+        43.63194274902344
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P8_NOEXO\\session3_20261014_085139\\derived\\opensim\\run_20261015_203429_2999",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P8_NOEXO\\session3_20261014_085139\\ground_truth.csv",
+      "elapsed_s": 18.12,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_STEADY\\DWALK_0P8_NOEXO\\session4_20261014_091225",
+      "condition": "DWALK_0P8_NOEXO",
+      "session_uuid": "50351ecb-b466-48d2-8033-183df4ed1c47",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P8_NOEXO\\session4_20261014_091225\\501_DWALK_0P8_NOEXO_r4_9603a0c31.c3d": {
+          "size": 2595264,
+          "mtime_ns": 1791984058594630000
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P8_NOEXO\\session4_20261014_091225\\501_DWALK_0P8_NOEXO_r4_9603a0c31.txt": {
+          "size": 13834767,
+          "mtime_ns": 1791984058333437300
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P8_NOEXO\\session4_20261014_091225\\mocap.h5": {
+          "size": 1380238,
+          "mtime_ns": 1791984059897303100
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P8_NOEXO\\session4_20261014_091225\\imu.h5": {
+          "size": 3467204,
+          "mtime_ns": 1791984059311277200
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": null,
+      "analysis_source": null,
+      "partial_transient": false,
+      "started_at": "2026-10-15T20:34:46.894214+08:00",
+      "csv_rows": 3760,
+      "viewer_frames": 5785,
+      "valid_moment_frames": 3772,
+      "csv_time_s": [
+        15.51,
+        53.22
+      ],
+      "time_gap_count": 1,
+      "max_adjacent_hip_jump_Nm": [
+        12.305481910705566,
+        35.13133239746094
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P8_NOEXO\\session4_20261014_091225\\derived\\opensim\\run_20261015_203447_4223",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P8_NOEXO\\session4_20261014_091225\\ground_truth.csv",
+      "elapsed_s": 20.25,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_STEADY\\DWALK_0P8_NOEXO\\session5_20261014_091335",
+      "condition": "DWALK_0P8_NOEXO",
+      "session_uuid": "50351ecb-b466-48d2-8033-183df4ed1c47",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P8_NOEXO\\session5_20261014_091335\\501_DWALK_0P8_NOEXO_r5_570c05371.c3d": {
+          "size": 2336768,
+          "mtime_ns": 1791984063188133900
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P8_NOEXO\\session5_20261014_091335\\501_DWALK_0P8_NOEXO_r5_570c05371.txt": {
+          "size": 12807051,
+          "mtime_ns": 1791984061306212100
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P8_NOEXO\\session5_20261014_091335\\mocap.h5": {
+          "size": 1270238,
+          "mtime_ns": 1791984062817308000
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P8_NOEXO\\session5_20261014_091335\\imu.h5": {
+          "size": 3150308,
+          "mtime_ns": 1791984062201325100
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": null,
+      "analysis_source": null,
+      "partial_transient": false,
+      "started_at": "2026-10-15T20:35:07.170347+08:00",
+      "csv_rows": 3500,
+      "viewer_frames": 5208,
+      "valid_moment_frames": 3500,
+      "csv_time_s": [
+        10.21,
+        45.2
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        4.752712249755859,
+        6.0651397705078125
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P8_NOEXO\\session5_20261014_091335\\derived\\opensim\\run_20261015_203507_6952",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P8_NOEXO\\session5_20261014_091335\\ground_truth.csv",
+      "elapsed_s": 19.03,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_STEADY\\DWALK_1P0_NOEXO\\session1_20261014_085248",
+      "condition": "DWALK_1P0_NOEXO",
+      "session_uuid": "aa057e83-0eb1-4087-a70f-34b0f001d646",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session1_20261014_085248\\501_DWALK_1P0_NOEXO_r1_adf69a551.c3d": {
+          "size": 2343488,
+          "mtime_ns": 1791984066993490500
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session1_20261014_085248\\501_DWALK_1P0_NOEXO_r1_adf69a551.txt": {
+          "size": 12917385,
+          "mtime_ns": 1791984065154897500
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session1_20261014_085248\\mocap.h5": {
+          "size": 1292238,
+          "mtime_ns": 1791984066217458200
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session1_20261014_085248\\imu.h5": {
+          "size": 3223908,
+          "mtime_ns": 1791984065452354800
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": null,
+      "analysis_source": null,
+      "partial_transient": false,
+      "started_at": "2026-10-15T20:35:26.218891+08:00",
+      "csv_rows": 3420,
+      "viewer_frames": 5223,
+      "valid_moment_frames": 3420,
+      "csv_time_s": [
+        14.05,
+        48.24
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        6.993010520935059,
+        34.06766128540039
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session1_20261014_085248\\derived\\opensim\\run_20261015_203526_7135",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session1_20261014_085248\\ground_truth.csv",
+      "elapsed_s": 18.97,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_STEADY\\DWALK_1P0_NOEXO\\session2_20261014_085354",
+      "condition": "DWALK_1P0_NOEXO",
+      "session_uuid": "aa057e83-0eb1-4087-a70f-34b0f001d646",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session2_20261014_085354\\501_DWALK_1P0_NOEXO_r2_ea3d7e021.c3d": {
+          "size": 1673728,
+          "mtime_ns": 1791984067515694900
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session2_20261014_085354\\mocap.h5": {
+          "size": 961886,
+          "mtime_ns": 1791984068772288100
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session2_20261014_085354\\imu.h5": {
+          "size": 2395908,
+          "mtime_ns": 1791984068258514900
+        }
+      },
+      "status": "MISSING_INPUT",
+      "reason": "Gaitway TXT"
+    },
+    {
+      "session": "d1\\F_STEADY\\DWALK_1P0_NOEXO\\session2_20261014_090036",
+      "condition": "DWALK_1P0_NOEXO",
+      "session_uuid": "50351ecb-b466-48d2-8033-183df4ed1c47",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session2_20261014_090036\\501_DWALK_1P0_NOEXO_r2_e46f65d01.c3d": {
+          "size": 2234624,
+          "mtime_ns": 1791984071795778700
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session2_20261014_090036\\501_DWALK_1P0_NOEXO_r2_e46f65d01.txt": {
+          "size": 12032707,
+          "mtime_ns": 1791984070718407900
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session2_20261014_090036\\mocap.h5": {
+          "size": 1204238,
+          "mtime_ns": 1791984071511877700
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session2_20261014_090036\\imu.h5": {
+          "size": 3003108,
+          "mtime_ns": 1791984070994778300
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": null,
+      "analysis_source": null,
+      "partial_transient": false,
+      "started_at": "2026-10-15T20:35:45.208701+08:00",
+      "csv_rows": 3261,
+      "viewer_frames": 4980,
+      "valid_moment_frames": 3261,
+      "csv_time_s": [
+        13.05,
+        45.65
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        8.036478042602539,
+        7.350233554840088
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session2_20261014_090036\\derived\\opensim\\run_20261015_203545_7113",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session2_20261014_090036\\ground_truth.csv",
+      "elapsed_s": 18.44,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_STEADY\\DWALK_1P0_NOEXO\\session3_20261014_090139",
+      "condition": "DWALK_1P0_NOEXO",
+      "session_uuid": "50351ecb-b466-48d2-8033-183df4ed1c47",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session3_20261014_090139\\501_DWALK_1P0_NOEXO_r3_863f2a461.c3d": {
+          "size": 2327808,
+          "mtime_ns": 1791984074409727400
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session3_20261014_090139\\501_DWALK_1P0_NOEXO_r3_863f2a461.txt": {
+          "size": 12664860,
+          "mtime_ns": 1791984073785637800
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session3_20261014_090139\\mocap.h5": {
+          "size": 1270238,
+          "mtime_ns": 1791984074602009300
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session3_20261014_090139\\imu.h5": {
+          "size": 3131908,
+          "mtime_ns": 1791984072758233500
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": null,
+      "analysis_source": null,
+      "partial_transient": false,
+      "started_at": "2026-10-15T20:36:03.678145+08:00",
+      "csv_rows": 3545,
+      "viewer_frames": 5188,
+      "valid_moment_frames": 3545,
+      "csv_time_s": [
+        11.65,
+        47.09
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        6.831942558288574,
+        7.22917366027832
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session3_20261014_090139\\derived\\opensim\\run_20261015_203604_2032",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session3_20261014_090139\\ground_truth.csv",
+      "elapsed_s": 19.36,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_STEADY\\DWALK_1P0_NOEXO\\session3_20261014_091440",
+      "condition": "DWALK_1P0_NOEXO",
+      "session_uuid": "50351ecb-b466-48d2-8033-183df4ed1c47",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session3_20261014_091440\\501_DWALK_1P0_NOEXO_r3_1fe47acf1.c3d": {
+          "size": 1835904,
+          "mtime_ns": 1791984075675037200
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session3_20261014_091440\\mocap.h5": {
+          "size": 1005886,
+          "mtime_ns": 1791984076085883200
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session3_20261014_091440\\imu.h5": {
+          "size": 2377508,
+          "mtime_ns": 1791984075458368900
+        }
+      },
+      "status": "MISSING_INPUT",
+      "reason": "Gaitway TXT"
+    },
+    {
+      "session": "d1\\F_STEADY\\DWALK_1P0_NOEXO\\session3_20261014_091545",
+      "condition": "DWALK_1P0_NOEXO",
+      "session_uuid": "50351ecb-b466-48d2-8033-183df4ed1c47",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session3_20261014_091545\\501_DWALK_1P0_NOEXO_r3_201134561.c3d": {
+          "size": 2638720,
+          "mtime_ns": 1791984077990725600
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session3_20261014_091545\\501_DWALK_1P0_NOEXO_r3_201134561.txt": {
+          "size": 14277998,
+          "mtime_ns": 1791984079598835500
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session3_20261014_091545\\mocap.h5": {
+          "size": 1424238,
+          "mtime_ns": 1791984078197072600
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session3_20261014_091545\\imu.h5": {
+          "size": 3522404,
+          "mtime_ns": 1791984077147197500
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": null,
+      "analysis_source": null,
+      "partial_transient": false,
+      "started_at": "2026-10-15T20:36:23.063020+08:00",
+      "csv_rows": 4042,
+      "viewer_frames": 5882,
+      "valid_moment_frames": 4042,
+      "csv_time_s": [
+        13.13,
+        53.54
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        8.442354202270508,
+        6.745251655578613
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session3_20261014_091545\\derived\\opensim\\run_20261015_203623_6583",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session3_20261014_091545\\ground_truth.csv",
+      "elapsed_s": 21.59,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_STEADY\\DWALK_1P0_NOEXO\\session4_20261014_091655",
+      "condition": "DWALK_1P0_NOEXO",
+      "session_uuid": "50351ecb-b466-48d2-8033-183df4ed1c47",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session4_20261014_091655\\501_DWALK_1P0_NOEXO_r4_172331311.c3d": {
+          "size": 2573312,
+          "mtime_ns": 1791984081585397000
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session4_20261014_091655\\501_DWALK_1P0_NOEXO_r4_172331311.txt": {
+          "size": 13769055,
+          "mtime_ns": 1791984083273112200
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session4_20261014_091655\\mocap.h5": {
+          "size": 1380238,
+          "mtime_ns": 1791984081870429400
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session4_20261014_091655\\imu.h5": {
+          "size": 3430404,
+          "mtime_ns": 1791984080737297000
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": null,
+      "analysis_source": null,
+      "partial_transient": false,
+      "started_at": "2026-10-15T20:36:44.682950+08:00",
+      "csv_rows": 3933,
+      "viewer_frames": 5736,
+      "valid_moment_frames": 3933,
+      "csv_time_s": [
+        13.22,
+        52.54
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        20.585403442382812,
+        40.71164321899414
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session4_20261014_091655\\derived\\opensim\\run_20261015_203645_2492",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session4_20261014_091655\\ground_truth.csv",
+      "elapsed_s": 22.22,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_STEADY\\DWALK_1P0_NOEXO\\session5_20261014_091806",
+      "condition": "DWALK_1P0_NOEXO",
+      "session_uuid": "50351ecb-b466-48d2-8033-183df4ed1c47",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session5_20261014_091806\\501_DWALK_1P0_NOEXO_r5_26fd0aeb1.c3d": {
+          "size": 2840768,
+          "mtime_ns": 1791984083781832100
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session5_20261014_091806\\501_DWALK_1P0_NOEXO_r5_26fd0aeb1.txt": {
+          "size": 15388647,
+          "mtime_ns": 1791984085755822900
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session5_20261014_091806\\mocap.h5": {
+          "size": 1512238,
+          "mtime_ns": 1791984087009581400
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session5_20261014_091806\\imu.h5": {
+          "size": 3761604,
+          "mtime_ns": 1791984086218834800
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": null,
+      "analysis_source": null,
+      "partial_transient": false,
+      "started_at": "2026-10-15T20:37:06.930802+08:00",
+      "csv_rows": 4351,
+      "viewer_frames": 6333,
+      "valid_moment_frames": 4351,
+      "csv_time_s": [
+        14.75,
+        58.25
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        7.300353527069092,
+        22.63053321838379
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session5_20261014_091806\\derived\\opensim\\run_20261015_203707_5585",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session5_20261014_091806\\ground_truth.csv",
+      "elapsed_s": 23.08,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session1_20261014_100033",
+      "condition": "STAND_BWALK_STAND_NOEXO",
+      "session_uuid": "72fc2473-6e84-47e7-a081-9f76a45774fb",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session1_20261014_100033\\501_STAND_BWALK_STAND_NOEXO_r1_438ffd4e1.c3d": {
+          "size": 3704960,
+          "mtime_ns": 1791984091713259500
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session1_20261014_100033\\501_STAND_BWALK_STAND_NOEXO_r1_438ffd4e1.txt": {
+          "size": 18437435,
+          "mtime_ns": 1791984089056177800
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session1_20261014_100033\\mocap.h5": {
+          "size": 1932212,
+          "mtime_ns": 1791984091090178900
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session1_20261014_100033\\imu.h5": {
+          "size": 4832900,
+          "mtime_ns": 1791984090156754500
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": [
+        0.0,
+        82.61
+      ],
+      "analysis_source": "full_record_transient_with_strict_force_validity_mask",
+      "partial_transient": true,
+      "started_at": "2026-10-15T20:37:30.017533+08:00",
+      "csv_rows": 5385,
+      "viewer_frames": 8262,
+      "valid_moment_frames": 5385,
+      "csv_time_s": [
+        20.13,
+        73.97
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        4.671906471252441,
+        4.961382865905762
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session1_20261014_100033\\derived\\opensim\\run_20261015_203730_0645",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session1_20261014_100033\\ground_truth.csv",
+      "elapsed_s": 25.25,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session2_20261014_100214",
+      "condition": "STAND_BWALK_STAND_NOEXO",
+      "session_uuid": "72fc2473-6e84-47e7-a081-9f76a45774fb",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session2_20261014_100214\\501_STAND_BWALK_STAND_NOEXO_r2_e9f07daa1.c3d": {
+          "size": 409472,
+          "mtime_ns": 1791984092570910900
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session2_20261014_100214\\mocap.h5": {
+          "size": 299838,
+          "mtime_ns": 1791984093048496800
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session2_20261014_100214\\imu.h5": {
+          "size": 604686,
+          "mtime_ns": 1791984092664955500
+        }
+      },
+      "status": "MISSING_INPUT",
+      "reason": "Gaitway TXT"
+    },
+    {
+      "session": "d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session2_20261014_100354",
+      "condition": "STAND_BWALK_STAND_NOEXO",
+      "session_uuid": "72fc2473-6e84-47e7-a081-9f76a45774fb",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session2_20261014_100354\\501_STAND_BWALK_STAND_NOEXO_r2_cedde2b21.c3d": {
+          "size": 799232,
+          "mtime_ns": 1791984094033205000
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session2_20261014_100354\\mocap.h5": {
+          "size": 499886,
+          "mtime_ns": 1791984094527958400
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session2_20261014_100354\\imu.h5": {
+          "size": 1230638,
+          "mtime_ns": 1791984094154634700
+        }
+      },
+      "status": "MISSING_INPUT",
+      "reason": "Gaitway TXT"
+    },
+    {
+      "session": "d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session2_20261014_100424",
+      "condition": "STAND_BWALK_STAND_NOEXO",
+      "session_uuid": "72fc2473-6e84-47e7-a081-9f76a45774fb",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session2_20261014_100424\\501_STAND_BWALK_STAND_NOEXO_r2_8dedccc71.c3d": {
+          "size": 1707328,
+          "mtime_ns": 1791984095520896700
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session2_20261014_100424\\mocap.h5": {
+          "size": 939886,
+          "mtime_ns": 1791984096325004700
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session2_20261014_100424\\imu.h5": {
+          "size": 2211908,
+          "mtime_ns": 1791984095799967900
+        }
+      },
+      "status": "MISSING_INPUT",
+      "reason": "Gaitway TXT"
+    },
+    {
+      "session": "d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session2_20261014_100848",
+      "condition": "STAND_BWALK_STAND_NOEXO",
+      "session_uuid": "72fc2473-6e84-47e7-a081-9f76a45774fb",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session2_20261014_100848\\501_STAND_BWALK_STAND_NOEXO_r2_9bc8198f1.c3d": {
+          "size": 4244352,
+          "mtime_ns": 1791984097506537600
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session2_20261014_100848\\501_STAND_BWALK_STAND_NOEXO_r2_9bc8198f1.txt": {
+          "size": 22441440,
+          "mtime_ns": 1791984100890965000
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session2_20261014_100848\\mocap.h5": {
+          "size": 2196212,
+          "mtime_ns": 1791984101229487800
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session2_20261014_100848\\imu.h5": {
+          "size": 5495300,
+          "mtime_ns": 1791984098063695300
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": [
+        0.0,
+        94.65
+      ],
+      "analysis_source": "full_record_transient_with_strict_force_validity_mask",
+      "partial_transient": true,
+      "started_at": "2026-10-15T20:37:55.295976+08:00",
+      "csv_rows": 7131,
+      "viewer_frames": 9466,
+      "valid_moment_frames": 7131,
+      "csv_time_s": [
+        17.26,
+        88.56
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        6.072396755218506,
+        4.69868278503418
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session2_20261014_100848\\derived\\opensim\\run_20261015_203756_1176",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session2_20261014_100848\\ground_truth.csv",
+      "elapsed_s": 29.47,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session3_20261014_101039",
+      "condition": "STAND_BWALK_STAND_NOEXO",
+      "session_uuid": "72fc2473-6e84-47e7-a081-9f76a45774fb",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session3_20261014_101039\\501_STAND_BWALK_STAND_NOEXO_r3_2676d1e11.c3d": {
+          "size": 3043712,
+          "mtime_ns": 1791984104610878900
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session3_20261014_101039\\501_STAND_BWALK_STAND_NOEXO_r3_2676d1e11.txt": {
+          "size": 18144785,
+          "mtime_ns": 1791984103496390100
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session3_20261014_101039\\mocap.h5": {
+          "size": 1622238,
+          "mtime_ns": 1791984104825388900
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session3_20261014_101039\\imu.h5": {
+          "size": 4019204,
+          "mtime_ns": 1791984103879147600
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": [
+        0.0,
+        67.85
+      ],
+      "analysis_source": "full_record_transient_with_strict_force_validity_mask",
+      "partial_transient": true,
+      "started_at": "2026-10-15T20:38:24.776067+08:00",
+      "csv_rows": 5346,
+      "viewer_frames": 6786,
+      "valid_moment_frames": 5346,
+      "csv_time_s": [
+        14.09,
+        67.54
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        9.383289337158203,
+        8.9693603515625
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session3_20261014_101039\\derived\\opensim\\run_20261015_203825_4144",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session3_20261014_101039\\ground_truth.csv",
+      "elapsed_s": 22.23,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session4_20261014_101204",
+      "condition": "STAND_BWALK_STAND_NOEXO",
+      "session_uuid": "72fc2473-6e84-47e7-a081-9f76a45774fb",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session4_20261014_101204\\501_STAND_BWALK_STAND_NOEXO_r4_b9412efe1.c3d": {
+          "size": 4074112,
+          "mtime_ns": 1791984107345233100
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session4_20261014_101204\\501_STAND_BWALK_STAND_NOEXO_r4_b9412efe1.txt": {
+          "size": 24044341,
+          "mtime_ns": 1791984109513735000
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session4_20261014_101204\\mocap.h5": {
+          "size": 2130212,
+          "mtime_ns": 1791984106920158700
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session4_20261014_101204\\imu.h5": {
+          "size": 5292900,
+          "mtime_ns": 1791984105987262000
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": [
+        0.0,
+        90.85
+      ],
+      "analysis_source": "full_record_transient_with_strict_force_validity_mask",
+      "partial_transient": true,
+      "started_at": "2026-10-15T20:38:47.029641+08:00",
+      "csv_rows": 7459,
+      "viewer_frames": 9086,
+      "valid_moment_frames": 7459,
+      "csv_time_s": [
+        10.75,
+        85.33
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        4.386966705322266,
+        4.776582717895508
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session4_20261014_101204\\derived\\opensim\\run_20261015_203847_8958",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session4_20261014_101204\\ground_truth.csv",
+      "elapsed_s": 30.22,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session5_20261014_101354",
+      "condition": "STAND_BWALK_STAND_NOEXO",
+      "session_uuid": "72fc2473-6e84-47e7-a081-9f76a45774fb",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session5_20261014_101354\\501_STAND_BWALK_STAND_NOEXO_r5_edf6a6541.c3d": {
+          "size": 4573184,
+          "mtime_ns": 1791984110941184100
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session5_20261014_101354\\501_STAND_BWALK_STAND_NOEXO_r5_edf6a6541.txt": {
+          "size": 26948300,
+          "mtime_ns": 1791984113892806000
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session5_20261014_101354\\mocap.h5": {
+          "size": 2372212,
+          "mtime_ns": 1791984115701796200
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session5_20261014_101354\\imu.h5": {
+          "size": 5904196,
+          "mtime_ns": 1791984114544786500
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": [
+        0.0,
+        101.99
+      ],
+      "analysis_source": "full_record_transient_with_strict_force_validity_mask",
+      "partial_transient": true,
+      "started_at": "2026-10-15T20:39:17.251691+08:00",
+      "csv_rows": 8660,
+      "viewer_frames": 10200,
+      "valid_moment_frames": 8660,
+      "csv_time_s": [
+        11.13,
+        97.72
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        5.1576361656188965,
+        5.17765474319458
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session5_20261014_101354\\derived\\opensim\\run_20261015_203918_2485",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_BWALK_STAND_NOEXO\\session5_20261014_101354\\ground_truth.csv",
+      "elapsed_s": 34.02,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session1_20261014_095052",
+      "condition": "STAND_WALK_STAND_NOEXO",
+      "session_uuid": "72fc2473-6e84-47e7-a081-9f76a45774fb",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session1_20261014_095052\\501_STAND_WALK_STAND_NOEXO_r1_3b168d591.c3d": {
+          "size": 4386816,
+          "mtime_ns": 1791984116811193600
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session1_20261014_095052\\501_STAND_WALK_STAND_NOEXO_r1_3b168d591.txt": {
+          "size": 23625627,
+          "mtime_ns": 1791984118787766100
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session1_20261014_095052\\mocap.h5": {
+          "size": 2262212,
+          "mtime_ns": 1791984120341799800
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session1_20261014_095052\\imu.h5": {
+          "size": 5660900,
+          "mtime_ns": 1791984119323728000
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": [
+        0.0,
+        97.83
+      ],
+      "analysis_source": "full_record_transient_with_strict_force_validity_mask",
+      "partial_transient": true,
+      "started_at": "2026-10-15T20:39:51.313511+08:00",
+      "csv_rows": 7146,
+      "viewer_frames": 9784,
+      "valid_moment_frames": 7146,
+      "csv_time_s": [
+        18.95,
+        90.4
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        6.924947261810303,
+        5.183134078979492
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session1_20261014_095052\\derived\\opensim\\run_20261015_203952_1971",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session1_20261014_095052\\ground_truth.csv",
+      "elapsed_s": 31.56,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session2_20261014_095243",
+      "condition": "STAND_WALK_STAND_NOEXO",
+      "session_uuid": "72fc2473-6e84-47e7-a081-9f76a45774fb",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session2_20261014_095243\\501_STAND_WALK_STAND_NOEXO_r2_6914a6411.c3d": {
+          "size": 4393088,
+          "mtime_ns": 1791984123325864800
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session2_20261014_095243\\501_STAND_WALK_STAND_NOEXO_r2_6914a6411.txt": {
+          "size": 25367260,
+          "mtime_ns": 1791984122876110500
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session2_20261014_095243\\mocap.h5": {
+          "size": 2284212,
+          "mtime_ns": 1791984125275105700
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session2_20261014_095243\\imu.h5": {
+          "size": 5679300,
+          "mtime_ns": 1791984124279558000
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": [
+        0.0,
+        97.97
+      ],
+      "analysis_source": "full_record_transient_with_strict_force_validity_mask",
+      "partial_transient": true,
+      "started_at": "2026-10-15T20:40:22.903397+08:00",
+      "csv_rows": 7949,
+      "viewer_frames": 9798,
+      "valid_moment_frames": 7949,
+      "csv_time_s": [
+        10.79,
+        90.27
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        5.584222793579102,
+        4.914734840393066
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session2_20261014_095243\\derived\\opensim\\run_20261015_204023_7706",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session2_20261014_095243\\ground_truth.csv",
+      "elapsed_s": 32.94,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session3_20261014_095436",
+      "condition": "STAND_WALK_STAND_NOEXO",
+      "session_uuid": "72fc2473-6e84-47e7-a081-9f76a45774fb",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session3_20261014_095436\\501_STAND_WALK_STAND_NOEXO_r3_50a73e711.c3d": {
+          "size": 3738112,
+          "mtime_ns": 1791984128199173200
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session3_20261014_095436\\501_STAND_WALK_STAND_NOEXO_r3_50a73e711.txt": {
+          "size": 21126857,
+          "mtime_ns": 1791984127790018000
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session3_20261014_095436\\mocap.h5": {
+          "size": 1954212,
+          "mtime_ns": 1791984129836180500
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session3_20261014_095436\\imu.h5": {
+          "size": 4869700,
+          "mtime_ns": 1791984128743969400
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": [
+        0.0,
+        83.35
+      ],
+      "analysis_source": "full_record_transient_with_strict_force_validity_mask",
+      "partial_transient": true,
+      "started_at": "2026-10-15T20:40:55.867706+08:00",
+      "csv_rows": 6742,
+      "viewer_frames": 8336,
+      "valid_moment_frames": 6742,
+      "csv_time_s": [
+        9.44,
+        76.85
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        5.734288215637207,
+        5.782793045043945
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session3_20261014_095436\\derived\\opensim\\run_20261015_204056_5880",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session3_20261014_095436\\ground_truth.csv",
+      "elapsed_s": 27.7,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session4_20261014_095612",
+      "condition": "STAND_WALK_STAND_NOEXO",
+      "session_uuid": "72fc2473-6e84-47e7-a081-9f76a45774fb",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session4_20261014_095612\\501_STAND_WALK_STAND_NOEXO_r4_74029a2f1.c3d": {
+          "size": 5130496,
+          "mtime_ns": 1791984132901226200
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session4_20261014_095612\\501_STAND_WALK_STAND_NOEXO_r4_74029a2f1.txt": {
+          "size": 29615481,
+          "mtime_ns": 1791984135631852000
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session4_20261014_095612\\mocap.h5": {
+          "size": 2640308,
+          "mtime_ns": 1791984132454967500
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session4_20261014_095612\\imu.h5": {
+          "size": 6603396,
+          "mtime_ns": 1791984131343969100
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": [
+        0.0,
+        114.43
+      ],
+      "analysis_source": "full_record_transient_with_strict_force_validity_mask",
+      "partial_transient": true,
+      "started_at": "2026-10-15T20:41:23.602019+08:00",
+      "csv_rows": 9669,
+      "viewer_frames": 11444,
+      "valid_moment_frames": 9669,
+      "csv_time_s": [
+        12.07,
+        108.75
+      ],
+      "time_gap_count": 0,
+      "max_adjacent_hip_jump_Nm": [
+        5.708531379699707,
+        31.423900604248047
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session4_20261014_095612\\derived\\opensim\\run_20261015_204124_6183",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session4_20261014_095612\\ground_truth.csv",
+      "elapsed_s": 40.03,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session5_20261014_095823",
+      "condition": "STAND_WALK_STAND_NOEXO",
+      "session_uuid": "72fc2473-6e84-47e7-a081-9f76a45774fb",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session5_20261014_095823\\501_STAND_WALK_STAND_NOEXO_r5_af075c941.c3d": {
+          "size": 5121984,
+          "mtime_ns": 1791984141023412200
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session5_20261014_095823\\501_STAND_WALK_STAND_NOEXO_r5_af075c941.txt": {
+          "size": 29171038,
+          "mtime_ns": 1791984140118439300
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session5_20261014_095823\\mocap.h5": {
+          "size": 2640308,
+          "mtime_ns": 1791984140451502800
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session5_20261014_095823\\imu.h5": {
+          "size": 6584996,
+          "mtime_ns": 1791984136800851100
+        }
+      },
+      "status": "COMPLETED",
+      "analysis_time_range_s": [
+        0.0,
+        114.24
+      ],
+      "analysis_source": "full_record_transient_with_strict_force_validity_mask",
+      "partial_transient": true,
+      "started_at": "2026-10-15T20:42:03.662095+08:00",
+      "csv_rows": 9818,
+      "viewer_frames": 11425,
+      "valid_moment_frames": 9820,
+      "csv_time_s": [
+        11.49,
+        109.68
+      ],
+      "time_gap_count": 1,
+      "max_adjacent_hip_jump_Nm": [
+        4.447246551513672,
+        5.405149459838867
+      ],
+      "qc_status": "WARN",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session5_20261014_095823\\derived\\opensim\\run_20261015_204204_6864",
+      "out_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_TRANSIENT\\STAND_WALK_STAND_NOEXO\\session5_20261014_095823\\ground_truth.csv",
+      "elapsed_s": 39.8,
+      "inputs_unchanged": true
+    },
+    {
+      "session": "d1\\T\\STATIC_CALIB\\session1_20261014_084014",
+      "condition": "STATIC_CALIB",
+      "session_uuid": "c5a6fd3b-0213-47e3-8205-ce05ce955300",
+      "inputs_before": {
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\T\\STATIC_CALIB\\session1_20261014_084014\\501_STATIC_CALIB_r1_f0f6f0481.c3d": {
+          "size": 983872,
+          "mtime_ns": 1791984141532348200
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\T\\STATIC_CALIB\\session1_20261014_084014\\mocap.h5": {
+          "size": 846686,
+          "mtime_ns": 1791984142690735300
+        },
+        "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\T\\STATIC_CALIB\\session1_20261014_084014\\imu.h5": {
+          "size": 1729412,
+          "mtime_ns": 1791984142128197800
+        }
+      },
+      "status": "CALIBRATION",
+      "reason": "Static calibration reference; not a dynamic trial"
+    }
+  ],
+  "updated_at": "2026-10-15T20:42:43.471039+08:00",
+  "counts": {
+    "MISSING_INPUT": 11,
+    "COMPLETED": 42,
+    "INVALID_FORCE_FILE": 1,
+    "CALIBRATION": 1
+  },
+  "parameters": {
+    "mass_kg": 80.0,
+    "height_m": 1.87,
+    "marker_cutoff_hz": 6.0,
+    "grf_cutoff_hz": 6.0,
+    "basis": "two_record_wrench_6hz_sensitivity; not independent truth validation"
+  },
+  "finished_at": "2026-10-15T20:42:43.471039+08:00"
+}

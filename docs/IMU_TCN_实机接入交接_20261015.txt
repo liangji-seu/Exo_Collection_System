@@ -1,0 +1,87 @@
+IMU-only TCN 实机在线接入：执行交接
+日期：2026-10-15
+归档说明：本文件记录开发前的方案与当时进度。用户随后授权继续开发，现已完成软件集成；当前操作步骤与验证范围见同目录 IMU_TCN_在线辅助调试说明.txt。下文“未完成”描述仅属于交接时点。
+
+一、目标与当前进度
+目标：在 run.py 的“在线测试”中连接控制输入，选择模型，校验输入后运行；实时显示传感器、右髋估计力矩、期望辅助力矩、底层限幅后的发送指令，以及双电机位置、速度和反馈力矩。
+已完成：定位正式训练产物、阅读模型契约和在线推理 helper、核对当前在线框架和底层协议、复制部署模型并逐文件核对 SHA-256。
+未完成：在线代码集成、串口服务重构、中层控制、界面修改、软件测试和实机验证。未打开串口、未使能电机。现有在线代码仍为 Mock 输出。
+本交接依据用户 AGENTS.md 中“关键思考后停止高消耗机械执行”的偏好编写；不代表功能已实现。
+
+二、输入与文件位置
+工作根目录：
+E:\1_Master\2_学业\my_project\2_外骨骼课题\1_exo_数据采集方案
+主程序：Exo_Collection_System\run.py
+在线入口：Exo_Collection_System\run_model.py
+在线模块：Exo_Collection_System\src\exo_collection\apps\model_runtime\
+关键文件：spec.py、backends.py、features.py、subscription.py、inference.py、torque.py、window.py、preview_panels.py。
+相关测试：Exo_Collection_System\tests\unit\test_model_runtime_*.py，以及 tests\integration\test_model_runtime_simulated.py。
+用户确认能运行的底层脚本（作为协议和行为来源）：
+E:\1_Master\2_学业\my_project\2_外骨骼课题\4_exo_底层电机控制\ExoCode\motor_controller.py
+论文原文：
+E:\paper2zh\library\jobs\46de01f07e5c48f1a3598fef74fc4f3b\markdown\source.md
+
+正式训练源：paper_experiments\imu_torque_unified_20261010\runs\real_seed17\final_bundle\
+已复制的部署目录：Exo_Collection_System\runtime_data\models\imu_right_pelvis_torque_v1_20261010\
+复制验证：该目录 local_copy_verification.json，19 个源文件逐一 SHA-256 一致。
+final_model.ts SHA-256：9F52EAFF94AD3BEA18B9CC81C6593C385204AB8EFE440475BC5DA7E464423CB8
+实验状态文件：paper_experiments\imu_torque_unified_20261010\status.json，记录 complete_verified；泛化评估仅针对既有留人验证，不应宣传为对任何新佩戴和新工况都保证准确。
+禁止误用 tmp 下 smoke 模型、302 的 US 分类模型；不需要重新训练或联网下载模型。
+
+三、已确定的模型契约
+优先加载 final_model.ts；scaler 已内嵌，禁止再归一化一次或重复恢复输出尺度。
+输入 float32 [B,40,12]，BTC 布局，20 Hz 网格、40 帧、历史跨度 1.95 s。
+严格通道顺序：right_leg_acc_x/y/z，right_leg_gyr_x/y/z，pelvis_acc_x/y/z，pelvis_gyr_x/y/z。
+单位：加速度 m/s²，陀螺仪 rad/s；使用训练时的原始物理传感器轴，不自行旋转、去重力、添加静态校准或滤波。
+两枚 IMU 的物理身份、佩戴部位、坐标轴和设备 ID 必须在预检中明确；不得依赖设备枚举顺序猜测。
+已有 xsens_mtw_usb.py 的 descriptor 包含 device_ids/slot/物理映射状态；独立USB模式标注 cross_device_hardware_sync_verified=False、alignment_mode=none_independent_streams，事件为主机到达时间且 device_timestamp=None。因此应保留双设备独立时间序列，并明确区分主机到达年龄与真实设备采样年龄；不能把当前数据通路宣称为已硬同步或已测出真实端到端延迟。
+参照部署包 predict.py 的 OnlineCausalPredictor：每个网格点仅取此前最近样本；任一设备相对该网格点的样本年龄超过 50 ms、数据非有限值、缺少历史或缺帧则拒绝/预热，不补零，不复制首帧凑足历史。
+在线网格由单调时钟推进；相同网格终点只能接受一次预测。检查独立的传感器采样/接收时刻，不能用新一轮推理的时间掩盖旧数据。
+输出单一当前右髋屈伸净关节力矩 Nm/kg。标签为 hip_flexion_r_moment / subject.mass_kg；只在中层乘一次被试体重 kg。
+原论文写 hip extension is positive，而该复现使用 OpenSim 原标签；不得根据论文图的正负号直接给部署输出取反。需要核实该项目 OpenSim 模型/标签与实物动作的符号对应。
+
+四、接口与三层控制方案
+顶层：提供命名明确的 right_hip_moment_nm_per_kg、源网格时间和输入有效性，保持估计量与辅助指令分离。
+中层：对估计值做可配置因果低通、体重及助力比例缩放、非负时间延迟和电机方向映射。
+右侧期望值可表示为：desired_right_nm = right_sign × mass_kg × assist_gain × delay(causal_lowpass(predicted_nm_per_kg))。
+滤波必须使用真实步长/固定有效网格，不能使用需要未来样本的 filtfilt。附加延迟用按时间管理的缓冲区，不用 sleep 阻塞接收或界面；展示额外设置延迟，不能把它称为总系统延迟。
+停止、故障、换模型、变更质量/比例/方向/延迟后清理滤波与延迟历史；重新预热，避免旧非零指令延后释放。
+用户已测定：左电机正 Nm 向后助力；右电机正 Nm 向前助力。只有确认训练输出正号对应右髋前屈，right_sign 才设 +1，否则经验证显式设 -1。
+本模型只估计右髋；本次左电机命令固定为 0，不镜像右侧估计。仍显示双侧位置、速度和反馈力矩。
+
+底层：从用户给定脚本抽取无 GUI 的力矩服务，接入 TorqueOutput；保留 Mock 后端。不要把 tkinter 窗口嵌入 Qt，也不要在测试中实例化会自动使能的原 GUI。
+协议：串口 1,000,000 baud；控制帧头 0xAA，payload <H3f（seq、左Nm、右Nm、limit），CRC8 poly 0x07 init 0，尾 0x55；使能/失能帧头 0xBB，命令 0xFC/0xFD；反馈 <BHBBffffffIBB，共35字节，含 seq/state/err、双侧pos/vel/torque及设备时间。
+一个服务独占同一个电机 COM 口，并向界面/订阅端发布反馈；避免 encoder adapter 再次打开该端口。收发分离但所有写入串行化，处理半帧、粘帧、CRC错误和重新同步。
+现有 adapters/encoder/teensy_serial.py 已能解析相同35字节反馈，当前只读，可复用解析器；不要让它和新服务各开一个串口。硬件项目 protocol.md 描述另一套 AA LEN TYPE 协议，不能混用；本次按已验证脚本及 ExoCode.ino 的实际实现。
+底层可按现有200 Hz发送最新有效命令；命令有效期独立于重发周期。重复发送旧命令不能刷新其有效期。
+
+五、必须实现的底层限幅与故障行为
+用户明确要求：中层即使给出超过阈值的值，底层最多发送该阈值。对正负两方向都执行：sent_nm = clip(desired_nm, -limit_nm, +limit_nm)。
+限幅必须位于底层服务每次实际组帧/写串口之前，覆盖所有命令入口；不只依赖中层、UI滑块或固件收到的 limit 字段。帧中的 limit 也必须合法。
+初始代码的上位机全局上限为9 Nm、GUI初值为5 Nm。2026-10-15后续按用户要求调整：在线界面允许自行设置0–18 Nm，采用ExoCode.ino源码定义的±18 Nm协议范围，所有层共用domain/motor_protocol.py常量；不改动或自动刷入固件。当前在线界面未配置时阈值为0，已缓存值不会自动提高。这些实现值不代表本次人体试验已认可的安全阈值，实际限值由操作者设置；每帧按所设阈值限幅，模型配置不能突破协议上界。
+阈值必须有限且非负；负数/NaN/Inf/无法解析时拒绝使能并归零。期望力矩 NaN/Inf 归零并报告故障。降低阈值必须对正在发送的旧命令立即生效，不等下一次推理。
+底层独立检查命令年龄、反馈年龄和反馈 state/err；异常时归零并失能、锁存故障。反馈缺失时显示过期，不能继续把旧位置显示成有效状态。
+急停、断开、关窗、换模型、推理异常、IMU过期均使输出归零且禁止自动恢复。重新使能需要操作者动作和预检通过。
+不要保留原脚本“连接后3秒自动使能”的行为。写入使能帧成功不等于电机反馈已确认使能，界面应区分。
+使用统一锁/状态代号防止正在进行的旧推理覆盖急停后的零值；热重载须确认旧推理和发送线程已停止。当前 _stop_controller 忽略 stop_and_wait 的失败，需要修正。
+断连后主机不能保证零帧送达，需确认既有固件掉线保护；本阶段不要擅自刷固件。这里的限幅保证发送指令受限，不等同于实际测得力矩绝无动态超调。
+已读到的 ExoCode.ino 源码有250 ms控制帧超时自动失能和下发CAN前限幅（约212-217、245-253行）；需现场确认设备实际刷入版本与此源码一致，不把源码检查当作实机验证。
+
+六、界面流程
+连接所需IMU和电机服务 → 选择本地模型接口 → 显示模型契约 → 校验设备身份/通道/单位/时序/40帧历史 → 预览估计 → 操作者设置体重、助力比例、滤波、附加延迟、方向和Nm阈值 → 明确启动辅助。
+加载模型和连接端口本身不启动辅助。模拟输入禁止驱动真实电机。
+实时显示：当前输入模态与各设备状态/采样率/数据年龄、12通道预览、右髋估计Nm/kg及换算Nm、期望辅助Nm、底层限幅后发送Nm、限幅标志、双电机pos(rad)/vel(rad/s)/反馈Nm、使能/故障状态。
+若本机推理/调度达不到20 Hz或输入年龄要求，展示失败原因并保持零输出，不暗中放宽模型契约。
+本次运行日志记录模型哈希、设备映射、体重、助力参数、阈值、时间戳、估计、期望、限幅指令、反馈和故障。
+
+七、执行步骤与验收
+1. 阅读相应AGENTS与已有测试；核实当前真实IMU adapter的设备身份、时间戳、单位，明确与模型12通道的映射。
+2. 新增模型适配器与严格输入预检，复用已导出的helper；加载一次模型，核验相同输入窗口下与官方helper输出一致。
+3. 实现独立中层组件、无GUI双向串口服务和底层硬限幅；通过依赖注入使用fake serial/虚拟时钟测试。
+4. 接入spec/inference/window/preview，保留Mock路径，实现明确启停和反馈显示。
+5. 验证正负越界、边界值、阈值降低、非法阈值、NaN/Inf、零阈值；直接解码实际待发帧断言每侧 |torque| <= 有效limit。
+6. 验证双IMU异步/缺帧/过期/历史不足、模型非有限输出、滤波/增益/延时、CRC错误/半帧/粘帧、反馈过期、写入失败、急停与并发旧结果、模型重载/关窗后的归零及失能。
+7. 在不连接硬件的环境完成适当的现有runtime回归、fake serial端到端测试、界面离屏smoke和模型一致性测试；最后给出启动方式、操作者参数和未验证项。真实佩戴、方向确认和力矩试验由用户在现场完成。
+
+八、可直接发送给承接Agent的完整提示词
+请完成 E:\1_Master\2_学业\my_project\2_外骨骼课题\1_exo_数据采集方案\Exo_Collection_System 的 IMU-only TCN 在线实机接入。先读取该项目 docs\IMU_TCN_实机接入交接_20261015.txt；这是本次需求、已核实文件位置、方案、约束和验收标准。模型已复制到 runtime_data\models\imu_right_pelvis_torque_v1_20261010，19文件SHA-256校验通过，不要重新训练或使用smoke模型。实现 run.py“在线测试”中的12通道双IMU输入校验、20Hz/40帧TorchScript推理、Nm/kg到Nm换算、因果滤波/缩放/延时、用户提供motor_controller.py协议的双向服务，以及底层每次发送前不可绕过的正负Nm限幅。仅右侧辅助，左侧命令0；显示传感器、右髋估计、期望辅助、限幅后发送指令和双侧电机位置速度反馈。保留Mock，默认未使能，不自动打开或驱动硬件，禁止模拟输入驱动真实电机。严格处理旧数据、并发急停、失联和热重载，不猜测体重、方向或人体试验阈值。修改限定在本项目内，原硬件项目脚本只作参考；如确实需要改动外部文件，按环境权限处理。完成软件和fake serial验证，交付文件位置、运行方式、测试证据和仍待现场确认的事项。

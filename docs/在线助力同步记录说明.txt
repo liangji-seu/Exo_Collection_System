@@ -1,0 +1,43 @@
+在线助力同步记录说明
+
+触发方式
+输出电机连接后，底层收到本次使能请求对应的正常使能反馈，自动开始一段记录。只连接输入、只运行预测、仅连接未使能的电机均不创建录制文件。停止、失能、急停、底层故障或断开会结束当前段；再次确认使能另建一段。发送归零指令先于录制收尾，写盘不负责或延迟电机停机。
+
+保存位置和命名
+Exo_Collection_System/runtime_data/online_recordings/YYYYMMDD_HHMMSS_ffffff/
+目录名使用开始记录时的本地时间，末尾六位为微秒。相同时间戳的重复启动会分配不同名称，不覆盖已有记录。写入期间目录带.recording后缀。
+目录内部沿用Collector的raw数据目录与.exo元数据目录、原始HDF5/二进制块格式、manifest和校验和；不再要求填写被试、条件、重复次数来命名。
+
+内容
+raw/imu.h5、raw/mocap.h5等：已连接输入设备的原始信号。HDF5保留原始维度、数值类型、样本索引、源序列、设备时间和主机时间。
+raw/encoder.h5：底层真实反馈的左右位置、速度、扭矩六通道，沿用Collector编码器结构；按每帧实际接收时间记录，名义200Hz，并保留设备时间和反馈序号。完整反馈状态与原帧同时存入事件日志。
+raw/ultrasound.bin、raw/emg.bin及其.meta.json/.idx：Collector格式的二进制块；保留通道信息、原始块头及时间锚点。
+raw/online_events.jsonl：模型原始输出及单位、换算为Nm的估计、限幅前左右期望辅助、成功发送的限幅后左右指令/阈值/原帧、逐帧电机位置/速度/反馈扭矩/状态/设备时钟/原帧，以及使能/结束事件。
+每次模型预测还保存实际输入张量、形状、dtype及输入时间栅格。电机刚使能时模型已经使用之前的历史窗口，这些输入张量可用于重算首段预测，不需要把使能前的数据伪称为本次原始录制。
+.exo/configuration_snapshot.json：模型spec、模型文件位置与哈希、设备配置及参数快照。
+.exo/online_session.json：准确启停单调时间、停止原因、各源尾部水位、完整性和错误原因。
+.exo/manifest.json、.exo/checksums.sha256：Collector兼容的数据包清单与内容校验。
+
+时间与完整性
+统一对齐基准为host_monotonic_ns。设备本地时钟另存，不直接当作主机时钟比较。
+输出电机encoder.h5的host_utc_ns由会话UTC起点加接收时刻的单调时间差得到，元数据明确记录此语义，不用写盘线程的当前时间替代接收时间。
+启停区间定义为[start_host_monotonic_ns, stop_host_monotonic_ns)。跨边界原始批次完整保存，读取器按逐样本时间筛选。这样既保留原块校验与序列，也不会把区间之外的样本算进回放。
+结束后写线程等待已到达原始流的尾数据。若无法在限定时间内确认各原始源已越过停止边界，标为ABORTED/complete=false；不将缺尾、设备故障、队列溢出或磁盘失败伪装成完整记录。严重写盘失败保留.recording目录和失败证据，界面及诊断日志报告原因。
+显示层的降采样电机编码器快照不重复录制；真实电机反馈和成功发送直接从底层逐帧入队，不依赖GUI刷新或有限history缓存。
+
+离线读取
+模块：exo_collection.apps.model_runtime.recording
+入口：read_online_recording(录制目录)
+返回session、manifest、streams、events和按统一时间排序的timeline。streams为原始数据的启停区间切片；events保留完整审计事件（含终止归零/边界），timeline只纳入启停区间事件。函数只读文件，不连接或控制电机。
+在项目目录、EXO环境且PYTHONPATH=src时，可在Python调用：
+from exo_collection.apps.model_runtime.recording import read_online_recording
+data = read_online_recording(r"runtime_data/online_recordings/实际时间戳目录")
+print(data["session"]["complete"], data["streams"].keys())
+后续回放时应先检查complete/manifest状态，再按记录的模型哈希和spec加载对应模型；不要把不完整数据当作完整实验。
+
+当前变更新增记录与读取能力，没有新增GUI回放操作页，没有更改滤波器、用户缓存参数、双侧同号分配或绝对值限幅规则。
+
+软件验收（2026-10-15）
+在线模块全部单元测试和六组相关集成：296 passed，保留1条原有Torch加载FutureWarning。新增12项录制测试涵盖确认使能边界、原始多模态、二进制四通道超声、真实TCN输入窗口重算、全帧电机反馈/发送、快速再使能隔离、跨界批次按样本裁剪、尾部缺口、队列溢出和写盘失败。命令输出对应runtime_data/test_runs/rec_full2。所有电机调用都使用假串口，未连接实物。
+另外尝试的旧Collector连续录制集成tests/integration/test_continuous_recording_spawn.py仍因模拟设备配置不含sync_pulse而失败，未修改该配置；不计入上述296项通过结果。首次长GUID临时目录超过Windows路径长度造成的录制测试失败，使用短临时目录后已消除。
+全量回归后补充encoder UTC锚点修正，专项1项通过：26条反馈的UTC等于会话锚点加接收单调时间差，与写盘时刻无关；主机单调时间、设备时钟及序号仍原样保留。证据runtime_data/test_runs/rec_encoderutc1。

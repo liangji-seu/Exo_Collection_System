@@ -1,0 +1,28 @@
+论文中层辅助力矩滤波核查（2026-10-15）
+
+原文：Estimating human joint moments unifies exoskeleton control, reducing user effort
+作者：Dean D. Molinaro、Inseung Kang、Aaron J. Young
+DOI：10.1126/scirobotics.adi8852
+本地来源：E:\paper2zh\library\jobs\46de01f07e5c48f1a3598fef74fc4f3b\markdown\source.md
+
+正文明确的在线流程
+1. 将估计的髋关节力矩缩放为原幅值的20%。
+2. 经先进先出（FIFO）缓冲增加100ms程序延时。
+3. 对延时后的辅助力矩使用二阶Butterworth低通滤波器，截止频率10Hz。
+4. 文中报告滤波额外引入约25ms延迟，连同程序延时共125ms。
+证据：source.md第1431–1445行、第1514–1519行。
+
+本文正文没有给出这个力矩滤波器的具体离散系数、运行采样频率、初始状态处理或代码，也没有明确使用“零相位”或filtfilt。不能把25ms当作对全部频率严格恒定的延迟，更不能直接沿用作本系统测得的总延迟。
+另外，正文第1452–1457行的10Hz低通针对编码器速度（后向差分后滤波），不能和辅助力矩滤波混为一谈。正文没有充分说明离线训练标签的滤波参数。
+
+当前代码对照（本次只核查，未更改控制律）
+src/exo_collection/apps/model_runtime/assistance.py实际采用一阶单极点递推低通：
+tau = 1 / (2*pi*fc)
+alpha = dt / (tau + dt)
+y = y_prev + alpha*(x - y_prev)
+处理顺序是先低通、取延时历史值，再按原始单位进行体重换算、助力比例及方向映射；模型输出分配层随后把右侧最终辅助Nm同号同步给两侧电机。原始模型预测单独保留，不作为已滤波辅助值。
+配置中的lowpass_hz是截止频率Hz，不是无量纲alpha。部署spec默认3Hz；运行采用用户实际缓存/提交的数值。
+
+后续若要严格按论文修改
+当前TCN及中层process以20Hz运行，10Hz恰好在其奈奎斯特频率，不能直接在该采样率上照搬普通数字二阶Butterworth的10Hz截止参数。应先明确并实现独立、固定采样率的中层滤波调度，再按该采样率设计二阶滤波器，验证实际延迟、输入更新保持与停机归零。提高滤波调度频率并不增加原TCN预测的20Hz信息带宽。
+以上是针对本系统的实现判断，不是论文提供的采样率或代码。本次自动记录开发保留已有滤波器、缓存参数和电机保护。

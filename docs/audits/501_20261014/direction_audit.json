@@ -1,0 +1,373 @@
+{
+  "scope": "three representative source trials, two preprocessing successes, one rejected; one backward OpenSim run, no source data edits or session CSV export",
+  "cases": [
+    {
+      "condition": "DWALK_0P6_NOEXO",
+      "dynamic_c3d": "..\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_0P6_NOEXO\\session1_20261014_084539\\501_DWALK_0P6_NOEXO_r1_1afb1a871.c3d",
+      "source_force_audit": {
+        "n_rows": 51609,
+        "duration_s": 51.608,
+        "total_fz_min_N": 676.4577,
+        "total_fz_max_N": 1161.2776,
+        "bilateral_finite_count": {
+          "R": 51609,
+          "L": 51609
+        }
+      },
+      "sync": {
+        "confidence": "HIGH",
+        "gaitway_offset_s": 3.8637968000000003
+      },
+      "mapping_geometry": {
+        "method": "single_support_cop_to_heel_toe_segment",
+        "thresholds": {
+          "min_bouts_per_native_side": 3,
+          "min_frames_per_bout": 5,
+          "min_frame_margin_m": 0.02,
+          "min_bout_agreement": 0.8,
+          "min_margin_ci_lower_m": 0.02,
+          "max_selected_distance_m": 0.15
+        },
+        "evidence": {
+          "R": {
+            "n_single_support_frames": 1218,
+            "n_bouts": 21,
+            "mapping": "identity",
+            "accepted": true,
+            "own_foot_distance_median_m": 0.08930178939520647,
+            "other_foot_distance_median_m": 0.18567424614029954,
+            "selected_margin_bootstrap95ci_m": [
+              0.08908244625575494,
+              0.11757909102605565
+            ],
+            "bout_agreement": 1.0
+          },
+          "L": {
+            "n_single_support_frames": 1276,
+            "n_bouts": 21,
+            "mapping": "identity",
+            "accepted": true,
+            "own_foot_distance_median_m": 0.06942783785314877,
+            "other_foot_distance_median_m": 0.20205836724893284,
+            "selected_margin_bootstrap95ci_m": [
+              0.11271351142732061,
+              0.14361267068510078
+            ],
+            "bout_agreement": 1.0
+          }
+        },
+        "double_support_decomposition_validated": false,
+        "native_to_anatomical": {
+          "R": "right",
+          "L": "left"
+        }
+      },
+      "status": "PREPROCESS_OK",
+      "manifest_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_System\\.direction_501_preprocess\\DWALK_0P6_NOEXO\\manifest.json",
+      "orientation": {
+        "static": {
+          "heading": "forward",
+          "heel_to_toe_x_cosine_median": [
+            0.981200632450582,
+            0.9405375933112814
+          ],
+          "n_valid_frames_per_foot": [
+            251,
+            251
+          ],
+          "orientation_consistency_fraction": [
+            1.0,
+            1.0
+          ],
+          "min_consistency_fraction": 0.9,
+          "min_frames": 30,
+          "min_abs_cosine": 0.7,
+          "rotation_ground_to_model": [
+            [
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "yaw_normalization_deg": 0
+        },
+        "dynamic": {
+          "heading": "forward",
+          "heel_to_toe_x_cosine_median": [
+            0.9697651551747244,
+            0.9812891543718307
+          ],
+          "n_valid_frames_per_foot": [
+            3293,
+            3293
+          ],
+          "orientation_consistency_fraction": [
+            0.9866383237169754,
+            1.0
+          ],
+          "min_consistency_fraction": 0.9,
+          "min_frames": 30,
+          "min_abs_cosine": 0.7,
+          "rotation_ground_to_model": [
+            [
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "yaw_normalization_deg": 0
+        }
+      },
+      "analysis_time_range_s": [
+        11.0162032,
+        43.9422032
+      ],
+      "backward_decomposition_unvalidated": false
+    },
+    {
+      "condition": "BWALK_0P3_NOEXO",
+      "dynamic_c3d": "..\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session1_20261014_093056\\501_BWALK_0P3_NOEXO_r1_721a00221.c3d",
+      "source_force_audit": {
+        "n_rows": 58,
+        "duration_s": 0.057,
+        "total_fz_min_N": -1.6233,
+        "total_fz_max_N": -0.8056,
+        "bilateral_finite_count": {
+          "R": 0,
+          "L": 0
+        }
+      },
+      "status": "REJECTED",
+      "error": "跺脚自动同步失败：已尝试 3 个 IMU 传感器 × 4 个测力台信号组合，均无法找到 ≥3 对跺脚峰（需人工标定）；参考组合 imu_right_leg×GRFz vertical (N)：IMU 171 峰/4 段（ok）；测力台 1 峰/0 段（峰数不足（1 < 3））",
+      "diagnosis": "Gaitway TXT truncated/wrong export: cannot contain three stomps and walking; re-export complete matching trial. Does not imply stomps were not performed."
+    },
+    {
+      "condition": "BWALK_0P4_NOEXO",
+      "dynamic_c3d": "..\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P4_NOEXO\\session1_20261014_094119\\501_BWALK_0P4_NOEXO_r1_b6e685911.c3d",
+      "source_force_audit": {
+        "n_rows": 74687,
+        "duration_s": 74.686,
+        "total_fz_min_N": 689.1456,
+        "total_fz_max_N": 1084.3638,
+        "bilateral_finite_count": {
+          "R": 74687,
+          "L": 74687
+        }
+      },
+      "sync": {
+        "confidence": "HIGH",
+        "gaitway_offset_s": 2.6878621000000003
+      },
+      "mapping_geometry": {
+        "method": "single_support_cop_to_heel_toe_segment",
+        "thresholds": {
+          "min_bouts_per_native_side": 3,
+          "min_frames_per_bout": 5,
+          "min_frame_margin_m": 0.02,
+          "min_bout_agreement": 0.8,
+          "min_margin_ci_lower_m": 0.02,
+          "max_selected_distance_m": 0.15
+        },
+        "evidence": {
+          "R": {
+            "n_single_support_frames": 1958,
+            "n_bouts": 33,
+            "mapping": "swap",
+            "accepted": true,
+            "own_foot_distance_median_m": 0.23063472576041918,
+            "other_foot_distance_median_m": 0.016038852392576478,
+            "selected_margin_bootstrap95ci_m": [
+              0.20778647589455057,
+              0.22469302912662387
+            ],
+            "bout_agreement": 1.0
+          },
+          "L": {
+            "n_single_support_frames": 1949,
+            "n_bouts": 33,
+            "mapping": "swap",
+            "accepted": true,
+            "own_foot_distance_median_m": 0.2736681419246824,
+            "other_foot_distance_median_m": 0.033845675994411864,
+            "selected_margin_bootstrap95ci_m": [
+              0.23303113932695774,
+              0.24737336543651509
+            ],
+            "bout_agreement": 1.0
+          }
+        },
+        "double_support_decomposition_validated": false,
+        "native_to_anatomical": {
+          "R": "left",
+          "L": "right"
+        }
+      },
+      "status": "PREPROCESS_OK",
+      "manifest_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_System\\.direction_501_preprocess\\BWALK_0P4_NOEXO\\manifest.json",
+      "orientation": {
+        "static": {
+          "heading": "forward",
+          "heel_to_toe_x_cosine_median": [
+            0.981200632450582,
+            0.9405375933112814
+          ],
+          "n_valid_frames_per_foot": [
+            251,
+            251
+          ],
+          "orientation_consistency_fraction": [
+            1.0,
+            1.0
+          ],
+          "min_consistency_fraction": 0.9,
+          "min_frames": 30,
+          "min_abs_cosine": 0.7,
+          "rotation_ground_to_model": [
+            [
+              1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "yaw_normalization_deg": 0
+        },
+        "dynamic": {
+          "heading": "reverse",
+          "heel_to_toe_x_cosine_median": [
+            -0.981933848158768,
+            -0.9644414459555175
+          ],
+          "n_valid_frames_per_foot": [
+            5400,
+            5400
+          ],
+          "orientation_consistency_fraction": [
+            1.0,
+            1.0
+          ],
+          "min_consistency_fraction": 0.9,
+          "min_frames": 30,
+          "min_abs_cosine": 0.7,
+          "rotation_ground_to_model": [
+            [
+              -1.0,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              -1.0
+            ]
+          ],
+          "yaw_normalization_deg": 180
+        }
+      },
+      "analysis_time_range_s": [
+        13.6186379,
+        67.6106379
+      ],
+      "backward_decomposition_unvalidated": true
+    }
+  ],
+  "opensim_representative": {
+    "condition": "BWALK_0P4_NOEXO",
+    "exit_code": 0,
+    "result_path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_System\\.direction_501_preprocess\\BWALK_0P4_NOEXO\\result.json",
+    "qc_status": "WARN",
+    "marker_qc_overall": {
+      "rms_mean_cm": 1.0471614775463682,
+      "rms_p95_cm": 1.7323475984601298,
+      "max_marker_p95_cm": 4.0773111084724105,
+      "max_marker_max_cm": 6.023319033917357
+    },
+    "checks": [
+      {
+        "key": "residual_force_rms_N",
+        "label": "残余力 RMS",
+        "status": "PASS",
+        "value": 70.4985,
+        "unit": "N",
+        "threshold": "≤15% BW 正常，>30% BW 失败",
+        "detail": "(9.0% BW)"
+      },
+      {
+        "key": "residual_force_p95_N",
+        "label": "残余力 p95",
+        "status": "PASS",
+        "value": 117.5884,
+        "unit": "N",
+        "threshold": "≤40% BW",
+        "detail": ""
+      },
+      {
+        "key": "force_coverage",
+        "label": "左右力有效覆盖",
+        "status": "WARN",
+        "value": 0.7298,
+        "unit": "",
+        "threshold": "≥80% 正常，<50% 失败",
+        "detail": "有效覆盖偏低"
+      },
+      {
+        "key": "backward_force_decomposition",
+        "label": "倒走左右分力适用性",
+        "status": "WARN",
+        "value": null,
+        "unit": "",
+        "threshold": "需独立验证倒走双支撑分力",
+        "detail": "单支撑 COP/脚 marker 映射检查仅验证左右分配；Gaitway 算法在倒走双支撑期尚未验证，结果不得自动视为合格真值"
+      },
+      {
+        "key": "marker_adjustment",
+        "label": "静态 marker 调整",
+        "status": "WARN",
+        "value": 108.35,
+        "unit": "mm",
+        "threshold": "解剖点 ≤50 正常，>80 需检查；技术点仅提示",
+        "detail": "技术点/解剖点调整偏大；技术点 R.Shank 108.35mm, L.Shank 97.56mm, L.Thigh 76.75mm；需检查的解剖点 L.Heel 50.04mm"
+      }
+    ],
+    "session_ground_truth_exported": false
+  },
+  "tests": {
+    "passed": 119,
+    "duration_s": 3.62,
+    "workspace_basetemp": true
+  }
+}

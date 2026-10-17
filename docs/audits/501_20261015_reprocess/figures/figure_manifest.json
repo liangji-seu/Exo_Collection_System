@@ -1,0 +1,147 @@
+{
+  "subject": "501",
+  "source_report": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_System\\docs\\audits\\501_20261015_reprocess\\batch_report.json",
+  "policy_check": {
+    "grf_input_policy_version": "continuous_native_wrench_v2",
+    "marker_cutoff_hz": 6.0,
+    "grf_cutoff_hz": 6.0,
+    "status": "passed"
+  },
+  "validity_rule": "bilateral analysis_mask ∩ support_mask and all six moment columns finite; time gaps force breaks",
+  "transformations": [
+    "display mask only",
+    "no extra filtering",
+    "no smoothing",
+    "no averaging",
+    "no downsampling",
+    "no body-mass normalization"
+  ],
+  "column_mapping": {
+    "hip_flexion_r": 0,
+    "hip_flexion_l": 1,
+    "knee_angle_r": 2,
+    "knee_angle_l": 3,
+    "ankle_angle_r": 4,
+    "ankle_angle_l": 5
+  },
+  "runs": [
+    {
+      "condition": "BWALK_0P3_NOEXO",
+      "display_condition": "倒走 0.3 m/s",
+      "session": "d1\\F_STEADY\\BWALK_0P3_NOEXO\\session5_20261014_093948",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session5_20261014_093948\\derived\\opensim\\run_20261015_202917_1886",
+      "qc_status": "WARN",
+      "sample_total": 7284,
+      "sample_valid": 2977,
+      "valid_by_mask_before_gap_break": 2977,
+      "time_range_s": [
+        0.0,
+        72.83
+      ],
+      "longest_continuous_valid_segment_s": [
+        13.3,
+        43.06
+      ],
+      "detail_window_s": [
+        24.18,
+        32.18
+      ],
+      "array_sha256": {
+        "time_s": "14df77ee4479a3fc9c095217c6d3158dc100ce3c360cd8c92e091a3851c64138",
+        "moments": "0735d1b2e02bd52eb6884632015cc12cd4f6a40810aca6f6096acbd1bfd93f66",
+        "viewer_meta": "97ca9888b2348831208ca8c36ef0491dadc88a63fb94c06b8e071ec1b35f2252",
+        "support_mask": "10456bdcc98722a480ae8a99b3baddf87f84a463b4282e86db4912a88336f8c6",
+        "analysis_mask": "e29dd2c1226d86c52ef57b5bb7635b327f114cf5e87a22c49700c13650e28aa9"
+      },
+      "npy_shapes": {
+        "time_s": [
+          7284
+        ],
+        "moments": [
+          7284,
+          6
+        ],
+        "support_mask": [
+          7284,
+          2
+        ],
+        "analysis_mask": [
+          7284,
+          2
+        ]
+      }
+    },
+    {
+      "condition": "DWALK_1P0_NOEXO",
+      "display_condition": "正走 1.0 m/s",
+      "session": "d1\\F_STEADY\\DWALK_1P0_NOEXO\\session5_20261014_091806",
+      "run_dir": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\DWALK_1P0_NOEXO\\session5_20261014_091806\\derived\\opensim\\run_20261015_203707_5585",
+      "qc_status": "WARN",
+      "sample_total": 6333,
+      "sample_valid": 4351,
+      "valid_by_mask_before_gap_break": 4351,
+      "time_range_s": [
+        0.0,
+        63.32
+      ],
+      "longest_continuous_valid_segment_s": [
+        14.75,
+        58.25
+      ],
+      "detail_window_s": [
+        32.5,
+        40.5
+      ],
+      "array_sha256": {
+        "time_s": "317aa5c5a652c9dcb6a770dba1780c11a86f2a47f00b6b304e8e8b619987f921",
+        "moments": "7d94988b7aa85939b453ccde5c217b789b6dbfb3c0d5885bd2efa389c73c50ad",
+        "viewer_meta": "3802335e35ab99b6e64258f6909db81aabdfdbb8a9b140f76b75747c0b63f2fa",
+        "support_mask": "11f2a7bc2005c6b16730a6993e9ef733667b18d25e18e9395568d8b3fa8df34e",
+        "analysis_mask": "11f2a7bc2005c6b16730a6993e9ef733667b18d25e18e9395568d8b3fa8df34e"
+      },
+      "npy_shapes": {
+        "time_s": [
+          6333
+        ],
+        "moments": [
+          6333,
+          6
+        ],
+        "support_mask": [
+          6333,
+          2
+        ],
+        "analysis_mask": [
+          6333,
+          2
+        ]
+      }
+    }
+  ],
+  "outputs": {
+    "overview": {
+      "png": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_System\\docs\\audits\\501_20261015_reprocess\\figures\\overview.png",
+      "svg": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_System\\docs\\audits\\501_20261015_reprocess\\figures\\overview.svg",
+      "width_px": 1800,
+      "height_px": 1200,
+      "sha256": "65df5f15c98818cc7f4962c27a5ace8fb47632b22e5217524d234400ea65820e"
+    },
+    "detail": {
+      "png": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_System\\docs\\audits\\501_20261015_reprocess\\figures\\detail.png",
+      "svg": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_System\\docs\\audits\\501_20261015_reprocess\\figures\\detail.svg",
+      "width_px": 1800,
+      "height_px": 1200,
+      "sha256": "7a0b2c7f21f62436c8f598e34b4e79b603455286af2e1aa64da81fa74b5191b0"
+    }
+  },
+  "render": {
+    "size_px": [
+      1800,
+      1200
+    ],
+    "dpi": 100,
+    "background": "white",
+    "extra_image_transform": "none"
+  },
+  "figure_note": "QC WARN is the batch report status and is not independent truth validation."
+}

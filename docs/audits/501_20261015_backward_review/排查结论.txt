@@ -1,0 +1,62 @@
+501 倒走力矩进一步排查
+日期：2026-10-15
+
+结论
+本轮确认了原生倒走双支撑 COP/倾覆力矩的一致性问题，但未找到有充分证据、可以直接替换正式力矩的修正。三个限定对照均未达到采纳条件。保留现有正式解算结果及 WARN，增加原生外力矩一致性诊断；没有为了波形平滑或左右对称修改数据。
+
+范围
+倒走：501/d1/F_STEADY/BWALK_0P3_NOEXO/session5_20261014_093948，run_20261015_202917_1886。
+正走对照：501/d1/F_STEADY/DWALK_1P0_NOEXO/session5_20261014_091806，run_20261015_203707_5585。
+局部图窗：倒走 24.18–32.18 s；另对完整有效分析区间复核候选 COP 修正。
+没有将这两条记录的结论推定为全部 501 工况均已通过准确性验收。
+
+已核实
+1. 方向/换脚：倒走 180°转换及左右原生通道到解剖腿的映射，有足部 marker 和每侧 17 个单支撑段支持。未发现忘记旋转或交换左右的证据。
+2. 时间轴：倒走 C3D 起始帧对应 mocap H5 第 419 帧；7284 帧、15 个标记的可比较有效坐标逐项一致。未发现采样序号跳跃；估计时漂约 -7.3 ppm，全程约 0.53 ms。
+3. 手工 offset：同带宽下的跺脚信号有约 35–40 ms 峰差，但骨盆点加速度与总地面反力可能有真实相位差。保存 offset 2.602539 s 与候选 2.564448 s 的有限 COM 受力残差对照只改善 0.69 N，且部分方向变差，不支持更改标定。
+4. 原生左右力相加与总力一致，差异为 TXT 舍入量级（约 1e-4 N）。
+5. 倒走图窗双支撑的双侧 Fz 加权 COP 与总 COP 两水平轴 RMS 差约 15 mm，对应两项倾覆力矩差约 12.21/12.49 N·m；严格单支撑差为零。正走对照明显更小。
+6. TXT 有总 Mx、My、Mz 和 Tz，但没有逐脚自由矩。501 的参考原点为零，总 COP 与总力矩的关系相符。两者是相关的导出量，不能视为两个独立真值。
+7. 静态标记点调整没有直接改变模型 BodySet/JointSet。左脚跟约 50 mm 的调整值得记录，但不能直接当作需要撤销的错误。
+8. 19 个静态、15 个动态 marker 均无躯干点。模型躯干质量约 36.44 kg；腰部三个坐标依赖高权重默认零位约束。全身残余力矩的解释受该假设限制，不能单靠压低它来验证下肢力矩。
+
+限定对照及决定
+一、恢复四个足跟/足尖 marker 的模型初始位置。
+同一窗口、相同 6 Hz 设置，marker RMS 11.36→19.78 mm，残余力 RMS 57.78→61.19 N，髋力矩负峰增大。不采纳。
+二、改同步 offset。
+COM 受力残差向量 RMS 57.984→57.295 N；改善有限且非所有方向改善。不采纳。
+三、使左右 COP 共同平移，以匹配总 COP 的倾覆矩。
+仅在独立试验目录实施；保持左右力不变、不用 50 N 硬开关、不填补缺失数据，并保持原模型/IK和 6 Hz 设置。
+倒走完整分析窗残余力矩向量 RMS 60.23→59.80 N·m；髋力矩 RMS 变化约右 3.41、左 3.40 N·m。部分 COP 到足跟—足尖线段距离增大，部分残余分量变差。此约束不能唯一确定真实双脚 COP，也不能单凭总倾覆矩一致就宣称完整外力矩或逐腿力矩准确。不采纳为正式结果。
+
+正式代码改动
+- Gaitway TXT 可选保留总 Mx/My/Mz/Tz 列，兼容没有这些列的旧文件。
+- manifest 的 gaitway.native_wrench_consistency 增加全部/单支撑/双支撑的总力、三轴总矩、同平面倾覆矩、参考原点可比性和总自由矩诊断。
+- QC 的倒走 WARN 展示具体倾覆矩不一致量级；诊断指标为 INFO，没有新增未经验证的 FAIL 阈值。
+- 单条和批量使用同一预处理链，下次解算均会生成这些诊断。
+- 正式力、模型、同步、有效掩码和已导出力矩均未修改；本轮没有重新发布整批结果。
+
+验证
+完整相关回归：241 passed，4.92 s。
+倒走、正走两个代表记录仅预处理验证：grf.mot、support_mask.npy、analysis_mask.npy、contact_mask.npy 与此前正式结果逐字节相同。
+原始输入、历史 run 和 ground_truth.csv 保留。
+
+展示图的解释
+phase_comparison.png / .svg：上中下分别为髋角度、垂直力、髋力矩。
+右腿 3 个、左腿 4 个完整周期，以各自同侧接触起点对齐，线性插值到 101 个相位点。细线为每一步，粗线为均值；未额外滤波。
+这是原正式结果的展示变换，不是新的修正力矩，也不是独立准确性验证。周期归一化后的左右髋力矩相关约 0.866、均方根差约 8.95 N·m；该差是左右差异，不是相对于真值的误差。
+
+可复现证据（相对 Exo_Collection_System）
+.direction_501_preprocess/backward_geometry_audit/bwalk_geometry_audit.json
+.direction_501_preprocess/backward_geometry_audit/foot_sensitivity_comparison.json
+.direction_501_preprocess/backward_geometry_audit/upperbody_residual_audit.json
+.direction_501_preprocess/backward_force_sync_audit/audit_report.json
+.direction_501_preprocess/backward_force_sync_audit/cop_conservation/comparison.json
+.direction_501_preprocess/backward_force_sync_audit/diagnostic_prep_verification.json
+docs/audits/501_20261015_backward_review/phase_comparison_manifest.json
+
+厂商/软件资料
+https://hpcosmos.com/en/products/software-measuring-technology/biomechanics-gaitway-3d
+厂商说明单平台双支撑左右力由算法分解；页面没有提供本次 0.3 m/s 转身倒走条件下的独立逐脚验证。
+https://docs.qualisys.com/clinical-gait/en/Content/Generic/Instrumented%20treadmill.htm
+集成文档说明分解算法的验证范围为平地行走/跑步，不能据此推定已覆盖本次倒走条件。

@@ -1,0 +1,15 @@
+{
+  "raw_input_stats_unchanged": true,
+  "completed_export_provenance_valid": true,
+  "status_counts": {
+    "MISSING_INPUT": 11,
+    "COMPLETED": 42,
+    "INVALID_FORCE_FILE": 1,
+    "CALIBRATION": 1
+  },
+  "qc_counts": {
+    "WARN": 42
+  },
+  "exported_rows": 238383,
+  "targeted_regression_tests_passed": 237
+}

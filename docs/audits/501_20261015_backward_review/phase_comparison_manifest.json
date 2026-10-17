@@ -1,0 +1,134 @@
+{
+  "figure": "phase_comparison.png and phase_comparison.svg",
+  "purpose": "Presentation-only gait-phase comparison for backward-walking moment review",
+  "source_run": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_Data\\501\\d1\\F_STEADY\\BWALK_0P3_NOEXO\\session5_20261014_093948\\derived\\opensim\\run_20261015_202917_1886",
+  "source_run_relative": "Exo_Collection_Data/501/d1/F_STEADY/BWALK_0P3_NOEXO/session5_20261014_093948/derived/opensim/run_20261015_202917_1886",
+  "diagnostic_source": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_System\\.direction_501_preprocess\\bwalk_window_diagnostic_20261015.json",
+  "diagnostic_source_relative": "Exo_Collection_System/.direction_501_preprocess/bwalk_window_diagnostic_20261015.json",
+  "window_s": [
+    24.18,
+    32.18
+  ],
+  "cycle_boundary_source": "diagnostic sides[*].cycles; complete side-specific contact-onset cycles in the stated window",
+  "cycle_boundaries_s": {
+    "r": [
+      {
+        "start_s": 25.37,
+        "end_s": 27.17,
+        "period_s": 1.8000000000000007
+      },
+      {
+        "start_s": 27.17,
+        "end_s": 28.87,
+        "period_s": 1.6999999999999993
+      },
+      {
+        "start_s": 28.87,
+        "end_s": 30.64,
+        "period_s": 1.7699999999999996
+      }
+    ],
+    "l": [
+      {
+        "start_s": 24.55,
+        "end_s": 26.26,
+        "period_s": 1.7100000000000009
+      },
+      {
+        "start_s": 26.26,
+        "end_s": 28.08,
+        "period_s": 1.8199999999999967
+      },
+      {
+        "start_s": 28.08,
+        "end_s": 29.75,
+        "period_s": 1.6700000000000017
+      },
+      {
+        "start_s": 29.75,
+        "end_s": 31.53,
+        "period_s": 1.7800000000000011
+      }
+    ]
+  },
+  "cycle_counts": {
+    "r": 3,
+    "l": 4
+  },
+  "event_segmentation": {
+    "threshold_N": 50.0,
+    "use": "event segmentation only",
+    "transient_jitter": "no new split at short transient crossings; supplied diagnostic boundaries reused"
+  },
+  "normalization": {
+    "method": "linear interpolation within each complete cycle",
+    "phase_points": 101,
+    "phase_range_percent": [
+      0.0,
+      100.0
+    ],
+    "formula": "phase=(t-start)/(end-start)*100",
+    "additional_filtering": "none",
+    "source_values_modified": false,
+    "display_only": true
+  },
+  "variables": {
+    "hip_angle": {
+      "source": "hh19_static_calibrated_ik.mot hip_flexion_r/l",
+      "unit": "deg"
+    },
+    "vertical_grf": {
+      "source": "viewer/grf.npy [:, side, 1]",
+      "unit": "N",
+      "component": "OpenSim y"
+    },
+    "hip_moment": {
+      "source": "viewer/moments.npy hip_flexion_r/l",
+      "unit": "N m"
+    }
+  },
+  "encoding": {
+    "right": {
+      "color": "#0072B2",
+      "label": "Right",
+      "n": 3
+    },
+    "left": {
+      "color": "#D55E00",
+      "label": "Left",
+      "n": 4
+    },
+    "thin_lines": "one semitransparent line per complete cycle",
+    "thick_lines": "arithmetic mean across the displayed cycles at each phase point"
+  },
+  "qc": {
+    "status": "WARN",
+    "notes": [
+      "Only 3 right and 4 left complete cycles are available.",
+      "Backward decomposition is marked unvalidated in the source run manifest.",
+      "This figure has not been independently validated against a separate event detector or source reprocessing.",
+      "No healthy template or expected pattern was imposed."
+    ]
+  },
+  "units_and_signs": {
+    "angle": "degrees as stored in IK .mot (inDegrees=yes)",
+    "force": "N from viewer arrays",
+    "moment": "N m from viewer arrays; source OpenSim anatomical sign convention retained"
+  },
+  "verification": {
+    "independent_validation": false,
+    "render_review": "Performed after export for clipping, font rendering, and panel readability"
+  },
+  "generated_outputs": {
+    "png": {
+      "path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_System\\docs\\audits\\501_20261015_backward_review\\phase_comparison.png",
+      "sha256": "bf83afcedb0c7e61c076566547f507bddc36ce9b2c687247db6cc335ab22bb66",
+      "size_bytes": 684426
+    },
+    "svg": {
+      "path": "E:\\1_Master\\2_学业\\my_project\\2_外骨骼课题\\1_exo_数据采集方案\\Exo_Collection_System\\docs\\audits\\501_20261015_backward_review\\phase_comparison.svg",
+      "sha256": "84a3993290022b9344f12fbef556849025619a06e321921ee8a867a9b262c444",
+      "size_bytes": 99236
+    }
+  }
+}

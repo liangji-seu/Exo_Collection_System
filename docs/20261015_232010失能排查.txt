@@ -1,0 +1,29 @@
+2026-10-15 23:20:10 在线助力失能排查与修复
+
+现场原因
+诊断 online_20261015_231526_67292_b79d58.jsonl 明确记录 source window expired before torque send，随后模型停止并请求双侧归零、失能。
+当时右腿和盆骨最新源数据年龄分别为27.7209和44.2477 ms，均未超过50 ms；但20 Hz因果重采样采用的旧网格末点，盆骨实际取样到发送前已过去107.4506 ms，超过原100 ms发送前限制。队列中还有9个IMU批次待处理。
+因此不是简单的“IMU没连接”：采集仍在继续，旧网格预测被发送前检查拦截。现场记录的电机反馈错误码全部为0，录制会话完整结束，未发现写盘故障。
+重连或刷新串口只处理电机连接；此前已停止并释放的模型不会因此恢复，必须重新点击“运行预测”。
+
+实现
+inference.py：过期输出直接丢弃，不进入辅助计算、预览、录制或电机发送。最多执行一次有上限的输入队列补读，且必须得到严格更新的源网格才重新预测。第二次结果仍经过停止代次、底层故障、非有限值及原有时效检查；没有更新网格、仍过期或真实断流时维持原归零失能行为。急停期间的在途预测不能晚发。
+输入源50 ms、源窗口发送前100 ms、指令看门狗150 ms和反馈看门狗250 ms均未放宽。双侧同号分配及绝对值限幅规则不变，未改变18 Nm配置。
+run_coordinator.py/window.py：区分电机已连接但预测未运行和底层故障锁定，提示重新运行或断开重连后运行。补充连接请求、成功/失败、断开和电机输出状态变化日志。
+
+证据
+runtime_data/online_qa/input_expiry_20261015_232010/analysis.json：现场诊断、原始数据网格重构、录制完整性及故障后操作。
+runtime_data/online_recordings/20261015_231925_141504/：现场同步记录，9027条反馈、9856条实际发送、837条模型预测，complete=true。
+tests/unit/test_model_runtime_prediction_retry.py：精确现场时间戳回归；旧源107.4506 ms被丢弃，新网格源45.1486 ms才发送；仅最终结果被录制。另覆盖无新网格、慢模型、非有限值、底层故障、重试时急停及真实断流。
+tests/unit/test_model_runtime_run_coordinator.py：重连不能复活已停止模型；重新运行产生新的使能意图。
+
+验证
+EXO Python环境、Qt offscreen；全部test_model_runtime_*单元测试及六组相关集成测试304 passed，1条原有Torch加载FutureWarning，51.93秒。
+集成包括test_imu_assistance_motor、test_model_runtime_load_live、test_model_runtime_one_click_start、test_model_runtime_output_switch、test_model_runtime_saturated_imu、test_model_runtime_simulated。
+测试临时目录：runtime_data/test_runs/retry_full1。
+本轮未连接、使能或驱动实物电机；实际硬件持续运行效果仍需重新启动在线窗口后验证。
+
+恢复操作
+退出旧在线测试窗口，重新从run.py打开在线测试以加载修复。
+确认所需输入与电机连接后点击“运行预测”；正常输入通过校验并收到本次使能反馈后恢复输出。
+若界面显示底层故障锁定，先断开重连电机，再点击“运行预测”。不要把“刷新串口”视为启动模型。
