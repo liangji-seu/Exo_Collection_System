@@ -35,10 +35,10 @@ def test_lowpass_segmented_isolates_segments_and_nans_gaps() -> None:
     assert np.all(np.isfinite(out[1100:1400]))
 
 
-def test_lowpass_segmented_returns_input_when_all_invalid() -> None:
+def test_lowpass_segmented_does_not_restore_unavailable_values() -> None:
     x = np.array([1.0, 2.0, 3.0])
     out = lowpass_segmented(x, np.zeros(3, dtype=bool), 100.0, 20.0)
-    np.testing.assert_allclose(out, x)
+    assert np.isnan(out).all()
 
 
 def _gaitway(rate: float, t: np.ndarray, fz_r: np.ndarray) -> GaitwayAsciiData:

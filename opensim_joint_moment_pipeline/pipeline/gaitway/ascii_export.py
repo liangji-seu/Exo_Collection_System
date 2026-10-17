@@ -85,6 +85,7 @@ def read_gaitway_ascii(path: str | Path) -> GaitwayAsciiData:
         "GRFx lateral (N)",
         "CoPx lateral (m)",
         "CoPy fore-aft (m)",
+        "Mx (N.m)", "My (N.m)", "Mz (N.m)", "Tz free moment (N.m)",
     ):
         if name in frame.columns:
             columns[name] = pd.to_numeric(frame[name], errors="coerce").to_numpy(
@@ -93,6 +94,92 @@ def read_gaitway_ascii(path: str | Path) -> GaitwayAsciiData:
     if "Grade (%)" in frame.columns:
         columns["Grade (%)"] = pd.to_numeric(frame["Grade (%)"], errors="coerce").to_numpy(dtype=np.float64)
     return GaitwayAsciiData(source, metadata, columns.pop("Time (s)"), columns)
+
+
+def audit_native_bilateral_wrench(
+    gaitway: GaitwayAsciiData, *, time_range_s: tuple[float, float],
+    diagnostic_contact_threshold_N: float = 50.0,
+) -> dict[str, Any]:
+    """Audit exported native signals before signs, rotation, filtering or mapping.
+
+    Moments use the export's native origin and z=0 COP plane. The bilateral
+    representation has no measured side free moments; its difference from total
+    Mz consequently includes missing free moment. These metrics never change
+    loads, masks or synchronization, and have no acceptance threshold.
+    """
+    col = gaitway.columns
+    n = len(gaitway.time_s)
+    missing = np.full(n, np.nan)
+    forces, points = [], []
+    for side in ("L", "R"):
+        force = np.column_stack([col[f"F{axis}{side}(N)"] for axis in "xyz"])
+        point = np.column_stack([col[f"CoPx{side}(m)"], col[f"CoPy{side}(m)"], np.zeros(n)])
+        # Undefined COP at exactly measured zero load contributes zero moment.
+        point[np.isfinite(force).all(axis=1) & (np.max(np.abs(force), axis=1) <= 1e-12)] = 0.0
+        forces.append(force)
+        points.append(point)
+    total_force = np.column_stack([col.get(key, missing) for key in (
+        "GRFx lateral (N)", "GRFy fore-aft (N)", "GRFz vertical (N)")])
+    total_moment = np.column_stack([col.get(f"M{axis} (N.m)", missing) for axis in "xyz"])
+    total_point = np.column_stack([col.get("CoPx lateral (m)", missing),
+                                   col.get("CoPy fore-aft (m)", missing), np.zeros(n)])
+    summed_force = forces[0] + forces[1]
+    represented_moment = np.cross(points[0], forces[0]) + np.cross(points[1], forces[1])
+    total_cop_moment = np.cross(total_point, total_force)
+    total_cop_with_free = total_cop_moment.copy()
+    total_cop_with_free[:, 2] += col.get("Tz free moment (N.m)", missing)
+    # Match production's unavailable-decomposition rule, independently of contact
+    # threshold; include missing force/COP in counts rather than converting to zero.
+    unsupported = (np.isfinite(total_force[:, 2]) & (total_force[:, 2] > 0)
+                   & np.isfinite(summed_force[:, 2]) & (np.abs(summed_force[:, 2]) <= 1e-12))
+    scope = ((gaitway.time_s >= time_range_s[0]) & (gaitway.time_s <= time_range_s[1]))
+    available = scope & ~unsupported & np.isfinite(summed_force).all(axis=1)
+    complete = available & np.isfinite(represented_moment).all(axis=1)
+    left_contact = forces[0][:, 2] > diagnostic_contact_threshold_N
+    right_contact = forces[1][:, 2] > diagnostic_contact_threshold_N
+
+    def statistics(values: np.ndarray) -> dict[str, Any]:
+        values = np.asarray(values)
+        values = values[np.isfinite(values)]
+        if not len(values):
+            return {"n_samples": 0, "mean": None, "rms": None, "p95_abs": None, "max_abs": None}
+        return {"n_samples": int(len(values)), "mean": float(np.mean(values)),
+                "rms": float(np.sqrt(np.mean(values**2))),
+                "p95_abs": float(np.quantile(np.abs(values), .95)),
+                "max_abs": float(np.max(np.abs(values)))}
+
+    phases = {}
+    for name, phase in (("all", np.ones(n, bool)),
+                        ("single_support", left_contact ^ right_contact),
+                        ("double_support", left_contact & right_contact)):
+        selected = available & phase
+        loaded = complete & phase
+        phases[name] = {
+            "n_available_native_samples": int(selected.sum()),
+            "n_complete_cop_native_samples": int(loaded.sum()),
+            "force_sum_minus_exported_total_N": {axis: statistics((summed_force-total_force)[selected, i]) for i, axis in enumerate("xyz")},
+            "represented_moment_minus_exported_total_Nm": {axis: statistics((represented_moment-total_moment)[loaded, i]) for i, axis in enumerate("xyz")},
+            "represented_moment_minus_total_cop_cross_force_Nm": {axis: statistics((represented_moment-total_cop_moment)[loaded, i]) for i, axis in enumerate("xyz")},
+            "exported_total_moment_minus_cop_cross_force_and_total_free_Nm": {axis: statistics((total_moment-total_cop_with_free)[selected, i]) for i, axis in enumerate("xyz")},
+            "exported_total_free_moment_Nm": statistics(col.get("Tz free moment (N.m)", missing)[selected]),
+        }
+    return {
+        "schema_version": "1.0.0", "status": "INFO", "frame": "native export XYZ, COP z=0",
+        "native_time_range_s": [float(v) for v in time_range_s],
+        "reference_origin_metadata_m": {key: gaitway.metadata.get(key) for key in ("REF-X0 (m)", "REF-Y0 (m)")},
+        "diagnostic_contact_threshold_N": float(diagnostic_contact_threshold_N),
+        "threshold_changes_loads_or_validity": False,
+        "n_unsupported_total_native_samples": int((scope & unsupported).sum()),
+        "n_missing_loaded_cop_native_samples": int((available & ~complete).sum()),
+        "exported_total_moment_axes_available": [axis for axis in "xyz" if f"M{axis} (N.m)" in col],
+        "exported_total_free_moment_available": "Tz free moment (N.m)" in col,
+        "bilateral_free_moments_measured": False,
+        "exported_total_free_moment_applied_to_feet": False,
+        "output_torque_semantics": "filtered wrench representation residual, not measured side free moment",
+        "exported_total_moment_reference_comparability": "not assumed; inspect exported_total_moment_minus_cop_cross_force_and_total_free_Nm and origin metadata",
+        "interpretation": "Represented minus total-COP cross force compares same-plane overturning moments. Exported total moment comparison also depends on matching reference origins; Mz includes omitted side free moments. Total COP and total moments are related signals, not independent validation. No unique bilateral correction follows.",
+        "phases": phases,
+    }
 
 
 def read_gaitway_patient_info(path: str | Path) -> dict[str, Any]:
@@ -162,9 +249,55 @@ def _interp_vec(time: np.ndarray, values: np.ndarray, query: np.ndarray, *, fill
     return out
 
 
-# 有依据的默认 GRF 抗混叠截止频率（prompt6 §3.8 第 2 条）。步行 GRF 有效带宽一般
-# 在 ~10 Hz 内，20 Hz 在保留步态特征的同时，为 1000 Hz → 100 Hz 的降采样提供抗混叠。
-DEFAULT_GRF_CUTOFF_HZ = 20.0
+# Default nominal bandwidth matches the app's 6 Hz marker/ID-coordinate setting.
+# The 501 two-run sensitivity check supported this choice without establishing
+# a universally optimal cutoff. Explicit alternatives (including 20 Hz) remain
+# supported and are recorded in processing/QC metadata.
+DEFAULT_GRF_CUTOFF_HZ = 6.0
+GRF_INPUT_POLICY_VERSION = "continuous_native_wrench_v2"
+
+
+def _interp_finite_segments(time, values, query, valid, *, sample_rate_hz):
+    """Interpolate complete vectors only within genuinely finite native runs."""
+    values = np.asarray(values, dtype=np.float64)
+    out = np.zeros((len(query), values.shape[1]), dtype=np.float64)
+    available = np.zeros(len(query), dtype=bool)
+    indices = np.flatnonzero(valid & np.isfinite(values).all(axis=1))
+    if not indices.size:
+        return out, available
+    split = np.flatnonzero((np.diff(indices) > 1) |
+                          (np.diff(time[indices]) > 1.5 / float(sample_rate_hz))) + 1
+    for run in np.split(indices, split):
+        selected = (query >= time[run[0]]) & (query <= time[run[-1]])
+        if not selected.any():
+            continue
+        for axis in range(values.shape[1]):
+            out[selected, axis] = np.interp(query[selected], time[run], values[run, axis])
+        available[selected] = True
+    return out, available
+
+
+def _wrench_trust_mask(time, valid, *, sample_rate_hz, cutoff_hz):
+    """Exclude finite-segment filter edges from truth, without cutting loads."""
+    trust = valid.copy()
+    indices = np.flatnonzero(valid)
+    if not len(indices):
+        return trust
+    split = np.flatnonzero((np.diff(indices) > 1) |
+                          (np.diff(time[indices]) > 1.5 / sample_rate_hz)) + 1
+    for run in np.split(indices, split):
+        if cutoff_hz is not None and 0 < cutoff_hz < sample_rate_hz / 2 and len(run) >= 12:
+            guard = 3.0 / cutoff_hz
+            trust[run] &= ((time[run] >= time[run[0]] + guard)
+                           & (time[run] <= time[run[-1]] - guard))
+        else:
+            # Without filtering there is no padding contamination, but an
+            # isolated sample adjacent to a genuine gap is not a trusted edge.
+            if run[0] > 0:
+                trust[run[0]] = False
+            if run[-1] < len(time) - 1:
+                trust[run[-1]] = False
+    return trust
 
 
 def build_bilateral_grf(
@@ -193,7 +326,7 @@ def build_bilateral_grf(
     is not a position-axis reflection. No global-axis sign flips are performed.
 
     抗混叠策略（prompt6 §3.8）：在 gaitway 原生采样率（1000 Hz）先做零相位低通
-    （每个接触段独立滤波，避免跨接触边界振铃），再做线性重采样到 mocap 100 Hz，
+    （每个连续有效测量段的完整wrench一致滤波），再做线性重采样到 mocap 100 Hz，
     杜绝直接把 1000 Hz 信号点采样到 100 Hz 造成的混叠。
     """
     query = np.asarray(mocap_time_s, dtype=np.float64) + float(force_time_offset_s)
@@ -228,7 +361,7 @@ def build_bilateral_grf(
                 "Gaitway 左右分力 FzL/FzR 全部缺失；该记录若为静止站立，"
                 "必须启用总 COP + 双脚 marker 的站立载荷估计"
             )
-        return _build_standing_grf_from_total(
+        feet, valid, qc = _build_standing_grf_from_total(
             gaitway,
             query,
             in_bounds,
@@ -244,9 +377,24 @@ def build_bilateral_grf(
             opensim_z_sign=opensim_z_sign,
             rear_axis_mocap=rear_axis_mocap,
         )
+        for foot in feet:
+            foot["valid"] = valid.copy()
+            foot["contact"] = valid.copy()
+        qc.update({"grf_input_policy_version": GRF_INPUT_POLICY_VERSION,
+                   "force_input_validity": "legacy_quiet_standing_estimate_WARN",
+                   "event_force_threshold_N": float(force_threshold_N),
+                   "wrench_filtering": "legacy_quiet_standing_estimate; not native bilateral"})
+        return feet, valid, qc
 
     feet: list[dict] = []
     contacts: dict[str, np.ndarray] = {}
+    validity: dict[str, np.ndarray] = {}
+    missing_loaded_native = 0
+    edge_excluded_frames = 0
+    total_native = gaitway.columns["GRFz vertical (N)"]
+    sum_native = gaitway.columns["FzR(N)"] + gaitway.columns["FzL(N)"]
+    unsupported_total = (np.isfinite(total_native) & (total_native > force_threshold_N)
+                         & np.isfinite(sum_native) & (np.abs(sum_native) <= 1e-12))
     for side, label in (("R", "right"), ("L", "left")):
         fz_n = gaitway.columns[f"Fz{side}(N)"]
         fy_n = gaitway.columns[f"Fy{side}(N)"]
@@ -265,43 +413,78 @@ def build_bilateral_grf(
         force_n = rotate_treadmill_grade(force_n, grade, rear_axis_mocap)
         point_n = rotate_treadmill_grade(point_n, grade, rear_axis_mocap)
 
-        # 接触段（原生采样率）：只接触时力才有物理意义，非接触按 0 处理。
-        contact_n = np.isfinite(fz_n) & (fz_n > float(force_threshold_N))
-
-        # 抗混叠低通：每个接触段独立滤波，非接触帧 NaN（不跨边界振铃）。
+        # Measurement validity is independent of the 50 N event threshold.
+        # With exactly measured zero force the wrench is zero even if COP is
+        # undefined. Positive/nonzero load with missing COP is NOT reconstructible.
+        finite_force = np.isfinite(force_n).all(axis=1)
+        measured_zero = finite_force & (np.max(np.abs(force_n), axis=1) <= 1e-12)
+        finite_point = np.isfinite(point_n).all(axis=1)
+        native_valid = finite_force & (finite_point | measured_zero) & ~unsupported_total
+        missing_loaded_native += int((finite_force & ~measured_zero & ~finite_point).sum())
+        point_n = np.where((finite_point & ~measured_zero)[:, None], point_n, 0.0)
+        # Unmeasured per-foot free moment remains assumed zero. An exported
+        # total Tz is retained for diagnostics, without inventing its allocation.
+        # Filter force and
+        # moment about ONE fixed origin together, preserving the physical wrench.
+        moment_n = np.cross(point_n, force_n)
+        wrench_n = np.column_stack([force_n, moment_n])
         if apply_aa:
-            force_n = lowpass_segmented(force_n, contact_n, native_rate, float(cutoff_hz))
-            point_n = lowpass_segmented(point_n, contact_n, native_rate, float(cutoff_hz))
-
-        # 滤波后再把非接触段清零（避免振铃泄漏进摆动相）。
-        force_n = np.where(contact_n[:, None], force_n, 0.0)
-        point_n = np.where(contact_n[:, None], point_n, 0.0)
-
-        # 重采样到 mocap 时间（已抗混叠，线性重采样即可）。
-        force = _interp_vec(native_t, force_n, query, fill=0.0)
-        point = _interp_vec(native_t, point_n, query, fill=0.0)
-
-        # mocap 采样率下的接触判定（用原始 fz 判接触，供有效区间与 QC）。
-        fz_q = _interp(native_t, fz_n, query, fill=0.0)
-        contact = in_bounds & np.isfinite(fz_q) & (fz_q > float(force_threshold_N))
-        force = np.nan_to_num(force, nan=0.0)
-        point = np.nan_to_num(point, nan=0.0)
-        force[~contact] = 0.0
-        point[~contact] = 0.0
+            wrench_n = lowpass_segmented(wrench_n, native_valid, native_rate,
+                                         float(cutoff_hz), time_s=native_t)
+        wrench, valid = _interp_finite_segments(native_t, wrench_n, query, native_valid,
+                                                sample_rate_hz=native_rate)
+        # COP is a choice of representation; the residual torque below ensures
+        # the same filtered moment regardless of this unfiltered native point.
+        point, point_valid = _interp_finite_segments(native_t, point_n, query, native_valid,
+                                                     sample_rate_hz=native_rate)
+        fz_q, fz_valid = _interp_finite_segments(native_t, fz_n[:, None], query, native_valid,
+                                               sample_rate_hz=native_rate)
+        available = valid & point_valid & fz_valid & in_bounds
+        native_trust = _wrench_trust_mask(native_t, native_valid, sample_rate_hz=native_rate,
+                                         cutoff_hz=cutoff_hz)
+        _, trusted = _interp_finite_segments(native_t, wrench_n, query, native_trust,
+                                              sample_rate_hz=native_rate)
+        valid = available & trusted
+        edge_excluded_frames += int((available & ~valid).sum())
+        force = wrench[:, :3]
+        torque = wrench[:, 3:] - np.cross(point, force)
+        # Quality guards must NOT create a new physical zero-force edge.
+        # Only true unavailable source samples receive numerical placeholders.
+        force[~available] = 0.0
+        point[~available] = 0.0
+        torque[~available] = 0.0
+        contact = valid & (fz_q[:, 0] > float(force_threshold_N))
         contacts[label] = contact
+        validity[label] = valid
         feet.append({
             "name": label,
             "force": force,
             "point": point,
-            "torque": np.zeros_like(force),
+            "torque": torque,
+            "valid": valid,
+            "contact": contact,
+            "input_available": available,
         })
 
     total_fz = _interp(
         native_t, gaitway.columns["GRFz vertical (N)"], query, fill=0.0
     )
-    decomposition_valid = in_bounds & ((contacts["right"] | contacts["left"]))
+    decomposition_valid = in_bounds & validity["right"] & validity["left"]
     qc = {
         "force_transform_version": FORCE_TRANSFORM_VERSION,
+        "grf_input_policy_version": GRF_INPUT_POLICY_VERSION,
+        "force_input_validity": "finite_native_complete_wrench_no_gap_interpolation",
+        "event_force_threshold_N": float(force_threshold_N),
+        "event_threshold_applied_to_physical_force": False,
+        "wrench_filtering": "joint_force_and_moment_about_fixed_origin",
+        "output_torque_semantics": "filtered_origin_moment_minus_cross_output_point_force; not measured free moment",
+        "n_right_valid_frames": int(validity["right"].sum()),
+        "n_left_valid_frames": int(validity["left"].sum()),
+        "n_missing_loaded_cop_native_side_samples": missing_loaded_native,
+        "n_unsupported_total_native_frames": int(unsupported_total.sum()),
+        "filter_segment_edge_guard_s": (3.0 / float(cutoff_hz) if apply_aa else 0.0),
+        "n_filter_edge_excluded_side_frames": edge_excluded_frames,
+        "invalid_force_values_are_placeholders": True,
         "grade_source": grade_source,
         "grade_percent_min": float(np.min(grade)),
         "grade_percent_max": float(np.max(grade)),
@@ -311,7 +494,7 @@ def build_bilateral_grf(
         "zero_grade_rotation_fp_to_mocap": np.asarray(R_fp_to_mocap).tolist(),
         "fixed_rear_axis_mocap": np.asarray(rear_axis_mocap).tolist(),
         "origin_mocap_mm": O_MOCAP_MM.tolist(),
-        "assumptions": ["标定对应显示坡度0，后沿轴在全局中固定", "保留动捕+Z竖直和模型原有重力，不根据力矩拟合重力", "双侧自由力矩缺失，仍按0处理", "原始水平力映射为局部方向后再旋转，未用新加载实验验证"],
+        "assumptions": ["标定对应显示坡度0，后沿轴在全局中固定", "保留动捕+Z竖直和模型原有重力，不根据力矩拟合重力", "逐脚自由力矩未知取0；已导出总Tz仅作诊断，未擅自分配；输出torque为保持已滤完整wrench的表示残差，非实测自由力矩", "原始水平力映射为局部方向后再旋转，未用新加载实验验证", "有效低载原生力保留，50N仅用于事件；正载缺COP或分力的样本不跨缺失插值"],
         "force_time_offset_s": float(force_time_offset_s),
         "gaitway_sample_rate_hz": gaitway.sample_rate_hz,
         "grf_cutoff_hz": (float(cutoff_hz) if cutoff_hz is not None else None),
@@ -321,7 +504,8 @@ def build_bilateral_grf(
         "n_right_contact_frames": int(contacts["right"].sum()),
         "n_left_contact_frames": int(contacts["left"].sum()),
         "decomposition_method": "native_bilateral",
-        "bilateral_force_measured": True,
+        "bilateral_force_measured": False,
+        "bilateral_force_source": "vendor_algorithm_decomposed_total_force",
         "total_fz_min_N": float(np.min(total_fz[in_bounds])),
         "total_fz_max_N": float(np.max(total_fz[in_bounds])),
     }

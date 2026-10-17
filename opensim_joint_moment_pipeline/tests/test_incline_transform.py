@@ -58,6 +58,8 @@ def test_real_rear_axis_invariance_and_moment_covariance():
 def test_zero_contact_stays_zero_with_grade():
     g = trial([8.7489, 8.7489])
     g.columns['FzR(N)'][:] = 0
+    g.columns['FyR(N)'][:] = 0
+    g.columns['FxR(N)'][:] = 0
     feet, valid, _ = build(g)
     assert valid.all()  # Left foot still loaded.
     np.testing.assert_array_equal(feet[0]['force'], 0)

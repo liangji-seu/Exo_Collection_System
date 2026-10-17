@@ -232,6 +232,49 @@ def _force_checks(force: dict[str, Any] | None, n_frames: int | None) -> list[di
         f"≥{FORCE_COVERAGE_WARN_FRAC * 100:.0f}% 正常，<{FORCE_COVERAGE_FAIL_FRAC * 100:.0f}% 失败",
         detail,
     )]
+    if force.get("grf_input_policy_version"):
+        checks.append(_check(
+            "grf_wrench_input_policy", "完整外力输入策略", None, "INFO", "",
+            str(force["grf_input_policy_version"]),
+            "接触事件阈值与物理外力输入分离；仅连续有限原生段滤波/重采样，缺失及滤波边缘由有效掩码排除",
+        ))
+    if force.get("n_missing_loaded_cop_native_side_samples", 0):
+        checks.append(_check(
+            "grf_loaded_cop_missing", "有载荷但COP缺失", force["n_missing_loaded_cop_native_side_samples"],
+            "WARN", "原生侧样本", "不得补造COP或跨缺口插值",
+            "相关区间及滤波边缘已标记无效；文件中的零值仅为占位，不能作为有效真值",
+        ))
+    consistency = force.get("native_wrench_consistency") or {}
+    phase_labels = {"all": "全部", "single_support": "单支撑", "double_support": "双支撑"}
+    for phase, metrics in consistency.get("phases", {}).items():
+        for kind, metric, unit in (
+            ("force", "force_sum_minus_exported_total_N", "N"),
+            ("moment", "represented_moment_minus_exported_total_Nm", "Nm"),
+        ):
+            axes = metrics.get(metric) or {}
+            values = [axes.get(axis, {}).get("rms") for axis in "xyz"]
+            value = math.sqrt(sum(v*v for v in values)) if all(v is not None for v in values) else None
+            axis_text = ", ".join(f"{axis}={v:.4g}" if v is not None else f"{axis}=未导出" for axis, v in zip("xyz", values))
+            checks.append(_check(
+                f"native_wrench_{phase}_{kind}", f"原生{phase_labels.get(phase, phase)}{'力' if kind == 'force' else '矩'}一致性",
+                value, "INFO", unit, "诊断指标，无合格阈值",
+                f"双侧表示减导出总量，轴RMS {axis_text}；50N仅分类；" +
+                ("总矩参考原点可比性须检查manifest内总矩-COP×F-Tz诊断；Mz包含未分配的逐脚自由矩，输出torque并非实测自由矩" if kind == "moment" else "不改变力或有效掩码"),
+            ))
+    if consistency:
+        checks.append(_check(
+            "native_total_free_moment", "导出总自由矩", None, "INFO", "", "不自动分配到双脚",
+            "已导出" if consistency.get("exported_total_free_moment_available") else "旧文件未导出；逐脚自由矩仍未知",
+        ))
+    if force.get("backward_decomposition_unvalidated"):
+        ds_axes = consistency.get("phases", {}).get("double_support", {}).get("represented_moment_minus_total_cop_cross_force_Nm", {})
+        ds_text = ", ".join(f"{axis}={ds_axes[axis]['rms']:.4g}Nm" for axis in "xy" if ds_axes.get(axis, {}).get("rms") is not None)
+        checks.append(_check(
+            "backward_force_decomposition", "倒走左右分力适用性", None, "WARN", "",
+            "需独立验证倒走双支撑分力",
+            "单支撑 COP/脚 marker 映射检查仅验证左右分配；Gaitway 算法在倒走双支撑期尚未验证，结果不得自动视为合格真值。"
+            + (f"原生双支撑同平面双COP表示矩减总COP×总力的倾覆矩RMS：{ds_text}；逐脚自由矩未知，不能据此唯一修正两脚COP。" if ds_text else ""),
+        ))
     if force.get("decomposition_method") == "estimated_from_total_cop_and_foot_markers":
         share = force.get("right_load_share_median")
         share_text = f"；右侧中位载荷 {float(share) * 100:.1f}%" if share is not None else ""

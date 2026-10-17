@@ -98,6 +98,10 @@ def export_viewer_data(
     grf_path: Path,
     out_dir: Path,
     mass_kg: float,
+    processing: dict[str, Any] | None = None,
+    validity_time_s: np.ndarray | None = None,
+    support_mask: np.ndarray | None = None,
+    analysis_mask: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """导出 viewer 数据到 ``out_dir/viewer/``，返回摘要 dict。"""
     viewer_dir = Path(out_dir) / "viewer"
@@ -171,6 +175,31 @@ def export_viewer_data(
         np.float32
     )
 
+    # A validity mask is categorical: never interpolate across an unsupported gap.
+    if validity_time_s is None or support_mask is None or analysis_mask is None:
+        raise ValueError("viewer 导出缺少外力/分析有效性依据")
+    source_time = np.asarray(validity_time_s, dtype=float)
+    if (source_time.ndim != 1 or len(source_time) == 0 or not np.isfinite(source_time).all()
+            or np.any(np.diff(source_time) <= 0)):
+        raise ValueError("有效性时间必须有限、非空且严格递增")
+    for mask_name, mask in (("support", support_mask), ("analysis", analysis_mask)):
+        candidate = np.asarray(mask)
+        if candidate.shape != (len(source_time), 2) or not np.isin(candidate, [0, 1]).all():
+            raise ValueError(f"{mask_name} 有效性必须为 (n,2) 布尔值")
+    indices = np.searchsorted(source_time, time_s)
+    indices = np.clip(indices, 0, len(source_time) - 1)
+    previous = np.maximum(indices - 1, 0)
+    indices = np.where(abs(source_time[previous] - time_s) < abs(source_time[indices] - time_s), previous, indices)
+    tolerance = max(1e-6, 0.51 * float(np.median(np.diff(source_time)))) if len(source_time) > 1 else 1e-6
+    matched = abs(source_time[indices] - time_s) <= tolerance
+    support = np.asarray(support_mask, dtype=bool)[indices] & matched[:, None]
+    analysis = np.asarray(analysis_mask, dtype=bool)[indices] & support
+    valid = np.all(analysis, axis=1)
+    moments[~valid] = np.nan
+    force[~support] = np.nan
+    cop[~support] = np.nan
+    np.save(viewer_dir / "support_mask.npy", support)
+    np.save(viewer_dir / "analysis_mask.npy", analysis)
     np.save(viewer_dir / "time_s.npy", time_s)
     np.save(viewer_dir / "model_markers.npy", model_markers)
     np.save(viewer_dir / "experimental_markers.npy", experimental_mm)
@@ -185,6 +214,8 @@ def export_viewer_data(
         "frame_rate_hz": float(frame_rate),
         "mass_kg": float(mass_kg),
         "units": {"position": "mm", "force": "N", "moment": "Nm"},
+        "processing": processing,
+        "analysis_validity": {"policy": "bilateral_analysis_v1", "valid_frames": int(valid.sum()), "total_frames": n, "note": "仅有效片段，非完整瞬态真值；缺失载荷不可作为实测零"},
         "model_marker_names": list(model_marker_names),
         "experimental_marker_names": list(exp_names),
         "medial_marker_names": sorted(_MEDIAL),

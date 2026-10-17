@@ -66,6 +66,7 @@ def build_trc(
     *,
     opensim_frame: bool = True,
     cutoff_hz: float | None = None,
+    ground_rotation: np.ndarray | None = None,
 ) -> tuple[list[str], np.ndarray]:
     """写 TRC 文件，返回 (marker_names, traj) 其中 traj 为写盘前坐标。
 
@@ -80,6 +81,8 @@ def build_trc(
             if valid.any():
                 traj_osim[valid, j, :] = mocap_to_opensim_points(traj[valid, j, :])
         traj = traj_osim
+    if ground_rotation is not None and not np.array_equal(ground_rotation, np.eye(3)):
+        traj = traj @ np.asarray(ground_rotation).T
     if cutoff_hz is not None:
         traj = lowpass_zero_phase(
             traj, data.point_rate_hz, float(cutoff_hz), preserve_missing=True)

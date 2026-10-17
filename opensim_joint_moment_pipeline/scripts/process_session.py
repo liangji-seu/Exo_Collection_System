@@ -132,8 +132,9 @@ def _moment_summary(id_file: Path, mask: np.ndarray, mass_kg: float) -> dict:
 
 def _map_mask_to_id_time(full_mask: np.ndarray, id_time: np.ndarray, point_rate: float) -> np.ndarray:
     """把 ID 输出时间（C3D 时间，从 0 起）映射回 support_mask 的行索引。"""
-    indices = np.clip(np.rint(id_time * point_rate).astype(int), 0, len(full_mask) - 1)
-    return full_mask[indices]
+    raw_indices = np.rint(id_time * point_rate).astype(int)
+    indices = np.clip(raw_indices, 0, len(full_mask) - 1)
+    return full_mask[indices] & ((raw_indices >= 0) & (raw_indices < len(full_mask)))[:, None]
 
 
 def _add_backpack_qc_audit(qc_report: dict, backpack: dict) -> None:
@@ -331,6 +332,10 @@ def _run(manifest: dict, cancel_file: str | None) -> dict:
             grf_path=Path(Path(manifest["grf_mot"]).name),
             out_dir=out,
             mass_kg=mass_kg,
+            processing=manifest.get("processing"),
+            validity_time_s=id_time,
+            support_mask=window_mask,
+            analysis_mask=analysis_mask,
         )
         _add_backpack_viewer_audit(viewer_summary, Path(viewer_summary["viewer_dir"]), backpack_receipt)
     finally:

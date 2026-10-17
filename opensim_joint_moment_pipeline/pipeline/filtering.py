@@ -33,7 +33,9 @@ def lowpass_zero_phase(
         if valid.sum() < 12:
             continue
         filled = np.interp(x, x[valid], series[valid])
-        filtered = sosfiltfilt(sos, filled)
+        # Short, genuinely finite segments still need a bounded padding length.
+        default_padlen = 3 * (2 * len(sos) + 1 - min((sos[:, 2] == 0).sum(), (sos[:, 5] == 0).sum()))
+        filtered = sosfiltfilt(sos, filled, padlen=min(int(default_padlen), len(filled) - 1))
         if preserve_missing:
             filtered[~valid] = np.nan
         out[:, column] = filtered
@@ -48,11 +50,13 @@ def lowpass_segmented(
     *,
     order: int = 4,
     min_segment: int = 12,
+    time_s: np.ndarray | None = None,
 ) -> np.ndarray:
     """Zero-phase lowpass each contiguous ``valid`` segment independently.
 
-    用于接触开关信号（GRF）：只在接触段内滤波，非接触帧置 NaN，避免滤波器的
-    边界振铃跨过「接触→摆动」边界制造假力（prompt6 §3.8 第 5 条）。
+    ``valid`` describes available measurements, not a force/contact threshold.
+    Continuous low-load/zero-load measurements must not be split at an event
+    threshold. Missing data and optional true timestamp gaps split the filter.
 
     ``values`` 可为 (n,) 或 (n, c)；``valid`` 为 (n,) bool。返回同 shape 数组，
     非接触帧为 NaN。
@@ -66,9 +70,13 @@ def lowpass_segmented(
     out = np.full_like(data, np.nan)
     idx = np.flatnonzero(valid)
     if idx.size == 0:
-        return values.copy()
+        return out[:, 0] if squeeze else out
 
-    boundaries = np.where(np.diff(idx) > 1)[0]
+    breaks = np.diff(idx) > 1
+    if time_s is not None:
+        time = np.asarray(time_s, dtype=np.float64)
+        breaks |= np.diff(time[idx]) > 1.5 / float(sample_rate_hz)
+    boundaries = np.where(breaks)[0]
     starts = np.concatenate([[0], boundaries + 1])
     ends = np.concatenate([boundaries, [idx.size - 1]])
     for s, e in zip(starts, ends):

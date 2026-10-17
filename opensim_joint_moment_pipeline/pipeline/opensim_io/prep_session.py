@@ -29,8 +29,11 @@ import numpy as np
 from ..c3d.reader import read_c3d
 from ..gait.steady_state import detect_steady_walking
 from ..gaitway import build_bilateral_grf, read_gaitway_ascii
-from ..transforms import R_FP_TO_MOCAP_DEFAULT, R_MOCAP_TO_OPENSIM, FORCE_TRANSFORM_VERSION
-from .build_trc import build_trc
+from ..gaitway.ascii_export import audit_native_bilateral_wrench
+from ..gaitway.ascii_export import GRF_INPUT_POLICY_VERSION
+from ..transforms import R_FP_TO_MOCAP_DEFAULT, R_MOCAP_TO_OPENSIM, FORCE_TRANSFORM_VERSION, mocap_to_opensim_points
+from .build_trc import build_trc, extract_hh19
+from .walking_direction import DIRECTION_POLICY_VERSION, is_backward_trial, body_heading, anatomical_load_mapping, rotate_loads
 from .grf import write_external_loads_xml
 from .static_window import select_static_window
 from .write_grf_mot import write_grf_mot
@@ -80,7 +83,7 @@ def prepare_session(
     height_m: float,
     gaitway_offset_s: float,
     marker_cutoff_hz: float | None = None,
-    grf_cutoff_hz: float = 20.0,
+    grf_cutoff_hz: float = 6.0,
     opensim_x_sign: float = -1.0,
     opensim_z_sign: float = -1.0,
     analysis_time_range_s: tuple[float, float] | None = None,
@@ -92,8 +95,13 @@ def prepare_session(
     force_threshold_N: float = 50.0,
     R_fp_to_mocap: np.ndarray | None = None,
     backpack: dict[str, Any] | None = None,
+    condition_code: str = "",
 ) -> dict[str, Any]:
     """预处理并写 manifest，返回摘要 dict（含 ``manifest_path``）。"""
+    condition = condition_code or Path(dynamic_c3d_path).stem
+    backward = is_backward_trial(condition)
+    if backward and "STAND_BWALK_STAND" in condition.upper() and analysis_time_range_s is None:
+        raise ValueError("站立→倒走→站立属于瞬态工况，不能自动截取稳态：请在 Calculate 显式设置分析起止时间，确认对应起停/行走段后再解算；批处理请跳过该试次")
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     if R_fp_to_mocap is None:
@@ -173,16 +181,36 @@ def prepare_session(
         steady_state["start_s"] = a0
         steady_state["end_s"] = a1
 
-    # 1. 静态 / 动态 TRC（OpenSim ground 帧，mm）
+    if backward:
+        steady_state["event_semantics"] = "vertical_force_contact_onset; does not imply heel-first landing"
+
+    # Body heading and walking direction are independent. Keep forward yaw;
+    # reverse heading uses a constant proper half-turn about ground Y.
+    static_geom_names, static_geom = extract_hh19(static_data)
+    dynamic_geom_names, dynamic_geom = extract_hh19(dynamic_data)
+    static_geom = mocap_to_opensim_points(static_geom)
+    dynamic_geom = mocap_to_opensim_points(dynamic_geom)
+    static_selected = (static_data.time_s >= static_window["start_s"]) & (static_data.time_s <= static_window["end_s"])
+    dynamic_selected = (dynamic_data.time_s >= analysis_range[0]) & (dynamic_data.time_s <= analysis_range[1])
+    static_rotation, static_heading = body_heading(static_geom_names, static_geom, static_selected, required=backward)
+    dynamic_rotation, dynamic_heading = body_heading(dynamic_geom_names, dynamic_geom, dynamic_selected, required=backward)
+
+    # 1. 静态 / 动态 TRC（model ground 帧，mm）；viewer reads these exact TRCs.
     static_names, _ = build_trc(
-        static_data, out / "static.trc", opensim_frame=True, cutoff_hz=marker_cutoff_hz
+        static_data, out / "static.trc", opensim_frame=True, cutoff_hz=marker_cutoff_hz,
+        ground_rotation=static_rotation,
     )
     dyn_names, dyn_traj_mm = build_trc(
-        dynamic_data, out / "dynamic.trc", opensim_frame=True, cutoff_hz=marker_cutoff_hz
+        dynamic_data, out / "dynamic.trc", opensim_frame=True, cutoff_hz=marker_cutoff_hz,
+        ground_rotation=dynamic_rotation,
     )
 
     standing_centers = None
     if quiet_standing:
+        # Keep filtering and ordinary forward standing outputs unchanged. The
+        # standing estimator expects lab ground, before any heading half-turn.
+        lab_dyn_traj_mm = (dyn_traj_mm if np.array_equal(dynamic_rotation, np.eye(3))
+                           else dyn_traj_mm @ dynamic_rotation)
         marker_index = {name: index for index, name in enumerate(dyn_names)}
         required = ("R.Heel", "R.Toe", "L.Heel", "L.Toe")
         missing = [name for name in required if name not in marker_index]
@@ -190,11 +218,11 @@ def prepare_session(
             raise ValueError(f"站立载荷估计缺少脚部 marker：{missing}")
         standing_centers = {
             "right": np.nanmean(
-                dyn_traj_mm[:, [marker_index["R.Heel"], marker_index["R.Toe"]], :],
+                lab_dyn_traj_mm[:, [marker_index["R.Heel"], marker_index["R.Toe"]], :],
                 axis=1,
             ) / 1000.0,
             "left": np.nanmean(
-                dyn_traj_mm[:, [marker_index["L.Heel"], marker_index["L.Toe"]], :],
+                lab_dyn_traj_mm[:, [marker_index["L.Heel"], marker_index["L.Toe"]], :],
                 axis=1,
             ) / 1000.0,
         }
@@ -212,12 +240,39 @@ def prepare_session(
         require_grade=True,
         standing_foot_centers_opensim_m=standing_centers,
     )
+    mapping_audit = None
+    diagnostic_times = dynamic_data.time_s[dynamic_selected] + float(gaitway_offset_s)
+    if gaitway_qc["decomposition_method"] == "native_bilateral" and len(diagnostic_times):
+        gaitway_qc["native_wrench_consistency"] = audit_native_bilateral_wrench(
+            gaitway, time_range_s=(float(diagnostic_times[0]), float(diagnostic_times[-1])),
+            diagnostic_contact_threshold_N=50.0,
+        )
+    if (backward or dynamic_heading["heading"] == "reverse") and gaitway_qc["decomposition_method"] == "native_bilateral":
+        feet, mapping_audit = anatomical_load_mapping(
+            feet, dynamic_geom_names, dynamic_geom, dynamic_selected,
+            force_threshold_N=force_threshold_N,
+        )
+        gaitway_qc["anatomical_mapping"] = mapping_audit
+        if mapping_audit["native_to_anatomical"]["R"] == "left":
+            gaitway_qc["n_right_contact_frames"], gaitway_qc["n_left_contact_frames"] = (
+                gaitway_qc["n_left_contact_frames"], gaitway_qc["n_right_contact_frames"])
+    # Incline is already applied in the lab frame. Rotate all spatial load
+    # quantities together, retaining the anatomical joint-moment signs.
+    feet = rotate_loads(feet, dynamic_rotation)
+    if backward:
+        gaitway_qc["backward_decomposition_unvalidated"] = True
+        gaitway_qc["assumptions"].append("倒走单支撑映射检查不验证厂商双支撑分力算法；倒走结果必须标记WARN并复核")
     write_grf_mot(out / "grf.mot", dynamic_data.time_s, feet)
     write_external_loads_xml(out / "external_loads.xml", "grf.mot")
     # 双侧有效：两腿 ID 结果在分解有效区间内都有效（含摆动与双支撑）。
-    right_valid = decomposed_valid.copy()
-    left_valid = decomposed_valid.copy()
-    np.save(out / "support_mask.npy", np.column_stack([right_valid, left_valid]))
+    right_valid = feet[0].get("valid", decomposed_valid).copy()
+    left_valid = feet[1].get("valid", decomposed_valid).copy()
+    support_mask = np.column_stack([right_valid, left_valid])
+    gaitway_qc["n_right_valid_frames"] = int(right_valid.sum())
+    gaitway_qc["n_left_valid_frames"] = int(left_valid.sum())
+    np.save(out / "support_mask.npy", support_mask)
+    np.save(out / "analysis_mask.npy", support_mask & dynamic_selected[:, None])
+    np.save(out / "contact_mask.npy", np.column_stack([foot.get("contact", decomposed_valid) for foot in feet]))
 
     # 3. 通用模型副本（自包含，OpenSim 用裸名相对加载）
     generic_dest = out / "gait2392_simbody.osim"
@@ -245,6 +300,8 @@ def prepare_session(
         "external_loads": str(out / "external_loads.xml"),
         "grf_mot": str(out / "grf.mot"),
         "support_mask": str(out / "support_mask.npy"),
+        "analysis_mask": str(out / "analysis_mask.npy"),
+        "contact_mask": str(out / "contact_mask.npy"),
         "inputs": inputs,
         "analysis_time_range_s": list(analysis_range),
         "steady_state": steady_state,
@@ -252,6 +309,9 @@ def prepare_session(
         "static_window": static_window,
         "processing": {
             "force_transform_version": FORCE_TRANSFORM_VERSION,
+            "grf_input_policy_version": GRF_INPUT_POLICY_VERSION,
+            "support_mask_semantics": "per_anatomical_side_finite_native_wrench_and_filter_edge_quality; not contact threshold",
+            "analysis_mask_semantics": "support_mask intersect dynamic C3D analysis interval; truth requires both sides",
             "force_sign_application": "native_before_rotation",
             "marker_cutoff_hz": marker_cutoff_hz,
             "grf_cutoff_hz": grf_cutoff_hz,
@@ -259,6 +319,12 @@ def prepare_session(
             "opensim_force_z_sign": float(opensim_z_sign),
             "marker_adjustment_expert_confirmed": bool(marker_adjustment_expert_confirmed),
             "quiet_standing": bool(quiet_standing),
+            "walking_direction": "backward" if backward else "unspecified_or_forward",
+            "direction_policy_version": DIRECTION_POLICY_VERSION,
+            "condition_code": condition,
+            "body_orientation": {"static": static_heading, "dynamic": dynamic_heading},
+            "joint_moment_sign_convention": "OpenSim anatomical coordinate; no direction-dependent negation",
+            "viewer_coordinate_frame": "same normalized ground as dynamic.trc/grf.mot",
         },
         "gaitway": gaitway_qc,
         "sync": {
@@ -283,6 +349,11 @@ def prepare_session(
 
     return {
         "manifest_path": str(manifest_path),
+        "support_mask": str(out / "support_mask.npy"),
+        "analysis_mask": str(out / "analysis_mask.npy"),
+        "contact_mask": str(out / "contact_mask.npy"),
+        "grf_input_policy_version": GRF_INPUT_POLICY_VERSION,
+        "processing": manifest["processing"],
         "static_n_markers": len(static_names),
         "dynamic_n_markers": len(dyn_names),
         "static_n_frames": static_data.n_frames,
