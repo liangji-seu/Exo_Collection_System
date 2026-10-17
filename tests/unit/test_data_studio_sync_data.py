@@ -224,7 +224,14 @@ def test_check_trial_solved_complete_and_solved(tmp_path: Path) -> None:
     _write_trigger(trial_root, CAP_NAME)
     (trial_root / f"{CAP_NAME}.c3d").write_text("x")
     (trial_root / f"{CAP_NAME}.txt").write_text("y")
-    (trial_root / "ground_truth.csv").write_text("time_s\n1\n")
+    csv = trial_root / "ground_truth.csv"
+    csv.write_text("time_s\n1\n")
+    from exo_collection.apps.calculate.ground_truth_status import write_ground_truth_qc
+    import json
+    run = trial_root / "derived" / "opensim" / "run_current"
+    run.mkdir(parents=True)
+    (run / "manifest.json").write_text(json.dumps({"processing": {"grf_input_policy_version": "continuous_native_wrench_v2"}}))
+    write_ground_truth_qc(csv, "WARN", run, validity={"export_validity_version": "bilateral_analysis_v1"})
     status = check_trial_solved(_manifest_path(trial_root))
     assert status.complete
     assert status.solved
@@ -274,7 +281,14 @@ def test_check_all_trial_solved_only_finalized(tmp_path: Path) -> None:
     _write_trigger(trial_root, CAP_NAME)
     (trial_root / f"{CAP_NAME}.c3d").write_text("x")
     (trial_root / f"{CAP_NAME}.txt").write_text("y")
-    (trial_root / "ground_truth.csv").write_text("time_s\n1\n")
+    csv = trial_root / "ground_truth.csv"
+    csv.write_text("time_s\n1\n")
+    from exo_collection.apps.calculate.ground_truth_status import write_ground_truth_qc
+    import json
+    run = trial_root / "derived" / "opensim" / "run_current"
+    run.mkdir(parents=True)
+    (run / "manifest.json").write_text(json.dumps({"processing": {"grf_input_policy_version": "continuous_native_wrench_v2"}}))
+    write_ground_truth_qc(csv, "WARN", run, validity={"export_validity_version": "bilateral_analysis_v1"})
     manifest_path = _manifest_path(trial_root)
     finalized = SimpleNamespace(state="FINALIZED", manifest_path=manifest_path)
     nonfinalized = SimpleNamespace(state="RECORDING", manifest_path=manifest_path)
@@ -385,3 +399,15 @@ def test_sync_sidecar_files_case_insensitive_suffix(tmp_path: Path) -> None:
 
     assert result.copied_files == 1
     assert (trial_root / f"{CAP_NAME}.C3D").exists()
+
+
+def test_check_trial_solved_old_csv_requires_recompute_without_deleting(tmp_path):
+    trial_root = tmp_path / "old_trial"
+    trial_root.mkdir()
+    _write_trigger(trial_root, CAP_NAME)
+    csv = trial_root / "ground_truth.csv"
+    csv.write_text("preserve old result")
+    status = check_trial_solved(_manifest_path(trial_root))
+    assert not status.solved
+    assert status.qc_status is None
+    assert csv.read_text() == "preserve old result"

@@ -1564,6 +1564,39 @@ def test_download_clears_stale_partial_staging_from_interrupted_run(
     assert (local_trial / "manifest.json").is_file()
 
 
+def test_download_ignores_local_management_sidecars(tmp_path: Path) -> None:
+    manifest_path = _publish_trial(tmp_path)
+    trial_dir = manifest_path.parent
+    (trial_dir / "dataset_selection.json").write_text(
+        '{"status": "accepted"}', encoding="utf-8"
+    )
+
+    # 上传打包不纳入本地管理边车（云端 data/ 应无标签边车）。
+    plan = build_upload_plan(manifest_path)
+    plan_relative = {item.relative_path.as_posix() for item in plan.files}
+    assert "dataset_selection.json" not in plan_relative
+    assert "manifest.json" in plan_relative
+    assert "raw/imu.h5" in plan_relative
+
+    target = tmp_path / "pull"
+    request = _download_request(tmp_path, manifest_path, target)
+    session = _FakeRemoteSession()
+    key, _remote_dir = _publish_remote_trial(session, request, plan, tmp_path)
+    _write_remote_index(session, request, {key: _index_entry(plan)})
+
+    # 本地目标目录已存在一个边车（模拟"接受为数据集"后本地已有 dataset_selection.json）。
+    local_trial = target.joinpath(*PurePosixPath(key).parts)
+    local_trial.mkdir(parents=True)
+    sidecar = local_trial / "dataset_selection.json"
+    sidecar.write_text('{"status": "accepted"}', encoding="utf-8")
+
+    result = RemoteDatasetDownloader(lambda _request: session).download(request, target)
+
+    assert result.downloaded_trials == 1
+    assert sidecar.is_file()  # 下载不会删除本地边车
+    assert (local_trial / "raw" / "imu.h5").read_bytes() == b"immutable-imu-payload"
+
+
 def test_download_skips_stale_index_entry_with_missing_remote_dir(tmp_path: Path) -> None:
     manifest_path = _publish_trial(tmp_path)
     plan = build_upload_plan(manifest_path)

@@ -251,7 +251,8 @@ def check_trial_solved(manifest_path: Path) -> SolveStatus:
         missing.append("c3d")
     if not sync.txt_present:
         missing.append("txt")
-    solved = (sync.trial_root / "ground_truth.csv").is_file()
+    from exo_collection.apps.calculate.direction_policy import export_is_current
+    solved = (sync.trial_root / "ground_truth.csv").is_file() and export_is_current(sync.trial_root)
     return SolveStatus(
         manifest_path=sync.manifest_path,
         trial_root=sync.trial_root,

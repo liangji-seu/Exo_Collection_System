@@ -509,9 +509,28 @@ def validate_finalized_trial(manifest_path: str | Path) -> TrialManifest:
     return manifest
 
 
-def _iter_trial_paths(trial_directory: Path) -> Iterator[Path]:
-    """Yield regular files without following symlinks or junction-like links."""
+# Data Studio 本地管理边车（接受/丢弃标记、动作标签），写在 trial 根目录、不属于云端
+# data/ 数据包。上传打包与下载整包校验都跳过它们：否则本地在接受/标注后新增的边车会让
+# 下载后的 ``_directory_fingerprint`` 多出云端没有的文件，触发 DOWNLOAD_INTEGRITY_FAILED。
+_LOCAL_MANAGEMENT_SIDECAR_FILENAMES = frozenset(
+    {
+        "dataset_selection.json",
+        "manual_review.json",
+        "prompt_annotations.json",
+        "prompt_added_labels.json",
+        "prompt_action_labels.json",
+    }
+)
 
+
+def _iter_trial_paths(trial_directory: Path) -> Iterator[Path]:
+    """Yield regular files without following symlinks or junction-like links.
+
+    跳过 trial 根目录下的 Data Studio 本地管理边车（见
+    :data:`_LOCAL_MANAGEMENT_SIDECAR_FILENAMES`），它们不参与数据包指纹。
+    """
+
+    trial_root = os.fspath(trial_directory)
     for current_root, directory_names, file_names in os.walk(
         trial_directory, topdown=True, followlinks=False
     ):
@@ -523,6 +542,8 @@ def _iter_trial_paths(trial_directory: Path) -> Iterator[Path]:
             if name_has_storage_suffix(name):
                 raise UploadError("INCOMPLETE_PACKAGE", f"Trial 包含未完成目录：{name}")
         for name in file_names:
+            if current_root == trial_root and name in _LOCAL_MANAGEMENT_SIDECAR_FILENAMES:
+                continue
             candidate = current / name
             if _is_link_or_reparse(candidate):
                 raise UploadError("UNSAFE_PACKAGE", f"Trial 包含符号链接文件：{name}")
