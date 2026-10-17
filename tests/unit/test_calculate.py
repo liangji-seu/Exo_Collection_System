@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,7 @@ from exo_collection.apps.calculate.window import (  # noqa: E402
 )
 from exo_collection.apps.calculate.workers import _parse_event  # noqa: E402
 from exo_collection.configuration.app_settings import SharedAppSettings  # noqa: E402
+from exo_collection.apps.calculate.processing_view import ProcessingView  # noqa: E402
 
 
 def _file_settings(path: Path) -> SharedAppSettings:
@@ -58,6 +60,146 @@ def _make_session(subject: str = "003", condition: str = "WALK_STEADY_1P00") -> 
         state="FINALIZED",
         started_at_utc="2026-01-01T00:00:00",
     )
+
+
+def test_transient_analysis_controls_require_current_c3d_window(tmp_path):
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    view = ProcessingView(_file_settings(tmp_path / "transient.ini"))
+    try:
+        view.set_solve_enabled(True)
+        view.set_condition("STAND_BWALK_STAND_NOEXO")
+        assert not view._analysis_auto.isChecked()
+        assert not view._analysis_auto.isEnabled()
+        assert "推荐" not in view._analysis_auto.text()
+        assert view._analysis_start.isEnabled() and view._analysis_end.isEnabled()
+        assert view._static_auto.isChecked()
+        assert not view._process_button.isEnabled()
+        assert "第0帧" in view._analysis_hint.text()
+        assert "不是TXT" in view._analysis_hint.text()
+        assert "静止期" in view._analysis_hint.text()
+        captured = []
+        view.process_requested.connect(captured.append)
+        view._request_process()
+        assert not captured
+        view._analysis_start.setValue(3)
+        view._analysis_end.setValue(20)
+        assert view._process_button.isEnabled()
+        view.set_analysis_last_time(10)
+        assert not view._process_button.isEnabled()
+        view._analysis_end.setValue(9)
+        view._request_process()
+        assert captured[0].analysis_time_range_s == (3, 9)
+        assert captured[0].static_time_range_s is None
+        view.set_condition("DWALK_0P6_NOEXO")
+        assert view._analysis_auto.isEnabled() and view._analysis_auto.isChecked()
+        assert view._analysis_last_time_s is None
+        assert view._analysis_start.value() == view._analysis_end.value() == 0
+        assert view._process_button.isEnabled()
+    finally:
+        view.close()
+
+
+@pytest.mark.parametrize("window", [None, (0, 0), (3, 1), (-1, 3), (0, float("nan")), (0, 31)])
+def test_transient_rejects_invalid_analysis_windows(window):
+    assert ProcessingView.analysis_window_error(window, required=True, last_time_s=30)
+    assert ProcessingView.analysis_window_error((0, 30), required=True, last_time_s=30) is None
+
+
+@pytest.mark.parametrize("failure", ["mark_failed", "mark_cancelled"])
+@pytest.mark.parametrize("manual,confirm", [(True, False), (False, True), (False, False)])
+def test_failed_processing_retry_keeps_confirmed_sync_gate(failure, manual, confirm):
+    controller = CalculateController(Path("/tmp/data"))
+    sync = SyncResult(c3d_start_in_mocap_h5_frame=0, c3d_h5_match_rms_mm=0,
+                      c3d_h5_overlap_frames=100, gaitway_offset_s=-1.544952,
+                      confidence="MEDIUM", manual=manual)
+    controller.set_sync(sync)
+    if confirm:
+        controller.confirm_sync(note="reviewed")
+    receipt = controller.confirm_meta
+    if controller.can_solve:
+        controller.mark_processing()
+    getattr(controller, failure)()
+    assert controller.can_solve == (manual or confirm)
+    assert controller.sync is sync and controller.confirm_meta is receipt
+    controller.set_dynamic(_make_session(condition="STAND_BWALK_STAND_NOEXO"))
+    assert not controller.can_solve
+
+
+def test_window_preflights_transient_bounds_before_worker_and_can_retry(tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    window = CalculateWindow(tmp_path, _file_settings(tmp_path / "transient_window.ini"))
+    try:
+        files = SessionFiles(c3d_path=tmp_path / "trial.c3d", txt_path=tmp_path / "trial.txt",
+                             mocap_h5_path=tmp_path / "mocap.h5", imu_h5_path=tmp_path / "imu.h5")
+        dynamic = replace(_make_session(condition="STAND_BWALK_STAND_NOEXO"), session_dir=tmp_path / "session", files=files)
+        static = replace(_make_session(condition="STATIC_CALIB"), files=SessionFiles(c3d_path=tmp_path / "static.c3d"))
+        window._on_dynamic(dynamic)
+        window._controller.set_static(static)
+        sync = SyncResult(c3d_start_in_mocap_h5_frame=0, c3d_h5_match_rms_mm=0, c3d_h5_overlap_frames=100,
+                          gaitway_offset_s=-1.544952, confidence="MEDIUM", manual=True)
+        window._controller.set_sync(sync)
+        monkeypatch.setattr(window._processing_view, "opensim_python", lambda: Path("python.exe"))
+        monkeypatch.setattr(window, "_generic_model_path", lambda: tmp_path / "model.osim")
+        report = InputCheckReport(subject_code="003", dynamic_session=dynamic.session_name, static_session=None,
+                                  dynamic_c3d_duration_s=40, dynamic_c3d_rate_hz=100)
+        calls = []
+        def check(*args):
+            calls.append(args)
+            return report
+        monkeypatch.setattr("exo_collection.apps.calculate.discovery.check_inputs", check)
+        launched = []
+        monkeypatch.setattr(window._thread_pool, "start", launched.append)
+        invalid = ProcessingConfig(mass_kg=80, height_m=1.87, analysis_time_range_s=(0, 60))
+        window._on_process_requested(invalid)
+        assert len(calls) == 1 and not launched
+        assert window._controller.run_dir is None and not window._busy
+        assert window._controller.sync is sync and window._controller.can_solve
+        assert window._processing_view._analysis_last_time_s == pytest.approx(39.99)
+        view = window._processing_view
+        view._analysis_start.setValue(5)
+        view._analysis_end.setValue(30)
+        valid = replace(invalid, analysis_time_range_s=(5, 30))
+        window._on_process_requested(valid)
+        assert len(launched) == 1
+        ctx = window._controller.active_operation
+        assert ctx is not None
+        window._on_process_failed("controlled preprocessing failure", ctx)
+        assert window._controller.state == ProcessingState.FAILED
+        assert window._controller.can_solve and view._process_button.isEnabled()
+        assert window._controller.sync is sync
+        # Another trial clears both the previous 39.99s limit and manual input.
+        window._on_dynamic(replace(dynamic, session_uuid="different", condition_code="DWALK_0P6_NOEXO"))
+        assert view._analysis_last_time_s is None and view._analysis_auto.isChecked()
+    finally:
+        window.close()
+
+
+def test_transient_metadata_check_cannot_continue_after_trial_switch(tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    window = CalculateWindow(tmp_path, _file_settings(tmp_path / "switched_window.ini"))
+    try:
+        files = SessionFiles(c3d_path=tmp_path / "trial.c3d", txt_path=tmp_path / "trial.txt",
+                             mocap_h5_path=tmp_path / "mocap.h5", imu_h5_path=tmp_path / "imu.h5")
+        dynamic = replace(_make_session(condition="STAND_BWALK_STAND_NOEXO"), files=files)
+        window._on_dynamic(dynamic)
+        window._controller.set_static(replace(_make_session(condition="STATIC_CALIB"), files=files))
+        window._controller.set_sync(SyncResult(c3d_start_in_mocap_h5_frame=0, c3d_h5_match_rms_mm=0,
+            c3d_h5_overlap_frames=100, gaitway_offset_s=0, confidence="HIGH"))
+        monkeypatch.setattr(window._processing_view, "opensim_python", lambda: Path("python.exe"))
+        def check(*args):
+            window._on_dynamic(replace(dynamic, session_uuid="new-session", condition_code="DWALK_0P6_NOEXO"))
+            return InputCheckReport(subject_code="003", dynamic_session=dynamic.session_name, static_session=None,
+                                    dynamic_c3d_duration_s=40, dynamic_c3d_rate_hz=100)
+        monkeypatch.setattr("exo_collection.apps.calculate.discovery.check_inputs", check)
+        window._on_process_requested(ProcessingConfig(mass_kg=80, height_m=1.87, analysis_time_range_s=(5, 30)))
+        assert window._controller.run_dir is None and not window._busy
+        assert "已丢弃旧" in window._processing_view._log.toPlainText()
+        assert window._processing_view._analysis_last_time_s is None
+    finally:
+        window.close()
 
 
 # --------------------------------------------------------------------------
@@ -822,3 +964,29 @@ def test_session_selector_restore_button_and_state(tmp_path: Path, monkeypatch) 
     selector._restore_button.click()
     assert emitted == [dynamic]
     selector.close()
+
+
+def test_grf_default_matches_kinematics_and_explicit_ui_setting_is_preserved(tmp_path):
+    from PySide6.QtWidgets import QApplication
+    from exo_collection.apps.calculate.workers import PrepWorker
+    QApplication.instance() or QApplication([])
+    config = ProcessingConfig(mass_kg=75, height_m=1.75)
+    assert config.marker_cutoff_hz == config.grf_cutoff_hz == 6.0
+    assert replace(config, grf_cutoff_hz=18.0).as_dict()["grf_cutoff_hz"] == 18.0
+    view = ProcessingView(_file_settings(tmp_path / "grf_default.ini"))
+    try:
+        assert view._grf_cutoff.value() == 6.0
+        assert "不保证" in view._grf_cutoff.toolTip()
+        view.set_solve_enabled(True)
+        emitted = []
+        view.process_requested.connect(emitted.append)
+        view._grf_cutoff.setValue(18.0)
+        view._request_process()
+        assert emitted[0].grf_cutoff_hz == 18.0
+    finally:
+        view.close()
+    kwargs = dict(static_c3d=Path("static.c3d"), dynamic_c3d=Path("dynamic.c3d"),
+                  gaitway_txt=Path("trial.txt"), generic_model=Path("model.osim"),
+                  out_dir=tmp_path, subject_id="501", mass_kg=75, height_m=1.75, gaitway_offset_s=0.)
+    assert PrepWorker(**kwargs)._grf_cutoff == 6.0
+    assert PrepWorker(**kwargs, grf_cutoff_hz=18.0)._grf_cutoff == 18.0

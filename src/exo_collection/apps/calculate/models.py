@@ -220,7 +220,7 @@ class ProcessingConfig:
     mass_kg: float
     height_m: float
     marker_cutoff_hz: float = 6.0
-    grf_cutoff_hz: float = 20.0
+    grf_cutoff_hz: float = 6.0
     # Legacy names: signs apply to native walking/lateral FORCE axes before
     # rotation; they are no longer post-rotation OpenSim-axis reflections.
     opensim_x_sign: float = -1.0

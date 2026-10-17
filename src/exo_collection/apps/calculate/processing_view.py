@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 
 from PySide6.QtCore import Signal
@@ -48,6 +49,8 @@ class ProcessingView(QWidget):
         self._settings = settings
         self._running = False
         self._solve_allowed = False
+        self._condition_code = ""
+        self._analysis_last_time_s: float | None = None
 
         layout = QVBoxLayout(self)
 
@@ -94,17 +97,18 @@ class ProcessingView(QWidget):
         self._marker_cutoff.setDecimals(1)
         self._grf_cutoff = QDoubleSpinBox()
         self._grf_cutoff.setRange(1.0, 60.0)
-        self._grf_cutoff.setValue(20.0)
+        self._grf_cutoff.setValue(6.0)
         self._grf_cutoff.setSuffix(" Hz")
         self._grf_cutoff.setDecimals(1)
+        self._grf_cutoff.setToolTip("默认 6 Hz，与 marker/逆动力学运动学低通匹配；匹配截止频率不保证力矩准确，仍需检查 QC。")
         param_form.addRow("体重：", self._mass)
         param_form.addRow("身高：", self._height)
         param_form.addRow("marker 低通：", self._marker_cutoff)
-        param_form.addRow("GRF 抗混叠低通：", self._grf_cutoff)
+        param_form.addRow("GRF 低通：", self._grf_cutoff)
         layout.addWidget(param_group)
 
         # 区间（可选）：稳态分析区间（§3.5）+ 静态稳定窗口（§3.6），默认自动。
-        range_group = QGroupBox("区间（留空则自动检测/选择）")
+        range_group = QGroupBox("分析区间与静态标定窗口")
         range_form = QFormLayout(range_group)
         self._analysis_auto = QCheckBox("自动检测稳态分析区间（推荐）")
         self._analysis_auto.setChecked(True)
@@ -120,6 +124,9 @@ class ProcessingView(QWidget):
         )
         range_form.addRow("", self._analysis_auto)
         range_form.addRow("分析区间（起/止）：", _span(self._analysis_start, self._analysis_end))
+        self._analysis_hint = QLabel()
+        self._analysis_hint.setWordWrap(True)
+        range_form.addRow("", self._analysis_hint)
 
         self._static_auto = QCheckBox("自动选择静态稳定窗口（推荐）")
         self._static_auto.setChecked(True)
@@ -157,6 +164,9 @@ class ProcessingView(QWidget):
         layout.addWidget(self._log, 1)
 
         self._load_persisted_env()
+        for signal in (self._analysis_auto.toggled, self._analysis_start.valueChanged, self._analysis_end.valueChanged):
+            signal.connect(self._refresh_analysis_state)
+        self._refresh_analysis_state()
         self._refresh_process_button()
 
     # ------------------------------------------------------------------
@@ -229,7 +239,68 @@ class ProcessingView(QWidget):
         if isinstance(height, (int, float)):
             self._height.setValue(float(height))
 
+    @staticmethod
+    def requires_manual_analysis(condition_code: str) -> bool:
+        return "STAND_BWALK_STAND" in condition_code.upper()
+
+    def set_condition(self, condition_code: str) -> None:
+        """Apply the current trial's policy without carrying another trial's window."""
+        self._condition_code = condition_code
+        self._analysis_last_time_s = None
+        required = self.requires_manual_analysis(condition_code)
+        self._analysis_auto.setEnabled(not required)
+        self._analysis_auto.setText("自动稳态截取不适用于站立→倒走→站立" if required else "自动检测稳态分析区间（推荐）")
+        self._analysis_auto.setChecked(not required)
+        self._analysis_start.setValue(0.0)
+        self._analysis_end.setValue(0.0)
+        self._refresh_analysis_state()
+
+    def set_analysis_last_time(self, last_time_s: float) -> None:
+        self._analysis_last_time_s = float(last_time_s)
+        self._refresh_analysis_state()
+
+    @staticmethod
+    def analysis_window_error(window, *, required=False, last_time_s=None) -> str | None:
+        if window is None:
+            return "此瞬态工况必须手动填写分析区间，不能自动截取稳态。" if required else None
+        try:
+            start, end = window
+            start, end = float(start), float(end)
+        except (TypeError, ValueError):
+            return "分析区间必须包含起始和结束两个秒数。"
+        if not math.isfinite(start) or not math.isfinite(end) or start < 0 or end <= start:
+            return "请填写有效分析区间：0 ≤ 起始 < 结束（动态 C3D 时间，秒）。"
+        if last_time_s is not None and end > last_time_s + 1e-6:
+            return f"分析区间超出当前动态 C3D 末帧 {last_time_s:.2f} s，请缩小结束时间。"
+        return None
+
+    def _current_analysis_range(self):
+        return None if self._analysis_auto.isChecked() else (self._analysis_start.value(), self._analysis_end.value())
+
+    def _refresh_analysis_state(self) -> None:
+        required = self.requires_manual_analysis(self._condition_code)
+        if required:
+            text = ("此工况包含起停，不能自动截取稳态。请只填写上方「分析区间（起/止）」。"
+                    "时间以当前动态 C3D 第0帧为0 s，不是TXT原始时间或同步offset；"
+                    "下方「静态窗口」用于另一条静态标定记录，可保持自动。"
+                    "请选择身体朝向固定且左右分力有效的片段。手选全段不能使左右分力缺失的静止期成为有效力矩真值。")
+        else:
+            text = "分析起止使用当前动态 C3D 时间（第0帧为0 s）；静态窗口属于独立的静态标定记录。"
+        if self._analysis_last_time_s is not None:
+            text += f" 当前动态 C3D 范围：0–{self._analysis_last_time_s:.2f} s。"
+        error = self.analysis_window_error(self._current_analysis_range(), required=required,
+                                           last_time_s=self._analysis_last_time_s)
+        if error:
+            text += " " + error
+        self._analysis_hint.setText(text)
+        self._refresh_process_button()
+
     def _request_process(self) -> None:
+        error = self.analysis_window_error(self._current_analysis_range(),
+            required=self.requires_manual_analysis(self._condition_code), last_time_s=self._analysis_last_time_s)
+        if error:
+            self.append_log("无法开始解算：" + error)
+            return
         analysis_range = None
         if not self._analysis_auto.isChecked():
             analysis_range = (
@@ -269,7 +340,9 @@ class ProcessingView(QWidget):
         self._refresh_process_button()
 
     def _refresh_process_button(self) -> None:
-        self._process_button.setEnabled(self._solve_allowed and not self._running)
+        valid_window = self.analysis_window_error(self._current_analysis_range(),
+            required=self.requires_manual_analysis(self._condition_code), last_time_s=self._analysis_last_time_s) is None
+        self._process_button.setEnabled(self._solve_allowed and not self._running and valid_window)
 
     def clear_log(self) -> None:
         self._log.clear()

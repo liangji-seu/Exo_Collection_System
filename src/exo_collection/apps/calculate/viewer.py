@@ -74,6 +74,11 @@ class ViewerData:
     frame_rate_hz: float
     mass_kg: float
 
+    support_mask: np.ndarray | None = None
+    analysis_mask: np.ndarray | None = None
+    export_mask: np.ndarray | None = None
+    validity_reason: str = "旧结果缺少当前有效性依据，需重算"
+
     @property
     def n_frames(self) -> int:
         return int(self.time_s.shape[0])
@@ -96,7 +101,7 @@ def load_viewer_data(viewer_dir: Path) -> ViewerData:
             raise FileNotFoundError(f"缺少 viewer 数据：{path}")
         return np.load(path)
 
-    return ViewerData(
+    data = ViewerData(
         time_s=_load("time_s"),
         model_markers=_load("model_markers"),
         experimental_markers=_load("experimental_markers"),
@@ -113,6 +118,36 @@ def load_viewer_data(viewer_dir: Path) -> ViewerData:
         frame_rate_hz=float(meta.get("frame_rate_hz", 100.0)),
         mass_kg=float(meta.get("mass_kg", 75.0)),
     )
+
+    from .direction_policy import current_grf_policy
+    n = data.n_frames
+    masks = []
+    try:
+        for name in ("support_mask", "analysis_mask"):
+            mask = _load(name)
+            if mask.shape != (n, 2) or not np.isin(mask, [0, 1]).all():
+                raise ValueError(f"{name} 必须为 (n,2) 布尔有效性")
+            setattr(data, name, mask.astype(bool))
+            masks.append(mask.astype(bool))
+        current = current_grf_policy(meta)
+        data.export_mask = np.all(masks[0] & masks[1], axis=1) & np.isfinite(data.moments).all(axis=1)
+        if not current:
+            data.export_mask[:] = False
+            data.support_mask[:] = False
+        data.validity_reason = ("仅有效片段，非完整瞬态真值；未审核或外力无原生依据处曲线断开"
+                                if current else "旧算法结果需重算；禁止导出")
+    except (OSError, ValueError):
+        data.export_mask = np.zeros(n, dtype=bool)
+        data.support_mask = np.zeros((n, 2), dtype=bool)
+    data.moments = data.moments.copy()
+    data.moments[~data.export_mask] = np.nan
+    # Invalid loads are unavailable, never a measured zero-wrench observation.
+    if data.support_mask is not None:
+        data.grf = data.grf.copy()
+        data.cop = data.cop.copy()
+        data.grf[~data.support_mask] = np.nan
+        data.cop[~data.support_mask] = np.nan
+    return data
 
 
 # ---------------------------------------------------------------------------
@@ -556,8 +591,8 @@ class MomentCurvesWidget(pg.GraphicsLayoutWidget):
         for row in range(len(self._curves)):
             ri = row * 2
             li = row * 2 + 1
-            self._curves[row][0].setData(t, self._data.moments[:, ri] / div)
-            self._curves[row][1].setData(t, self._data.moments[:, li] / div)
+            self._curves[row][0].setData(t, self._data.moments[:, ri] / div, connect="finite")
+            self._curves[row][1].setData(t, self._data.moments[:, li] / div, connect="finite")
         self._update_cursors()
 
     def set_frame(self, idx: int) -> None:
@@ -752,6 +787,9 @@ class ViewerWidget(QWidget):
         self._export_gt_btn.setProperty("buttonRole", "primary")
         self._export_gt_btn.clicked.connect(self.export_ground_truth_requested.emit)
         layout.addWidget(self._export_gt_btn)
+        self._validity_label = QLabel("未载入有效性依据")
+        self._validity_label.setWordWrap(True)
+        layout.addWidget(self._validity_label)
 
         layout.addStretch(1)
         return box
@@ -799,6 +837,15 @@ class ViewerWidget(QWidget):
         self.imu_curves.set_data(None, None)
         self._slider.setRange(0, self._data.n_frames - 1)
         self._set_enabled(True)
+        mask = self._data.export_mask
+        self._export_gt_btn.setEnabled(mask is not None and bool(mask.any()))
+        valid = int(mask.sum()) if mask is not None else 0
+        edges = np.diff(np.r_[False, mask, False].astype(int)) if mask is not None else np.array([])
+        intervals = list(zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1) - 1))
+        ranges = "; ".join(f"{self._data.time_s[a]:.3f}–{self._data.time_s[b]:.3f}s" for a, b in intervals[:6])
+        if len(intervals) > 6:
+            ranges += f"；共 {len(intervals)} 段"
+        self._validity_label.setText(f"{self._data.validity_reason}\n有效/审核覆盖 {valid}/{self._data.n_frames} 帧\n{ranges}")
         self.set_frame(0)
 
     def _set_enabled(self, on: bool) -> None:
@@ -832,7 +879,7 @@ class ViewerWidget(QWidget):
         self.curves.set_frame(idx)
         t = float(self._data.time_s[idx])
         self.imu_curves.set_time(t)
-        self._time_label.setText(f"{t:6.3f} s")
+        self._time_label.setText(f"{t:6.3f} s" + (" 有效" if self._data.export_mask is not None and self._data.export_mask[idx] else " 未审核/外力无效"))
         self.frame_changed.emit(idx, t)
 
     def _advance(self) -> None:

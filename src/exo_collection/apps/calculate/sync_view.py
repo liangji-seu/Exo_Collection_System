@@ -135,8 +135,14 @@ class SyncView(QWidget):
         self._axis_combo = QComboBox()
         self._axis_combo.addItem("映射后的 C3D 时间", "c3d")
         self._axis_combo.addItem("各设备原始时间", "device")
-        self._axis_combo.currentIndexChanged.connect(self._replot)
-        layout.addWidget(self._axis_combo)
+        self._axis_combo.currentIndexChanged.connect(lambda: self._replot(reset_view=True))
+        axis_row = QHBoxLayout()
+        axis_row.addWidget(self._axis_combo, 1)
+        self._fit_plots_button = QPushButton("恢复全图")
+        self._fit_plots_button.setToolTip("恢复两图全部信号的时间和幅值范围；保留峰配对及 offset")
+        self._fit_plots_button.clicked.connect(self._fit_plots)
+        axis_row.addWidget(self._fit_plots_button)
+        layout.addLayout(axis_row)
 
         self._marker_aux_checkbox = QCheckBox("显示动捕右踝辅助（仅参考）")
         self._marker_aux_checkbox.setChecked(False)
@@ -256,6 +262,8 @@ class SyncView(QWidget):
     def set_manual_data(self, bundle: SyncDataBundle) -> None:
         """加载人工标定原始信号并绘图。"""
         self._bundle = bundle
+        self._pairs.clear()
+        self._selected_imu_time = None
         self._marker_aux_checkbox.setChecked(False)
         self._marker_aux_checkbox.setEnabled(
             bundle.marker_acc_norm is not None and bundle.marker_time_s is not None
@@ -275,12 +283,12 @@ class SyncView(QWidget):
         self._offset_spin.blockSignals(True)
         self._offset_spin.setValue(self._current_offset_s)
         self._offset_spin.blockSignals(False)
-        self._replot()
+        self._replot(reset_view=True)
 
     # ------------------------------------------------------------------
     # 绘图
     # ------------------------------------------------------------------
-    def _replot(self) -> None:
+    def _replot(self, *, reset_view: bool = False) -> None:
         if self._bundle is None:
             return
         axis_mode = self._axis_combo.currentData()
@@ -339,6 +347,48 @@ class SyncView(QWidget):
             )
 
         self._draw_pairs()
+        if reset_view:
+            self._fit_plots()
+
+    def _fit_plots(self) -> None:
+        """Reset stale ViewBox zoom only on new data, time mode, or explicit fit.
+
+        PlotWidget.clear() removes curves but retains disabled auto-range from
+        mouse zoom/pan. Ordinary offset/pair/auxiliary redraws intentionally
+        preserve that user view. Fit both Y axes independently and only link X.
+        """
+        if self._bundle is None:
+            return
+        for plot in (self._imu_plot, self._gaitway_plot):
+            vb = plot.getViewBox()
+            # A finite fallback handles all-NaN data and constant signals without
+            # inheriting an unrelated previous trial's enormous/tiny Y span.
+            vb.setYRange(0.0, 1.0, padding=0.0)
+            vb.enableAutoRange(axis=vb.YAxis, enable=True)
+            vb.updateAutoRange()
+
+        def time_bounds(plot):
+            bounds = []
+            for item in plot.listDataItems():
+                if not isinstance(item, pg.PlotDataItem):
+                    continue  # Pair ScatterPlotItems are annotations, not data.
+                x, _ = item.getData()
+                if x is not None:
+                    finite = np.asarray(x)[np.isfinite(x)]
+                    if finite.size:
+                        bounds.extend((float(finite.min()), float(finite.max())))
+            return bounds
+
+        imu_bounds = time_bounds(self._imu_plot)
+        gait_bounds = time_bounds(self._gaitway_plot)
+        if self._axis_combo.currentData() == "c3d":
+            bounds = imu_bounds + gait_bounds
+            if bounds:
+                self._imu_plot.setXRange(min(bounds), max(bounds), padding=0.03)
+        else:
+            for plot, bounds in ((self._imu_plot, imu_bounds), (self._gaitway_plot, gait_bounds)):
+                if bounds:
+                    plot.setXRange(min(bounds), max(bounds), padding=0.03)
 
     def _draw_pairs(self) -> None:
         if self._bundle is None:
@@ -350,7 +400,7 @@ class SyncView(QWidget):
             y=[0.0] * len(self._pairs),
             size=12, brush="#0f766e", pen="w",
         )
-        self._imu_plot.addItem(imu_scatter)
+        self._imu_plot.addItem(imu_scatter, ignoreBounds=True)
         gait_t = [p.gaitway_time_s - self._current_offset_s if axis_mode == "c3d"
                   else p.gaitway_time_s for p in self._pairs]
         gait_scatter = pg.ScatterPlotItem(
@@ -358,7 +408,7 @@ class SyncView(QWidget):
             y=[0.0] * len(self._pairs),
             size=12, brush="#c0603a", pen="w",
         )
-        self._gaitway_plot.addItem(gait_scatter)
+        self._gaitway_plot.addItem(gait_scatter, ignoreBounds=True)
         self._pairs_label.setText(
             f"已配对峰：{len(self._pairs)} 对"
             + (f"  ·  中位 offset = {self._median_offset():.4f} s" if self._pairs else "")
@@ -366,6 +416,9 @@ class SyncView(QWidget):
 
     def _on_imu_click(self, event) -> None:
         if self._bundle is None:
+            return
+        if (event.button() != Qt.MouseButton.LeftButton or event.isAccepted()
+                or not self._imu_plot.getViewBox().sceneBoundingRect().contains(event.scenePos())):
             return
         pos = self._imu_plot.plotItem.vb.mapSceneToView(event.scenePos())
         self._selected_imu_time = float(pos.x())
@@ -375,6 +428,9 @@ class SyncView(QWidget):
 
     def _on_gaitway_click(self, event) -> None:
         if self._bundle is None or self._selected_imu_time is None:
+            return
+        if (event.button() != Qt.MouseButton.LeftButton or event.isAccepted()
+                or not self._gaitway_plot.getViewBox().sceneBoundingRect().contains(event.scenePos())):
             return
         axis_mode = self._axis_combo.currentData()
         pos = self._gaitway_plot.plotItem.vb.mapSceneToView(event.scenePos())

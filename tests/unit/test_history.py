@@ -33,6 +33,7 @@ def _write_manifest(run_dir: Path, inputs: dict) -> None:
     (run_dir / "manifest.json").write_text(
         json.dumps(
             {
+                "processing": {"grf_input_policy_version": "continuous_native_wrench_v2"},
                 "subject": {"id": "003", "mass_kg": 75.0, "height_m": 1.75},
                 "inputs": inputs,
                 "sync": {"method": "AUTO_HIGH", "gaitway_offset_s": 5.835, "confidence": "HIGH"},

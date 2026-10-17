@@ -326,7 +326,7 @@ class PrepWorker(QRunnable):
         height_m: float,
         gaitway_offset_s: float,
         marker_cutoff_hz: float | None = None,
-        grf_cutoff_hz: float | None = None,
+        grf_cutoff_hz: float | None = 6.0,
         opensim_x_sign: float = -1.0,
         opensim_z_sign: float = -1.0,
         analysis_time_range_s: tuple[float, float] | None = None,
@@ -396,6 +396,7 @@ class PrepWorker(QRunnable):
                 marker_adjustment_expert_confirmed=self._marker_adjustment_expert_confirmed,
                 quiet_standing=self._quiet_standing,
                 backpack=backpack,
+                condition_code=self._condition_code,
             )
             self.signals.finished.emit(summary)
         except Exception as exc:  # noqa: BLE001 —— 线程边界，必须捕获

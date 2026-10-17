@@ -142,7 +142,13 @@ class CalculateController(QObject):
     @property
     def can_solve(self) -> bool:
         """当前是否允许「开始解算」（同步已确认，或已有可复跑结论）。"""
-        return self._state in _SOLVABLE_STATES
+        if self._state in _SOLVABLE_STATES:
+            return True
+        if self._state in (ProcessingState.FAILED, ProcessingState.CANCELLED) and self._sync is not None:
+            # Keep the original sync and confirmation audit intact on retry.
+            return bool(self._sync.high_confidence or self._sync.manual
+                        or self._method is SyncMethod.EXPERT_FORCED or self._confirm_meta is not None)
+        return False
 
     @property
     def config(self) -> ProcessingConfig | None:

@@ -4,11 +4,12 @@ import json
 from pathlib import Path
 
 
-def write_ground_truth_qc(csv_path: Path, status: str | None, run_dir: Path) -> None:
+def write_ground_truth_qc(csv_path: Path, status: str | None, run_dir: Path, *, validity: dict | None = None) -> None:
     stat = csv_path.stat()
     destination = csv_path.with_suffix(".qc.json")
     temporary = destination.with_suffix(".tmp")
     temporary.write_text(json.dumps({
+        **(validity or {}),
         "qc_status": status,
         "run_dir": str(run_dir.resolve()),
         "csv_size": stat.st_size,

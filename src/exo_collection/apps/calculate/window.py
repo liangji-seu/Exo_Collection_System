@@ -209,6 +209,7 @@ class CalculateWindow(QMainWindow):
     # ------------------------------------------------------------------
     def _on_dynamic(self, record: SessionRecord | None) -> None:
         self._controller.set_dynamic(record)
+        self._processing_view.set_condition(record.condition_code if record else "")
         self._sync_view.reset()
         self._apply_patient_info(record)
 
@@ -307,8 +308,17 @@ class CalculateWindow(QMainWindow):
             self.statusBar().showMessage("输入检查失败")
             return
         self._controller.set_input_report(report)
+        self._set_analysis_time_bounds(report)
         self._show_report(report)
         self.statusBar().showMessage("输入检查完成")
+
+    def _set_analysis_time_bounds(self, report: InputCheckReport) -> float | None:
+        duration, rate = report.dynamic_c3d_duration_s, report.dynamic_c3d_rate_hz
+        if duration is None or rate is None or duration <= 0 or rate <= 0:
+            return None
+        last_time = max(0.0, float(duration) - 1.0 / float(rate))
+        self._processing_view.set_analysis_last_time(last_time)
+        return last_time
 
     def _show_report(self, report: InputCheckReport) -> None:
         lines = ["输入检查结果："]
@@ -498,7 +508,9 @@ class CalculateWindow(QMainWindow):
         }
 
     def _on_process_requested(self, config) -> None:
-        self._controller.set_config(config)
+        if self._busy:
+            self._processing_view.append_log("已有后台任务运行，请等待完成或取消后重试。")
+            return
         dynamic = self._controller.dynamic
         static = self._controller.static
         sync = self._controller.sync
@@ -506,6 +518,11 @@ class CalculateWindow(QMainWindow):
 
         if dynamic is None:
             self._processing_view.append_log("错误：未选择动态 Session。")
+            return
+        required = ProcessingView.requires_manual_analysis(dynamic.condition_code)
+        error = ProcessingView.analysis_window_error(config.analysis_time_range_s, required=required)
+        if error:
+            self._processing_view.append_log("无法开始解算：" + error)
             return
         if static is None or static.files.c3d_path is None:
             self._processing_view.append_log("错误：未选择静态标定 Session（无法缩放模型）。")
@@ -522,10 +539,35 @@ class CalculateWindow(QMainWindow):
         if not dynamic.files.has_dynamic_inputs:
             self._processing_view.append_log("错误：动态 Session 输入不齐全。")
             return
+        report = self._controller.report
+        if report is not None and report.dynamic_session != dynamic.session_name:
+            report = None
+        if required and (report is None or report.dynamic_c3d_duration_s is None or report.dynamic_c3d_rate_hz is None):
+            # Fetch current-trial metadata without set_input_report(), which
+            # would reset the already confirmed synchronization state.
+            from exo_collection.apps.calculate.discovery import check_inputs
+            try:
+                report = check_inputs(dynamic, static)
+            except Exception as exc:
+                self._processing_view.append_log(f"无法读取当前动态 C3D 时间范围：{exc}；请先检查输入。")
+                return
+            if (self._controller.dynamic is not dynamic or self._controller.static is not static
+                    or self._controller.sync is not sync):
+                self._processing_view.append_log("当前试次或同步已变更，已丢弃旧时间范围检查；请在当前试次重新开始。")
+                return
+        last_time = self._set_analysis_time_bounds(report) if report is not None else None
+        if required and last_time is None:
+            self._processing_view.append_log("无法确定当前动态 C3D 末帧时间，请检查输入后重试。")
+            return
+        error = ProcessingView.analysis_window_error(config.analysis_time_range_s, required=required, last_time_s=last_time)
+        if error:
+            self._processing_view.append_log("无法开始解算：" + error)
+            return
         generic_model = self._generic_model_path()
         if generic_model is None:
             self._processing_view.append_log("错误：找不到 gait2392 通用模型。")
             return
+        self._controller.set_config(config)
 
         # 派生 run 目录（不覆盖旧 run）；原始数据保持只读，只写 derived/。
         run_dir = self._controller.new_run_directory(
@@ -593,6 +635,8 @@ class CalculateWindow(QMainWindow):
         )
         sw = summary.get("static_window") or {}
         force_info = summary.get("gaitway") or {}
+        if force_info.get("backward_decomposition_unvalidated"):
+            self._processing_view.append_log("倒走：已检验单支撑左右映射并规范化身体朝向；厂商双支撑分力仍待验证，QC至少WARN，导出数据须复核。")
         if force_info.get("decomposition_method") == "estimated_from_total_cop_and_foot_markers":
             self._processing_view.append_log(
                 "注意：站立记录没有 Gaitway 原生左右分力；已用总 COP + 双脚 marker "
@@ -746,6 +790,7 @@ class CalculateWindow(QMainWindow):
         """
         try:
             self._viewer.load(viewer_dir)
+            self._viewer_run_dir = Path(viewer_dir).parent if viewer_dir else None
         except Exception as exc:  # noqa: BLE001
             _log.exception("载入回放数据失败")
             self._processing_view.append_log(f"回放数据载入失败：{exc}")
@@ -866,6 +911,12 @@ class CalculateWindow(QMainWindow):
             return
 
         # 直接写入当前 Session 文件夹，训练时按 session 直接读取。
+        from exo_collection.apps.calculate.direction_policy import is_backward_code, current_run_policy, load_run_manifest
+        viewer_run = getattr(self, "_viewer_run_dir", None)
+        backward = is_backward_code(dynamic.condition_code)
+        if not current_run_policy(load_run_manifest(viewer_run)) or data.export_mask is None:
+            self._processing_view.append_log("旧结果缺少当前外力/分析有效性依据，禁止导出：请重新解算。")
+            return
         out_path = dynamic.session_dir / "ground_truth.csv"
         try:
             import h5py
@@ -895,14 +946,25 @@ class CalculateWindow(QMainWindow):
             from exo_collection.apps.calculate.ground_truth import (
                 align_ground_truth,
                 write_ground_truth_csv,
+                export_validity_audit,
             )
 
             time_s, imu_aligned, moments = align_ground_truth(
-                data.time_s, data.moments, imu_time_s, imu_signal
+                data.time_s, data.moments, imu_time_s, imu_signal, validity_mask=data.export_mask
             )
             write_ground_truth_csv(
                 out_path, time_s, imu_aligned, moments, moment_names=data.moment_names
             )
+            if viewer_run is not None:
+                import json
+                from exo_collection.apps.calculate.ground_truth_status import write_ground_truth_qc
+                qc_path = viewer_run / "qc_report.json"
+                qc_status = json.loads(qc_path.read_text(encoding="utf-8")).get("status") if qc_path.is_file() else None
+                if backward and qc_status != "FAIL":
+                    qc_status = "WARN"
+                write_ground_truth_qc(out_path, qc_status, viewer_run, validity=export_validity_audit(data, time_s))
+            if backward:
+                self._processing_view.append_log("已导出倒走数据并记录QC WARN/FAIL：双支撑分力尚未独立验证，不得自动作为合格真值。")
             self.statusBar().showMessage(f"已导出真值数据：{out_path}（{time_s.shape[0]} 帧）")
             self._processing_view.append_log(f"已导出真值数据：{out_path}")
         except Exception as exc:  # noqa: BLE001

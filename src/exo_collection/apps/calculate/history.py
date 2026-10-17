@@ -145,6 +145,15 @@ def _load_one_run(
     analysis_window = tuple(analysis) if isinstance(analysis, (list, tuple)) and len(analysis) == 2 else None
 
     stale, stale_reason = _stale_check((manifest or {}).get("inputs") or {}, current_inputs)
+    from .direction_policy import current_run_policy
+    processing = (manifest or {}).get("processing") or {}
+    input_receipt = (manifest or {}).get("inputs") or {}
+    recorded_dynamic = input_receipt.get("dynamic_c3d") or {}
+    dynamic_path = (current_inputs or {}).get("dynamic_c3d") or recorded_dynamic.get("path")
+    code = processing.get("condition_code") or (Path(dynamic_path).stem if dynamic_path else "")
+    if not current_run_policy(manifest):
+        stale = True
+        stale_reason = "旧算法结果缺少当前连续外力/有效性策略，请重新预处理和解算"
 
     return HistoryRun(
         run_dir=run_dir,
