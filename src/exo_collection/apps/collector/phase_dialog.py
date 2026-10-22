@@ -308,11 +308,16 @@ class PhaseConfigDialog(QDialog):
             checkbox.clicked.connect(
                 lambda checked, k=key, c=code: self._set_wear(k, c, checked)
             )
-        else:
+        elif info["has_exo"]:
             # 仅有穿戴版本，恒勾选且不可改。
             checkbox.setChecked(True)
             checkbox.setEnabled(False)
             checkbox.setToolTip("该工况仅有穿戴版本")
+        else:
+            # 仅有不穿戴版本（如第六期负重工况），恒不勾选且不可改。
+            checkbox.setChecked(False)
+            checkbox.setEnabled(False)
+            checkbox.setToolTip("该工况仅有不穿戴版本")
         return checkbox
 
     def _set_wear(self, key: str, code: str, checked: bool) -> None:

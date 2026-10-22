@@ -18,7 +18,7 @@ from typing import Any
 
 from exo_collection.protocols import load_default_protocol
 
-PHASE_CONFIG_SCHEMA_VERSION = 5
+PHASE_CONFIG_SCHEMA_VERSION = 6
 
 # 主工况固定 4 类，顺序即下拉/标签页顺序。
 MAIN_CATEGORIES: tuple[dict[str, str], ...] = (
@@ -306,40 +306,40 @@ PHASE_3_SPECIAL: tuple[str, ...] = (
 
 
 # 第四期 = 负重识别（负重 0/2.5/5/10kg × 平地/2.5°坡/5°坡 稳态行走 + 平地/2.5°坡 变速）。
-# 详细工况按相同负重归组（先定负重、再变地形/坡度），避免反复装卸负重片。
+# 详细工况排序：地形 → 速度 → 负重（同地形、同速度下按负重升序）。
 PHASE_4_STEADY: tuple[str, ...] = (
     "LWALK_0P6_0KG",
-    "LWALK_1P0_0KG",
-    "LWALK_2P5D_0P6_0KG",
-    "LWALK_2P5D_1P0_0KG",
-    "LWALK_5D_0P6_0KG",
-    "LWALK_5D_1P0_0KG",
     "LWALK_0P6_2P5KG",
-    "LWALK_1P0_2P5KG",
-    "LWALK_2P5D_0P6_2P5KG",
-    "LWALK_2P5D_1P0_2P5KG",
-    "LWALK_5D_0P6_2P5KG",
-    "LWALK_5D_1P0_2P5KG",
     "LWALK_0P6_5KG",
-    "LWALK_1P0_5KG",
-    "LWALK_2P5D_0P6_5KG",
-    "LWALK_2P5D_1P0_5KG",
-    "LWALK_5D_0P6_5KG",
-    "LWALK_5D_1P0_5KG",
     "LWALK_0P6_10KG",
+    "LWALK_1P0_0KG",
+    "LWALK_1P0_2P5KG",
+    "LWALK_1P0_5KG",
     "LWALK_1P0_10KG",
+    "LWALK_2P5D_0P6_0KG",
+    "LWALK_2P5D_0P6_2P5KG",
+    "LWALK_2P5D_0P6_5KG",
     "LWALK_2P5D_0P6_10KG",
+    "LWALK_2P5D_1P0_0KG",
+    "LWALK_2P5D_1P0_2P5KG",
+    "LWALK_2P5D_1P0_5KG",
     "LWALK_2P5D_1P0_10KG",
+    "LWALK_5D_0P6_0KG",
+    "LWALK_5D_0P6_2P5KG",
+    "LWALK_5D_0P6_5KG",
     "LWALK_5D_0P6_10KG",
+    "LWALK_5D_1P0_0KG",
+    "LWALK_5D_1P0_2P5KG",
+    "LWALK_5D_1P0_5KG",
     "LWALK_5D_1P0_10KG",
 )
 PHASE_4_TRANSIENT: tuple[str, ...] = (
     "LWALK_RAMP_0KG",
-    "LWALK_RAMP_2P5D_0KG",
     "LWALK_RAMP_2P5KG",
     "LWALK_RAMP_5KG",
-    "LWALK_RAMP_2P5D_5KG",
     "LWALK_RAMP_10KG",
+    "LWALK_RAMP_2P5D_0KG",
+    "LWALK_RAMP_2P5D_5KG",
     "LWALK_RAMP_2P5D_10KG",
 )
 
@@ -359,11 +359,62 @@ PHASE_5_TRANSIENT: tuple[str, ...] = (
 )
 
 
-def _seed_detail(code: str, catalog: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """种子详细工况：无穿戴工况不带 wear，其余默认「增加穿戴」。"""
+# 第六期 = 地形/速度 × 负重矩阵：稳态（0/5/10/15/20kg × 平地/5°坡/7.5°坡 × 0.6/1.0 m/s）
+# + 非稳态（同负重 × 平地/5°坡 变速）+ 特殊（0kg 急停急变、变负重）。
+# 排序统一为 地形 → 速度 → 负重；本期只做不穿戴（default_wear=False）。
+PHASE_6_STEADY: tuple[str, ...] = (
+    "LWALK_0P6_0KG",
+    "LWALK_0P6_5KG",
+    "LWALK_0P6_10KG",
+    "LWALK_0P6_15KG",
+    "LWALK_0P6_20KG",
+    "LWALK_1P0_0KG",
+    "LWALK_1P0_5KG",
+    "LWALK_1P0_10KG",
+    "LWALK_1P0_15KG",
+    "LWALK_1P0_20KG",
+    "LWALK_5D_0P6_0KG",
+    "LWALK_5D_0P6_5KG",
+    "LWALK_5D_0P6_10KG",
+    "LWALK_5D_0P6_15KG",
+    "LWALK_5D_0P6_20KG",
+    "LWALK_5D_1P0_0KG",
+    "LWALK_5D_1P0_5KG",
+    "LWALK_5D_1P0_10KG",
+    "LWALK_5D_1P0_15KG",
+    "LWALK_5D_1P0_20KG",
+    "LWALK_7P5D_0P6_0KG",
+    "LWALK_7P5D_0P6_5KG",
+    "LWALK_7P5D_0P6_10KG",
+    "LWALK_7P5D_0P6_15KG",
+    "LWALK_7P5D_0P6_20KG",
+)
+PHASE_6_TRANSIENT: tuple[str, ...] = (
+    "LWALK_RAMP_0KG",
+    "LWALK_RAMP_5KG",
+    "LWALK_RAMP_10KG",
+    "LWALK_RAMP_15KG",
+    "LWALK_RAMP_20KG",
+    "LWALK_RAMP_5D_0KG",
+    "LWALK_RAMP_5D_5KG",
+    "LWALK_RAMP_5D_10KG",
+    "LWALK_RAMP_5D_15KG",
+    "LWALK_RAMP_5D_20KG",
+)
+PHASE_6_SPECIAL: tuple[str, ...] = (
+    "LWALK_STOP_TURN_0KG",
+    "LWALK_VARLOAD_1P0",
+    "LWALK_VARLOAD_5D_1P0",
+)
+
+
+def _seed_detail(
+    code: str, catalog: dict[str, dict[str, Any]], *, default_wear: bool = True
+) -> dict[str, Any]:
+    """种子详细工况：无穿戴工况不带 wear；成对工况按 ``default_wear`` 决定是否纳入穿戴版。"""
     info = catalog[code]
     if info["has_noexo"] or info["has_exo"]:
-        return {"code": code, "wear": True}
+        return {"code": code, "wear": default_wear}
     return {"code": code}
 
 
@@ -373,6 +424,8 @@ def _make_phase(
     steady: tuple[str, ...],
     transient: tuple[str, ...],
     special: tuple[str, ...],
+    *,
+    default_wear: bool = True,
 ) -> dict[str, Any]:
     catalog = base_catalog()
     return {
@@ -380,26 +433,38 @@ def _make_phase(
         "categories": {
             "BASELINE": {
                 "name": "基础",
-                "details": [_seed_detail(code, catalog) for code in baseline],
+                "details": [
+                    _seed_detail(code, catalog, default_wear=default_wear)
+                    for code in baseline
+                ],
             },
             "STEADY_STATE": {
                 "name": "稳态",
-                "details": [_seed_detail(code, catalog) for code in steady],
+                "details": [
+                    _seed_detail(code, catalog, default_wear=default_wear)
+                    for code in steady
+                ],
             },
             "TRANSIENT": {
                 "name": "非稳态",
-                "details": [_seed_detail(code, catalog) for code in transient],
+                "details": [
+                    _seed_detail(code, catalog, default_wear=default_wear)
+                    for code in transient
+                ],
             },
             "SPECIAL": {
                 "name": "特殊",
-                "details": [_seed_detail(code, catalog) for code in special],
+                "details": [
+                    _seed_detail(code, catalog, default_wear=default_wear)
+                    for code in special
+                ],
             },
         },
     }
 
 
 def default_phase_config() -> dict[str, Any]:
-    """首次无配置时的默认期次：第一期=新增工况，第二期=标准工况+详细地形矩阵，第三期=站姿/坐姿关节工况，第四期=负重识别，第五期=稳态/非稳态（含倒走）。"""
+    """首次无配置时的默认期次：第一期=新增工况，第二期=标准工况+详细地形矩阵，第三期=站姿/坐姿关节工况，第四期=负重识别，第五期=稳态/非稳态（含倒走），第六期=地形×速度×负重矩阵。"""
     return {
         "schema_version": PHASE_CONFIG_SCHEMA_VERSION,
         "phases": [
@@ -437,6 +502,14 @@ def default_phase_config() -> dict[str, Any]:
                 PHASE_5_STEADY,
                 PHASE_5_TRANSIENT,
                 (),
+            ),
+            _make_phase(
+                "第六期",
+                (),
+                PHASE_6_STEADY,
+                PHASE_6_TRANSIENT,
+                PHASE_6_SPECIAL,
+                default_wear=False,
             ),
         ],
     }

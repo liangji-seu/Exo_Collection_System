@@ -1984,11 +1984,11 @@ def test_condition_combo_exposes_phase_conditions(
         ]
 
     try:
-        # 期次固定五期；主工况固定 4 类。
+        # 期次固定六期；主工况固定 4 类。
         assert [
             window.phase_combo.itemText(index)
             for index in range(window.phase_combo.count())
-        ] == ["第一期", "第二期", "第三期", "第四期", "第五期"]
+        ] == ["第一期", "第二期", "第三期", "第四期", "第五期", "第六期"]
         assert [
             window.main_category_combo.itemText(index)
             for index in range(window.main_category_combo.count())
@@ -2386,6 +2386,29 @@ def test_condition_combo_exposes_phase_conditions(
 
 
 
+
+        # 第六期：地形/速度 × 负重矩阵（0/5/10/15/20kg × 平地/5°坡/7.5°坡 × 0.6/1.0 m/s），只做不穿戴。
+        window.phase_combo.setCurrentIndex(5)
+        select_category("BASELINE")
+        assert window.condition_combo.count() == 0
+        select_category("STEADY_STATE")
+        assert window.condition_combo.count() == 25
+        phase6_steady_codes = combo_codes()
+        assert "LWALK_0P6_0KG_NOEXO" in phase6_steady_codes
+        assert "LWALK_0P6_15KG_NOEXO" in phase6_steady_codes
+        assert "LWALK_0P6_15KG_EXO" not in phase6_steady_codes
+        assert "LWALK_5D_1P0_20KG_NOEXO" in phase6_steady_codes
+        assert "LWALK_7P5D_0P6_20KG_NOEXO" in phase6_steady_codes
+        load_item = window.condition_combo.itemData(
+            phase6_steady_codes.index("LWALK_5D_0P6_15KG_NOEXO")
+        )
+        assert load_item["parameters"]["load_kg"] == 15
+        assert load_item["parameters"]["slope_deg"] == 5
+        assert load_item["parameters"]["speed_mps"] == 0.6
+        select_category("TRANSIENT")
+        assert window.condition_combo.count() == 10
+        select_category("SPECIAL")
+        assert window.condition_combo.count() == 3
         # 每个期次 × 每个主工况里，操作者看到的都是中文工况名，而非英文 code。
         for phase_index in range(window.phase_combo.count()):
             window.phase_combo.setCurrentIndex(phase_index)
@@ -2410,7 +2433,7 @@ def test_phase_config_dialog_round_trips_seed() -> None:
     try:
         result = dialog.validated_config
         phases = result["phases"]
-        assert [phase["name"] for phase in phases] == ["第一期", "第二期", "第三期", "第四期", "第五期"]
+        assert [phase["name"] for phase in phases] == ["第一期", "第二期", "第三期", "第四期", "第五期", "第六期"]
         assert list(phases[0]["categories"].keys()) == [
             "BASELINE",
             "STEADY_STATE",

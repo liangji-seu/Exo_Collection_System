@@ -20,44 +20,76 @@ def _expanded_codes(phase: dict) -> set[str]:
 def test_default_phase_config_partitions_protocol() -> None:
     cfg = default_phase_config()
     phases = cfg["phases"]
-    assert len(phases) == 5
-    p1, p2, p3, p4, p5 = phases
+    assert len(phases) == 6
+    p1, p2, p3, p4, p5, p6 = phases
     assert p1["name"] == "第一期"
     assert p2["name"] == "第二期"
     assert p3["name"] == "第三期"
     assert p4["name"] == "第四期"
     assert p5["name"] == "第五期"
+    assert p6["name"] == "第六期"
 
     # 每期都固定 4 类主工况。
     for phase in phases:
         assert list(phase["categories"].keys()) == list(MAIN_CATEGORY_KEYS)
 
-    # 展开为协议完整码后：第一期 56 码，第二期 222 码，第三期 108 码，第四期 62 码，第五期 16 码。
+    # 展开为协议完整码后：第一期 56 码，第二期 222 码，第三期 108 码，第四期 62 码，第五期 16 码，第六期 38 码（只不穿戴）。
     assert len(_expanded_codes(p1)) == 56
     assert len(_expanded_codes(p2)) == 222
     assert len(_expanded_codes(p3)) == 108
     assert len(_expanded_codes(p4)) == 62
     assert len(_expanded_codes(p5)) == 16
+    assert len(_expanded_codes(p6)) == 38
+    # 第六期只做不穿戴：展开后不应出现 _EXO。
+    assert all(code.endswith("_NOEXO") for code in _expanded_codes(p6))
 
     protocol_codes = {c.condition_code for c in load_default_protocol().conditions}
-    union = _expanded_codes(p1) | _expanded_codes(p2) | _expanded_codes(p3) | _expanded_codes(p4) | _expanded_codes(p5)
+    union = _expanded_codes(p1) | _expanded_codes(p2) | _expanded_codes(p3) | _expanded_codes(p4) | _expanded_codes(p5) | _expanded_codes(p6)
     assert union == protocol_codes
-    assert len(union) == 418
+    assert len(union) == 441
 
 
-def test_phase4_details_grouped_by_load() -> None:
-    # 改变负重代价高：第四期详细工况按相同负重归组（先定负重、再变地形/坡度）。
-    p4 = default_phase_config()["phases"][3]
-    load_rank = {"0KG": 0, "2P5KG": 1, "5KG": 2, "10KG": 3}
+def test_load_details_ordered_by_terrain_speed_load() -> None:
+    # 负重类工况统一按 地形 → 速度 → 负重 排序；第四期与第六期共用同一批基础码，
+    # 因此两期的详细工况顺序一致（同地形、同速度下按负重升序）。
+    params_by_code = {
+        condition.condition_code: (condition.parameters or {})
+        for condition in load_default_protocol().conditions
+    }
 
-    def _load_seq(category: str) -> list[int]:
-        details = p4["categories"][category]["details"]
-        return [load_rank[detail["code"].rsplit("_", 1)[-1]] for detail in details]
+    def _sort_key(code: str) -> tuple[float, float, float]:
+        params = params_by_code[f"{code}_NOEXO"]
+        return (
+            float(params.get("slope_deg") or 0),
+            float(params.get("speed_mps") or 0),
+            float(params["load_kg"]),
+        )
 
-    steady = _load_seq("STEADY_STATE")
-    assert steady == sorted(steady)
-    transient = _load_seq("TRANSIENT")
-    assert transient == sorted(transient)
+    phases = default_phase_config()["phases"]
+    for index in (3, 5):
+        phase = phases[index]
+        for category in ("STEADY_STATE", "TRANSIENT"):
+            codes = [detail["code"] for detail in phase["categories"][category]["details"]]
+            keys = [_sort_key(code) for code in codes]
+            assert keys == sorted(keys), (phase["name"], category)
+
+    # 平地 0.6 m/s 先走完该期全部负重档，再进 1.0 m/s。
+    p4_steady = [d["code"] for d in phases[3]["categories"]["STEADY_STATE"]["details"]]
+    assert p4_steady[:4] == [
+        "LWALK_0P6_0KG",
+        "LWALK_0P6_2P5KG",
+        "LWALK_0P6_5KG",
+        "LWALK_0P6_10KG",
+    ]
+    p6_steady = [d["code"] for d in phases[5]["categories"]["STEADY_STATE"]["details"]]
+    assert p6_steady[:5] == [
+        "LWALK_0P6_0KG",
+        "LWALK_0P6_5KG",
+        "LWALK_0P6_10KG",
+        "LWALK_0P6_15KG",
+        "LWALK_0P6_20KG",
+    ]
+    assert p6_steady[-1] == "LWALK_7P5D_0P6_20KG"
 
 
 def test_level_walking_four_speeds_shared_across_phases() -> None:

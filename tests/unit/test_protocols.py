@@ -12,7 +12,7 @@ def test_default_protocol_is_versioned_and_has_unique_conditions() -> None:
     protocol = load_default_protocol()
     assert protocol.schema_version == "1.0.0"
     assert protocol.protocol_version == "1.3.0"
-    assert len(protocol.conditions) == 418
+    assert len(protocol.conditions) == 441
     assert {condition.condition_code for condition in protocol.conditions} == {
         "FREE_TEST",
         "STATIC_CALIB",
@@ -420,6 +420,29 @@ def test_default_protocol_is_versioned_and_has_unique_conditions() -> None:
         "LWALK_RAMP_2P5D_5KG_EXO",
         "LWALK_RAMP_2P5D_10KG_NOEXO",
         "LWALK_RAMP_2P5D_10KG_EXO",
+        "LWALK_7P5D_0P6_0KG_NOEXO",
+        "LWALK_7P5D_0P6_5KG_NOEXO",
+        "LWALK_7P5D_0P6_10KG_NOEXO",
+        "LWALK_7P5D_0P6_15KG_NOEXO",
+        "LWALK_7P5D_0P6_20KG_NOEXO",
+        "LWALK_0P6_15KG_NOEXO",
+        "LWALK_1P0_15KG_NOEXO",
+        "LWALK_5D_0P6_15KG_NOEXO",
+        "LWALK_5D_1P0_15KG_NOEXO",
+        "LWALK_0P6_20KG_NOEXO",
+        "LWALK_1P0_20KG_NOEXO",
+        "LWALK_5D_0P6_20KG_NOEXO",
+        "LWALK_5D_1P0_20KG_NOEXO",
+        "LWALK_RAMP_15KG_NOEXO",
+        "LWALK_RAMP_20KG_NOEXO",
+        "LWALK_RAMP_5D_0KG_NOEXO",
+        "LWALK_RAMP_5D_5KG_NOEXO",
+        "LWALK_RAMP_5D_10KG_NOEXO",
+        "LWALK_RAMP_5D_15KG_NOEXO",
+        "LWALK_RAMP_5D_20KG_NOEXO",
+        "LWALK_STOP_TURN_0KG_NOEXO",
+        "LWALK_VARLOAD_5D_1P0_NOEXO",
+        "LWALK_VARLOAD_1P0_NOEXO",
         "WALK_0P8_NOEXO",
         "WALK_0P8_EXO",
         "BWALK_0P2_NOEXO",
@@ -469,27 +492,24 @@ def test_default_protocol_is_versioned_and_has_unique_conditions() -> None:
     )
 
 
-def test_phase4_protocol_grouped_by_load() -> None:
-    # 协议顺序即采集端工况下拉框顺序：第四期按相同负重归组，避免反复装卸负重片。
+def test_load_protocol_ordered_by_terrain_speed_load() -> None:
+    # 协议顺序即采集端工况下拉框顺序；负重类工况按 地形 → 速度 → 负重 排列。
     protocol = load_default_protocol()
-    steady = [
-        c
-        for c in protocol.conditions
-        if c.condition_code.startswith("LWALK") and c.condition_level == "STEADY_STATE"
-    ]
-    transient = [
-        c
-        for c in protocol.conditions
-        if c.condition_code.startswith("LWALK") and c.condition_level == "TRANSIENT"
-    ]
-    assert len(steady) == 48
-    assert len(transient) == 14
-    assert [c.parameters["load_kg"] for c in steady] == sorted(
-        c.parameters["load_kg"] for c in steady
-    )
-    assert [c.parameters["load_kg"] for c in transient] == sorted(
-        c.parameters["load_kg"] for c in transient
-    )
+    for level in ("STEADY_STATE", "TRANSIENT"):
+        conditions = [
+            c
+            for c in protocol.conditions
+            if c.condition_code.startswith("LWALK") and c.condition_level == level
+        ]
+        keys = [
+            (
+                float(c.parameters.get("slope_deg") or 0),
+                float(c.parameters.get("speed_mps") or 0),
+                float(c.parameters["load_kg"]),
+            )
+            for c in conditions
+        ]
+        assert keys == sorted(keys), level
 
 
 def test_protocol_rejects_duplicate_condition_codes(tmp_path) -> None:
