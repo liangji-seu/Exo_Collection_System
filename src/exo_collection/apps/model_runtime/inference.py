@@ -15,6 +15,7 @@ operator can watch model output before arming the motors.
 from __future__ import annotations
 
 import logging
+from dataclasses import asdict, replace
 
 import threading
 from time import perf_counter_ns, sleep
@@ -31,6 +32,16 @@ from exo_collection.apps.model_runtime.spec import ModelSpec, OutputSpec
 from exo_collection.apps.model_runtime.model_adapter import ModelInputAdapter, ModelOutputAdapter, map_output_values
 from exo_collection.apps.model_runtime.subscription import SubscriptionHub
 from exo_collection.apps.model_runtime.torque import TorqueOutput
+
+_GRID_RETRY_POLL_NS = 1_000_000
+
+
+def _quick_grid_retry_deadline(now_ns: int, reason: str | None,
+                               next_regular_ns: int) -> int | None:
+    retry_ns = int(now_ns) + _GRID_RETRY_POLL_NS
+    if reason != "no new source grid" or retry_ns >= int(next_regular_ns):
+        return None
+    return retry_ns
 
 
 def map_output_to_torque(output: np.ndarray, output_spec: OutputSpec) -> tuple[float, float]:
@@ -66,6 +77,9 @@ class InferenceController(QThread):
         diagnostic_callback=None,
         recording_callback=None,
         allow_input_wait_recovery: bool = False,
+        gate_mode: str = "none",
+        gate_recording_callback=None,
+        gate_process_isolated: bool = True,
     ) -> None:
         super().__init__(parent)
         self._hub = hub
@@ -82,6 +96,10 @@ class InferenceController(QThread):
         self._generation = 0
         self._predicted_once = False
         self._recording_callback = recording_callback
+        self._gate_recording_callback = gate_recording_callback
+        self._last_gate_recorded_state = None
+        self._last_gate_recorded_provenance: dict | None = None
+        self._gate_fault_latched = False
         self._diagnostic_callback = diagnostic_callback
         self._timing = {}
         self._timing_max = {}
@@ -99,6 +117,27 @@ class InferenceController(QThread):
         self._input_adapter = ModelInputAdapter(hub, spec, self._extractor, clock_ns=clock_ns)
         self._output_adapter = ModelOutputAdapter(spec)
         self._assistance = self._output_adapter
+        from exo_collection.apps.model_runtime.gate_dispatch import GateDispatch
+        from exo_collection.apps.model_runtime.gate_worker import GateWorker
+        self._gate_dispatch = GateDispatch(gate_mode)
+        self._gate_worker = GateWorker(gate_mode, clock_ns=self._clock_ns,
+                                       process_isolated=gate_process_isolated)
+        self._gate_worker.start()
+        self._gate_cursor_ns: int | None = None
+        self._run_active = False
+        self._gate_epoch: int | None = None
+        self._gate_last_output_epoch: int | None = None
+        self._gate_epoch_start_ns: int | None = None
+        self._gate_was_open = False
+        self._gate_zeroed_for_expiry = False
+        self._last_gate_status = None
+        self._last_gate_sample: dict[str, object] | None = None
+        self._gate_watchdog_stop = threading.Event()
+        self._gate_watchdog = None
+        if gate_mode != "none":
+            self._gate_watchdog = threading.Thread(target=self._gate_watchdog_loop,
+                name="gate-ttl-watchdog", daemon=True)
+            self._gate_watchdog.start()
 
     # -- state -------------------------------------------------------------
 
@@ -114,6 +153,18 @@ class InferenceController(QThread):
     @property
     def last_predict_ns(self) -> int | None:
         return self._last_predict_ns
+
+    @property
+    def gate_status(self):
+        return self._last_gate_status
+
+    @property
+    def gate_sample(self):
+        return None if self._last_gate_sample is None else dict(self._last_gate_sample)
+
+    @property
+    def gate_provenance(self) -> dict:
+        return dict(self._gate_worker.provenance)
 
     @property
     def last_error(self) -> str | None:
@@ -160,8 +211,10 @@ class InferenceController(QThread):
             if not requested:
                 self._zero_and_disarm_unlocked()
                 self._assistance.reset()
+                self._reset_gate_unlocked()
                 return
             else:
+                self._reset_gate_unlocked()
                 # Do not release assistance accumulated before the explicit
                 # arming edge (including a pending delay sample).
                 self._assistance.reset()
@@ -224,7 +277,20 @@ class InferenceController(QThread):
     def _preflight_unlocked(self) -> dict[str, object]:
         """Return a GUI-safe report; this method never arms the motors."""
         self._input_adapter.extractor = self._extractor
-        return self._input_adapter.preflight()
+        report = self._input_adapter.preflight()
+        if self._gate_dispatch.mode != "none" and self._imu_extractor is None:
+            report = dict(report)
+            report["errors"] = list(report.get("errors", [])) + [
+                "selected assistance gate requires the right-leg/pelvis IMU TCN input"]
+            report["ready"] = False
+        if (self._gate_dispatch.mode != "none" and
+                (abs(float(self._spec.features.control_rate_hz) - 100.0) > 1e-6
+                 or int(self._spec.feature_window_samples) != 94)):
+            report = dict(report)
+            report["errors"] = list(report.get("errors", [])) + [
+                "助力门控要求 100 Hz IMU 网格；请先选择 100 Hz / 94 点模型"]
+            report["ready"] = False
+        return report
 
     def assistance_preflight(self) -> dict[str, object]:
         """Middle-layer readiness, separate from observing model predictions."""
@@ -241,6 +307,8 @@ class InferenceController(QThread):
             self._enabled = False
             self._zero_and_disarm_unlocked()
             self._reset_processing_history_unlocked()
+            self._gate_worker.close()
+            self._gate_watchdog_stop.set()
 
     def stop_and_wait(self, timeout_ms: int = 3000) -> bool:
         self.request_stop()
@@ -251,27 +319,41 @@ class InferenceController(QThread):
     # -- loop --------------------------------------------------------------
 
     def run(self) -> None:  # noqa: C901 - explicit safety handling
+        self._run_active = True
         self.state_changed.emit("running")
         period_ns = int(1e9 / self._spec.features.control_rate_hz)
         next_tick_ns = perf_counter_ns()
+        retry_tick_ns = None
         last_report_ns = next_tick_ns
         ticks_since_report = predictions_since_report = 0
+        no_grid_retries = no_grid_recovered = 0
         try:
             while not self._stop_event.is_set():
                 now_ns = perf_counter_ns()
                 if self._last_loop_ns is not None:
                     self._measure("loop_gap_ms", (now_ns - self._last_loop_ns) / 1e6)
                 self._last_loop_ns = now_ns
-                if now_ns >= next_tick_ns:
+                scheduled_tick = now_ns >= next_tick_ns
+                retry_tick = retry_tick_ns is not None and now_ns >= retry_tick_ns
+                if scheduled_tick or retry_tick:
                     self._tick_started_ns = now_ns
                     previous_prediction = self._last_predict_ns
                     self._tick()
-                    ticks_since_report += 1
                     predictions_since_report += int(self._last_predict_ns != previous_prediction)
+                    if scheduled_tick:
+                        ticks_since_report += 1
+                        next_tick_ns = max(next_tick_ns + period_ns, perf_counter_ns())
+                    elif retry_tick:
+                        no_grid_retries += 1
+                        no_grid_recovered += int(
+                            self._last_predict_ns != previous_prediction)
+                    reason = None if self._imu_extractor is None else self._imu_extractor.last_reason
+                    retry_tick_ns = _quick_grid_retry_deadline(
+                        perf_counter_ns(), reason, next_tick_ns)
                     self._measure("tick_ms", (perf_counter_ns() - now_ns) / 1e6)
-                    next_tick_ns = max(next_tick_ns + period_ns, perf_counter_ns())
                 else:
                     self._drain_inputs()
+                self._expire_gate_if_needed()
                 now_ns = perf_counter_ns()
                 if now_ns - last_report_ns >= 5_000_000_000:
                     report_interval_s = (now_ns - last_report_ns) / 1e9
@@ -280,16 +362,22 @@ class InferenceController(QThread):
                         configured_rate_hz=self._spec.features.control_rate_hz,
                         tick_rate_hz=ticks_since_report / report_interval_s,
                         prediction_rate_hz=predictions_since_report / report_interval_s,
+                        no_new_grid_retries=no_grid_retries,
+                        no_new_grid_recovered=no_grid_recovered,
                         report_interval_s=report_interval_s)
                     self._timing_max.clear()
                     ticks_since_report = predictions_since_report = 0
+                    no_grid_retries = no_grid_recovered = 0
                     last_report_ns = now_ns
                 # Windows Event.wait may round a 1 ms wait to ~15.6 ms,
                 # preventing a declared 100 Hz model from actually running at
                 # that rate. Python 3.11 sleep uses a high-resolution timer.
                 # Short bounded sleeps keep input pumping and Stop responsive;
                 # every tick still rechecks the source grid and safety gates.
-                remaining_s = (next_tick_ns - now_ns) / 1e9
+                next_deadline_ns = next_tick_ns
+                if retry_tick_ns is not None:
+                    next_deadline_ns = min(next_deadline_ns, retry_tick_ns)
+                remaining_s = (next_deadline_ns - now_ns) / 1e9
                 if remaining_s > 0:
                     sleep(min(.001, remaining_s))
         except Exception as exc:  # any fault → zero torque + report
@@ -300,8 +388,12 @@ class InferenceController(QThread):
             self.fault.emit(str(exc))
             return
         finally:
+            self._run_active = False
             self._fault_stop(None)
-        self.state_changed.emit("stopped")
+            self._gate_worker.close(timeout=.1)
+            self._gate_watchdog_stop.set()
+        if self._last_fault_details is None:
+            self.state_changed.emit("stopped")
 
     def _measure(self, name, value):
         self._timing[name] = value
@@ -397,6 +489,20 @@ class InferenceController(QThread):
                 if self._imu_extractor is not None
                 else None
             )
+            if (source_result is not None and source_result.grid_times_ns is not None
+                    and source_result.raw_values is not None and self._gate_worker.mode != "none"):
+                # Gate history starts at the explicit arm edge. While disarmed,
+                # advance the cursor without replaying old hub history.
+                for stamp, values in zip(source_result.grid_times_ns, source_result.raw_values):
+                    stamp = int(stamp)
+                    if self._gate_cursor_ns is not None and stamp <= self._gate_cursor_ns:
+                        continue
+                    self._gate_cursor_ns = stamp
+                    if (self._enabled or self._run_active) and not self._gate_worker.submit(
+                            stamp, values, generation, valid=bool(np.isfinite(values).all())):
+                        self._record_diagnostic("gate_queue_overflow", source_grid_ns=stamp,
+                                                generation=generation,
+                                                dropped=self._gate_worker.dropped)
         if features.size == 0:
             if retry is not None:
                 self._record_diagnostic("prediction_retry_failed", reason=self._input_adapter.last_reason
@@ -497,6 +603,68 @@ class InferenceController(QThread):
                 self._input_wait_report_ns = None
                 self._record_diagnostic("input_resumed", grid_end_ns=now_ns)
             sample = self._output_adapter.process(now_ns, left_value, right_value)
+            gate_pre_left = sample["desired_left_nm"]
+            gate_pre_right = sample["desired_right_nm"]
+            gate_epoch = None
+            if self._gate_dispatch.mode != "none":
+                if not self._collect_gate_results():
+                    return
+                now_wall = int(self._clock_ns())
+                delayed_source_ns = sample.get("delayed_source_time_ns")
+                candidate_source_ns = (int(delayed_source_ns) if delayed_source_ns is not None
+                                       else max(0, now_ns-int(self._spec.assistance.delay_s*1e9)))
+                allowed, gate_epoch, gate_status = self._gate_dispatch.decide(
+                    source_grid_ns=now_ns, now_ns=now_wall,
+                    worker_closed=self._gate_worker.closed_reason,
+                    candidate_source_ns=candidate_source_ns)
+                if not allowed and self._gate_worker.state == "loading" and gate_status.state == "warming":
+                    gate_status = replace(gate_status, state="loading",
+                                          reason="loading verified gate assets")
+                reopened = allowed and self._gate_last_output_epoch != gate_epoch
+                if reopened:
+                    self._gate_epoch_start_ns = int(gate_status.source_grid_ns)
+                epoch_candidate_ok = (self._gate_epoch_start_ns is None
+                    or (delayed_source_ns is not None
+                        and int(delayed_source_ns) >= self._gate_epoch_start_ns))
+                if not allowed:
+                    sample["desired_left_nm"] = 0.0
+                    sample["desired_right_nm"] = 0.0
+                    sample["gate_allowed"] = False
+                    sample["gate_status"] = gate_status
+                    self._gate_was_open = False
+                    self._gate_epoch = None
+                    self._gate_zeroed_for_expiry = True
+                else:
+                    sample["gate_allowed"] = True
+                    if not epoch_candidate_ok:
+                        sample["desired_left_nm"] = 0.0
+                        sample["desired_right_nm"] = 0.0
+                        sample["gate_allowed"] = False
+                        gate_status = replace(gate_status, state="delay_warming",
+                                              reason="waiting for post-reopen delayed assistance sample")
+                    sample["gate_status"] = gate_status
+                    self._gate_was_open = True
+                    self._gate_epoch = gate_epoch
+                    self._gate_zeroed_for_expiry = False
+                    self._gate_last_output_epoch = gate_epoch
+                self._record_gate_transition(gate_status, now_wall)
+                # Record the command before and after gate separately. The
+                # original desired values were captured before any closure.
+                sample["gate_generation"] = generation
+                sample["gate_epoch"] = gate_epoch
+                sample["gate_pre_left_nm"] = gate_pre_left
+                sample["gate_pre_right_nm"] = gate_pre_right
+                sample["gate_post_left_nm"] = sample["desired_left_nm"]
+                sample["gate_post_right_nm"] = sample["desired_right_nm"]
+            else:
+                sample["gate_allowed"] = True
+                sample["gate_status"] = None
+                sample["gate_pre_left_nm"] = gate_pre_left
+                sample["gate_pre_right_nm"] = gate_pre_right
+                sample["gate_post_left_nm"] = gate_pre_left
+                sample["gate_post_right_nm"] = gate_pre_right
+            self._last_gate_status = sample.get("gate_status")
+            self._last_gate_sample = dict(sample)
             if self._recording_callback is not None:
                 self._recording_callback({"host_monotonic_ns": perf_counter_ns(),
                     "source_grid_time_ns": now_ns, "raw_output": np.asarray(output).copy(),
@@ -515,14 +683,171 @@ class InferenceController(QThread):
             # this RLock is held.  Revalidate after notifying observers.
             if generation != self._generation or self._stop_event.is_set():
                 return
-            if sample["assistance_ready"]:
-                self._torque.send(float(sample["desired_left_nm"]), float(sample["desired_right_nm"]))
+            command_gate_context = {
+                "mode": self._gate_dispatch.mode,
+                "sequence": None if self._last_gate_status is None else self._last_gate_status.sequence,
+                "source_grid_ns": None if self._last_gate_status is None else self._last_gate_status.source_grid_ns,
+                "generation": generation,
+                "epoch": sample.get("gate_epoch"),
+                "pre_left_nm": sample.get("gate_pre_left_nm"),
+                "pre_right_nm": sample.get("gate_pre_right_nm"),
+                "post_left_nm": sample.get("gate_post_left_nm"),
+                "post_right_nm": sample.get("gate_post_right_nm"),
+                "state": None if self._last_gate_status is None else self._last_gate_status.state,
+                "reason": ("delay_epoch_warmup" if self._last_gate_status is not None
+                           and self._last_gate_status.state == "delay_warming" else
+                           None if self._last_gate_status is None else self._last_gate_status.reason),
+                "output_allowed": bool(sample.get("gate_allowed", True)
+                                        and sample.get("assistance_ready", True)),
+            }
+            if self._gate_dispatch.mode != "none":
+                # Warming and rejection are ordinary gate states. Keep the
+                # explicitly started session alive and hold zero output.
+                if sample["assistance_ready"]:
+                    self._torque.send_with_gate_context(
+                        float(sample["desired_left_nm"]),
+                        float(sample["desired_right_nm"]), command_gate_context)
+                else:
+                    self._torque.send_with_gate_context(0.0, 0.0, command_gate_context)
+            elif sample["assistance_ready"]:
+                command_gate_context["state"] = "disabled"
+                self._torque.send_with_gate_context(float(sample["desired_left_nm"]),
+                                                     float(sample["desired_right_nm"]),
+                                                     command_gate_context)
             else:
                 self._enabled = False
                 self._zero_and_disarm_unlocked()
             command = getattr(self._torque, "last", None)
             if command is not None:
                 self.torque_commanded.emit(command)
+
+    def _reset_gate_unlocked(self) -> None:
+        if self._gate_dispatch.mode == "none":
+            return
+        self._gate_dispatch.reset(self._generation)
+        self._gate_worker.reset(generation=self._generation)
+        self._gate_cursor_ns = (self._imu_extractor.last_grid_end_ns
+                                if self._imu_extractor is not None else None)
+        self._gate_epoch = None
+        self._gate_last_output_epoch = None
+        self._gate_epoch_start_ns = None
+        self._gate_was_open = False
+        self._gate_zeroed_for_expiry = False
+        self._last_gate_recorded_state = None
+
+    def _collect_gate_results(self) -> bool:
+        results = self._gate_worker.drain()
+        self._gate_dispatch.publish(results)
+        worker_fault = self._gate_worker.closed_reason
+        if worker_fault:
+            self._latch_gate_fault(f"assistance gate fault: {worker_fault}")
+            return False
+        provenance = dict(self._gate_worker.provenance)
+        if (self._gate_dispatch.mode != "none" and provenance
+                and provenance != self._last_gate_recorded_provenance):
+            self._last_gate_recorded_provenance = provenance
+            if self._gate_recording_callback is not None:
+                try:
+                    self._gate_recording_callback("gate_provenance", provenance)
+                except Exception as exc:
+                    self._record_diagnostic("gate_recording_failed", reason=str(exc))
+        if self._gate_recording_callback is None:
+            return True
+        for result in results:
+            decision = result.decision
+            payload = {**asdict(decision), "computed_at_ns": int(result.computed_at_ns),
+                       "compute_ms": float(result.compute_ms),
+                       "generation": int(result.generation),
+                       "queue_depth": self._gate_worker.queue_depth,
+                       "queue_dropped": self._gate_worker.dropped}
+            try:
+                self._gate_recording_callback("gate_decision", payload)
+            except Exception as exc:
+                self._record_diagnostic("gate_recording_failed", reason=str(exc))
+        return True
+
+    def _record_gate_transition(self, status, at_ns: int) -> None:
+        if status.state == self._last_gate_recorded_state:
+            return
+        self._last_gate_recorded_state = status.state
+        if self._gate_recording_callback is not None:
+            try:
+                self._gate_recording_callback("gate_transition",
+                    {**asdict(status), "host_monotonic_ns": int(at_ns),
+                     "worker_state": self._gate_worker.state,
+                     "loading_samples_skipped": self._gate_worker.skipped_loading,
+                     "queue_depth": self._gate_worker.queue_depth,
+                     "queue_dropped": self._gate_worker.dropped})
+            except Exception as exc:
+                self._record_diagnostic("gate_recording_failed", reason=str(exc))
+
+    def _latch_gate_fault(self, reason: str) -> None:
+        if self._gate_fault_latched:
+            return
+        self._gate_fault_latched = True
+        try:
+            self._fault_stop(reason)
+        except Exception as exc:
+            self._record_diagnostic("gate_fault_cleanup_failed", reason=str(exc))
+        finally:
+            self.state_changed.emit("fault")
+            self.fault.emit(reason)
+
+    def _expire_gate_if_needed(self) -> None:
+        if self._gate_dispatch.mode == "none" or not self._enabled:
+            return
+        with self._state_lock:
+            if not self._collect_gate_results():
+                return
+            if self._gate_dispatch.expire(int(self._clock_ns())):
+                self._gate_was_open = False
+                self._gate_epoch = None
+                self._gate_zeroed_for_expiry = True
+                status = self._gate_dispatch.status
+                self._torque.send_with_gate_context(0.0, 0.0, {
+                    "mode": self._gate_dispatch.mode,
+                    "sequence": status.sequence, "source_grid_ns": status.source_grid_ns,
+                    "generation": self._generation, "epoch": None,
+                    "pre_left_nm": None, "pre_right_nm": None,
+                    "post_left_nm": 0.0, "post_right_nm": 0.0,
+                    "state": "stale"})
+                self._record_diagnostic("gate_transition", state="stale",
+                                        reason=self._gate_dispatch.status.reason,
+                                        generation=self._generation)
+                self._record_gate_transition(self._gate_dispatch.status,
+                                             int(self._clock_ns()))
+
+    def _gate_watchdog_loop(self) -> None:
+        # This independent 5 ms monitor remains live while model.predict or a
+        # device callback stalls. It only closes the current output epoch.
+        while not self._gate_watchdog_stop.wait(.005):
+            with self._state_lock:
+                if not self._enabled or self._gate_dispatch.mode == "none":
+                    continue
+                if not self._collect_gate_results():
+                    continue
+                if self._gate_dispatch.expire(int(self._clock_ns())):
+                    self._gate_was_open = False
+                    self._gate_epoch = None
+                    self._gate_zeroed_for_expiry = True
+                    try:
+                        self._torque.send_with_gate_context(0.0, 0.0, {
+                            "mode": self._gate_dispatch.mode,
+                            "sequence": None if self._last_gate_status is None else self._last_gate_status.sequence,
+                            "source_grid_ns": None if self._last_gate_status is None else self._last_gate_status.source_grid_ns,
+                            "generation": self._generation, "epoch": None,
+                            "pre_left_nm": None, "pre_right_nm": None,
+                            "post_left_nm": 0.0, "post_right_nm": 0.0,
+                            "state": "stale"})
+                    except Exception as exc:
+                        self._record_diagnostic("gate_ttl_zero_failed", reason=str(exc),
+                                                generation=self._generation)
+                        self._latch_gate_fault(f"gate TTL zero failed: {exc}")
+                    self._record_diagnostic("gate_transition", state="stale",
+                        reason=self._gate_dispatch.status.reason,
+                        generation=self._generation)
+                    self._record_gate_transition(self._gate_dispatch.status,
+                                                 int(self._clock_ns()))
 
     def _fault_stop(self, reason: str | None) -> None:
         with self._state_lock:
@@ -555,6 +880,14 @@ class InferenceController(QThread):
     def _zero_and_disarm_unlocked(self) -> None:
         """Always attempt disable, even if a backend's zero write fails."""
         try:
+            self._torque.set_gate_context({
+                "mode": self._gate_dispatch.mode,
+                "sequence": None if self._last_gate_status is None else self._last_gate_status.sequence,
+                "source_grid_ns": None if self._last_gate_status is None else self._last_gate_status.source_grid_ns,
+                "generation": self._generation, "epoch": None,
+                "pre_left_nm": None, "pre_right_nm": None,
+                "post_left_nm": 0.0, "post_right_nm": 0.0,
+                "output_allowed": False, "state": "closed", "reason": "session_closed"})
             self._torque.zero()
         finally:
             self._torque.set_enabled(False)

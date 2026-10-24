@@ -125,6 +125,8 @@ class ModelOutputPanel(QGroupBox):
         layout.addWidget(self._feedback_label)
         self._desired_right_nm = None
         self._desired_left_nm = None
+        self._post_gate_right_nm = None
+        self._post_gate_left_nm = None
         self._estimate_per_kg = None
         self._raw_right = None
         self._raw_left = None
@@ -192,6 +194,8 @@ class ModelOutputPanel(QGroupBox):
             "待填写体重 / 不可换算" if missing_conversion
             else f"{self._side_values(self._desired_left_nm, self._desired_right_nm, motor=True)} Nm"
         )
+        post_gate = ("未启用" if self._post_gate_right_nm is None else
+                     f"{self._side_values(self._post_gate_left_nm, self._post_gate_right_nm, motor=True)} Nm")
         reason = "; ".join(map(str, self._assistance_errors))
         command_text = ""
         if self._last_sent_command is not None:
@@ -203,6 +207,7 @@ class ModelOutputPanel(QGroupBox):
         self._values_label.setText(
             f"模型预测 {estimate}"
             f" ｜期望辅助（限幅前） {desired}\n输出：{self._output_status}"
+            f" ｜门控后目标 {post_gate}"
             + (f" ｜ {reason}" if reason else "")
             + (f"\n{command_text}" if command_text else "")
         )
@@ -238,9 +243,14 @@ class ModelOutputPanel(QGroupBox):
             self._store(self._raw_traces[0], t, float(self._estimate_right_nm))
         if self._estimate_left_nm is not None and self._single_output_maps_to != "right_torque":
             self._store(self._raw_traces[1], t, float(self._estimate_left_nm))
-        self._desired_right_nm = payload.get("desired_right_nm")
-        self._desired_left_nm = payload.get("desired_left_nm")
+        self._desired_right_nm = payload.get("gate_pre_right_nm", payload.get("desired_right_nm"))
+        self._desired_left_nm = payload.get("gate_pre_left_nm", payload.get("desired_left_nm"))
         self._append_motor_values("期望辅助", t, self._desired_left_nm, self._desired_right_nm)
+        status = payload.get("gate_status")
+        self._post_gate_right_nm = payload.get("gate_post_right_nm", payload.get("desired_right_nm"))
+        self._post_gate_left_nm = payload.get("gate_post_left_nm", payload.get("desired_left_nm"))
+        if status is not None:
+            self._append_motor_values("门控后目标", t, self._post_gate_left_nm, self._post_gate_right_nm)
         self._assistance_errors = list(payload.get("assistance_errors", []))
         self._render_traces()
         self._render_values()
@@ -325,6 +335,8 @@ class ModelOutputPanel(QGroupBox):
         if legend_label is None:
             if label.startswith("期望辅助"):
                 legend_label = label.replace("期望辅助", "期望").replace(" (Nm)", " (Nm，限幅前)")
+            elif label.startswith("门控后目标"):
+                legend_label = label
             elif label.startswith("指令"):
                 legend_label = label.replace("指令", "下发").replace(" (Nm)", " (Nm，限幅后)")
             else:
@@ -332,8 +344,11 @@ class ModelOutputPanel(QGroupBox):
         trace = self._traces.get(label)
         if trace is None:
             color = {"期望辅助右 (Nm)": "#d97706", "期望辅助左 (Nm)": "#7c3aed",
+                     "门控后目标右 (Nm)": "#059669", "门控后目标左 (Nm)": "#0891b2",
                      "指令右 (Nm)": "#2563eb", "指令左 (Nm)": "#64748b"}.get(label, "#64748b")
-            style = Qt.PenStyle.DashLine if label.startswith("指令") else Qt.PenStyle.SolidLine
+            style = (Qt.PenStyle.DashLine if label.startswith("指令")
+                     else Qt.PenStyle.DotLine if label.startswith("门控后目标")
+                     else Qt.PenStyle.SolidLine)
             curve = pg.PlotDataItem(pen=pg.mkPen(color, width=1.6, style=style), name=label)
             self._assistance_view.addItem(curve)
             self._plot.getPlotItem().legend.addItem(curve, legend_label)
@@ -394,6 +409,7 @@ class ModelOutputPanel(QGroupBox):
         self._raw_left = self._raw_right = None
         self._estimate_left_nm = self._estimate_right_nm = None
         self._desired_left_nm = self._desired_right_nm = None
+        self._post_gate_left_nm = self._post_gate_right_nm = None
         self._assistance_errors = []
         self._last_sent_command = None
         self._motor_values_diverged.clear()

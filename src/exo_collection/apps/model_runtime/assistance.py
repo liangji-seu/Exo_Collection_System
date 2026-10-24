@@ -21,6 +21,7 @@ class AssistanceSample:
     desired_right_nm: float | None
     assistance_ready: bool = True
     assistance_errors: tuple[str, ...] = ()
+    delayed_source_time_ns: int | None = None
 
 
 class AssistancePipeline:
@@ -82,7 +83,9 @@ class AssistancePipeline:
         self._last_time_ns = t_ns
         self._history.append((t_ns, float(filtered)))
         target_ns = t_ns - int(round(float(self.config.delay_s) * _NS_PER_S))
-        delayed = self._delayed_value(target_ns)
+        delayed_sample = self._delayed_value(target_ns)
+        delayed = None if delayed_sample is None else delayed_sample[1]
+        delayed_source_ns = None if delayed_sample is None else delayed_sample[0]
         # Drop samples that can no longer be selected, retaining one boundary.
         while len(self._history) > 1 and self._history[1][0] <= target_ns:
             self._history.popleft()
@@ -96,19 +99,20 @@ class AssistancePipeline:
             self.reset()
             desired = 0.0
             estimate_nm = 0.0
-        return AssistanceSample(t_ns, value if unit == "Nm/kg" else None, estimate_nm, desired)
+        return AssistanceSample(t_ns, value if unit == "Nm/kg" else None, estimate_nm,
+                                desired, delayed_source_time_ns=delayed_source_ns)
 
-    def _delayed_value(self, target_ns: int) -> float | None:
+    def _delayed_value(self, target_ns: int) -> tuple[int, float] | None:
         if not self._history:
             return None
         if target_ns < self._history[0][0]:
             return None
-        selected = self._history[0][1]
+        selected = self._history[0]
         for t_ns, value in self._history:
             if t_ns > target_ns:
                 break
-            selected = value
-        return float(selected)
+            selected = (t_ns, value)
+        return int(selected[0]), float(selected[1])
 
 
 __all__ = ["AssistancePipeline", "AssistanceSample"]

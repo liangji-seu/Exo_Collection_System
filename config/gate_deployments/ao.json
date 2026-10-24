@@ -1,0 +1,135 @@
+{
+  "schema": "exo_gate_deployment_v1",
+  "mode": "ao",
+  "display_name": "AO24 + RF-full (frozen q99)",
+  "model_version": "ao-rf-full-r2-20261024",
+  "source": {
+    "study": "paper_experiments/ao_research_loop_20261024/round02_dev_readout",
+    "freeze": "paper_experiments/ao_research_loop_20261024/MODEL_SELECTION_FREEZE.json",
+    "core_lock": "paper_experiments/ao_gate_refinement_20261021/results/frozen_candidate_lock.json",
+    "core_config": "paper_experiments/ao_gate_refinement_20261021/core_config_normalizer.json",
+    "normalizer_binding": "R2 readout bound to R1 round01_dev_attempt04 train-only normalizer audit"
+  },
+  "source_sha256": {
+    "paper_experiments/ao_research_loop_20261024/MODEL_SELECTION_FREEZE.json": "e3de921fc4ff4853768431a7136d2aca86a4806bcf2a9aa944a6a249d9ec7a5b",
+    "paper_experiments/ao_research_loop_20261024/round02_dev_readout/model_manifest.json": "6a9ee3e5869b2038bac921c4b008249d6cdb7eeee0dc1f37454541562fedc138",
+    "paper_experiments/ao_research_loop_20261024/round02_dev_readout/R2_RUN_LOCK.json": "b8335610a19af8c5c008fc19efc54342714bb6a928b9ece460e92e1bff187733",
+    "paper_experiments/ao_gate_refinement_20261021/code/adaptive_periodic.py": "829003528f14682430c89fbe9035cf482005723a722fc0ff3f4757f96d34d956",
+    "paper_experiments/ao_gate_refinement_20261021/core_config_normalizer.json": "13dcafdff42a08d9d8b8967c0b0132a8e6549d7e4a5218b72a6367e7a92909c5",
+    "paper_experiments/ao_gate_refinement_20261021/results/frozen_candidate_lock.json": "c6dc8612b21ef4f6bd312cdd8e0354456dce808a840de6b2f7689e0039799377",
+    "paper_experiments/ao_multiday_evidence_20261024/code/ao_feature_adapter.py": "a35eb809762b4dba8fca52b400035e4e120346af81888271357bd088cf9e3080"
+    ,"paper_experiments/ao_research_loop_20261024/code/features.py": "9f10b37053668a137f76a2bc7551529c8c89fcb8a344593cea7b0e2d11c7dc3b"
+    ,"paper_experiments/ao_research_loop_20261024/code/adaptive_periodic_mh.py": "64654e3059d957e1016e1a0f80540d6cf2e4066559cc0352bf30abf05a2ba59d"
+    ,"paper_experiments/ao_research_loop_20261024/round01_dev_attempt04/normalizer_audit.json": "0f6870c25fa1b3030b591737cb3979838397d34dab2d197675f3ae7b9da18d6c"
+  },
+  "asset": {
+    "path": "paper_experiments/ao_research_loop_20261024/round02_dev_readout/models/ao_rf_full_features.joblib",
+    "sha256": "55b0229bc01a2c089ae133229bd8b413fcd6a7aec79cd8013a2bbcf66ab2c8e3"
+  },
+  "threshold": 0.585730925727732,
+  "feature_count": 24,
+  "feature_names": [
+    "log_rms_right",
+    "log_rms_pelvis",
+    "log_rms_right_minus_pelvis",
+    "log_band_right",
+    "log_band_pelvis",
+    "evidence_right",
+    "evidence_pelvis",
+    "anchor_hz_right",
+    "anchor_hz_pelvis",
+    "anchor_hz_difference",
+    "log_preupdate_residual_rms_right",
+    "log_preupdate_residual_rms_pelvis",
+    "log_residual_to_motion_right",
+    "log_residual_to_motion_pelvis",
+    "frequency_coherence_right",
+    "frequency_coherence_pelvis",
+    "lock_continuity_right",
+    "lock_continuity_pelvis",
+    "ao_frequency_right",
+    "ao_frequency_pelvis",
+    "frequency_clipped_right",
+    "frequency_clipped_pelvis",
+    "log_reconstruction_rms_right",
+    "log_reconstruction_rms_pelvis"
+  ],
+  "config": {
+    "family": "vector_anchor",
+    "dt": 0.01,
+    "harmonics": 3,
+    "phase_gain": 0.025,
+    "frequency_gain": 0.02,
+    "coefficient_gain": 0.8,
+    "anchor_blend": 0.08,
+    "frequency_bounds_hz": [
+      0.55,
+      2.4
+    ],
+    "anchor_window": 250,
+    "anchor_step": 25,
+    "anchor_grid_hz": [
+      0.55,
+      0.6000000000000001,
+      0.6500000000000001,
+      0.7000000000000002,
+      0.7500000000000002,
+      0.8000000000000003,
+      0.8500000000000003,
+      0.9000000000000004,
+      0.9500000000000004,
+      1.0000000000000004,
+      1.0500000000000005,
+      1.1000000000000005,
+      1.1500000000000006,
+      1.2000000000000006,
+      1.2500000000000007,
+      1.3000000000000007,
+      1.3500000000000008,
+      1.4000000000000008,
+      1.4500000000000008,
+      1.5000000000000009,
+      1.550000000000001,
+      1.600000000000001,
+      1.650000000000001,
+      1.700000000000001,
+      1.750000000000001,
+      1.8000000000000012,
+      1.8500000000000012,
+      1.9000000000000012,
+      1.9500000000000013,
+      2.0000000000000013,
+      2.0500000000000016,
+      2.1000000000000014,
+      2.1500000000000012,
+      2.2000000000000015,
+      2.2500000000000018,
+      2.3000000000000016,
+      2.3500000000000014,
+      2.4000000000000017
+    ],
+    "warmup": 250,
+    "gap_reset_s": 0.015,
+    "activity_floor": 0.03,
+    "scale_floor": 0.1,
+    "seed_frequency_hz": 1.1,
+    "bias_gain": 0.02
+  },
+  "normalizer": {
+    "schema": "gyro_periodic_normalizer_v1",
+    "scales_rad_s": [
+      1.5226342165850437,
+      0.439543911147815
+    ],
+    "axes_xyz": [
+      2,
+      0
+    ],
+    "axis_signs": [
+      1,
+      1
+    ]
+  },
+  "input": "100 Hz right-leg + pelvis SI: acc_xyz,gyr_xyz per device; only gyro channels enter AO",
+  "threshold_name": "q99"
+}

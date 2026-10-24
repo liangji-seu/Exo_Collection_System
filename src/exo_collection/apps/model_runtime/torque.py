@@ -133,6 +133,7 @@ class TorqueCommand:
     enabled: bool
     host_monotonic_ns: int
     frame: bytes
+    gate_context: dict | None = None
 
 
 class TorqueOutput(ABC):
@@ -145,6 +146,16 @@ class TorqueOutput(ABC):
     @abstractmethod
     def send(self, left_nm: float, right_nm: float) -> None:
         """Command one control cycle of bilateral torque."""
+
+    def set_gate_context(self, context: dict | None) -> None:
+        """Attach source decision metadata to the next recorded send."""
+        del context  # Optional for third-party/mock sinks.
+
+    def send_with_gate_context(self, left_nm: float, right_nm: float,
+                               context: dict | None) -> None:
+        """Send while atomically associating provenance when supported."""
+        self.set_gate_context(context)
+        self.send(left_nm, right_nm)
 
     @abstractmethod
     def set_limit(self, value: float) -> None:
@@ -191,6 +202,7 @@ class MockTorqueOutput(TorqueOutput):
         self._seq = 0
         self._history: deque[TorqueCommand] = deque(maxlen=history_capacity)
         self._lock = threading.RLock()
+        self._gate_context = None
 
     # -- protocol ----------------------------------------------------------
 
@@ -226,6 +238,19 @@ class MockTorqueOutput(TorqueOutput):
             right_nm = clamp_torque(right_nm, self._limit)
             self._record(left_nm, right_nm)
 
+    def set_gate_context(self, context: dict | None) -> None:
+        with self._lock:
+            self._gate_context = None if context is None else dict(context)
+
+    def send_with_gate_context(self, left_nm: float, right_nm: float,
+                               context: dict | None) -> None:
+        with self._lock:
+            self._gate_context = None if context is None else dict(context)
+            if not self._enabled:
+                left_nm = right_nm = 0.0
+            self._record(clamp_torque(left_nm, self._limit),
+                         clamp_torque(right_nm, self._limit))
+
     def zero(self) -> None:
         with self._lock:
             self._record(0.0, 0.0)
@@ -255,6 +280,7 @@ class MockTorqueOutput(TorqueOutput):
                 enabled=self._enabled,
                 host_monotonic_ns=perf_counter_ns(),
                 frame=frame,
+                gate_context=None if self._gate_context is None else dict(self._gate_context),
             )
         )
 

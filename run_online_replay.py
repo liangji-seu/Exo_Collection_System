@@ -47,28 +47,118 @@ def load_session(path):
                     "channels": channels, "units": units})
         else:
             result["encoder"] = {"times": times, "data": data, "channels": channels, "units": units}
-    predictions, commands = [], []
+    predictions, commands, gate_predictions = [], [], []
+    gate_decisions, gate_transitions, gate_provenance_events = [], [], []
+    command_context = []
+    command_keys = set()
+    command_indexes = {}
     # The log includes large model tensors: scan one line at a time and keep
     # only the few scalar fields used in the plots. Never read_text this file.
     with (root / "raw/online_events.jsonl").open(encoding="utf-8") as stream:
         for line in stream:
-            if not line.startswith(('{"kind": "prediction"', '{"kind": "sent_command"')):
+            if not line.startswith('{"kind":'):
                 continue
             event = json.loads(line)
+            kind = event.get("kind")
             payload = event["payload"]
-            if event["kind"] == "prediction":
-                at = int(payload.get("source_grid_time_ns", payload["time_ns"]))
+            if kind == "prediction":
+                at_value = payload.get("source_grid_time_ns", payload.get("time_ns"))
+                if at_value is None:
+                    continue
+                at = int(at_value)
                 if start <= at < stop:
                     values = [payload.get(key) for key in ("estimate_nm", "desired_left_nm", "desired_right_nm")]
                     predictions.append([(at - start) / 1e9,
                         *[np.nan if value is None else float(value) for value in values],
                         (int(payload["host_monotonic_ns"]) - start) / 1e9])
-            else:
-                at = int(payload["host_monotonic_ns"])
+                    pre = [payload.get(key) for key in ("gate_pre_left_nm", "gate_pre_right_nm")]
+                    post = [payload.get(key) for key in ("gate_post_left_nm", "gate_post_right_nm")]
+                    gate_predictions.append([(at - start) / 1e9,
+                        *[np.nan if value is None else float(value) for value in (*pre, *post)]])
+                    status = payload.get("gate_status")
+                    if isinstance(status, dict):
+                        gate_transitions.append({"time_s": (int(payload["host_monotonic_ns"]) - start) / 1e9,
+                            "kind": "prediction_status", "status": status})
+            elif kind in {"sent_command", "command"}:
+                # `sent_command` is the motor service's actual frame record.
+                # The UI also writes an enriched `command` wrapper for the same
+                # frame, so retain it only as a fallback if the actual event is absent.
+                nested = payload.get("command") if isinstance(payload.get("command"), dict) else {}
+                command = payload if payload.get("left_nm") is not None else nested
+                at_value = command.get("host_monotonic_ns", payload.get("host_monotonic_ns"))
+                if at_value is None:
+                    continue
+                at = int(at_value)
                 if start <= at < stop:
-                    commands.append([(at - start) / 1e9, float(payload["left_nm"]), float(payload["right_nm"])])
+                    if command.get("left_nm") is None or command.get("right_nm") is None:
+                        continue
+                    seq = command.get("seq", nested.get("seq"))
+                    key = (None if seq is None else int(seq), at,
+                           float(command["left_nm"]), float(command["right_nm"]))
+                    context = payload.get("gate_context", command.get("gate_context"))
+                    if not isinstance(context, dict):
+                        context = {name.removeprefix("gate_"): payload.get(name)
+                                   for name in ("gate_mode", "gate_sequence", "gate_source_grid_ns",
+                                                "gate_generation", "gate_epoch", "gate_state",
+                                                "gate_pre_left_nm", "gate_pre_right_nm",
+                                                "gate_post_left_nm", "gate_post_right_nm")
+                                   if payload.get(name) is not None}
+                    item = {"time_s": (at - start) / 1e9, "host_monotonic_ns": at,
+                            "kind": kind, "context": context}
+                    if key not in command_keys:
+                        command_keys.add(key)
+                        command_indexes[key] = len(command_context)
+                        commands.append([(at - start) / 1e9,
+                            float(command["left_nm"]), float(command["right_nm"])])
+                        command_context.append(item)
+                    elif kind == "sent_command" and key in command_indexes:
+                        # Prefer the motor's actual send record over the UI wrapper.
+                        command_context[command_indexes[key]] = item
+            elif kind in {"gate_decision", "gate_transition", "gate_provenance"}:
+                at = int(event.get("host_monotonic_ns", payload.get("computed_at_ns",
+                                                                      payload.get("host_monotonic_ns", start))))
+                if start <= at < stop:
+                    item = {"time_s": (at - start) / 1e9, "host_monotonic_ns": at,
+                            "kind": kind, "payload": payload}
+                    if kind == "gate_decision":
+                        gate_decisions.append(item)
+                    elif kind == "gate_transition":
+                        gate_transitions.append(item)
+                    else:
+                        gate_provenance_events.append(item)
     result["prediction"] = np.asarray(predictions, dtype=np.float64).reshape(-1, 5)
     result["command"] = np.asarray(commands, dtype=np.float64).reshape(-1, 3)
+    result["gate_prediction"] = np.asarray(gate_predictions, dtype=np.float64).reshape(-1, 5)
+    result["gate_decisions"] = gate_decisions
+    result["gate_transitions"] = gate_transitions
+    result["gate_provenance_events"] = gate_provenance_events
+    result["command_context"] = command_context
+    metadata = session.get("metadata", {})
+    gate_metadata = metadata.get("gate", {}) if isinstance(metadata, dict) else {}
+    provenance = gate_metadata.get("provenance") if isinstance(gate_metadata, dict) else None
+    if provenance is None and gate_provenance_events:
+        provenance = gate_provenance_events[-1]["payload"]
+    recorded_gate = bool(provenance or gate_decisions or gate_transitions or gate_provenance_events or
+                         (isinstance(gate_metadata, dict) and gate_metadata.get("mode") not in (None, "none")) or
+                         any(np.isfinite(row[1:]).any() for row in gate_predictions))
+    states = []
+    for item in gate_decisions + [entry for entry in gate_transitions if entry["kind"] != "prediction_status"]:
+        body = item.get("payload", {})
+        status = body.get("state") if isinstance(body, dict) else None
+        if status is None and isinstance(body, dict):
+            status = body.get("decision", {}).get("reason") if isinstance(body.get("decision"), dict) else None
+        if status is not None:
+            states.append(str(status))
+    result["gate_summary"] = {
+        "recorded": recorded_gate,
+        "mode": gate_metadata.get("mode") if isinstance(gate_metadata, dict) else None,
+        "label": ("未启用" if isinstance(gate_metadata, dict) and gate_metadata.get("mode") == "none" else
+                  "已记录" if recorded_gate else "未记录"),
+        "provenance": provenance,
+        "decision_count": len(gate_decisions),
+        "transition_count": len([item for item in gate_transitions if item["kind"] != "prediction_status"]),
+        "states": states,
+    }
     return result
 
 
@@ -80,6 +170,9 @@ def summary(data):
         "predictions_in_source_grid_interval": len(data["prediction"]),
         "sent_commands": len(data["command"]),
         "command_max_abs_nm": float(np.max(np.abs(data["command"][:, 1:]))) if len(data["command"]) else None,
+        "gate": data.get("gate_summary", {"recorded": False, "label": "未记录"}),
+        "gate_decision_events": len(data.get("gate_decisions", [])),
+        "gate_transition_events": len(data.get("gate_transitions", [])),
         "timing": "model: source grid; command/feedback/IMU: actual host receive/send; origin: enable confirmation"}
 
 
@@ -117,6 +210,14 @@ def show_replay(data, *, snapshot=None, at=30):
                 f"双侧映射 {config.get('motor_distribution', '—')}"))
             layout.addWidget(QLabel("统一起点：真实使能确认；模型/期望辅助按源网格时刻，发送/反馈按实际时刻。"
                 "原始信号独立计时；缺测保留 NaN；每页 10 秒，红线为播放位置；鼠标缩放已关闭。"))
+            gate_info = data.get("gate_summary", {"label": "未记录"})
+            gate_text = f"门控：{gate_info.get('label', '未记录')}"
+            if gate_info.get("mode"):
+                gate_text += f" · {gate_info['mode']}"
+            if gate_info.get("recorded"):
+                gate_text += (f" · 决策 {gate_info.get('decision_count', 0)} 条"
+                              f" · 状态变化 {gate_info.get('transition_count', 0)} 条")
+            layout.addWidget(QLabel(gate_text))
             controls = QHBoxLayout()
             self.button = QPushButton("暂停")
             self.button.clicked.connect(self.toggle)
@@ -173,9 +274,18 @@ def show_replay(data, *, snapshot=None, at=30):
                 self.imu_traces.append((widget, item, entries))
             model = plot("关节估计 / 期望辅助 / 实际发送", "Nm", 1, 0, 3)
             prediction, command = data["prediction"], data["command"]
-            for column, name, color, dashed in [(1, "模型右关节估计", "#334155", False),
-                (2, "期望辅助左", "#7c3aed", True), (3, "期望辅助右", "#059669", False)]:
+            for column, name, color, dashed in [(1, "模型右关节估计", "#334155", False)]:
                 trace(model, prediction[:, 0], prediction[:, column], name, color, dashed)
+            gate_trace = data.get("gate_prediction", np.empty((0, 5)))
+            if data.get("gate_summary", {}).get("recorded") and len(gate_trace):
+                for column, name, color, dashed in [(1, "门控前辅助左", "#7c3aed", True),
+                    (2, "门控前辅助右", "#059669", True), (3, "门控后辅助左", "#8b5cf6", False),
+                    (4, "门控后辅助右", "#10b981", False)]:
+                    trace(model, gate_trace[:, 0], gate_trace[:, column], name, color, dashed)
+            else:
+                for column, name, color, dashed in [(2, "期望辅助左", "#7c3aed", True),
+                    (3, "期望辅助右", "#059669", False)]:
+                    trace(model, prediction[:, 0], prediction[:, column], name, color, dashed)
             for column, name, color, dashed in [(1, "实际发送左", "#f97316", True), (2, "实际发送右", "#2563eb", False)]:
                 trace(model, command[:, 0], command[:, column], name, color, dashed)
             if data["encoder"] is not None:

@@ -37,6 +37,8 @@ hardware = [
   "zeroconf>=0.132,<1",
 ]
 model-runtime = ["torch>=2.5,<3", "pyserial>=3.5,<4"]
+# Frozen AO readouts are serialized with scikit-learn 1.8.0.
+model-gates = ["torch>=2.5,<3", "scikit-learn==1.8.0", "joblib>=1.5,<2"]
 
 [project.scripts]
 exo-collector = "exo_collection.apps.collector.main:main"

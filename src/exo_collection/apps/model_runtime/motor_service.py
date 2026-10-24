@@ -165,6 +165,7 @@ class SerialTorqueOutput(TorqueOutput):
         self._last_command_ns: int | None = None
         self._seq = 0
         self._history: deque[TorqueCommand] = deque(maxlen=int(history_capacity))
+        self._gate_context = None
         self._lock = threading.RLock()
         self._write_lock = threading.Lock()
         self._close_lock = threading.Lock()
@@ -560,6 +561,18 @@ class SerialTorqueOutput(TorqueOutput):
                 left_nm = right_nm = 0.0
             self._write_control_locked(left_nm, right_nm, record=True)
 
+    def set_gate_context(self, context: dict | None) -> None:
+        """Capture the exact inference decision for subsequent hardware frames."""
+        with self._lock:
+            self._gate_context = None if context is None else dict(context)
+
+    def send_with_gate_context(self, left_nm: float, right_nm: float,
+                               context: dict | None) -> None:
+        """Atomically cache/send a target and bind it to its exact gate decision."""
+        with self._lock:
+            self._gate_context = None if context is None else dict(context)
+            self.send(left_nm, right_nm)  # RLock keeps sender from observing an interleaving target.
+
     @staticmethod
     def _finite_command(value: float) -> bool:
         try:
@@ -692,6 +705,7 @@ class SerialTorqueOutput(TorqueOutput):
                     enabled=self._enabled,
                     host_monotonic_ns=self._now_ns(),
                     frame=frame,
+                    gate_context=None if self._gate_context is None else dict(self._gate_context),
                 )
             self._history.append(command)
             self._record_event_locked("sent_command", command)

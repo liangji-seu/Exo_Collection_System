@@ -185,6 +185,11 @@ def test_real_tcn_mock_pipeline_and_stale_input_shutdown(window, qt_app, monkeyp
             break
     assert window._controller.ready, window._controller.preflight()
     window._run_prediction()
+    startup_deadline = time.perf_counter() + 4
+    while (not window.controller_running and window._startup.active
+           and time.perf_counter() < startup_deadline):
+        queue.put(_batch(time.perf_counter_ns()))
+        pump(qt_app, 0.01)
     assert window.controller_running, window.statusBar().currentMessage()
     assert not window._controller.enabled
     output = window._torque

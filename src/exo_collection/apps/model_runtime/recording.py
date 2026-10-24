@@ -12,6 +12,7 @@ import hashlib
 import json
 import re
 import threading
+from dataclasses import asdict, is_dataclass
 import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -98,6 +99,14 @@ class OnlineRecording:
         with self._lock:
             if metadata is not None:
                 self._context = dict(metadata)
+                if self._active is not None:
+                    session = self._sessions[self._active]
+                    previous_gate = session["metadata"].get("gate", {})
+                    current_gate = self._context.get("gate", {})
+                    session["metadata"].update(self._context)
+                    if current_gate != previous_gate and current_gate.get("provenance"):
+                        self._put(("event", self._active,
+                            ("gate_provenance", time.perf_counter_ns(), current_gate)))
             if streams is not None:
                 self._streams = dict(streams)
                 if self._active is not None:
@@ -123,6 +132,7 @@ class OnlineRecording:
             if kind == "enabled":
                 if self._active is not None:
                     return
+                self._last_gate_state = None
                 start = self._now()
                 if self._last_start is not None and start <= self._last_start:
                     start = self._last_start + timedelta(microseconds=1)
@@ -152,8 +162,31 @@ class OnlineRecording:
     def prediction(self, payload):
         with self._lock:
             if self._active is not None:
-                self._put(("event", self._active,
-                    ("prediction", int(payload["host_monotonic_ns"]), payload)))
+                at = int(payload["host_monotonic_ns"])
+                self._put(("event", self._active, ("prediction", at, payload)))
+
+    def command(self, payload):
+        with self._lock:
+            if self._active is not None:
+                at = int(payload.get("host_monotonic_ns", time.perf_counter_ns()))
+                self._put(("event", self._active, ("command", at, dict(payload))))
+
+    def gate_event(self, kind, payload):
+        if kind not in {"gate_decision", "gate_transition", "gate_provenance"}:
+            return
+        at = int(payload.get("computed_at_ns", payload.get("host_monotonic_ns",
+                                                            time.perf_counter_ns())))
+        with self._lock:
+            if kind == "gate_provenance":
+                context = dict(self._context)
+                gate = dict(context.get("gate", {}))
+                gate["provenance"] = dict(payload)
+                context["gate"] = gate
+                self._context = context
+                if self._active is not None:
+                    self._sessions[self._active]["metadata"].update(context)
+            if self._active is not None:
+                self._put(("event", self._active, (kind, at, dict(payload))))
 
     def raw(self, modality, item, descriptor=None):
         # Invoked before Hub converts/flat-flattens the event. Never consume a

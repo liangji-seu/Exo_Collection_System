@@ -108,6 +108,51 @@ def test_enable_requires_feedback_then_clamps_every_transmitted_command() -> Non
     assert seq >= 0
 
 
+def test_background_sender_repeats_the_atomic_gate_context_for_each_target():
+    import time
+
+    serial = FakeSerial()
+    service = SerialTorqueOutput("FAKE", 5,
+        serial_factory=lambda *args, **kwargs: serial, background=True)
+    try:
+        service.connect()
+        service.feed_feedback(status_frame(state=0))
+        service.set_enabled(True)
+        service.feed_feedback(status_frame(seq=5, state=2))
+        assert service.enabled
+
+        first = {"mode": "ao", "sequence": 10, "output_allowed": True,
+                 "post_left_nm": 1.25, "post_right_nm": 1.25}
+        service.send_with_gate_context(1.25, 1.25, first)
+        first["sequence"] = 99
+        deadline = time.monotonic() + .1
+        while time.monotonic() < deadline and sum(
+                command.gate_context is not None and command.gate_context.get("sequence") == 10
+                for command in service.history) < 2:
+            time.sleep(.002)
+
+        second = {"mode": "ao", "sequence": 11, "output_allowed": False,
+                  "post_left_nm": 0.0, "post_right_nm": 0.0}
+        service.send_with_gate_context(0.0, 0.0, second)
+        deadline = time.monotonic() + .1
+        while time.monotonic() < deadline and not any(
+                command.gate_context is not None and command.gate_context.get("sequence") == 11
+                for command in service.history):
+            time.sleep(.002)
+
+        repeated = [command for command in service.history
+                    if command.gate_context is not None]
+        assert sum(command.gate_context["sequence"] == 10 for command in repeated) >= 2
+        assert any(command.gate_context["sequence"] == 11 for command in repeated)
+        for command in repeated:
+            context = command.gate_context
+            assert context["post_left_nm"] == command.left_nm
+            assert context["post_right_nm"] == command.right_nm
+            assert context["output_allowed"] is (context["sequence"] == 10)
+    finally:
+        service.close()
+
+
 def test_state_zero_pending_then_new_state_two_confirms_enable() -> None:
     clock, serial = Clock(), FakeSerial()
     service = make_service(clock, serial)

@@ -22,6 +22,8 @@ class ImuWindowResult:
     grid_end_ns: int
     right_source_times_ns: np.ndarray
     pelvis_source_times_ns: np.ndarray
+    grid_times_ns: np.ndarray | None = None
+    raw_values: np.ndarray | None = None
 
 
 class ImuTcnFeatureExtractor:
@@ -192,7 +194,11 @@ class ImuTcnFeatureExtractor:
         if features.shape != (12, count) or not np.isfinite(features).all():
             return self._empty("invalid IMU feature tensor")
         self.last_grid_end_ns = grid_end
-        self.last_result = ImuWindowResult(features, grid_end, right_times, pelvis_times)
+        # Keep canonical causal SI samples for the independent gate cursor.
+        # The TCN tensor remains its own model-normalized 94-point window.
+        raw_values = np.concatenate((right_values[:, :6], pelvis_values[:, :6]), axis=1)
+        self.last_result = ImuWindowResult(features, grid_end, right_times, pelvis_times,
+                                           grid.copy(), raw_values.copy())
         return features
 
     def _causal_resample(

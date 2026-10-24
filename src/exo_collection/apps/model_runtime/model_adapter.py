@@ -232,6 +232,7 @@ class ModelOutputAdapter:
             "desired_right_nm": right_sample.desired_right_nm,
             "assistance_ready": ready,
             "assistance_errors": list(right_sample.assistance_errors),
+            "delayed_source_time_ns": right_sample.delayed_source_time_ns,
             "motor_distribution": distribution,
             "contract_description": _output_contract_description(self.spec),
         }

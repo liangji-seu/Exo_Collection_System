@@ -1,0 +1,35 @@
+{
+  "schema": "exo_gate_deployment_v1",
+  "mode": "phase_ensemble",
+  "display_name": "Seven GaitPhase TCN variance (causal 0.5 s median, q99)",
+  "model_version": "gaitphase-7seed-variance-median-q99-20261024",
+  "source": {
+    "bundle": "paper_experiments/ao_gate_refinement_20261021/paper_comparison_20261022/tcn_fit/approved_bundle.json",
+    "runner": "paper_experiments/ao_gate_refinement_20261021/paper_comparison_20261022/code/frozen_fit_runner.py",
+    "calibration_lock": "paper_experiments/ao_research_loop_20261024/paper_baseline_revision03/PAPER_EVAL_LOCK.json"
+  },
+  "source_sha256": {
+    "paper_experiments/ao_gate_refinement_20261021/paper_comparison_20261022/tcn_fit/approved_bundle.json": "b610ca8f270d2ab38e6dbbbf2f3aa89cf423ada201893c8c78e0ad65b564aaf7",
+    "paper_experiments/ao_gate_refinement_20261021/paper_comparison_20261022/code/frozen_fit_runner.py": "d07d1ecd129368427d0cfe9c8dc4abd2af84349b71fcd78b1b46ac457111b088",
+    "paper_experiments/ao_research_loop_20261024/paper_baseline_revision03/PAPER_EVAL_LOCK.json": "1de5ec7206b136a2523ffc3596a8495207aeeac06460fc91d568485ef171e4f7"
+  },
+  "assets": {
+    "directory": "paper_experiments/ao_gate_refinement_20261021/paper_comparison_20261022/tcn_fit",
+    "checkpoints": {
+      "17": "da968c69edcb89dabcd18cb59778a31db7208758ee16927061b26f5edcd4cc87",
+      "29": "d754d21b5dfcf7afe378d475bc00c29e054cf4f7725a72fe6bc3b9fb3c44206b",
+      "43": "edb890fae879ae50a3f80cb7d7f1c5fcaf8e4f808ee7a37a45cac05d600b011a",
+      "59": "5d8838f9606d49cea751df4b21e48b2b1fa12a3f86fb210db1a4e01bada35c65",
+      "71": "8b62f0a0e53b119f042996bbdaa43ff13236ce4aabc6dbbb2e73d70e7af7b16e",
+      "83": "ac919f637c884edd29d8cfd1807825c2553a7537694a576c8cd1fe5c41b734b8",
+      "97": "a843534e2d25ec6dc41cac84a19df098bf832a18e5911bfc5a788c0ce7140f7b"
+    }
+  },
+  "window_samples": 100,
+  "decision_stride_samples": 5,
+  "median_seconds": 0.5,
+  "raw_threshold": 0.07031945884227753,
+  "threshold": 0.08490906655788422,
+  "threshold_name": "median_q99",
+  "input": "100 Hz right-leg + pelvis SI in the frozen 12-channel order"
+}

@@ -1,0 +1,61 @@
+助力门控接入验收
+日期：2026-10-24
+
+完成范围
+在线测试的“模型设置 → 助力门控”提供三种缓存选项：不门控、AO24 + RF-full、
+七相位 TCN 方差 + 0.5 秒因果中值。运行时不能切换，停止后可切换。
+力矩模型仍为现有 100 Hz / 94 点 IMU-only TCN；相位门控另用 100 点历史。
+门控后目标、门控前辅助、实际发送指令分别显示/记录，历史回放兼容旧文件。
+首次载入会校验冻结资产与阈值绑定；载入、预热、拒绝、过期期间保持零目标。
+门控计算放在独立进程。决定超过 100 ms 有效期时独立监视线程归零。
+恢复放行后等待本次放行区间产生的延时样本，避免发出上次遗留的辅助目标。
+底层绝对值限幅、双侧同号输出、显式使能/停止和故障处理保持有效。
+
+验证环境与输入
+Python：E:/miniconda/envs/EXO/python.exe；CPU 推理，Qt 离屏测试。
+历史输入：runtime_data/online_recordings/20261016_210359_806362/raw/imu.h5
+原始数据 SHA256：f08506d0a80b6edead0df7c680989d4c7cd3b109a41f98b61ab72e85c7573192
+力矩模型：runtime_data/models/imu_right_pelvis_torque_100hz_rf94_static_20261017/final_model.ts
+模型 SHA256：e1382dd307b765d6154a028e7d94e55569d5863f7ef9bc738186b8a9c258a512
+实时验证参数：80 kg、助力比例 0.2、延时 250 ms、底层限幅 ±18 Nm。
+仅使用 MockTorqueOutput / FakeSerial；未打开真实串口，未驱动电机，未改固件。
+
+测试结果
+1. 运行框架、门控引擎、故障、记录、回放、界面回归：350 项通过。
+   一个已有 torch.load FutureWarning；没有测试失败。
+   异步启动测试的等待方式修正及重复测试定义清理后，两个对应测试另行复核。
+2. 实际推理控制器按真实时间馈送历史输入，每种模式运行 25 秒：
+   不门控：2498 次预测，99.92 Hz。
+   AO：2500 次预测，100.00 Hz；352 个有效决定，219 个放行决定。
+   七相位 TCN：2500 次预测，100.00 Hz；430 个有效决定，256 个放行决定。
+   全部无运行故障、无门控队列丢帧；左右指令同值；停止后归零并失能。
+   有非零目标的命令均绑定当时有效且允许输出的门控决定。
+   这些频率是本机此轮 25 秒测量结果，不是任意负载下的实时保证。
+3. 三种模式共用 20 秒历史数据做算法回放：2000 个网格点中 1999 点有效，
+   生成 1906 次力矩预测；三种模式的原始预测和门控前辅助逐点完全一致。
+   冻结参考一致性测试涵盖 AO24 特征、RF 分数、七相位模型方差与因果中值。
+   放行数量只描述这段历史信号，不作为准确率、真实助力效果或安全性证明。
+4. 原始 60.37 秒记录能够只读加载；旧文件显示“未记录”门控。
+   新记录测试验证资产来源、决定序号、门控前后目标以及真实发送上下文落盘。
+5. 1740 × 1000 离屏界面检查：下拉表显示三项，沿用左右分区，滤波设置可见。
+
+本次发现并修复的运行问题
+AO 与主推理共线程域运行时可能竞争计算时间，改为独立进程。
+原来遇到“尚无新网格”就等待整个下一周期，数据到达边界抖动会使有效预测率下降；
+现在只对这一状态进行截止于下一个正常周期的 1 ms 轮询，仍禁止重复预测同一网格。
+诊断日志新增 no_new_grid_retries / no_new_grid_recovered，区分输入等待和模型计算慢。
+
+复核文件
+runtime_data/online_qa/gate_integration_20261024/unit_results.xml
+runtime_data/online_qa/gate_integration_20261024/target_final.txt
+runtime_data/online_qa/gate_integration_20261024/realtime_all.json
+runtime_data/online_qa/gate_integration_20261024/realtime_diagnostics_*.jsonl
+runtime_data/online_qa/gate_integration_20261024/algorithm_replay.json
+runtime_data/online_qa/gate_integration_20261024/legacy_replay.json
+runtime_data/online_qa/gate_integration_20261024/gate_selector.png
+这些运行产物留在本地；验证入口与实现、部署清单和说明纳入 Git。
+
+使用边界
+AO 是工况适用性评分；七模型方差来自相位预测，均不等同于力矩误差概率。
+本次未校准新阈值，未用这次回放结果挑选/替换冻结模型。
+离线与模拟输出验证已经完成；穿戴条件下的门控效果仍需实机比较。

@@ -100,6 +100,48 @@ def test_confirmed_real_motor_enable_is_only_recording_boundary(tmp_path):
         assert "session UTC/monotonic" in device_metadata["metadata"]["host_utc_semantics"]
 
 
+def test_gate_provenance_decision_and_command_context_are_serialized(tmp_path):
+    rec = OnlineRecording(tmp_path)
+    rec.configure({"gate": {"mode": "ao"}}, {})
+    clock = [1_000_000_000]
+    motor = SerialTorqueOutput("FAKE", 5, background=False, clock=lambda: clock[0],
+        serial_factory=lambda **kwargs: Serial(), recording_sink=rec.motor_event)
+    motor.connect()
+    motor.feed_feedback(feedback(state=0))
+    motor.set_enabled(True)
+    motor.feed_feedback(feedback(seq=2))
+    assert motor.enabled and rec.active
+
+    provenance = {"mode": "ao", "manifest_sha256": "manifest-hash",
+                  "asset_sha256": {"ao_rf_full_features.joblib": "asset-hash"}}
+    rec.gate_event("gate_provenance", provenance)
+    decision = {"mode": "ao", "sequence": 23, "source_grid_ns": clock[0],
+                "computed_at_ns": clock[0], "ready": True, "allow": True,
+                "score": .2, "threshold": .5, "reason": "below_threshold"}
+    rec.gate_event("gate_decision", decision)
+    command_context = {"mode": "ao", "sequence": 23, "state": "allow",
+                       "output_allowed": True, "pre_left_nm": 1.5,
+                       "pre_right_nm": 1.5, "post_left_nm": 1.5,
+                       "post_right_nm": 1.5}
+    motor.send_with_gate_context(1.5, 1.5, command_context)
+    clock[0] += 1_000_000
+    motor.set_enabled(False)
+    motor.close()
+    assert rec.close()
+
+    result = read_online_recording(rec.completed[0])
+    assert result["session"]["metadata"]["gate"]["provenance"] == provenance
+    gate_events = {event["kind"] for event in result["events"]
+                   if event["kind"].startswith("gate_")}
+    assert {"gate_provenance", "gate_decision"} <= gate_events
+    sent = [event["payload"] for event in result["events"]
+            if event["kind"] == "sent_command"]
+    selected = next(command for command in sent
+                    if command.get("gate_context", {}).get("sequence") == 23)
+    assert selected["gate_context"]["output_allowed"] is True
+    assert selected["gate_context"]["pre_left_nm"] == selected["left_nm"] == 1.5
+
+
 def test_delayed_raw_tail_crossing_batches_replay_and_session_isolation(tmp_path):
     fixed = datetime(2026, 10, 15, 1, 2, 3, tzinfo=timezone.utc)
     rec = OnlineRecording(tmp_path, now=lambda: fixed)

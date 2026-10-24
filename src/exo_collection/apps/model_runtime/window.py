@@ -20,6 +20,7 @@ from __future__ import annotations
 import uuid
 import os
 import time
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -148,6 +149,9 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
         self.setStyleSheet(COLLECTOR_STYLESHEET)
 
         self._settings = settings
+        self._gate_mode = str(self._settings._backend.value("model_runtime/gate_mode", "none"))
+        if self._gate_mode not in {"none", "ao", "phase_ensemble"}:
+            self._gate_mode = "none"
         self._diagnostics = Diagnostics(self._project_root() / "runtime_data/model_runtime_diagnostics")
         self._loader = ModelLoader(self._diagnostics)
         self._loader.completed.connect(self._on_model_loaded, Qt.ConnectionType.QueuedConnection)
@@ -352,6 +356,8 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
     def _build_model_group(self) -> QGroupBox:
         group = QGroupBox("模型设置")
         layout = QVBoxLayout(group)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(2)
 
         path_row = QHBoxLayout()
         # Keep the path API for programmatic callers; the operator chooses a
@@ -378,6 +384,19 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
         path_row.addWidget(self._model_choice, 1)
         layout.addLayout(path_row)
 
+        gate_row = QHBoxLayout()
+        gate_row.addWidget(QLabel("助力门控"))
+        self._gate_choice = QComboBox(group)
+        for label, value in (("不门控", "none"),
+                             ("AO24 + RF-full · 原始分数", "ao"),
+                             ("七相位 TCN · 0.5 s 因果中值", "phase_ensemble")):
+            self._gate_choice.addItem(label, value)
+        idx = self._gate_choice.findData(self._gate_mode)
+        self._gate_choice.setCurrentIndex(max(0, idx))
+        self._gate_choice.currentIndexChanged.connect(self._on_gate_mode_changed)
+        gate_row.addWidget(self._gate_choice, 1)
+        layout.addLayout(gate_row)
+
         load_row = QHBoxLayout()
         load_btn = QPushButton("重载模型", group)
         load_btn.clicked.connect(self._load_selected)
@@ -402,6 +421,20 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
         self._load_button = load_btn
         self._run_button = run_btn
         return group
+
+    def _on_gate_mode_changed(self, _index=None):
+        if self._run.running or self._startup.active:
+            idx = self._gate_choice.findData(self._gate_mode)
+            self._gate_choice.blockSignals(True)
+            self._gate_choice.setCurrentIndex(max(0, idx))
+            self._gate_choice.blockSignals(False)
+            return
+        self._gate_mode = str(self._gate_choice.currentData() or "none")
+        self._settings._backend.setValue("model_runtime/gate_mode", self._gate_mode)
+        self._diagnostics.record("gate_mode_selected", mode=self._gate_mode,
+                                 version="ao24_rf_full_raw_v1" if self._gate_mode == "ao"
+                                 else "gaitphase7_variance_median_0p5s_v1"
+                                 if self._gate_mode == "phase_ensemble" else "none")
 
     def _build_torque_group(self) -> QGroupBox:
         group = self._controls = AssistanceControls()
@@ -1331,6 +1364,7 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
 
     def _cancel_startup(self, reason):
         if self._startup.active:
+            self._gate_choice.setEnabled(True)
             self._diagnostics.record("startup_cancelled", generation=self._startup.generation, reason=reason)
             self._startup.cancel(reason)
             self._run_button.setEnabled(self._spec is not None or bool(self._spec_path_edit.text().strip()))
@@ -1342,6 +1376,7 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
         self._run_button.setEnabled(False)
 
     def _fail_startup(self, message, *, detail=None, stop=True):
+        self._gate_choice.setEnabled(True)
         generation = self._startup.generation
         self._startup.fail(message)
         self._diagnostics.record("startup_failed", generation=generation, reason=message,
@@ -1369,6 +1404,7 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
                 self.statusBar().showMessage("请先选择模型，再点击运行。")
                 return
         generation = self._startup.begin()
+        self._gate_choice.setEnabled(False)
         self._startup_probe_after = 0.0
         self._fault_label.clear()
         self._diagnostics.record("startup_requested", generation=generation,
@@ -1691,7 +1727,9 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
         for command in motor.history:
             if command.host_monotonic_ns > self._last_logged_command_ns:
                 self._last_logged_command_ns = command.host_monotonic_ns
-                self._write_log("sent_command", command)
+                record = self._command_record(command)
+                self._write_log("sent_command", record)
+                self._online_recording.command(record)
         if motor.last is not None:
             self._model_output_panel.add_command(motor.last)
             self._update_torque_label(motor.last)
@@ -1749,7 +1787,12 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
             "spec": self._spec.model_dump(mode="json") if self._spec else None,
             "runtime_parameters": self._controls.parameters_snapshot() if hasattr(self._controls, "parameters_snapshot") else {},
             "motor_port": self._controls.port.currentText(),
-            "motor_limit_nm": self._controls.limit.value()}
+            "motor_limit_nm": self._controls.limit.value(),
+            "gate": {"mode": self._gate_mode, "max_age_ms": 100,
+                     "decision_rate_hz": 20, "input_grid_hz": 100,
+                     "resume_rule": "keep pregate history; hold zero until delayed sample source reaches new gate epoch"}}
+        if self._controller is not None and self._gate_mode != "none":
+            metadata["gate"]["provenance"] = self._controller.gate_provenance
         self._online_recording.configure(metadata, streams)
 
     def _poll_recording(self):
@@ -1781,7 +1824,10 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
                     "diagnostic_log": str(self._diagnostics.path),
                     "output_interface": "serial" if self._motor is not None else "display_only",
                     "right_sign": spec.assistance.right_sign,
-                    "motor_distribution": spec.assistance.motor_distribution}
+                    "motor_distribution": spec.assistance.motor_distribution,
+                    "gate": {"mode": self._gate_mode, "max_age_ms": 100,
+                             "decision_rate_hz": 20, "input_grid_hz": 100,
+                             "resume_rule": "keep pregate history; hold zero until delayed sample source reaches new gate epoch"}}
         if self._model_sha256 is not None:
             metadata["model_sha256"] = self._model_sha256
         self._session_log = SessionLog(self._project_root() / "runtime_data/model_runtime_logs", metadata)
@@ -1809,13 +1855,30 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
             return
         self._model_output_panel.set_output_status(self._run.reason)
         if self._motor is None:
-            self._model_status.setText("推理运行中 · 仅显示预测与辅助")
+            self._model_status.setText("推理运行中 · 仅显示预测与辅助" +
+                                       self._gate_status_text(payload.get("gate_status")))
             self.statusBar().showMessage("推理运行中 · 电机未连接，未下发。")
+        elif payload.get("gate_status") is not None:
+            self._model_status.setText("推理运行中" + self._gate_status_text(payload["gate_status"]))
         self._workspace.set_stream_state("model_output", "live")
         self._model_output_panel.add_pipeline(payload)
         self._write_log("pipeline", payload)
         # Input/assistance checks run at explicit Run/arm edges. Re-probing
         # all 40 frames for every GUI plot update blocks the inference lock.
+
+    @staticmethod
+    def _gate_status_text(status) -> str:
+        if status is None:
+            return ""
+        name = {"ao": "AO24", "phase_ensemble": "七相位 TCN", "none": "不门控"}.get(status.mode, status.mode)
+        parts = [name, {"allow": "放行", "rejected": "拒绝", "warming": "预热",
+                        "loading": "载入门控模型", "delay_warming": "等待延时样本", "stale": "过期",
+                        "fault": "故障"}.get(status.state, status.state)]
+        if status.score is not None and status.threshold is not None:
+            parts.append(f"分数 {status.score:.4g} / 阈值 {status.threshold:.4g}")
+        if status.age_ms is not None:
+            parts.append(f"{status.age_ms:.0f} ms")
+        return " · 门控：" + "，".join(parts)
 
     def _load_selected(self) -> None:
         path = self._spec_path_edit.text().strip()
@@ -1921,6 +1984,8 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
             torque.set_limit(self._controls.limit.value())
         controller = InferenceController(self._hub, spec, runtime, torque, parent=self,
             allow_input_wait_recovery=self._motor is None,
+            gate_mode=self._gate_mode,
+            gate_recording_callback=self._online_recording.gate_event,
             recording_callback=self._online_recording.prediction)
         controller.diagnostic_event.connect(self._on_runtime_diagnostic, Qt.ConnectionType.QueuedConnection)
         for signal, callback in (
@@ -1944,6 +2009,7 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
         self._spec = spec
         self._runtime = runtime
         self._run.prepare(controller, torque)
+        self._gate_choice.setEnabled(False)
         self._model_output_panel.set_output_spec(spec.output,
             active_sides=("right",) if spec.imu_tcn.enabled else ("left", "right"),
             motor_distribution=spec.assistance.motor_distribution)
@@ -1960,6 +2026,7 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
         if not self._run.stop(timeout_ms=3000):
             raise RuntimeError(self._run.reason)
         controller = self._run.release_controller()
+        self._gate_choice.setEnabled(True)
         if controller is not None:
             for signal in (controller.prediction, controller.torque_commanded,
                            controller.fault, controller.state_changed, controller.pipeline_sample):
@@ -2087,7 +2154,25 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
             return  # Serial commands are displayed from the actual send history.
         self._model_output_panel.add_command(command)
         self._update_torque_label(command)
-        self._write_log("mock_command", command)
+        self._write_log("mock_command", self._command_record(command))
+
+    def _command_record(self, command):
+        # Command provenance was copied into the output frame at its send/cache
+        # boundary. Looking up the current UI/controller sample here can bind
+        # a later decision to an earlier 200 Hz sender frame.
+        context = getattr(command, "gate_context", None) or {}
+        return {"command": asdict(command) if is_dataclass(command) else command,
+                "host_monotonic_ns": int(command.host_monotonic_ns),
+                "gate_mode": context.get("mode"),
+                "gate_sequence": context.get("sequence"),
+                "gate_source_grid_ns": context.get("source_grid_ns"),
+                "gate_generation": context.get("generation"),
+                "gate_epoch": context.get("epoch"),
+                "gate_pre_left_nm": context.get("pre_left_nm"),
+                "gate_pre_right_nm": context.get("pre_right_nm"),
+                "gate_post_left_nm": context.get("post_left_nm"),
+                "gate_post_right_nm": context.get("post_right_nm"),
+                "gate_state": context.get("state")}
 
     def _on_fault(self, message: str) -> None:
         if (self.sender() is not None and self.sender() is not self._controller):
