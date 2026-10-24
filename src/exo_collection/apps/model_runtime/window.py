@@ -75,6 +75,7 @@ from exo_collection.apps.model_runtime.model_loader import ModelLoader
 from exo_collection.apps.model_runtime.preview_panels import (
     ModelOutputPanel,
 )
+from exo_collection.apps.model_runtime.uncertainty_panel import UncertaintyPanel
 from exo_collection.apps.model_runtime.spec import ModelSpec
 from exo_collection.apps.model_runtime.model_bindings import bind_model_inputs
 from exo_collection.apps.model_runtime.model_catalog import (
@@ -430,6 +431,8 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
             self._gate_choice.blockSignals(False)
             return
         self._gate_mode = str(self._gate_choice.currentData() or "none")
+        self._uncertainty_panel.set_mode(self._gate_mode)
+        self._workspace.set_stream_state("uncertainty", "waiting")
         self._settings._backend.setValue("model_runtime/gate_mode", self._gate_mode)
         self._diagnostics.record("gate_mode_selected", mode=self._gate_mode,
                                  version="ao24_rf_full_raw_v1" if self._gate_mode == "ao"
@@ -523,6 +526,10 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
         self._model_output_panel = ModelOutputPanel("模型输出")
         self._workspace.register_panel("model_output", "模型输出", self._model_output_panel,
                                        preferred_height=340)
+        self._uncertainty_panel = UncertaintyPanel()
+        self._uncertainty_panel.set_mode(self._gate_mode)
+        self._workspace.register_panel("uncertainty", "不确定性判定", self._uncertainty_panel,
+                                       preferred_height=240)
         self._workspace.reset_default_layout()
         self._workspace.focus_mode_requested.connect(self._set_preview_focus_mode)
         layout.addWidget(self._workspace, 1)
@@ -881,6 +888,8 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
                                  self._workspace.set_stream_state(m, "error" if st == "bad" else "disconnected"), modality=modality)
         safe("mark_model_output_fault", lambda:
              self._workspace.set_stream_state("model_output", "error"))
+        self._uncertainty_panel.mark_inactive(fault=True)
+        self._workspace.set_stream_state("uncertainty", "error")
         safe("poll_recording_tail", self._poll_recording)
         message = self._friendly_fault(str(detail))
         popup_message = self._incident_message(detail, snapshot)
@@ -1389,6 +1398,8 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
         self.statusBar().showMessage(message)
         self._model_output_panel.set_output_status(message)
         self._workspace.set_stream_state("model_output", "error")
+        self._uncertainty_panel.mark_inactive(fault=True)
+        self._workspace.set_stream_state("uncertainty", "error")
 
     def _run_prediction(self) -> None:
         """Latch an explicit Run intent; loading/connection/warmup are async."""
@@ -1862,6 +1873,15 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
             self._model_status.setText("推理运行中" + self._gate_status_text(payload["gate_status"]))
         self._workspace.set_stream_state("model_output", "live")
         self._model_output_panel.add_pipeline(payload)
+        gate_status = payload.get("gate_status")
+        self._uncertainty_panel.add_pipeline(payload)
+        gate_state = getattr(gate_status, "state", None)
+        if isinstance(gate_status, dict):
+            gate_state = gate_status.get("state")
+        self._workspace.set_stream_state(
+            "uncertainty", "live" if gate_status is not None and gate_state in {"allow", "rejected", "delay_warming"}
+            else "error" if gate_state == "fault" else "waiting"
+        )
         self._write_log("pipeline", payload)
         # Input/assistance checks run at explicit Run/arm edges. Re-probing
         # all 40 frames for every GUI plot update blocks the inference lock.
@@ -1895,6 +1915,8 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
             self._show_error("旧模型尚未停止", exc)
             return
         self._spec = None
+        self._uncertainty_panel.clear()
+        self._workspace.set_stream_state("uncertainty", "waiting")
         self._model_template_spec = None
         self._runtime = None
         self._model_sha256 = None
@@ -1970,6 +1992,8 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
         except RuntimeError as exc:
             self._show_error("旧模型尚未停止", exc)
             return False
+        self._uncertainty_panel.clear()
+        self._workspace.set_stream_state("uncertainty", "waiting")
         try:
             if runtime is None:
                 runtime = build_model_runtime(spec, base_dir=base_dir)
@@ -2067,6 +2091,8 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
         except RuntimeError as exc:
             self._fault_label.setText(str(exc))
             self.statusBar().showMessage(str(exc))
+            self._uncertainty_panel.mark_inactive(fault=True)
+            self._workspace.set_stream_state("uncertainty", "error")
             return
         self._run_button.setEnabled(self._spec is not None or bool(self._spec_path_edit.text().strip()))
         self._enable_check.blockSignals(True)
@@ -2080,6 +2106,8 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
             self._model_output_panel.clear_command()
         self._update_torque_label()
         self._workspace.set_stream_state("model_output", "error" if reason else "waiting")
+        self._uncertainty_panel.mark_inactive(fault=bool(reason))
+        self._workspace.set_stream_state("uncertainty", "error" if reason else "waiting")
         if reason:
             message = self._friendly_fault(reason)
             self._fault_label.setText(message)
