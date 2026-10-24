@@ -63,6 +63,7 @@ from exo_collection.apps.model_runtime.backends import (
     build_model_runtime,
 )
 from exo_collection.apps.model_runtime.inference import InferenceController
+from exo_collection.apps.model_runtime.gate_compatibility import gate_compatibility_error
 from exo_collection.apps.model_runtime.run_coordinator import (
     RunCoordinator, OutputState, _motor_fault_reason,
 )
@@ -76,7 +77,7 @@ from exo_collection.apps.model_runtime.preview_panels import (
     ModelOutputPanel,
 )
 from exo_collection.apps.model_runtime.uncertainty_panel import UncertaintyPanel
-from exo_collection.apps.model_runtime.spec import ModelSpec
+from exo_collection.apps.model_runtime.spec import ModelSpec, load_model_spec
 from exo_collection.apps.model_runtime.model_bindings import bind_model_inputs
 from exo_collection.apps.model_runtime.model_catalog import (
     ModelCatalogEntry, discover_local_models, read_model_entry,
@@ -431,6 +432,7 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
             self._gate_choice.blockSignals(False)
             return
         self._gate_mode = str(self._gate_choice.currentData() or "none")
+        self._applied_signature = None
         self._uncertainty_panel.set_mode(self._gate_mode)
         self._workspace.set_stream_state("uncertainty", "waiting")
         self._settings._backend.setValue("model_runtime/gate_mode", self._gate_mode)
@@ -438,6 +440,7 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
                                  version="ao24_rf_full_raw_v1" if self._gate_mode == "ao"
                                  else "gaitphase7_variance_median_0p5s_v1"
                                  if self._gate_mode == "phase_ensemble" else "none")
+        self._update_gate_compatibility_status()
 
     def _build_torque_group(self) -> QGroupBox:
         group = self._controls = AssistanceControls()
@@ -1243,6 +1246,35 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
         if selected:
             self.load_model_from_path(Path(selected))
 
+    def _update_gate_compatibility_status(self, spec: ModelSpec | None = None) -> str | None:
+        """Show the selected model/gate mismatch as soon as either changes."""
+        if spec is None:
+            spec = self._spec
+        if spec is None:
+            path_text = self._spec_path_edit.text().strip()
+            if path_text and Path(path_text).is_file():
+                try:
+                    spec = load_model_spec(path_text)
+                except Exception:
+                    return None
+        if spec is None:
+            return None
+        reason = gate_compatibility_error(spec, self._gate_mode)
+        if reason:
+            message = f"门控与模型不兼容：{reason}"
+            self._model_status.setText(message)
+            self.statusBar().showMessage(message)
+        elif self._model_status.text().startswith("门控与模型不兼容："):
+            if self._spec is not None:
+                message = (f"已加载 · 输入：{', '.join(i.modality for i in self._spec.features.inputs)} · 点击运行")
+            elif self._load_generation is not None:
+                message = "正在后台加载模型…可点击运行，加载完成后自动准备输入"
+            else:
+                message = "未加载"
+            self._model_status.setText(message)
+            self.statusBar().showMessage(message)
+        return reason
+
     def _show_model_choice(self, path: Path) -> None:
         path = Path(path).resolve()
         key = str(path)
@@ -1439,6 +1471,10 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
                 return
             if self._spec is None:
                 self._fail_startup("模型尚不可用，请重新选择模型。")
+                return
+            compatibility_error = gate_compatibility_error(self._spec, self._gate_mode)
+            if compatibility_error:
+                self._fail_startup(compatibility_error, detail=compatibility_error)
                 return
             required = tuple(dict.fromkeys(entry.modality for entry in self._spec.features.inputs))
             self._startup.required = required
@@ -1927,6 +1963,7 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
         self._model_status.setText("正在后台加载模型…可点击运行，加载完成后自动准备输入")
         self._run_button.setEnabled(True)
         self._spec_path_edit.setText(str(path))
+        self._update_gate_compatibility_status()
 
     @Slot(object)
     def _on_model_loaded(self, result):
@@ -2044,6 +2081,7 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
         self._fault_label.setText("")
         self._run_button.setEnabled(True)
         self.statusBar().showMessage("模型已加载，等待运行；尚未启动推理。")
+        self._update_gate_compatibility_status(spec)
         return True
 
     def _stop_controller(self) -> None:

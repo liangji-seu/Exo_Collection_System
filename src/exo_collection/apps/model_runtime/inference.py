@@ -29,6 +29,7 @@ from exo_collection.apps.model_runtime.features import (
     FeatureExtractor,
 )
 from exo_collection.apps.model_runtime.spec import ModelSpec, OutputSpec
+from exo_collection.apps.model_runtime.gate_compatibility import gate_compatibility_error
 from exo_collection.apps.model_runtime.model_adapter import ModelInputAdapter, ModelOutputAdapter, map_output_values
 from exo_collection.apps.model_runtime.subscription import SubscriptionHub
 from exo_collection.apps.model_runtime.torque import TorqueOutput
@@ -278,17 +279,13 @@ class InferenceController(QThread):
         """Return a GUI-safe report; this method never arms the motors."""
         self._input_adapter.extractor = self._extractor
         report = self._input_adapter.preflight()
-        if self._gate_dispatch.mode != "none" and self._imu_extractor is None:
+        compatibility_error = gate_compatibility_error(
+            self._spec, self._gate_dispatch.mode,
+            has_imu_tcn_extractor=self._imu_extractor is not None,
+        )
+        if compatibility_error:
             report = dict(report)
-            report["errors"] = list(report.get("errors", [])) + [
-                "selected assistance gate requires the right-leg/pelvis IMU TCN input"]
-            report["ready"] = False
-        if (self._gate_dispatch.mode != "none" and
-                (abs(float(self._spec.features.control_rate_hz) - 100.0) > 1e-6
-                 or int(self._spec.feature_window_samples) != 94)):
-            report = dict(report)
-            report["errors"] = list(report.get("errors", [])) + [
-                "助力门控要求 100 Hz IMU 网格；请先选择 100 Hz / 94 点模型"]
+            report["errors"] = list(report.get("errors", [])) + [compatibility_error]
             report["ready"] = False
         return report
 

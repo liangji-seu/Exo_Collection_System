@@ -15,6 +15,8 @@ from exo_collection.apps.model_runtime import window as module, model_loader
 from exo_collection.apps.model_runtime.backends import build_model_runtime
 from exo_collection.apps.model_runtime.spec import ModelSpec
 from exo_collection.apps.model_runtime.startup import StartupCoordinator, StartupPhase
+from exo_collection.apps.model_runtime.gate_compatibility import gate_compatibility_error
+from exo_collection.apps.model_runtime.torque import MockTorqueOutput
 from exo_collection.configuration import SharedAppSettings
 from exo_collection.domain.events import SampleBatch
 
@@ -222,3 +224,69 @@ def test_run_intent_survives_async_model_loading_without_early_connections(widge
         assert not window.controller_running and not errors
     finally:
         release.set()
+
+
+@pytest.mark.parametrize("mode", ["ao", "phase_ensemble"])
+def test_incompatible_20hz_gate_fails_before_connecting_or_warming(widget, mode):
+    app, window, errors = widget
+    window._gate_choice.setCurrentIndex(window._gate_choice.findData(mode))
+    install(window)
+    assert "门控与模型不兼容" in window._model_status.text()
+    started = time.monotonic()
+    window._run_prediction()
+    elapsed = time.monotonic() - started
+    assert elapsed < 3.0
+    assert not window._startup.active
+    assert window._startup.phase is StartupPhase.FAILED
+    assert not Handle.created
+    assert "100 Hz / 94 点模型" in window._fault_label.text()
+    assert "超时" not in window._fault_label.text()
+    window._gate_choice.setCurrentIndex(window._gate_choice.findData("none"))
+    assert "不兼容" not in window._model_status.text()
+
+
+@pytest.mark.parametrize("mode", ["ao", "phase_ensemble"])
+def test_gate_compatibility_contract_and_none_mode(mode):
+    old_model = spec()
+    compatible_model = ModelSpec.model_validate({"model": {"backend": "demo"},
+        "features": {"control_rate_hz": 100, "window_s": .94,
+                     "inputs": [{"modality": "imu"}]},
+        "output": {"torque_limit_nm": 0}, "safety": {"watchdog_s": .5}})
+    assert gate_compatibility_error(old_model, "none") is None
+    assert gate_compatibility_error(compatible_model, "none") is None
+    assert "100 Hz / 94 点模型" in gate_compatibility_error(old_model, mode)
+    assert gate_compatibility_error(compatible_model, mode,
+                                   has_imu_tcn_extractor=True) is None
+
+
+@pytest.mark.parametrize("mode", ["ao", "phase_ensemble"])
+def test_compatible_100hz_94_point_gate_starts_with_mock_output(widget, tmp_path, monkeypatch, mode):
+    app, window, errors = widget
+    model = ModelSpec.model_validate({
+        "model": {"backend": "torchscript", "weights_path": "unused.pt",
+                  "input_layout": "btc"},
+        "features": {"control_rate_hz": 100, "window_s": .94,
+                     "inputs": [{"modality": "imu"}]},
+        "output": {"unit": "Nm/kg", "single_output_maps_to": "right_torque",
+                   "torque_limit_nm": 5},
+        "safety": {"watchdog_s": .5},
+        "imu_tcn": {"enabled": True, "right_device_id": "right",
+                    "pelvis_device_id": "pelvis"},
+    })
+
+    class Runtime:
+        def predict(self, features):
+            return np.zeros((1,), dtype=np.float32)
+
+    window._gate_choice.setCurrentIndex(window._gate_choice.findData(mode))
+    assert window._install_runtime(model, base_dir=tmp_path, runtime=Runtime())
+    window._applied_signature = window._controls.signature()
+    window._hub.register_stream("imu", Queue(), channels=("x",), sample_shape=(1,), rate_hz=100)
+    monkeypatch.setattr(window, "_preflight", lambda quiet=False: True)
+    window._run_prediction()
+    assert window.controller_running
+    assert window._run.running
+    assert window._startup.phase is StartupPhase.STARTED
+    assert isinstance(window._run.controller._torque, MockTorqueOutput)
+    assert window._motor is None
+    assert not errors
