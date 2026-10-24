@@ -80,7 +80,7 @@ from exo_collection.apps.model_runtime.uncertainty_panel import UncertaintyPanel
 from exo_collection.apps.model_runtime.spec import ModelSpec, load_model_spec
 from exo_collection.apps.model_runtime.model_bindings import bind_model_inputs
 from exo_collection.apps.model_runtime.model_catalog import (
-    ModelCatalogEntry, discover_local_models, read_model_entry,
+    RETIRED_ONLINE_DEPLOYMENTS, ModelCatalogEntry, discover_local_models, read_model_entry,
 )
 from exo_collection.apps.model_runtime.subscription import SubscriptionHub
 from exo_collection.apps.model_runtime.torque import MockTorqueOutput, TorqueCommand, TorqueOutput
@@ -1238,7 +1238,7 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
         return Path(__file__).resolve().parents[4]
 
     def _load_bundled_model(self) -> None:
-        path = self._project_root() / "runtime_data/models/imu_right_pelvis_torque_v1_20261010/model_spec.json"
+        path = self._project_root() / "runtime_data/models/imu_right_pelvis_torque_100hz_rf94_static_20261017/model_spec.json"
         self.load_model_from_path(path)
 
     def _choose_model_entry(self) -> None:
@@ -1944,6 +1944,10 @@ class ModelRuntimeWindow(SignalPreviewMixin, QMainWindow):
         self.load_model_from_path(Path(path))
 
     def load_model_from_path(self, path: Path) -> None:
+        path = Path(path)
+        if path.parent.name in RETIRED_ONLINE_DEPLOYMENTS:
+            path = (self._project_root() / "runtime_data/models/"
+                    / "imu_right_pelvis_torque_100hz_rf94_static_20261017/model_spec.json")
         self._cancel_startup("model_changed")
         try:
             self._stop_controller()

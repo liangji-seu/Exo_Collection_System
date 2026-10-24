@@ -8,6 +8,16 @@ from pathlib import Path
 from .spec import ModelSpec, load_model_spec
 
 
+# These deployments were retired from the online app.  Ignore them even when
+# another workstation still has a local copy; other future deployments remain
+# discoverable.
+RETIRED_ONLINE_DEPLOYMENTS = frozenset({
+    "imu_right_pelvis_torque_v1_20261010",
+    "imu_right_pelvis_torque_v2_20261016",
+    "imu_right_pelvis_torque_100hz_rf94_20261016",
+})
+
+
 @dataclass(frozen=True)
 class ModelCatalogEntry:
     spec_path: Path
@@ -80,6 +90,8 @@ def discover_local_models(directory: Path) -> ModelCatalog:
     directory = Path(directory)
     for deployment in sorted(directory.iterdir()) if directory.is_dir() else ():
         if not deployment.is_dir():
+            continue
+        if deployment.name in RETIRED_ONLINE_DEPLOYMENTS:
             continue
         path = deployment / "model_spec.json"
         if not path.is_file():

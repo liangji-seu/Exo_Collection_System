@@ -6,7 +6,7 @@ from pathlib import Path
 from exo_collection.apps.model_runtime.model_catalog import discover_local_models, read_model_entry
 
 
-DEPLOYMENT = Path(__file__).resolve().parents[2] / "runtime_data/models/imu_right_pelvis_torque_v1_20261010"
+DEPLOYMENT = Path(__file__).resolve().parents[2] / "runtime_data/models/imu_right_pelvis_torque_100hz_rf94_static_20261017"
 
 
 def deployment(root, name, *, backend="torchscript", weights=True, metadata=None):
@@ -32,17 +32,23 @@ def test_installed_model_has_the_real_user_facing_name_without_importing_torch(m
     monkeypatch.setattr(builtins, "__import__", no_torch)
     catalog = discover_local_models(DEPLOYMENT.parent)
     entries = {entry.spec_path.parent.name: entry for entry in catalog.entries}
-    v1 = entries[DEPLOYMENT.name]
-    v2 = entries["imu_right_pelvis_torque_v2_20261016"]
-    assert v1.name == "右髋估计·双侧同号助力 · IMU-TCN v1"
-    assert "输出：右髋力矩 (Nm/kg)" in v1.description
-    assert "左右同号同 Nm" in v1.description
-    assert v2.name == "右髋估计·双侧同号助力 · IMU-TCN v2（6 Hz 标签）"
-    assert "Nm/kg" in v2.description
-    assert "离线6 Hz" in v2.description
-    rf94 = entries["imu_right_pelvis_torque_100hz_rf94_20261016"]
-    assert "100 Hz" in rf94.name and "94帧" in rf94.name
+    static = entries[DEPLOYMENT.name]
+    assert static.name == "右髋估计·双侧同号助力 · IMU-TCN 静止优化版（100 Hz / 94帧）"
+    assert "静止工况增强训练版" in static.description
+    assert len(entries) == 1
     assert not catalog.issues
+
+
+def test_catalog_hides_retired_models_but_discovers_new_deployments(tmp_path):
+    for retired in (
+        "imu_right_pelvis_torque_v1_20261010",
+        "imu_right_pelvis_torque_v2_20261016",
+        "imu_right_pelvis_torque_100hz_rf94_20261016",
+    ):
+        deployment(tmp_path, retired)
+    deployment(tmp_path, "future_model")
+    catalog = discover_local_models(tmp_path)
+    assert [entry.spec_path.parent.name for entry in catalog.entries] == ["future_model"]
 
 
 def test_catalog_excludes_missing_invalid_and_demo_deployments(tmp_path):
